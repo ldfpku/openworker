@@ -1,0 +1,31 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "gemini-relay",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-08-01",
+	// workers.dev is DNS-poisoned in mainland China and would expose a second, uncontrolled
+	// hostname — serve exclusively on the custom domain.
+	"workers_dev": false,
+	"routes": [
+		{
+			"pattern": "gemini.smjtools.com",
+			"custom_domain": true
+		}
+	],
+	"kv_namespaces": [
+		{
+			"binding": "ROSTER",
+			"id": "757a4efde59c44d1a47267e4aa06e11b"
+		}
+	],
+	// schema changes go through migrations/:
+	//   npx wrangler d1 migrations apply gemini_relay_usage --remote
+	"d1_databases": [
+		{
+			"binding": "USAGE_DB",
+			"database_name": "gemini_relay_usage",
+			"database_id": "96cd44cf-273b-4e88-845d-1183e7f2fdeb",
+			"migrations_dir": "migrations"
+		}
+	]
+}

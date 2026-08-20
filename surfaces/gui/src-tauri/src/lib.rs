@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 #[cfg(target_os = "windows")]
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use ocw_stt::{Dictation, DownloadProgress};
 use serde::Serialize;
@@ -45,6 +45,42 @@ fn free_port() -> u16 {
 
 fn launch_token() -> String {
     format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
+}
+
+// -- native-shell locale -----------------------------------------------------------------------
+// The tray menu and updater strings are the only user-facing text the Rust shell owns; the SPA
+// does its own i18n. Resolved once from the OS locale at startup — in-app language switching
+// does not hot-update the tray (a restart applies it).
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ShellLocale {
+    En,
+    Zh,
+}
+
+static SHELL_LOCALE: OnceLock<ShellLocale> = OnceLock::new();
+
+/// The system locale, resolved once: any `zh*` tag → Zh, everything else → En.
+fn shell_locale() -> ShellLocale {
+    *SHELL_LOCALE.get_or_init(|| match sys_locale::get_locale() {
+        Some(tag) if tag.to_ascii_lowercase().starts_with("zh") => ShellLocale::Zh,
+        _ => ShellLocale::En,
+    })
+}
+
+/// Match-table lookup for the shell's few native strings. The English text is the key and the
+/// English value, so unknown keys (and the En locale) pass through unchanged.
+fn tr(locale: ShellLocale, key: &'static str) -> &'static str {
+    if locale == ShellLocale::En {
+        return key;
+    }
+    match key {
+        "Open OpenWorker" => "打开 OpenWorker",
+        "Settings" => "设置",
+        "Quit" => "退出",
+        "no update available" => "没有可用更新",
+        _ => key,
+    }
 }
 
 /// Path to the server entrypoint. Resolution order:
@@ -519,7 +555,7 @@ async fn download_update(
     use tauri_plugin_updater::UpdaterExt;
     let updater = app.updater().map_err(|e| e.to_string())?;
     let Some(update) = updater.check().await.map_err(|e| e.to_string())? else {
-        return Err("no update available".into());
+        return Err(tr(shell_locale(), "no update available").into());
     };
     // Periodic re-checks re-invoke this for the same release — the cached bytes stand.
     // (Guard scope stays sync: a std MutexGuard must not live across an await.)
@@ -553,7 +589,7 @@ async fn install_update(
     use tauri_plugin_updater::UpdaterExt;
     let updater = app.updater().map_err(|e| e.to_string())?;
     let Some(update) = updater.check().await.map_err(|e| e.to_string())? else {
-        return Err("no update available".into());
+        return Err(tr(shell_locale(), "no update available").into());
     };
     // Pre-fetched bytes for this exact version install instantly; a stale or missing
     // cache falls back to the original blocking download-and-install.
@@ -578,6 +614,7 @@ async fn install_update(
 }
 
 pub fn run() {
+    let locale = shell_locale();
     let port = free_port();
     let api_token = launch_token();
     let http = format!("http://127.0.0.1:{port}");
@@ -721,10 +758,22 @@ pub fn run() {
                 }
             });
 
-            // 3. System tray: Open / Settings / Quit.
-            let open_i = MenuItem::with_id(app, "open", "Open OpenWorker", true, None::<&str>)?;
-            let settings_i = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
-            let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            // 3. System tray: Open / Settings / Quit (labels follow the OS locale, see tr()).
+            let open_i = MenuItem::with_id(
+                app,
+                "open",
+                tr(locale, "Open OpenWorker"),
+                true,
+                None::<&str>,
+            )?;
+            let settings_i = MenuItem::with_id(
+                app,
+                "settings",
+                tr(locale, "Settings"),
+                true,
+                None::<&str>,
+            )?;
+            let quit_i = MenuItem::with_id(app, "quit", tr(locale, "Quit"), true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open_i, &settings_i, &quit_i])?;
 
             // A monochrome template icon (black + alpha, raw RGBA 44×44) so the menu bar tints

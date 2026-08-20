@@ -24,7 +24,7 @@ from typing import Any, Callable, Optional
 from .anthropic_provider import AnthropicProvider
 from .base import ProviderClient
 from .bedrock_provider import BedrockProvider
-from .gemini_provider import GeminiProvider
+from .gemini_provider import GeminiProvider, resolve_base_url
 from .openai_provider import OpenAIProvider
 from .openai_responses import OpenAIResponsesProvider
 from .vertex_provider import VertexProvider
@@ -143,8 +143,11 @@ def _build_anthropic(profile: dict[str, Any], secrets: Any) -> ProviderClient:
 
 def _build_gemini(profile: dict[str, Any], secrets: Any) -> ProviderClient:
     # Same deferred-key contract as anthropic (GeminiProvider/resolve_api_key).
+    # base_url: hidden profile override (same precedent as anthropic's thinking_budget) —
+    # no ProviderField, since the UI only ever asks for the key.
     api_key = ((profile or {}).get("api_key") or "").strip() or None
-    return GeminiProvider(api_key=api_key, secrets=secrets)
+    base_url = ((profile or {}).get("base_url") or "").strip() or None
+    return GeminiProvider(api_key=api_key, secrets=secrets, base_url=base_url)
 
 
 def _build_bedrock(profile: dict[str, Any], secrets: Any) -> ProviderClient:
@@ -921,8 +924,8 @@ def verify_provider_key(
             )
         elif name == "gemini":
             resp = httpx.get(
-                "https://generativelanguage.googleapis.com/v1beta/models",
-                params={"key": key},
+                resolve_base_url(None) + "/v1beta/models",
+                headers={"x-goog-api-key": key},
                 timeout=timeout,
             )
         elif name == "ollama":
@@ -969,6 +972,12 @@ def verify_provider_key(
     if resp.status_code in (401, 403):
         if name == "ollama":
             return {"ok": False, "error": "Server rejected the request."}
+        if name == "gemini" and resp.status_code == 403:
+            return {
+                "ok": False,
+                "error": "This key is not registered with the company relay yet — "
+                "ask the admin to add it.",
+            }
         return {"ok": False, "error": "Invalid API key."}
     if resp.status_code == 404 and name == "ollama":
         return {

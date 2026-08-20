@@ -3,6 +3,8 @@
 // sets `withGlobalTauri`) instead of the @tauri-apps npm packages, so the browser build needs
 // no Tauri dependencies.
 
+import i18n from "./i18n";
+
 export const isTauri = (): boolean =>
   typeof (globalThis as any).__TAURI__ !== "undefined";
 
@@ -46,7 +48,7 @@ const invoke = async <T>(cmd: string, args?: Record<string, unknown>): Promise<T
 
 const invokeStrict = async <T>(cmd: string, args?: Record<string, unknown>): Promise<T> => {
   const tauri = (globalThis as any).__TAURI__;
-  if (!tauri?.core?.invoke) throw new Error("This feature is available in the desktop app.");
+  if (!tauri?.core?.invoke) throw new Error(i18n.t("This feature is available in the desktop app."));
   return (await tauri.core.invoke(cmd, args)) as T;
 };
 

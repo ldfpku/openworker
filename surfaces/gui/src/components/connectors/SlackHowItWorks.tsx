@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { SlackWorkspace } from "../../api";
 
 // UX-027: the post-connect "how mentions reach you" card. A tabbed carousel of
@@ -24,6 +25,7 @@ function readCollapsed(): boolean {
 }
 
 export function SlackHowItWorks({ workspaces }: { workspaces: SlackWorkspace[] }) {
+  const { t } = useTranslation();
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [tab, setTab] = useState(0);
   const [cycle, setCycle] = useState(0); // bump = remount the scene = restart its animations
@@ -74,15 +76,15 @@ export function SlackHowItWorks({ workspaces }: { workspaces: SlackWorkspace[] }
     <div className="mb-5" data-testid="slack-howitworks">
       <div className="flex items-baseline gap-2.5">
         <h3 className="text-[13.5px] font-semibold tracking-tight">
-          Getting started with Slack &amp; OpenWorker
+          {t("Getting started with Slack & OpenWorker")}
         </h3>
         <button
           className="ml-auto shrink-0 inline-flex items-center gap-1.5 text-[12px] text-muted hover:text-ink"
           data-testid="hiw-collapse"
-          title={collapsed ? "Show how mentions work" : "Collapse — reopen anytime"}
+          title={collapsed ? t("Show how mentions work") : t("Collapse — reopen anytime")}
           onClick={toggle}
         >
-          {collapsed ? "How it works" : "Hide"}
+          {collapsed ? t("How it works") : t("Hide")}
           <span
             className="text-[9px] transition-transform"
             style={collapsed ? { transform: "rotate(-90deg)" } : undefined}
@@ -93,24 +95,23 @@ export function SlackHowItWorks({ workspaces }: { workspaces: SlackWorkspace[] }
       </div>
       <div className="text-[12px] text-muted mt-0.5">
         <span className="text-ok font-bold">✓ </span>
-        {ws?.account || "Workspace"} connected
         {mine
-          ? " — you're on the People list, so your mentions get through."
-          : " — here's how mentions reach you."}
+          ? t("{{name}} connected — you're on the People list, so your mentions get through.", { name: ws?.account || t("Workspace") })
+          : t("{{name}} connected — here's how mentions reach you.", { name: ws?.account || t("Workspace") })}
       </div>
 
       {!collapsed && (
         <div className="mt-3">
           <div className="flex gap-1 border-b border-line mb-3">
-            {TABS.map((t, i) => (
+            {TABS.map((label, i) => (
               <button
-                key={t}
+                key={label}
                 className={"hiw-tab" + (i === tab ? " on" : "")}
                 data-testid={`hiw-tab-${i}`}
                 style={{ "--hiw-dur": `${DUR}ms` } as React.CSSProperties}
                 onClick={() => jump(i)}
               >
-                {t}
+                {t(label)}
                 <span className="hiw-prog"><i /></span>
               </button>
             ))}
@@ -122,7 +123,7 @@ export function SlackHowItWorks({ workspaces }: { workspaces: SlackWorkspace[] }
             {tab === 2 && <SceneTeammates />}
           </div>
           <div className="mt-2.5 text-[12px] text-muted" data-testid="hiw-caption">
-            {CAPTIONS[tab]}
+            {t(CAPTIONS[tab])}
           </div>
         </div>
       )}
@@ -280,11 +281,12 @@ function Msg({
 
 /* ---- scene 1: mention in a channel → new session, reply via thread panel ---- */
 function SceneMention({ meFirst, meInitial }: { meFirst: string; meInitial: string }) {
+  const { t } = useTranslation();
   return (
     <>
       <span className="hiw-spark" style={d("1.9s")} />
-      <Sticky d="3.1s" pos={{ left: "51%", top: "8%" }}>a @mention starts a NEW session →</Sticky>
-      <Sticky d="5.8s" r pos={{ left: "27%", bottom: "5%" }}>the answer comes back as a thread ↑</Sticky>
+      <Sticky d="3.1s" pos={{ left: "51%", top: "8%" }}>{t("a @mention starts a NEW session →")}</Sticky>
+      <Sticky d="5.8s" r pos={{ left: "27%", bottom: "5%" }}>{t("the answer comes back as a thread ↑")}</Sticky>
       <SlackWin>
         <SlackRail active="launch-room" />
         <div className="hiw-slmain">
@@ -343,10 +345,11 @@ function SceneMention({ meFirst, meInitial }: { meFirst: string; meInitial: stri
 
 /* ---- scene 2: mention INSIDE the open thread panel → the same session ---- */
 function SceneThread({ meFirst, meInitial }: { meFirst: string; meInitial: string }) {
+  const { t } = useTranslation();
   return (
     <>
       <span className="hiw-spark" style={d("1.9s")} />
-      <Sticky d="3.2s" r pos={{ left: "52%", top: "10%" }}>chatting in the thread continues the SAME conversation →</Sticky>
+      <Sticky d="3.2s" r pos={{ left: "52%", top: "10%" }}>{t("chatting in the thread continues the SAME conversation →")}</Sticky>
       <SlackWin>
         <SlackRail active="launch-room" />
         <div className="hiw-slmain">
@@ -423,10 +426,11 @@ function SceneThread({ meFirst, meInitial }: { meFirst: string; meInitial: strin
 
 /* ---- scene 3: a teammate's first mention waits for your OK ---- */
 function SceneTeammates() {
+  const { t } = useTranslation();
   return (
     <>
       <span className="hiw-spark" style={d("1.9s")} />
-      <Sticky d="3.4s" pos={{ left: "53%", bottom: "10%" }}>first-time senders wait for your OK</Sticky>
+      <Sticky d="3.4s" pos={{ left: "53%", bottom: "10%" }}>{t("first-time senders wait for your OK")}</Sticky>
       <SlackWin>
         <SlackRail active="launch-room" />
         <div className="hiw-slmain">

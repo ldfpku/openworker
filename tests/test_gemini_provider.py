@@ -475,6 +475,71 @@ def test_resolve_api_key_env_then_secrets(monkeypatch):
     assert resolve_api_key(None) is None
 
 
+# -- relay base URL (gemini-relay multi-user rollout) -------------------------------
+
+
+def test_resolve_base_url_precedence(monkeypatch):
+    from coworker.providers.gemini_provider import RELAY_BASE_URL, resolve_base_url
+
+    monkeypatch.delenv("GOOGLE_GEMINI_BASE_URL", raising=False)
+    assert resolve_base_url() == RELAY_BASE_URL
+    assert resolve_base_url(None) == RELAY_BASE_URL
+    assert resolve_base_url("  ") == RELAY_BASE_URL  # blank explicit is not a value
+
+    monkeypatch.setenv("GOOGLE_GEMINI_BASE_URL", "https://env.example")
+    assert resolve_base_url() == "https://env.example"  # env beats the relay default
+
+    # explicit beats env
+    assert resolve_base_url("https://explicit.example") == "https://explicit.example"
+    monkeypatch.delenv("GOOGLE_GEMINI_BASE_URL", raising=False)
+
+
+def test_ensure_client_uses_relay_base_url_by_default(monkeypatch):
+    from google import genai
+
+    monkeypatch.delenv("GOOGLE_GEMINI_BASE_URL", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-x")
+    captured: dict = {}
+
+    class _FakeSDKClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(genai, "Client", _FakeSDKClient)
+    client = GeminiProvider()._ensure_client()
+    assert isinstance(client, _FakeSDKClient)
+    assert captured["api_key"] == "AIza-x"
+    assert captured["http_options"].base_url == "https://gemini.smjtools.com"
+
+
+def test_ensure_client_honors_explicit_base_url_override(monkeypatch):
+    from google import genai
+
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-x")
+    captured: dict = {}
+
+    class _FakeSDKClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(genai, "Client", _FakeSDKClient)
+    GeminiProvider(base_url="https://custom.example")._ensure_client()
+    assert captured["http_options"].base_url == "https://custom.example"
+
+
+def test_build_gemini_forwards_hidden_base_url_override():
+    # The registry's base_url is a hidden profile key (no ProviderField) — same precedent
+    # as anthropic's thinking_budget.
+    from coworker.providers.registry import build_provider_client
+
+    overridden = build_provider_client(
+        "gemini", {"api_key": "AIza-x", "base_url": "https://custom.example"}, None
+    )
+    assert overridden._base_url == "https://custom.example"
+    default = build_provider_client("gemini", {"api_key": "AIza-x"}, None)
+    assert default._base_url is None  # falls through to resolve_base_url's own precedence
+
+
 def test_gemini_capabilities_parallel_tool_calls():
     caps = capabilities_for("gemini:gemini-2.5-flash")
     assert caps.tools and caps.vision and caps.streaming

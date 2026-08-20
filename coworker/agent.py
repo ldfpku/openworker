@@ -114,7 +114,9 @@ _NARRATION_GUIDANCE = """\
 Narration: before each batch of tool calls, write ONE short plain sentence saying what \
 you're doing and why (e.g. "Checking what merged since yesterday's digest."). It is shown \
 to the user as live progress. Don't narrate trivial single-call follow-ups, don't repeat \
-the previous line, and never let narration replace your final answer."""
+the previous line, and never let narration replace your final answer.
+
+Language: reply (and narrate) in the language the user writes in."""
 
 
 def _enabled_connector_tools(secrets: SecretStore) -> tuple[set[str], set[str]]:

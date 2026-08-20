@@ -6,7 +6,16 @@
 // generalizes to any connector via the registry — no Slack special-casing here.
 
 import type { ConversationMessage } from "./api";
+import i18n from "./i18n";
 import type { Attachment, Item } from "./types";
+
+// i18n.t() returns undefined before init() (bare unit tests call this mapper without
+// initLocale(); the app always inits in main.tsx). Mirror react-i18next's graceful
+// fallback: return the English key itself, with {{placeholders}} interpolated.
+const t = (key: string, opts?: Record<string, unknown>): string =>
+  i18n.isInitialized
+    ? i18n.t(key, opts)
+    : key.replace(/\{\{(\w+)\}\}/g, (_, v: string) => String(opts?.[v] ?? ""));
 
 export function itemsFromMessages(messages: ConversationMessage[]): Item[] {
   const items: Item[] = [];
@@ -72,13 +81,13 @@ export function itemsFromMessages(messages: ConversationMessage[]): Item[] {
       // the Transcript only offers the button when it's the transcript tail.
       items.push(
         m.kind === "interrupted"
-          ? { kind: "notice", tone: "warn", text: "Interrupted." }
+          ? { kind: "notice", tone: "warn", text: t("Interrupted.") }
           : m.kind === "model_switch"
-            ? { kind: "notice", tone: "info", text: m.text || "Model switched" }
+            ? { kind: "notice", tone: "info", text: m.text || t("Model switched") }
             : m.kind === "compacted"
               ? // The subtle "compacted here" divider (OPE-27) — the transcript itself is intact.
-                { kind: "notice", tone: "info", text: m.text || "Context compacted" }
-              : { kind: "notice", tone: "warn", text: "Error: " + (m.text || "unknown"), retriable: true },
+                { kind: "notice", tone: "info", text: m.text || t("Context compacted") }
+              : { kind: "notice", tone: "warn", text: t("Error: {{message}}", { message: m.text || t("unknown") }), retriable: true },
       );
     }
     // system messages are omitted; tool-result messages are folded into the tool row above

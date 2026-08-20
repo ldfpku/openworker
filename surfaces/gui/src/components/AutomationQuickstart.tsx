@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import {
   cloudLogin,
   connectManaged,
@@ -160,6 +161,7 @@ export function AutomationQuickstart({
     permissions?: { tool: string; target: string; access: "read" | "write" }[];
   }) => void;
 }) {
+  const { t } = useTranslation();
   const [pickedKey, setPickedKey] = useState<string | null>(null);
   const picked = TEMPLATES.find((t) => t.key === pickedKey) || null;
 
@@ -291,12 +293,14 @@ export function AutomationQuickstart({
   };
 
   const gateHint = !allConnected
-    ? `Connect ${picked?.conns
-        .filter((c) => !connState(c.name)?.connected)
-        .map((c) => connState(c.name)?.title || c.name)
-        .join(" and ")} to continue`
+    ? t("Connect {{names}} to continue", {
+        names: picked?.conns
+          .filter((c) => !connState(c.name)?.connected)
+          .map((c) => connState(c.name)?.title || c.name)
+          .join(t(" and ")),
+      })
     : picked?.needsChannel && !channel
-      ? "Pick a channel to post to first"
+      ? t("Pick a channel to post to first")
       : "";
 
   const label = "block text-[12px] text-muted mt-3 mb-1";
@@ -306,33 +310,37 @@ export function AutomationQuickstart({
   return (
     <div className="mb-4">
       <div className="text-[11px] uppercase tracking-[0.05em] text-faint mb-2.5">
-        Start from a template
+        {t("Start from a template")}
       </div>
       {/* Equal-height cards (owner ask 2026-07-12): 1fr rows + h-full — <button> grid items
           don't stretch like divs. */}
       <div className="grid grid-cols-3 auto-rows-fr gap-3">
-        {TEMPLATES.map((t) => (
+        {TEMPLATES.map((tpl) => (
           <button
-            key={t.key}
-            data-testid={`qs-template-${t.key}`}
+            key={tpl.key}
+            data-testid={`qs-template-${tpl.key}`}
             className={
               "h-full text-left rounded-xl2 border bg-panel p-4 flex flex-col gap-1.5 " +
-              (pickedKey === t.key
+              (pickedKey === tpl.key
                 ? "border-accent ring-2 ring-accentSoft"
                 : "border-line hover:border-lineStrong")
             }
-            onClick={() => pick(t)}
+            onClick={() => pick(tpl)}
           >
-            <span className="text-[13.5px] font-semibold">{t.title}</span>
-            <span className="text-[12px] text-muted leading-relaxed flex-1">{t.blurb}</span>
+            <span className="text-[13.5px] font-semibold">{t(tpl.title)}</span>
+            <span className="text-[12px] text-muted leading-relaxed flex-1">{t(tpl.blurb)}</span>
             <span className="flex items-center gap-1.5 mt-1">
-              {t.conns.map((c) => {
+              {tpl.conns.map((c) => {
                 const cs = connState(c.name);
                 const on = !!cs?.connected;
                 return (
                   <span
                     key={c.name}
-                    title={`${cs?.title || c.name} — ${on ? "connected" : "not connected yet"}`}
+                    title={
+                      on
+                        ? t("{{name}} — connected", { name: cs?.title || c.name })
+                        : t("{{name}} — not connected yet", { name: cs?.title || c.name })
+                    }
                     style={on ? undefined : { filter: "grayscale(1)", opacity: 0.55 }}
                   >
                     {cs ? (
@@ -344,7 +352,9 @@ export function AutomationQuickstart({
                 );
               })}
               <span className="text-[11px] text-faint ml-0.5">
-                {t.conns.length === 0 ? `No connections needed · ${t.cadence}` : t.cadence}
+                {tpl.conns.length === 0
+                  ? `${t("No connections needed")} · ${t(tpl.cadence)}`
+                  : t(tpl.cadence)}
               </span>
             </span>
           </button>
@@ -360,12 +370,12 @@ export function AutomationQuickstart({
           {/* §30: the card names its template — without this it starts abruptly after the grid. */}
           <div className="flex items-baseline gap-2 pb-2.5 mb-1 border-b border-line">
             <span className="text-[11px] uppercase tracking-[0.05em] text-accent font-semibold">
-              Set up
+              {t("Set up")}
             </span>
-            <span className="text-[14px] font-semibold">{picked.title}</span>
+            <span className="text-[14px] font-semibold">{t(picked.title)}</span>
             <span className="ml-auto text-[12px] text-faint max-sm:hidden">
-              {picked.conns.length ? "Connections, delivery & schedule" : "Delivery & schedule"} ·{" "}
-              {picked.cadence}
+              {picked.conns.length ? t("Connections, delivery & schedule") : t("Delivery & schedule")} ·{" "}
+              {t(picked.cadence)}
             </span>
           </div>
           {picked.conns.map(({ name, why }) => {
@@ -377,16 +387,16 @@ export function AutomationQuickstart({
                   {c && <ConnectorBadge connector={c} size={26} title={c.title} />}
                   <span className="min-w-0 flex-1">
                     <span className="block text-[13.5px] font-medium">{c?.title || name}</span>
-                    <span className="block text-[11.5px] text-faint">{why}</span>
+                    <span className="block text-[11.5px] text-faint">{t(why)}</span>
                   </span>
                   {c?.connected ? (
-                    <span className="text-[12.5px] text-ok">✓ Connected</span>
+                    <span className="text-[12.5px] text-ok">{t("✓ Connected")}</span>
                   ) : flow ? (
                     <span className="inline-flex items-center gap-2 text-[12px] text-muted">
                       <Spinner />
                       {flow.phase === "opening"
-                        ? "Opening browser…"
-                        : `Waiting for ${c?.title || name}…`}
+                        ? t("Opening browser…")
+                        : t("Waiting for {{name}}…", { name: c?.title || name })}
                     </span>
                   ) : (
                     <button
@@ -394,7 +404,7 @@ export function AutomationQuickstart({
                       onClick={() => startConnect(name)}
                       data-testid={`ob-connect-${name}`}
                     >
-                      Connect
+                      {t("Connect")}
                     </button>
                   )}
                 </div>
@@ -408,16 +418,16 @@ export function AutomationQuickstart({
                     <span>↗</span>
                     <span className="flex-1 min-w-0">
                       <b className="text-ink font-medium">
-                        Finish connecting {c?.title || name} in your browser.
+                        {t("Finish connecting {{name}} in your browser.", { name: c?.title || name })}
                       </b>{" "}
-                      Approve it there, then come back — this page updates by itself.
+                      {t("Approve it there, then come back — this page updates by itself.")}
                     </span>
                     <button
                       className="text-faint underline hover:text-muted shrink-0"
                       onClick={() => setConnFlow(null)}
                       data-testid="ob-connect-cancel"
                     >
-                      Cancel
+                      {t("Cancel")}
                     </button>
                   </div>
                 )}
@@ -431,25 +441,25 @@ export function AutomationQuickstart({
               data-testid="ob-cloudpane"
             >
               <span className="block text-[13px] text-ink font-medium">
-                One sign-in unlocks every one-click connection
+                {t("One sign-in unlocks every one-click connection")}
               </span>
-              Connections are brokered by OpenWorker Cloud — your tokens stay on this computer.
+              {t("Connections are brokered by OpenWorker Cloud — your tokens stay on this computer.")}
               <div className="flex items-center gap-3 mt-2">
                 {signinPhase ? (
                   <>
                     <span className="inline-flex items-center gap-2 text-[12px]">
                       <Spinner />
-                      {signinPhase === "opening" ? "Opening browser…" : "Waiting for sign-in…"}
+                      {signinPhase === "opening" ? t("Opening browser…") : t("Waiting for sign-in…")}
                     </span>
                     {signinPhase === "waiting" && (
                       <span className="text-[11.5px] text-faint">
-                        Finish signing in in your browser — this page updates by itself.{" "}
+                        {t("Finish signing in in your browser — this page updates by itself.")}{" "}
                         <button
                           className="underline hover:text-muted"
                           onClick={cancelSignin}
                           data-testid="ob-signin-cancel"
                         >
-                          Cancel
+                          {t("Cancel")}
                         </button>
                       </span>
                     )}
@@ -460,7 +470,7 @@ export function AutomationQuickstart({
                     onClick={signInThenConnect}
                     data-testid="ob-cloud-signin"
                   >
-                    Sign in to OpenWorker Cloud
+                    {t("Sign in to OpenWorker Cloud")}
                   </button>
                 )}
               </div>
@@ -471,7 +481,7 @@ export function AutomationQuickstart({
             <div className={picked.conns.length ? "bg-paper rounded-xl px-4 py-3.5 mt-3" : ""} data-testid="ob-recipe">
               {picked.needsRepo && (
                 <>
-                  <label className={label}>Repository</label>
+                  <label className={label}>{t("Repository")}</label>
                   <input
                     className={input}
                     placeholder="owner/repo"
@@ -483,7 +493,7 @@ export function AutomationQuickstart({
               )}
               {picked.needsChannel && (
                 <>
-                  <label className={label}>Post to channel</label>
+                  <label className={label}>{t("Post to channel")}</label>
                   <div data-testid="ob-channel">
                     <ChannelPicker
                       value={channel}
@@ -495,37 +505,37 @@ export function AutomationQuickstart({
                     />
                   </div>
                   <p className="text-[11px] text-warnInk mt-1">
-                    The bot must be a member of the channel — invite @OpenWorker in Slack if it isn't.
+                    {t("The bot must be a member of the channel — invite @OpenWorker in Slack if it isn't.")}
                   </p>
                 </>
               )}
-              <label className={label}>When</label>
+              <label className={label}>{t("When")}</label>
               <div className="flex gap-2">
                 <div className="flex-1 min-w-0">
                   <SelectMenu
-                    ariaLabel="Day"
+                    ariaLabel={t("Day")}
                     value={day}
-                    options={Object.entries(DAYS).map(([k, v]) => ({ value: k, label: v.label }))}
+                    options={Object.entries(DAYS).map(([k, v]) => ({ value: k, label: t(v.label) }))}
                     onChange={setDay}
                   />
                 </div>
                 <input
                   className="w-28 px-3 py-2 rounded-lg border border-line bg-panel text-[13.5px] outline-none focus:border-accent"
                   type="time"
-                  aria-label="Time"
+                  aria-label={t("Time")}
                   value={time}
                   onChange={(e) => setTime(e.target.value)}
                 />
               </div>
               {picked.deliver && (
                 <>
-                  <label className={label}>Deliver to</label>
+                  <label className={label}>{t("Deliver to")}</label>
                   <SelectMenu
-                    ariaLabel="Deliver to"
+                    ariaLabel={t("Deliver to")}
                     value={deliver}
                     options={[
-                      { value: "app", label: "In the app" },
-                      { value: "slack", label: "Slack DM (connect Slack later)" },
+                      { value: "app", label: t("In the app") },
+                      { value: "slack", label: t("Slack DM (connect Slack later)") },
                     ]}
                     onChange={(v) => setDeliver(v as "app" | "slack")}
                   />
@@ -551,8 +561,10 @@ export function AutomationQuickstart({
                 </label>
               ) : picked.conns.length > 0 ? (
                 <p className="text-[12.5px] text-muted mt-3">
-                  This automation only <b className="text-ink">reads</b> on schedule — reading
-                  never needs approval.
+                  <Trans>
+                    This automation only <b className="text-ink">reads</b> on schedule — reading
+                    never needs approval.
+                  </Trans>
                 </p>
               ) : null}
             </div>
@@ -563,7 +575,7 @@ export function AutomationQuickstart({
               className="text-[12.5px] text-faint hover:text-muted"
               onClick={() => setPickedKey(null)}
             >
-              Cancel
+              {t("Cancel")}
             </button>
             {/* A silently-disabled primary reads as a bug — always name the missing piece. */}
             {gateHint && (
@@ -580,7 +592,7 @@ export function AutomationQuickstart({
               onClick={create}
               data-testid="ob-create"
             >
-              {busy ? "Creating…" : "Create automation"}
+              {busy ? t("Creating…") : t("Create automation")}
             </button>
           </div>
         </div>

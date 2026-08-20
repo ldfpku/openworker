@@ -8,5 +8,8 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     include: ["src/**/*.test.{ts,tsx}"],
+    // Mirrors main.tsx's pre-render initLocale() so react-i18next interpolates in tests
+    // exactly as in the app (English output stays byte-identical — keys ARE the strings).
+    setupFiles: ["src/setupTests.ts"],
   },
 });

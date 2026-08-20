@@ -2,11 +2,13 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "./App";
 import { initTheme } from "./theme";
+import { initLocale } from "./i18n";
 import { platformOS } from "./tauri";
 import "./tailwind.css";
 import "./styles.css";
 
 initTheme();
+initLocale();
 // Platform hook for CSS (html[data-platform="windows"] scrollbar styling etc.).
 document.documentElement.dataset.platform = platformOS();
 

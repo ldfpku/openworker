@@ -9,3 +9,5 @@ dist/
 
 # Local secrets (live-smoke BYO keys) — never committed
 .env
+.research/proxy-guard/README.pdf
+gemini-relay/worker/migrations/0001_init.sql

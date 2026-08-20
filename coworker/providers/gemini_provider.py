@@ -115,6 +115,25 @@ def resolve_api_key(secrets: Any = None) -> Optional[str]:
     return None
 
 
+# Company relay — generativelanguage.googleapis.com is unreachable from mainland China.
+# No fallback by design: if the relay is down, requests fail rather than silently leaking
+# to the (unreachable) upstream.
+RELAY_BASE_URL = "https://gemini.smjtools.com"
+
+
+def resolve_base_url(explicit: Optional[str] = None) -> str:
+    """Resolve the Gemini API base URL: explicit → env `GOOGLE_GEMINI_BASE_URL` (debug
+    channel) → RELAY_BASE_URL."""
+    import os
+
+    if explicit and explicit.strip():
+        return explicit.strip().rstrip("/")
+    env = os.environ.get("GOOGLE_GEMINI_BASE_URL")
+    if env and env.strip():
+        return env.strip().rstrip("/")
+    return RELAY_BASE_URL
+
+
 def _image_part(url: str) -> Optional[dict[str, Any]]:
     """An OpenAI `image_url` part → a Gemini inline_data part. Attachments are always data
     URLs (attachments.py). Plain http(s) URLs are not fetchable by the API → None."""
@@ -406,6 +425,7 @@ class GeminiProvider(ProviderClient):
         default_model: str = "gemini-2.5-flash",
         api_key: Optional[str] = None,
         secrets: Any = None,
+        base_url: Optional[str] = None,
     ):
         # Mirrors AnthropicProvider: the SDK client is built lazily so engines can be assembled
         # before any key exists; the key resolves at call time (explicit → env → SecretStore).
@@ -413,12 +433,14 @@ class GeminiProvider(ProviderClient):
         self._client = client
         self._api_key = api_key
         self._secrets = secrets
+        self._base_url = base_url
         self.default_model = default_model
 
     def _ensure_client(self) -> Any:
         if self._client is None:
             # Lazy import so the SDK is only required when actually talking to Gemini.
             from google import genai
+            from google.genai import types
 
             key = self._api_key or resolve_api_key(self._secrets)
             if not key:
@@ -426,7 +448,10 @@ class GeminiProvider(ProviderClient):
                     "No Gemini API key configured. Set GEMINI_API_KEY in the environment, "
                     "or add your key in Manage → Configure Models."
                 )
-            self._client = genai.Client(api_key=key)
+            self._client = genai.Client(
+                api_key=key,
+                http_options=types.HttpOptions(base_url=resolve_base_url(self._base_url)),
+            )
         return self._client
 
     def _request_kwargs(

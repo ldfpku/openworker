@@ -88,11 +88,25 @@ def test_verify_anthropic_headers(monkeypatch):
     assert "anthropic-version" in cap["headers"]
 
 
-def test_verify_gemini_key_param(monkeypatch):
+def test_verify_gemini_uses_relay_and_header_auth(monkeypatch):
+    # gemini-relay multi-user rollout: the probe now hits the company relay with the key
+    # in a header, not `?key=` on the (unreachable-from-China) Google endpoint.
     cap: dict = {}
     _patch_get(monkeypatch, status=200, capture=cap)
     verify_provider_key("gemini", api_key="AIza-x")
-    assert cap["params"]["key"] == "AIza-x"
+    assert cap["url"] == "https://gemini.smjtools.com/v1beta/models"
+    assert cap["headers"]["x-goog-api-key"] == "AIza-x"
+    assert "params" not in cap
+
+
+def test_verify_gemini_403_reports_unregistered_key(monkeypatch):
+    _patch_get(monkeypatch, status=403)
+    res = verify_provider_key("gemini", api_key="AIza-x")
+    assert res == {
+        "ok": False,
+        "error": "This key is not registered with the company relay yet — "
+        "ask the admin to add it.",
+    }
 
 
 def test_verify_ollama_uses_v1_models_no_key(monkeypatch):
