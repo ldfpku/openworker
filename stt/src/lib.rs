@@ -24,13 +24,19 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
-/// A reasonably fast English model for short OpenWorker prompts (~142 MB).
-pub const DEFAULT_MODEL_FILE: &str = "ggml-base.en.bin";
-pub const DEFAULT_MODEL_URL: &str =
-    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin";
-pub const DEFAULT_MODEL_BYTES: u64 = 147_964_211;
+/// A reasonably fast multilingual model for short OpenWorker prompts (~141 MB). Whisper
+/// auto-detects the spoken language (including Chinese and English) per utterance.
+pub const DEFAULT_MODEL_FILE: &str = "ggml-base.bin";
+/// Mirrors to try in order. hf-mirror.com is reachable from mainland China; huggingface.co is
+/// the fallback for everyone else. Both serve the exact same file, and the pinned SHA-256 below
+/// guarantees integrity regardless of which host actually served it.
+pub const DEFAULT_MODEL_URLS: &[&str] = &[
+    "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
+];
+pub const DEFAULT_MODEL_BYTES: u64 = 147_951_465;
 pub const DEFAULT_MODEL_SHA256: &str =
-    "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002";
+    "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe";
 const WHISPER_SAMPLE_RATE: u32 = 16_000;
 
 #[derive(Debug, Clone, Serialize)]
@@ -118,7 +124,7 @@ impl Dictation {
             model_verified,
             test_passed: model_verified && self.ready_marker_path.is_file(),
             download_in_progress: self.download_in_progress.load(Ordering::SeqCst),
-            model_name: "Whisper Base English (local)",
+            model_name: "Whisper Base Multilingual (local)",
             model_bytes: DEFAULT_MODEL_BYTES,
         }
     }
@@ -167,10 +173,22 @@ impl Dictation {
                 .timeout_connect(std::time::Duration::from_secs(30))
                 .timeout_read(std::time::Duration::from_secs(30))
                 .build();
-            let response = agent
-                .get(DEFAULT_MODEL_URL)
-                .call()
-                .map_err(|e| format!("Could not download the local voice model: {e}"))?;
+            // Try each mirror in order, falling through on any connect/HTTP error. The
+            // SHA-256 pin verified below guarantees integrity no matter which host actually
+            // served the bytes, so it's safe to accept whichever mirror answers first.
+            let mut response = None;
+            let mut last_err = String::new();
+            for url in DEFAULT_MODEL_URLS {
+                match agent.get(url).call() {
+                    Ok(resp) => {
+                        response = Some(resp);
+                        break;
+                    }
+                    Err(e) => last_err = e.to_string(),
+                }
+            }
+            let response = response
+                .ok_or_else(|| format!("Could not download the local voice model: {last_err}"))?;
             let mut input = response.into_reader();
             let mut output = fs::File::create(&partial)
                 .map_err(|e| format!("Could not save the local voice model: {e}"))?;
@@ -589,7 +607,7 @@ fn transcribe(model_path: &Path, samples: &[f32]) -> Result<String, String> {
         .create_state()
         .map_err(|e| format!("Could not prepare transcription: {e}"))?;
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-    params.set_language(Some("en"));
+    params.set_language(Some("auto"));
     params.set_translate(false);
     params.set_print_progress(false);
     params.set_print_special(false);
@@ -634,8 +652,8 @@ mod tests {
     }
 
     #[test]
-    fn default_model_size_matches_the_published_base_english_artifact() {
-        assert_eq!(DEFAULT_MODEL_BYTES, 147_964_211);
+    fn default_model_size_matches_the_published_base_multilingual_artifact() {
+        assert_eq!(DEFAULT_MODEL_BYTES, 147_951_465);
     }
 
     #[test]

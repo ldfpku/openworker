@@ -387,9 +387,11 @@ fn voice_input_compatibility() -> (bool, String, Option<String>) {
         .ok()
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
         .unwrap_or_else(|| "Windows (unknown version)".to_owned());
-    let build = version
+    // cmd `ver` output is OEM-codepage-encoded and localized, so only the ASCII numeric token is safe to display.
+    let numeric_version = version
         .split(|character: char| !character.is_ascii_digit() && character != '.')
-        .find(|part| part.matches('.').count() >= 2)
+        .find(|part| part.matches('.').count() >= 2);
+    let build = numeric_version
         .and_then(|part| part.split('.').nth(2))
         .and_then(|part| part.parse::<u32>().ok())
         .unwrap_or(0);
@@ -402,7 +404,10 @@ fn voice_input_compatibility() -> (bool, String, Option<String>) {
     } else {
         None
     };
-    (supported, format!("{version} · x64"), reason)
+    let device_summary = numeric_version
+        .map(|numeric_version| format!("Windows {numeric_version} · x64"))
+        .unwrap_or_else(|| "Windows · x64".to_owned());
+    (supported, device_summary, reason)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]

@@ -79,14 +79,33 @@ const EXAMPLE = `{
 // per-provider ModelChecklist / read-only model preview (form view).
 export function ModelsTab() {
   const { t } = useTranslation();
-  const [settings, setSettings] = useState<ModelSettings | null>(null);
+  // undefined = still loading, null = the fetch failed, object = ready.
+  const [settings, setSettings] = useState<ModelSettings | null | undefined>(undefined);
   const refreshSettings = () => getSettings().then(setSettings).catch(() => setSettings(null));
   const ps = useProviderSetup({ onSaved: refreshSettings });
   useEffect(() => {
     refreshSettings();
   }, []);
 
-  if (!settings) return <div className="text-[13px] text-muted">{t("Loading…")}</div>;
+  if (settings === undefined) return <div className="text-[13px] text-muted">{t("Loading…")}</div>;
+
+  if (settings === null) {
+    return (
+      <div className="text-[13px] text-muted flex items-center gap-2.5">
+        {t("Couldn't load providers.")}
+        <button
+          className={BTN_BORDERED}
+          onClick={() => {
+            setSettings(undefined);
+            refreshSettings();
+            ps.refreshProviders();
+          }}
+        >
+          {t("Retry")}
+        </button>
+      </div>
+    );
+  }
 
   const info = ps.info;
   const knownNames = ps.providers.map((p) => p.name);

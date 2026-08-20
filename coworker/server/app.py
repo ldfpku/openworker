@@ -11,6 +11,7 @@ import asyncio
 import base64
 import binascii
 import json
+import logging
 import os
 import re
 import secrets
@@ -23,6 +24,8 @@ from typing import Any, Optional
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+
+logger = logging.getLogger("coworker.server")
 
 # Origins allowed to talk to the local sidecar. It binds to 127.0.0.1, but a page in the
 # user's own browser can still reach loopback — so without an origin gate, any website they
@@ -231,6 +234,16 @@ def create_app(manager: SessionManager) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.exception_handler(Exception)
+    async def handle_unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+        # Starlette's ExceptionMiddleware sits INSIDE CORSMiddleware in the stack, so a
+        # JSONResponse returned here still picks up CORS headers on the way out. Without
+        # this handler, an uncaught exception (e.g. a bad numeric cast in stored prefs)
+        # reaches the webview as an opaque "Failed to fetch" instead of a readable 500.
+        logger.exception("unhandled exception on %s %s", request.method, request.url.path)
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
     app.state.manager = manager
 
     @app.get("/v1/health")

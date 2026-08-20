@@ -45,6 +45,13 @@ function Require-Cmd($name) {
 
 Require-Cmd rustc
 Require-Cmd npm
+
+# Mainland-China network: tauri-bundler downloads NSIS/WiX from github.com, which stalls
+# without a VPN. The bundler natively supports a ghproxy-style mirror prefix and verifies
+# every download against hashes hardcoded in its source, so the mirror needs no trust.
+if (-not $env:TAURI_BUNDLER_TOOLS_GITHUB_MIRROR) {
+    $env:TAURI_BUNDLER_TOOLS_GITHUB_MIRROR = "https://gh-proxy.com"
+}
 if (-not (Test-Path $PyInst)) {
     throw "PyInstaller not found at $PyInst. Create the venv and install deps (see header)."
 }
@@ -98,7 +105,10 @@ if ($env:TAURI_SIGNING_PRIVATE_KEY) {
 }
 Push-Location $Gui
 try {
-    & npm run tauri build -- --bundles $Bundles @UpdaterArgs
+    # npm >= 12 parses flags after `--` itself (EUNKNOWNCONFIG on --bundles), so call
+    # the local tauri CLI's JS entry through node directly — this also avoids the
+    # cmd.exe shim re-tokenizing and PowerShell execution-policy blocks on .ps1 shims.
+    & node (Join-Path $Gui "node_modules\@tauri-apps\cli\tauri.js") build --bundles $Bundles @UpdaterArgs
     if ($LASTEXITCODE -ne 0) { throw "tauri build failed (exit $LASTEXITCODE)" }
 }
 finally {

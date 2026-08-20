@@ -1389,7 +1389,9 @@ export async function setUnattended(
 }
 
 export async function getSettings(): Promise<ModelSettings> {
-  const res = await fetch(`${httpBase()}/v1/settings`);
+  // 15s timeout so a hung sidecar fails fast into ModelsTab's retry UI instead of an
+  // indefinite "Loading…" (owner-hit 2026-08-20).
+  const res = await fetch(`${httpBase()}/v1/settings`, { signal: AbortSignal.timeout(15000) });
   return res.json();
 }
 
@@ -1539,7 +1541,8 @@ export interface ProviderInfo {
 }
 
 export async function getProviders(): Promise<ProviderInfo[]> {
-  const res = await fetch(`${httpBase()}/v1/providers`);
+  // Same 15s timeout as getSettings — both feed ModelsTab's initial load/retry.
+  const res = await fetch(`${httpBase()}/v1/providers`, { signal: AbortSignal.timeout(15000) });
   return res.json();
 }
 

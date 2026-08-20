@@ -23,10 +23,15 @@ key is never printed — only whether one was found.
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 import time
 from pathlib import Path
+
+# google-genai warns about "direct AFC use" on every bare generate_content(_stream)
+# call, tools or no tools; this smoke test passes no tools, so it's pure noise here.
+logging.getLogger("google_genai.models").setLevel(logging.ERROR)
 
 DEFAULT_RELAY = "https://gemini.smjtools.com"
 MODEL = "gemini-3.5-flash-lite"

@@ -320,9 +320,9 @@ function VoiceInputSection() {
             <div className="p-4 flex items-center gap-3">
               <div className="w-9 h-9 rounded-lg bg-accentSoft text-accent grid place-items-center font-semibold">W</div>
               <div className="min-w-0 flex-1">
-                <div className="text-[13.5px] font-medium">{t("Whisper Base · English")}</div>
+                <div className="text-[13.5px] font-medium">{t("Whisper Base · Multilingual")}</div>
                 <div className="text-[12px] text-muted mt-0.5">
-                  {status?.model_verified ? t("Installed and verified · {{size}}", { size: formatBytes(status.model_bytes) }) : t("Local voice model · {{size}}", { size: formatBytes(status?.model_bytes || 147_964_211) })}
+                  {status?.model_verified ? t("Installed and verified · {{size}}", { size: formatBytes(status.model_bytes) }) : t("Local voice model · {{size}}", { size: formatBytes(status?.model_bytes || 147_951_465) })}
                 </div>
               </div>
               {status?.model_verified ? (

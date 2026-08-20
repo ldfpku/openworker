@@ -1963,13 +1963,21 @@ class SessionManager:
         summarizer-model pin; absent keys fall back to compaction.py defaults."""
         from ..compaction import DEFAULT_CAP_TOKENS, DEFAULT_THRESHOLD_PCT
 
-        return {
-            "threshold_pct": float(
+        try:
+            threshold_pct = float(
                 self._prefs.get("compaction_threshold_pct") or DEFAULT_THRESHOLD_PCT
-            ),
-            "cap_tokens": int(
+            )
+        except (TypeError, ValueError):
+            threshold_pct = DEFAULT_THRESHOLD_PCT
+        try:
+            cap_tokens = int(
                 self._prefs.get("compaction_cap_tokens") or DEFAULT_CAP_TOKENS
-            ),
+            )
+        except (TypeError, ValueError):
+            cap_tokens = DEFAULT_CAP_TOKENS
+        return {
+            "threshold_pct": threshold_pct,
+            "cap_tokens": cap_tokens,
             # "" → the session's own model (engine falls back to self.model).
             "model": str(self._prefs.get("compaction_model") or ""),
         }
