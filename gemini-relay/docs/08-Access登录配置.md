@@ -49,6 +49,29 @@ openworker
 
 > Cloudflare 会不定期改 Zero Trust 控制台的分区名字。下面写的路径是本文成稿时的叫法，找不到的时候按关键词（One-time PIN / Applications / Application Audience）搜一下控制台即可。
 
+## 只能在控制台做（`wrangler login` 的令牌不够）
+
+步骤 1–3 必须在 Zero Trust 控制台点，**不能用 API 脚本代替**。2026-08-23 实测：
+`wrangler login` 拿到的 OAuth 令牌可以**读** Access 接口（`GET /access/apps`、
+`GET /access/identity_providers` 都返回 200），但任何**写**操作一律
+
+```json
+{"code": 1010, "error": "auth.forbidden"}
+```
+
+建身份源、建应用都一样。注意这个错误**没有 message 字段**，光看 code 容易误判成参数校验
+错误——判断依据是 `error` 那一项写着 `auth.forbidden`。`GET /access/organizations` 更直接，
+回的是 `10000 Authentication error`。
+
+想脚本化的话得自己在控制台建一个带 **Account ▸ Cloudflare One (Zero Trust) ▸ Edit** 权限的
+API Token。为了三个只做一次的对象去建一个长期有效的高权限令牌，不划算——直接点完更省事。
+
+控制台做完之后，把两个值交给收尾脚本，它会填配置、部署、跑验证：
+
+```powershell
+.\gemini-relay\scripts\finish_access.ps1 -TeamDomain 你的团队名 -Aud <64位十六进制>
+```
+
 ## 步骤 1：打开 One-time PIN 登录方式
 
 Zero Trust ▸ **Integrations ▸ Identity providers** ▸ Add new ▸ **One-time PIN**。
