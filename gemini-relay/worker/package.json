@@ -7,6 +7,9 @@
     "tail": "wrangler tail",
     "check": "tsc --noEmit"
   },
+  "dependencies": {
+    "jose": "^6.1.0"
+  },
   "devDependencies": {
     "@cloudflare/workers-types": "^5",
     "typescript": "^7.0.2",

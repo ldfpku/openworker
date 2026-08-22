@@ -12,6 +12,35 @@
 			"custom_domain": true
 		}
 	],
+	// Cloudflare Access (Zero Trust) coordinates for the One-time PIN application that
+	// guards gemini.smjtools.com/login. Neither is a secret — the team domain is in every
+	// login redirect and the AUD tag is in every issued token — so they live here, not in
+	// `wrangler secret`. Fill both in from docs/08-Access登录配置.md before deploying.
+	"vars": {
+		"ACCESS_TEAM_DOMAIN": "https://TODO-your-team.cloudflareaccess.com",
+		"ACCESS_AUD": "TODO-application-audience-tag",
+		// House default ceilings, per person per window (worker/src/quota.ts). A roster entry
+		// may override any of them; -1 disables a ceiling, 0 suspends the person entirely.
+		// These are the numbers everyone gets unless roster.csv says otherwise, so they are
+		// sized for a person driving an agent by hand — one agentic turn with tool calls is
+		// easily 10-20 requests — not for one chat message.
+		"QUOTA_RPM": "30",
+		"QUOTA_RPD": "1200",
+		"QUOTA_TPD": "5000000"
+	},
+	// This Worker holds NO secrets. Every caller presents their own Google key in
+	// x-goog-api-key and it is forwarded untouched, so there is nothing here to leak and
+	// nothing to rotate. (v3 briefly had a shared GEMINI_API_KEY secret; if this deployment
+	// still has one, `npx wrangler secret delete GEMINI_API_KEY` — it is now unused.)
+	//
+	// Nightly at 03:17 UTC = 11:17 Beijing: drop quota buckets older than three days. Off
+	// hours would be nicer, but Cloudflare cron triggers are UTC-only and the job is a single
+	// indexed DELETE.
+	"triggers": {
+		"crons": [
+			"17 3 * * *"
+		]
+	},
 	"kv_namespaces": [
 		{
 			"binding": "ROSTER",

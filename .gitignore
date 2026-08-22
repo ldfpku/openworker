@@ -9,5 +9,7 @@ dist/
 
 # Local secrets (live-smoke BYO keys) — never committed
 .env
+# The real relay roster: colleagues' names and personal mailboxes. This fork is PUBLIC,
+# so the filled-in roster stays on the admin's machine — only roster.example.csv ships.
+gemini-relay/scripts/roster.csv
 .research/proxy-guard/README.pdf
-gemini-relay/worker/migrations/0001_init.sql

@@ -11,6 +11,11 @@ import { useTranslation } from "react-i18next";
 import i18n from "../i18n";
 import { openExternal } from "../tauri";
 import { PROVIDER_LOGOS, providerRank } from "./logos";
+import { RelaySignIn } from "./RelaySignIn";
+
+/** The one provider whose credential comes from signing in to the company relay instead of
+ *  from an API key field (see RelaySignIn). */
+const RELAY_PROVIDER = "gemini";
 
 // The provider gallery ⇄ key form, shared by Onboarding step 1 (§39) and
 // Settings ▸ Models (UX-021) so the two can never drift apart visually. The hook
@@ -348,6 +353,33 @@ export function ProviderForm({
   const testKey = requiredSecret ? requiredSecret.key : fieldsAll[0]?.key;
   if (!sel) return null;
 
+  const header = (
+    <>
+      <button className="text-[12.5px] text-muted hover:text-ink" onClick={ps.backToGallery} data-testid={`${tp}-back`}>
+        {t("‹ All providers")}
+      </button>
+      <div className="flex items-center gap-3 mt-3 mb-1">
+        <ProviderMark name={info?.name || ""} title={info?.title || ""} size={36} />
+        <span className="min-w-0">
+          <span className="block text-[15px] font-semibold leading-tight">{info?.title}</span>
+          {info ? ps.statusFor(info) : null}
+        </span>
+      </div>
+      {info?.blurb && <p className="text-[11.5px] text-faint mt-1">{t(info.blurb)}</p>}
+    </>
+  );
+
+  // Gemini takes two credentials, so its pane shows the sign-in card ABOVE the ordinary
+  // key field rather than instead of it: the company relay needs a login to know who is
+  // calling (and which quota to count against), and Google needs the person's own key.
+  // Order matters — signing in is step 1, and the card names step 2.
+  const relayCard =
+    sel === RELAY_PROVIDER ? (
+      <div className="mt-3 mb-1">
+        <RelaySignIn tp={tp} onChanged={ps.refreshProviders} />
+      </div>
+    ) : null;
+
   const fieldRow = (f: ProviderFieldT, testable: boolean) => (
     <div key={f.key}>
       <label className={label}>{t(f.label)}</label>
@@ -397,17 +429,8 @@ export function ProviderForm({
 
   return (
     <div>
-      <button className="text-[12.5px] text-muted hover:text-ink" onClick={ps.backToGallery} data-testid={`${tp}-back`}>
-        {t("‹ All providers")}
-      </button>
-      <div className="flex items-center gap-3 mt-3 mb-1">
-        <ProviderMark name={info?.name || ""} title={info?.title || ""} size={36} />
-        <span className="min-w-0">
-          <span className="block text-[15px] font-semibold leading-tight">{info?.title}</span>
-          {info ? ps.statusFor(info) : null}
-        </span>
-      </div>
-      {info?.blurb && <p className="text-[11.5px] text-faint mt-1">{t(info.blurb)}</p>}
+      {header}
+      {relayCard}
 
       {fieldsAll
         .filter(

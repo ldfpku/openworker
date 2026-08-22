@@ -80,13 +80,25 @@ _BRAND_COLORS = {
 
 
 def _browser_page(
-    title: str, detail: str, *, ok: bool = True, error: str = "", connector: str = ""
+    title: str,
+    detail: str,
+    *,
+    ok: bool = True,
+    error: str = "",
+    connector: str = "",
+    company: bool = False,
 ) -> str:
     """The page shown in the user's browser at the end of a loopback flow (sign-in or
     connector callback) — one branded card (UX-DECISIONS §30): OCW mark, ok/fail icon
     (the connector's initial rides the ✓), the friendly detail, and the raw error
     preserved on failures (it's the debugging breadcrumb). Inline CSS, light/dark via
-    prefers-color-scheme, no external assets — it must render offline."""
+    prefers-color-scheme, no external assets — it must render offline.
+
+    `company=True` swaps the OpenWorker wordmark for the SMJAR one. Used by the Gemini-relay
+    sign-in landing, which is the tail of a flow that started on the company's own Cloudflare
+    Access page — seeing a different brand at the finish line reads as a wrong turn. The
+    marks are inlined (coworker/brand_assets.py) to keep the offline promise above.
+    """
     import html as _html
 
     badge = ""
@@ -97,6 +109,21 @@ def _browser_page(
     icon = (
         f'<div class="ico ok">✓{badge}</div>' if ok else '<div class="ico bad">✕</div>'
     )
+    if company:
+        from ..brand_assets import LOGO_DARK_DATA_URI, LOGO_LIGHT_DATA_URI
+
+        # Both variants ship and CSS picks one. A <picture> media source only re-evaluates
+        # on load, so flipping the OS theme with the page already open left the white-text
+        # wordmark sitting on a now-white card.
+        mark = (
+            '<div class="mark">'
+            f'<img class="lt" src="{LOGO_LIGHT_DATA_URI}" alt="SMJAR">'
+            f'<img class="dk" src="{LOGO_DARK_DATA_URI}" alt="">'
+            "</div>"
+        )
+    else:
+        mark = '<div class="mark"><i></i>OpenWorker</div>'
+
     err = f'<div class="err">{_html.escape(error)}</div>' if error else ""
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
@@ -118,6 +145,10 @@ def _browser_page(
         "font-size:13px;font-weight:650}"
         ".mark i{width:20px;height:20px;border-radius:6px;background:var(--accent);"
         "display:inline-block;position:relative}"
+        ".mark img{height:24px;width:auto;display:block;margin:0 auto}"
+        ".mark .dk{display:none}"
+        "@media(prefers-color-scheme:dark){.mark .lt{display:none}"
+        ".mark .dk{display:block}}"
         ".mark i::after{content:'';position:absolute;inset:5px;border-radius:2px;"
         "background:conic-gradient(from 0deg,#fff 0 25%,transparent 0 50%,#fff 0 75%,transparent 0)}"
         ".ico{width:52px;height:52px;border-radius:50%;margin:0 auto 14px;display:flex;"
@@ -133,11 +164,21 @@ def _browser_page(
         "padding:7px 10px;margin-top:12px;text-align:left;word-break:break-word}"
         ".foot{font-size:10.5px;color:var(--faint)}"
         "</style></head><body>"
-        '<div class="card"><div class="mark"><i></i>OpenWorker</div>'
+        f'<div class="card">{mark}'
         f"{icon}<h1>{_html.escape(title)}</h1><p>{_html.escape(detail)}</p>{err}</div>"
-        '<div class="foot">Served locally by OpenWorker on your Mac</div>'
+        # Platform read at render time — this line used to say "on your Mac" unconditionally,
+        # which is simply false on the Windows builds this ships to.
+        f'<div class="foot">{_html.escape(_local_host_label())}</div>'
         "</body></html>"
     )
+
+
+def _local_host_label() -> str:
+    """Footer line for the loopback pages: whose machine actually served this."""
+    import sys as _sys
+
+    system = {"darwin": "Mac", "win32": "PC"}.get(_sys.platform, "computer")
+    return f"Served locally by OpenWorker on your {system}"
 
 
 def _connector_title(name: str) -> str:
@@ -190,6 +231,7 @@ def create_app(manager: SessionManager) -> FastAPI:
         "/auth/callback",
         "/mcp/oauth/callback",
         "/oauth/callback",
+        "/relay/callback",
     }
 
     def _request_authenticated(request: Request) -> bool:
@@ -1138,6 +1180,74 @@ def create_app(manager: SessionManager) -> FastAPI:
                 "Signed in",
                 "You're signed in to OpenWorker Cloud. "
                 "You can close this tab and return to OpenWorker.",
+            )
+        )
+
+    @app.post("/v1/relay/login")
+    def relay_login() -> dict[str, Any]:
+        """Start Gemini-relay sign-in (Cloudflare Access one-time PIN). The sidecar opens
+        the system browser itself, same as cloud sign-in above."""
+        import webbrowser
+
+        from .. import relay_auth
+        from ..config import load_config
+
+        out = relay_auth.begin_login(load_config())
+        if out.get("ok"):
+            webbrowser.open(out["login_url"])
+        return out
+
+    @app.get("/v1/relay/status")
+    async def relay_status(verify: int = 0) -> dict[str, Any]:
+        """Local view by default; `?verify=1` also asks the relay whether the token still
+        resolves, which is how a revoked colleague finds out."""
+        from .. import relay_auth
+
+        return await asyncio.to_thread(
+            lambda: relay_auth.status(manager.secrets, verify=bool(verify))
+        )
+
+    @app.post("/v1/relay/logout")
+    async def relay_logout() -> dict[str, Any]:
+        from .. import relay_auth
+
+        return await asyncio.to_thread(lambda: relay_auth.logout(manager.secrets))
+
+    @app.get("/relay/callback")
+    async def relay_auth_callback(code: str = "", state: str = "", error: str = ""):
+        # Loopback landing for the relay sign-in flow (relay_auth.py). Browser-facing:
+        # returns the same styled card as the cloud/connector callbacks, in Chinese to match
+        # the Cloudflare Access login pages the colleague just came through.
+        from fastapi.responses import HTMLResponse
+
+        from .. import relay_auth
+
+        failed_detail = "关掉这个标签页，回 OpenWorker 重新点一次「登录」。"
+        if error:
+            return HTMLResponse(
+                _browser_page("登录失败", failed_detail, ok=False, error=error, company=True),
+                status_code=400,
+            )
+        result = await asyncio.to_thread(
+            lambda: relay_auth.deliver_callback(manager.secrets, code, state)
+        )
+        if not result.get("ok"):
+            return HTMLResponse(
+                _browser_page(
+                    "登录失败",
+                    failed_detail,
+                    ok=False,
+                    error=result.get("error", ""),
+                    company=True,
+                ),
+                status_code=400,
+            )
+        who = result.get("name") or result.get("email") or ""
+        return HTMLResponse(
+            _browser_page(
+                "已登录",
+                f"{who}，你已经登录 OpenWorker 中转，可以关掉这个标签页回到 OpenWorker 了。",
+                company=True,
             )
         )
 

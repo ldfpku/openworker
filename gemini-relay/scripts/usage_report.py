@@ -1,9 +1,14 @@
 """gemini-relay 用量报表 —— 按人（邮箱）汇总 Cloudflare D1 里的 usage 流水表。
 
-背景：gemini-relay v2 的 Worker 每次转发请求都会往 D1 数据库（database_name
+背景：gemini-relay 的 Worker 每次转发请求都会往 D1 数据库（database_name
 gemini_relay_usage，binding USAGE_DB）异步写一条 usage 流水（schema 见
-worker/migrations/0001_init.sql）。本脚本通过 Cloudflare 的 D1 HTTP Query API
-在本机跑聚合 SQL，不需要登录控制台，也不需要装 wrangler。
+worker/migrations/），同一个库里还有 quota 表 —— 那是限额闸门在用的实时计数器
+（worker/src/quota.ts）。本脚本通过 Cloudflare 的 D1 HTTP Query API 在本机跑聚合
+SQL，不需要登录控制台，也不需要装 wrangler。
+
+两张表回答的问题不一样：usage 是流水账，问「这个月谁用了多少」；quota 是当下的
+闸门读数，问「谁今天快撞墙了」。quota 的分钟桶三天后会被 Worker 的定时任务清掉，
+所以它只能看今天，历史一律查 usage。
 
 依赖：仅 httpx（仓库根目录 .venv 已经装好，见 .venv/pyvenv.cfg）。用仓库自带的
 解释器运行：
@@ -29,6 +34,8 @@ worker/migrations/0001_init.sql）。本脚本通过 Cloudflare 的 D1 HTTP Quer
     --days N          统计最近 N 天（默认 30），与 --month 互斥。
     --month YYYY-MM    统计某个自然月（如 2026-08），与 --days 互斥。
     --by-model         额外输出一张「邮箱 x 模型」的分解表。
+    --by-dept          额外输出一张按部门汇总的表。
+    --quota            额外输出今天（北京时间）的限额闸门读数，不受 --days/--month 影响。
     --csv PATH         把控制台打印的表格（们）追加写成一份 CSV 文件。
 
 用法示例：
@@ -45,9 +52,13 @@ worker/migrations/0001_init.sql）。本脚本通过 Cloudflare 的 D1 HTTP Quer
     # 同上，同时导出 CSV
     python usage_report.py --month 2026-08 --by-model --csv usage-2026-08.csv
 
+    # 今天谁快撞限额了（部门口径 + 闸门读数）
+    python usage_report.py --days 1 --by-dept --quota
+
 也可以完全不用这个脚本：去 Cloudflare 控制台 Workers & Pages → D1 →
-gemini_relay_usage → Console，直接跑 SQL。下面三条是最常用的现成语句
-（口径和本脚本一致，字段名对应 worker/migrations/0001_init.sql 里的 usage 表）：
+gemini_relay_usage → Console，直接跑 SQL。下面五条是最常用的现成语句（口径和
+本脚本一致）。字段名见 worker/migrations/ 下的建表迁移：usage 表由 0001_init.sql
+建、0002_login.sql 补上 name/dept 两列，quota 表由 0003_quota.sql 建：
 
     -- 1) 本月每人汇总
     SELECT
@@ -73,7 +84,24 @@ gemini_relay_usage → Console，直接跑 SQL。下面三条是最常用的现�
     GROUP BY day
     ORDER BY day;
 
-    -- 3) 按模型分解（本月，每人每模型一行）
+    -- 3) 今天的限额闸门读数（bucket 是北京时间，d| 是当天，m| 是某一分钟）
+    SELECT email, requests, tokens
+    FROM quota
+    WHERE bucket = 'd|' || strftime('%Y-%m-%d', 'now', '+8 hours')
+    ORDER BY tokens DESC;
+
+    -- 4) 按部门分解（本月）
+    SELECT
+      COALESCE(NULLIF(dept, ''), '(未填)') AS dept,
+      COUNT(DISTINCT email) AS people,
+      COUNT(*) AS requests,
+      SUM(total_tokens) AS total_tokens
+    FROM usage
+    WHERE substr(ts, 1, 7) = strftime('%Y-%m', 'now')
+    GROUP BY dept
+    ORDER BY total_tokens DESC;
+
+    -- 5) 按模型分解（本月，每人每模型一行）
     SELECT
       email,
       model,
@@ -106,7 +134,9 @@ D1_QUERY_URL = "https://api.cloudflare.com/client/v4/accounts/{account_id}/d1/da
 
 REQUIRED_ENV_VARS = ("CF_API_TOKEN", "CF_ACCOUNT_ID", "CF_D1_DATABASE_ID")
 
-# 与 worker/migrations/0001_init.sql 的列顺序保持一致，方便对照 schema 核对。
+# 列顺序沿用 worker/migrations/0001_init.sql 的建表顺序，方便对照 schema 核对——这条聚合到的
+# 列也确实都来自 0001。但 usage 表的完整 schema 是 0001 加 0002（后者补了 name/dept 两列，
+# 物理上排在末尾），按部门出账走下面的 BY_DEPT_SQL。
 SUMMARY_SQL = """
 SELECT
   email,
@@ -157,6 +187,55 @@ BY_MODEL_HEADERS = [
     "thoughts_tokens",
     "failed",
 ]
+
+# 部门是下单时的快照（0002_login.sql 起 usage 表带 name/dept 两列），所以调过部门的人
+# 历史用量仍然记在原部门下 —— 这是有意的，报表要能对上当时的账。
+BY_DEPT_SQL = """
+SELECT
+  COALESCE(NULLIF(dept, ''), '(未填)') AS dept,
+  COUNT(DISTINCT email) AS people,
+  COUNT(*) AS requests,
+  COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+  COALESCE(SUM(output_tokens), 0) AS output_tokens,
+  COALESCE(SUM(total_tokens), 0) AS total_tokens,
+  SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END) AS failed
+FROM usage
+WHERE ts >= ? AND ts < ?
+GROUP BY dept
+ORDER BY total_tokens DESC
+""".strip()
+
+BY_DEPT_HEADERS = [
+    "dept",
+    "people",
+    "requests",
+    "prompt_tokens",
+    "output_tokens",
+    "total_tokens",
+    "failed",
+]
+
+# 闸门读数。日桶一行一人，分钟桶取今天最忙的那一分钟 —— 每分钟那道闸是防跑飞的，
+# 「今天最高峰到过多少」比「此刻是多少」有用得多。
+QUOTA_SQL = """
+SELECT
+  email,
+  COALESCE(MAX(CASE WHEN bucket = ? THEN requests END), 0) AS day_requests,
+  COALESCE(MAX(CASE WHEN bucket = ? THEN tokens END), 0) AS day_tokens,
+  COALESCE(MAX(CASE WHEN bucket LIKE ? THEN requests END), 0) AS peak_per_min
+FROM quota
+WHERE bucket = ? OR bucket LIKE ?
+GROUP BY email
+ORDER BY day_tokens DESC
+""".strip()
+
+QUOTA_HEADERS = ["email", "day_requests", "day_tokens", "peak_per_min"]
+
+
+def beijing_today() -> str:
+    """今天的日期，北京时间 —— 和 worker/src/quota.ts 的分桶口径必须一致（固定 +08:00，
+    中国 1991 年后没有夏令时）。用错时区的后果是查出来空表，而不是报错。"""
+    return datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
 
 _MONTH_RE = re.compile(r"^(\d{4})-(0[1-9]|1[0-2])$")
 
@@ -250,7 +329,8 @@ def run_query(env: dict[str, str], sql: str, params: list[Any]) -> list[dict[str
         raise ReportError(
             f"Cloudflare API 返回失败：{detail}\n"
             "常见原因：CF_API_TOKEN 权限不够（需要 Account/D1/Read）、CF_D1_DATABASE_ID "
-            "写错、或者该数据库还没跑过迁移（worker/migrations/0001_init.sql）。"
+            "写错、或者该数据库还没跑过迁移（在 gemini-relay/worker 下跑 "
+            "npx wrangler d1 migrations apply gemini_relay_usage --remote）。"
         )
 
     result_list = data.get("result") or []
@@ -303,6 +383,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     window.add_argument("--days", type=int, default=None, help="统计最近 N 天（默认 30）")
     window.add_argument("--month", type=str, default=None, metavar="YYYY-MM", help="统计某个自然月，如 2026-08")
     parser.add_argument("--by-model", action="store_true", help="额外输出「邮箱 x 模型」分解表")
+    parser.add_argument("--by-dept", action="store_true", help="额外输出按部门汇总表")
+    parser.add_argument(
+        "--quota", action="store_true", help="额外输出今天（北京时间）的限额闸门读数"
+    )
     parser.add_argument("--csv", type=str, default=None, metavar="PATH", help="把表格同时写成 CSV 文件")
     return parser
 
@@ -344,6 +428,41 @@ def main(argv: list[str] | None = None) -> int:
             print()
 
             csv_sections.append(("by_model", BY_MODEL_HEADERS, by_model_rows))
+
+        if args.by_dept:
+            by_dept_results = run_query(env, BY_DEPT_SQL, [from_iso, to_iso])
+            by_dept_rows = rows_from_results(by_dept_results, BY_DEPT_HEADERS)
+
+            print("按部门汇总（按 total_tokens 降序）：")
+            if by_dept_rows:
+                print(format_table(BY_DEPT_HEADERS, by_dept_rows))
+            else:
+                print("（这段时间没有任何记录）")
+            print()
+
+            csv_sections.append(("by_dept", BY_DEPT_HEADERS, by_dept_rows))
+
+        if args.quota:
+            day = beijing_today()
+            day_bucket = "d|" + day
+            minute_like = "m|" + day + "%"
+            quota_results = run_query(
+                env, QUOTA_SQL, [day_bucket, day_bucket, minute_like, day_bucket, minute_like]
+            )
+            quota_rows = rows_from_results(quota_results, QUOTA_HEADERS)
+
+            print(f"今天（北京时间 {day}）的限额闸门读数：")
+            if quota_rows:
+                print(format_table(QUOTA_HEADERS, quota_rows))
+                print(
+                    "上限本身不在这张表里 —— 每个人的上限看 roster.ps1 -List，"
+                    "没设的用 wrangler.jsonc 里的 QUOTA_* 默认值。"
+                )
+            else:
+                print("（今天还没有人发过请求）")
+            print()
+
+            csv_sections.append(("quota_" + day, QUOTA_HEADERS, quota_rows))
 
         if args.csv:
             try:

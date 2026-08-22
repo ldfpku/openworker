@@ -24,7 +24,7 @@ from typing import Any, Callable, Optional
 from .anthropic_provider import AnthropicProvider
 from .base import ProviderClient
 from .bedrock_provider import BedrockProvider
-from .gemini_provider import GeminiProvider, resolve_base_url
+from .gemini_provider import GeminiProvider, RELAY_TOKEN_PREFIX, resolve_base_url
 from .openai_provider import OpenAIProvider
 from .openai_responses import OpenAIResponsesProvider
 from .vertex_provider import VertexProvider
@@ -381,7 +381,9 @@ DESCRIPTORS: list[ProviderDescriptor] = [
             ),
         ],
         build=_build_gemini,
-        recommended_model="gemini-3.6-flash",
+        # Newest stable Flash on https://ai.google.dev/gemini-api/docs/models
+        # ("our latest and most capable Flash model", checked 2026-08-22).
+        recommended_model="gemini-3.7-flash",
         env_key="GEMINI_API_KEY",
     ),
     ProviderDescriptor(
@@ -892,6 +894,14 @@ def _verify_vertex(fields: dict[str, Any], timeout: float) -> dict[str, Any]:
     return {"ok": False, "error": f"Vertex AI returned HTTP {resp.status_code}."}
 
 
+def relay_headers_from(fields: dict[str, Any]) -> dict[str, str]:
+    """`Authorization: Bearer` for the company Gemini relay, out of an already-merged field
+    map. Test runs before anything is saved, so the caller (manager.verify_provider) is the
+    one holding the SecretStore; this module only reads what it was handed."""
+    token = str(fields.get("relay_token") or "").strip()
+    return {"Authorization": f"Bearer {token}"} if token.startswith(RELAY_TOKEN_PREFIX) else {}
+
+
 def verify_provider_key(
     name: str,
     *,
@@ -923,9 +933,15 @@ def verify_provider_key(
                 timeout=timeout,
             )
         elif name == "gemini":
+            # Two credentials, because the company relay wants both: `key` is the person's
+            # own Google key (what Test is actually validating) and the relay login says who
+            # is asking. Testing while signed out earns a 401 from the relay, which is the
+            # honest answer — that call would fail for real too.
+            gemini_headers = {"x-goog-api-key": key}
+            gemini_headers.update(relay_headers_from(fields or {}))
             resp = httpx.get(
                 resolve_base_url(None) + "/v1beta/models",
-                headers={"x-goog-api-key": key},
+                headers=gemini_headers,
                 timeout=timeout,
             )
         elif name == "ollama":

@@ -1673,6 +1673,13 @@ class SessionManager:
             missing = [f.label for f in d.fields if f.required and not merged.get(f.key)]
             if missing:
                 return {"ok": False, "error": "missing: " + ", ".join(missing)}
+        if name == "gemini":
+            # Not a descriptor field (nothing types it into a form), so the merge loop above
+            # never picks it up — but the relay refuses an unauthenticated probe, so Test
+            # would fail for a correctly configured colleague without it.
+            from ..providers.gemini_provider import resolve_relay_token
+
+            merged["relay_token"] = resolve_relay_token(self.secrets) or ""
         return verify_provider_key(
             name, api_key=api_key, base_url=merged.get("base_url", ""), fields=merged
         )

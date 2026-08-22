@@ -1,21 +1,46 @@
 /**
- * Gemini API relay v2 — reverse proxy + per-user roster + usage accounting.
+ * Gemini API relay v3 — reverse proxy + login-backed identity + per-person quota.
  *
- * openworker's google-genai SDK points GOOGLE_GEMINI_BASE_URL at this host;
- * every /v1beta/... request is forwarded verbatim to generativelanguage.googleapis.com
- * with the response body streamed back untouched (SSE included).
+ * openworker's google-genai SDK points at this host; every /v1beta/... request is forwarded
+ * verbatim to generativelanguage.googleapis.com with the response body streamed back
+ * untouched (SSE included).
  *
- * Identity comes from a KV roster (sha256(api_key) -> email), never from anything the
- * client claims — see gemini-relay design doc. The roster doubles as admission control:
- * an unregistered key gets 403. Every terminal outcome (401 no-key, 403 unregistered,
- * proxied) is recorded to D1 via ctx.waitUntil so accounting never delays or risks the
- * response already sent to the client.
+ * Two separate credentials ride every request, and keeping them separate is the whole
+ * design:
+ *
+ *   Authorization: Bearer owr_...   who you are.   Minted by this Worker after a Cloudflare
+ *                                   Access One-time PIN login (auth.ts). Consumed here and
+ *                                   stripped — Google never sees it.
+ *   x-goog-api-key: AIza...         who pays.      The caller's own Google key. Forwarded
+ *                                   untouched. The relay never stores one and holds no key
+ *                                   of its own, so it cannot bill anyone.
+ *
+ * Identity being Worker-verified rather than client-claimed is what makes the counting gate
+ * (quota.ts) mean anything: limits are keyed on a mailbox somebody proved they own, so
+ * nobody can reset their own counter by rotating a key.
+ *
+ * Every terminal outcome (401 no-token, 403 revoked, 400 no key, 429 over quota, proxied)
+ * is recorded to D1 via ctx.waitUntil so accounting never delays or risks the response
+ * already sent to the client.
  */
 
-export interface Env {
-  ROSTER: KVNamespace;
-  USAGE_DB: D1Database;
-}
+import {
+  extractRelayToken,
+  handleAuthRoutes,
+  resolveRelayToken,
+  sha256Hex,
+  TOKEN_PREFIX,
+} from "./auth";
+import { handleBrandRoutes } from "./brand";
+import type { Env } from "./env";
+import {
+  checkQuota,
+  countRequest,
+  countTokens,
+  type Limits,
+  pruneQuota,
+  type QuotaVerdict,
+} from "./quota";
 
 const UPSTREAM = "https://generativelanguage.googleapis.com";
 
@@ -26,6 +51,11 @@ const ALLOWED_PATH = /^\/(upload\/)?(v1|v1beta|v1alpha)\//;
 // Hop-by-hop headers plus everything that would leak client/edge details upstream.
 const STRIP_REQUEST_HEADERS = [
   "host",
+  // The relay token is ours to consume, not Google's to see. x-goog-api-key is deliberately
+  // NOT in this list: it carries the caller's own key and is the one thing that must survive
+  // the hop (the fetch handler re-sets it, to normalize the ?key= form into the header).
+  "authorization",
+  "cookie",
   "connection",
   "keep-alive",
   "transfer-encoding",
@@ -65,11 +95,6 @@ function classify(pathname: string): { kind: Kind; model: string } {
   }
   if (/\/models\/?$/.test(pathname)) return { kind: "models", model: "" };
   return { kind: "other", model: "" };
-}
-
-async function sha256Hex(input: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 // ---------------------------------------------------------------------------------------
@@ -226,6 +251,8 @@ async function parseNonStream(stream: ReadableStream<Uint8Array>, kind: Kind, us
 
 interface UsageRow {
   email: string;
+  name: string;
+  dept: string;
   model: string;
   kind: Kind;
   status: number;
@@ -243,18 +270,31 @@ interface UsageRow {
   error: string;
 }
 
-async function insertUsageRow(env: Env, row: UsageRow): Promise<void> {
+/**
+ * One ledger row, plus any quota counter updates that belong with it.
+ *
+ * `extra` rides the same D1 batch (one implicit transaction) rather than a second round
+ * trip: the ledger and the counters should not be able to disagree about whether a request
+ * happened.
+ */
+async function insertUsageRow(
+  env: Env,
+  row: UsageRow,
+  extra: D1PreparedStatement[] = []
+): Promise<void> {
   try {
-    await env.USAGE_DB.prepare(
+    const statement = env.USAGE_DB.prepare(
       `INSERT INTO usage
-        (ts, email, model, kind, status, key_hash, model_version, response_id,
+        (ts, email, name, dept, model, kind, status, key_hash, model_version, response_id,
          prompt_tokens, output_tokens, total_tokens, cached_tokens, thoughts_tokens,
          tool_prompt_tokens, latency_ms, duration_ms, error)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
       .bind(
         new Date().toISOString(),
         row.email,
+        row.name,
+        row.dept,
         row.model,
         row.kind,
         row.status,
@@ -270,11 +310,23 @@ async function insertUsageRow(env: Env, row: UsageRow): Promise<void> {
         row.latencyMs,
         row.durationMs,
         row.error
-      )
-      .run();
+      );
+    if (extra.length) await env.USAGE_DB.batch([statement, ...extra]);
+    else await statement.run();
   } catch (err) {
     // Accounting must never affect a response that has already gone out to the client.
     console.error("gemini-relay: usage insert failed:", err);
+  }
+}
+
+/** Fire quota counter statements on their own, for the admission-time bump that has no
+ *  ledger row to ride along with. Same rule: never let bookkeeping surface to the client. */
+async function runCounters(env: Env, statements: D1PreparedStatement[]): Promise<void> {
+  if (!statements.length) return;
+  try {
+    await env.USAGE_DB.batch(statements);
+  } catch (err) {
+    console.error("gemini-relay: quota counter update failed:", err);
   }
 }
 
@@ -286,10 +338,16 @@ async function recordRejected(
   status: number,
   keyHash: string,
   latencyMs: number,
-  error: string
+  error: string,
+  // Known only when the rejection happened after the token resolved (e.g. a missing
+  // upstream key); for anonymous rejections `email` carries a "(no-token)" placeholder.
+  name = "",
+  dept = ""
 ): Promise<void> {
   await insertUsageRow(env, {
     email,
+    name,
+    dept,
     model,
     kind,
     status,
@@ -308,11 +366,32 @@ async function recordRejected(
   });
 }
 
+interface RecordMeta {
+  email: string;
+  name: string;
+  dept: string;
+  model: string;
+  kind: Kind;
+  status: number;
+  keyHash: string;
+  latencyMs: number;
+  t0: number;
+  /** This person's ceilings — needed to know whether the token counter is worth writing. */
+  limits: Limits;
+}
+
+/** What the daily token ceiling counts. `totalTokenCount` is the upstream's own total
+ *  (prompt + candidates + thoughts + tool use); the sum is only a fallback for shapes that
+ *  report the parts but not the total. */
+function billableTokens(usage: Usage): number {
+  return usage.totalTokens > 0 ? usage.totalTokens : usage.promptTokens + usage.outputTokens;
+}
+
 async function recordUsage(
   env: Env,
   body: ReadableStream<Uint8Array>,
   contentType: string,
-  meta: { email: string; model: string; kind: Kind; status: number; keyHash: string; latencyMs: number; t0: number }
+  meta: RecordMeta
 ): Promise<void> {
   try {
     const usage = emptyUsage();
@@ -321,24 +400,31 @@ async function recordUsage(
     } else {
       await parseNonStream(body, meta.kind, usage);
     }
-    await insertUsageRow(env, {
-      email: meta.email,
-      model: meta.model,
-      kind: meta.kind,
-      status: meta.status,
-      keyHash: meta.keyHash,
-      modelVersion: usage.modelVersion,
-      responseId: usage.responseId,
-      promptTokens: usage.promptTokens,
-      outputTokens: usage.outputTokens,
-      totalTokens: usage.totalTokens,
-      cachedTokens: usage.cachedTokens,
-      thoughtsTokens: usage.thoughtsTokens,
-      toolPromptTokens: usage.toolPromptTokens,
-      latencyMs: meta.latencyMs,
-      durationMs: Date.now() - meta.t0,
-      error: "",
-    });
+    await insertUsageRow(
+      env,
+      {
+        email: meta.email,
+        name: meta.name,
+        dept: meta.dept,
+        model: meta.model,
+        kind: meta.kind,
+        status: meta.status,
+        keyHash: meta.keyHash,
+        modelVersion: usage.modelVersion,
+        responseId: usage.responseId,
+        promptTokens: usage.promptTokens,
+        outputTokens: usage.outputTokens,
+        totalTokens: usage.totalTokens,
+        cachedTokens: usage.cachedTokens,
+        thoughtsTokens: usage.thoughtsTokens,
+        toolPromptTokens: usage.toolPromptTokens,
+        latencyMs: meta.latencyMs,
+        durationMs: Date.now() - meta.t0,
+        error: "",
+      },
+      // The request was counted at admission; this is the token half, known only now.
+      countTokens(env, meta.email, meta.limits, meta.t0, billableTokens(usage))
+    );
   } catch (err) {
     // Stream-level failure (e.g. connection reset mid-body) rather than a per-event parse
     // miss — those are already swallowed inside parseSSE/parseNonStream. Still record the
@@ -346,6 +432,8 @@ async function recordUsage(
     console.error("gemini-relay: recordUsage failed:", err);
     await insertUsageRow(env, {
       email: meta.email,
+      name: meta.name,
+      dept: meta.dept,
       model: meta.model,
       kind: meta.kind,
       status: meta.status,
@@ -366,6 +454,63 @@ async function recordUsage(
 }
 
 // ---------------------------------------------------------------------------------------
+// Refusals the relay generates itself
+// ---------------------------------------------------------------------------------------
+
+/**
+ * Google's own error envelope, not a plain text body.
+ *
+ * The client is the google-genai SDK, which parses `{"error": {...}}` and puts `message`
+ * into the exception it raises. A bare text body surfaces to the person as a stack trace
+ * with no explanation, and these refusals — no key, over quota — are exactly the ones they
+ * need to read. Messages are in Chinese and name the relay, so nobody spends an afternoon
+ * arguing with Google about a limit Google did not set.
+ */
+function apiError(
+  status: number,
+  googleStatus: string,
+  message: string,
+  extraHeaders: Record<string, string> = {}
+): Response {
+  return new Response(
+    JSON.stringify({ error: { code: status, message, status: googleStatus } }),
+    {
+      status,
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+        ...extraHeaders,
+      },
+    }
+  );
+}
+
+/**
+ * The caller's own Google key. Header first — that is what the SDK sends — falling back to
+ * the `?key=` form Google also accepts, so a hand-written curl still works. Either way it
+ * leaves here as a header, keeping the credential out of the upstream URL.
+ */
+function extractUpstreamKey(request: Request, url: URL): string {
+  const header = (request.headers.get("x-goog-api-key") || "").trim();
+  if (header) return header;
+  return (url.searchParams.get("key") || "").trim();
+}
+
+function quotaMessage(verdict: QuotaVerdict): string {
+  const day = "北京时间次日 00:00 重置";
+  switch (verdict.scope) {
+    case "suspended":
+      return "OpenWorker 中转：你的账号已被管理员暂停（限额为 0），请联系管理员。";
+    case "rpm":
+      return `OpenWorker 中转：每分钟最多 ${verdict.limit} 次请求，已经用满。${verdict.retryAfter} 秒后自动恢复；如果这是自动循环跑飞了，请先停下来看一眼。`;
+    case "rpd":
+      return `OpenWorker 中转：今天最多 ${verdict.limit} 次请求，已经用满。${day}；需要更高额度请联系管理员。`;
+    default:
+      return `OpenWorker 中转：今天最多 ${verdict.limit} tokens，已经用了 ${verdict.used}。${day}；需要更高额度请联系管理员。`;
+  }
+}
+
+// ---------------------------------------------------------------------------------------
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -376,35 +521,107 @@ export default {
       return new Response("ok\n", { headers: { "content-type": "text/plain" } });
     }
 
+    // Public brand marks. Cloudflare Access's custom branding wants a logo URL rather than
+    // an upload, and this host is the one guaranteed to be reachable from the login page.
+    const brandResponse = handleBrandRoutes(url);
+    if (brandResponse) return brandResponse;
+
+    // The login surface: /login/... is fronted by Cloudflare Access (One-time PIN), while
+    // /auth/... is public and secured by the one-time code + PKCE exchange. Both are handled
+    // before ALLOWED_PATH, which only ever describes upstream Gemini paths.
+    const authResponse = await handleAuthRoutes(request, env, url);
+    if (authResponse) return authResponse;
+
     if (!ALLOWED_PATH.test(url.pathname)) {
       return new Response("not found\n", { status: 404 });
     }
 
     const { kind, model } = classify(url.pathname);
 
-    // The Gemini API authenticates via this header; refusing keyless requests keeps
+    // Identity is Worker-side, not client-claimed: the caller presents a relay token this
+    // Worker minted after a verified Access login. Refusing tokenless requests also keeps
     // the relay useless to random scanners without revealing what sits upstream.
-    // Header only — the ?key= query form is rejected because full URLs (query
-    // string included) land in wrangler tail / zone logs, unlike headers.
-    const apiKey = request.headers.get("x-goog-api-key");
-    if (!apiKey) {
+    const relayToken = extractRelayToken(request);
+    if (!relayToken) {
       const latencyMs = Date.now() - t0;
-      ctx.waitUntil(recordRejected(env, "(no-key)", model, kind, 401, "", latencyMs, "no-key"));
-      return new Response("missing api key\n", { status: 401 });
+      ctx.waitUntil(recordRejected(env, "(no-token)", model, kind, 401, "", latencyMs, "no-token"));
+      return apiError(
+        401,
+        "UNAUTHENTICATED",
+        "OpenWorker 中转：还没有登录。在「设置 ▸ 模型 ▸ Gemini」里用工作邮箱收验证码登录一次。"
+      );
     }
 
-    // Identity is Worker-side, not client-claimed: hash the key and look it up in the
-    // roster (sha256(key) -> email). The roster is also admission control — miss = 403.
-    const fullHash = await sha256Hex(apiKey);
-    const keyHash12 = fullHash.slice(0, 12);
-    // cacheTtl keeps roster lookups at the edge (~ms) instead of hitting KV's central
-    // store per request; the cost is that a revoked key stays usable for up to 5 minutes.
-    const email = await env.ROSTER.get("k:" + fullHash, { cacheTtl: 300 });
-    if (!email) {
+    // Recorded instead of the v2 key hash: same 12-hex shape, so the usage table's key_hash
+    // column keeps working as a "which credential was this" discriminator without storing one.
+    const tokenHash12 = (await sha256Hex(relayToken)).slice(0, 12);
+    const user = await resolveRelayToken(env, relayToken);
+    if (!user) {
       const latencyMs = Date.now() - t0;
-      ctx.waitUntil(recordRejected(env, "(unregistered)", model, kind, 403, keyHash12, latencyMs, "unregistered"));
-      return new Response("unregistered key\n", { status: 403 });
+      ctx.waitUntil(
+        recordRejected(env, "(revoked)", model, kind, 403, tokenHash12, latencyMs, "bad-token")
+      );
+      return apiError(
+        403,
+        "PERMISSION_DENIED",
+        "OpenWorker 中转：登录已失效（过期、被吊销，或已不在允许名单里），请重新登录。"
+      );
     }
+
+    // Who pays. Checked after identity so the ledger can attribute the mistake to a person,
+    // and so an outsider probing the relay learns nothing about what it wants.
+    const upstreamKey = extractUpstreamKey(request, url);
+    if (!upstreamKey) {
+      const latencyMs = Date.now() - t0;
+      ctx.waitUntil(
+        recordRejected(
+          env, user.email, model, kind, 400, tokenHash12, latencyMs, "no-upstream-key",
+          user.name, user.dept
+        )
+      );
+      return apiError(
+        400,
+        "INVALID_ARGUMENT",
+        "OpenWorker 中转：登录成功，但还没有填自己的 Gemini API key。" +
+          "去 https://aistudio.google.com/apikey 申请一个，填进「设置 ▸ 模型 ▸ Gemini」的 API key 里。"
+      );
+    }
+    if (upstreamKey.startsWith(TOKEN_PREFIX)) {
+      // A pre-quota client put the relay token in the api_key slot. Forwarding it would earn
+      // an opaque 400 from Google that reads as "your login is broken".
+      const latencyMs = Date.now() - t0;
+      ctx.waitUntil(
+        recordRejected(
+          env, user.email, model, kind, 400, tokenHash12, latencyMs, "token-as-key",
+          user.name, user.dept
+        )
+      );
+      return apiError(
+        400,
+        "INVALID_ARGUMENT",
+        "OpenWorker 中转：客户端版本过旧——它把登录令牌当成 API key 发了过来。请升级 OpenWorker。"
+      );
+    }
+
+    // The counting gate. Keyed on the verified mailbox, so rotating a Google key does not
+    // reset anyone's counter. Deliberately last: a client that is merely misconfigured
+    // should hear about that first, and should not burn a slot doing so.
+    const verdict = await checkQuota(env, user.email, user.limits, t0);
+    if (!verdict.ok) {
+      const latencyMs = Date.now() - t0;
+      ctx.waitUntil(
+        recordRejected(
+          env, user.email, model, kind, 429, tokenHash12, latencyMs, "quota-" + verdict.scope,
+          user.name, user.dept
+        )
+      );
+      return apiError(429, "RESOURCE_EXHAUSTED", quotaMessage(verdict), {
+        "retry-after": String(verdict.retryAfter ?? 60),
+      });
+    }
+    // Admitted — count it now rather than at completion, so a burst of long streaming
+    // requests cannot all slip under the per-minute ceiling while none of them has finished.
+    ctx.waitUntil(runCounters(env, countRequest(env, user.email, user.limits, t0)));
 
     const headers = new Headers(request.headers);
     for (const name of STRIP_REQUEST_HEADERS) headers.delete(name);
@@ -412,8 +629,14 @@ export default {
     for (const name of [...headers.keys()]) {
       if (name.startsWith("cf-")) headers.delete(name);
     }
+    // Set rather than pass through, so the ?key= form arrives upstream as a header too.
+    headers.set("x-goog-api-key", upstreamKey);
 
-    const upstream = await fetch(UPSTREAM + url.pathname + url.search, {
+    // ...and drop the query copy, so the credential is not sitting in a URL any more.
+    const upstreamUrl = new URL(UPSTREAM + url.pathname + url.search);
+    upstreamUrl.searchParams.delete("key");
+
+    const upstream = await fetch(upstreamUrl.toString(), {
       method: request.method,
       headers,
       body: request.body,
@@ -437,11 +660,13 @@ export default {
     if (!upstreamBody) {
       ctx.waitUntil(
         insertUsageRow(env, {
-          email,
+          email: user.email,
+          name: user.name,
+          dept: user.dept,
           model,
           kind,
           status: upstream.status,
-          keyHash: keyHash12,
+          keyHash: tokenHash12,
           modelVersion: "",
           responseId: "",
           promptTokens: 0,
@@ -463,7 +688,18 @@ export default {
     const [clientBody, recordBody] = upstreamBody.tee();
     const contentType = upstream.headers.get("content-type") || "";
     ctx.waitUntil(
-      recordUsage(env, recordBody, contentType, { email, model, kind, status: upstream.status, keyHash: keyHash12, latencyMs, t0 })
+      recordUsage(env, recordBody, contentType, {
+        email: user.email,
+        name: user.name,
+        dept: user.dept,
+        model,
+        kind,
+        status: upstream.status,
+        keyHash: tokenHash12,
+        latencyMs,
+        t0,
+        limits: user.limits,
+      })
     );
 
     return new Response(clientBody, {
@@ -471,5 +707,21 @@ export default {
       statusText: upstream.statusText,
       headers: respHeaders,
     });
+  },
+
+  /**
+   * Nightly housekeeping (cron in wrangler.jsonc).
+   *
+   * Only the quota table is pruned. Minute buckets alone accumulate at up to 1,440 rows per
+   * person per day and are meaningless the moment their minute passes. The `usage` ledger
+   * and `auth_events` are kept forever on purpose — one is the billing record, the other is
+   * security evidence.
+   */
+  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(
+      pruneQuota(env, Date.now())
+        .then((rows) => console.log(`gemini-relay: pruned ${rows} quota rows`))
+        .catch((err) => console.error("gemini-relay: quota prune failed:", err))
+    );
   },
 } satisfies ExportedHandler<Env>;

@@ -534,6 +534,80 @@ export async function cloudLogout(): Promise<{ ok: boolean }> {
   return res.json();
 }
 
+/** Today's usage against today's ceilings, as the relay reports it.
+ *  In every limit, -1 means unlimited and 0 means suspended. */
+export interface RelayQuota {
+  limits: { rpm: number; rpd: number; tpd: number };
+  used: { minuteRequests: number; dayRequests: number; dayTokens: number };
+  /** Seconds until the daily buckets reset (local midnight in Asia/Shanghai). */
+  resets_in: number;
+}
+
+/** Sign-in state for the company Gemini relay (Cloudflare Access one-time PIN). */
+export interface RelayStatus {
+  signed_in: boolean;
+  email: string;
+  name: string;
+  dept: string;
+  role: string;
+  expires_at: string;
+  /** Relay base URL currently in effect. */
+  relay: string;
+  /** Signing in only says who you are — the relay still refuses a caller with no Gemini
+   *  key of their own. False means setup is half-done. */
+  has_api_key: boolean;
+  /** The stored token was issued by a different relay than the one now configured. */
+  stale_relay: boolean;
+  /** Only present when `verify` reached the relay and it answered. */
+  quota?: RelayQuota | null;
+  /** Only set when `verify` asked the relay and the answer wasn't a clean yes. */
+  verify_error?: string;
+}
+
+/** `verify` costs a round trip to the relay but is the only way to notice a revoked
+ *  account — the token stays on disk either way. Use it on mount, not on every poll. */
+export async function getRelayStatus(verify = false): Promise<RelayStatus> {
+  const res = await fetch(`${httpBase()}/v1/relay/status${verify ? "?verify=1" : ""}`);
+  return res.json();
+}
+
+export async function relayLogin(): Promise<{ ok: boolean; login_url?: string; error?: string }> {
+  // The sidecar opens the system browser; the GUI just polls status after.
+  const res = await fetch(`${httpBase()}/v1/relay/login`, { method: "POST" });
+  return res.json();
+}
+
+/** Poll relay status until the browser sign-in lands (or the bound runs out).
+ *
+ * Same cadence as waitForCloudSignIn, and for the same reason: right after finishing in
+ * the browser the user is staring at the app waiting for it to flip. Calls `onDone` with
+ * the signed-in status, or null when it timed out. Returns a cancel function. */
+export function waitForRelaySignIn(
+  onDone: (s: RelayStatus | null) => void,
+): () => void {
+  let cancelled = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let polls = 0;
+  const tick = async () => {
+    polls += 1;
+    const s = await getRelayStatus().catch(() => null);
+    if (cancelled) return;
+    if (s?.signed_in) return onDone(s);
+    if (polls >= 90) return onDone(null); // 40×500ms + 50×2s ≈ 2min
+    timer = setTimeout(tick, polls < 40 ? 500 : 2000);
+  };
+  timer = setTimeout(tick, 500);
+  return () => {
+    cancelled = true;
+    if (timer) clearTimeout(timer);
+  };
+}
+
+export async function relayLogout(): Promise<{ ok: boolean }> {
+  const res = await fetch(`${httpBase()}/v1/relay/logout`, { method: "POST" });
+  return res.json();
+}
+
 export async function connectManaged(
   name: string,
   options?: { access?: "read" | "write" },

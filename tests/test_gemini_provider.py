@@ -475,6 +475,51 @@ def test_resolve_api_key_env_then_secrets(monkeypatch):
     assert resolve_api_key(None) is None
 
 
+class _GeminiSecrets:
+    """Just enough SecretStore to answer `get("provider:gemini")`."""
+
+    def __init__(self, **profile):
+        self._profile = profile
+
+    def get(self, name):
+        return dict(self._profile) if name == "provider:gemini" else None
+
+
+def test_resolve_api_key_ignores_a_relay_token_in_the_key_slot(monkeypatch):
+    """The two credentials never substitute for each other.
+
+    A build from before the quota change parked the login token in `api_key`. It is not a
+    Gemini key: handing it to the SDK would send `owr_...` upstream as `x-goog-api-key` and
+    earn an opaque 400 that reads as "Gemini is broken". Treat it as no key at all.
+    """
+    from coworker.providers.gemini_provider import resolve_api_key
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    assert resolve_api_key(_GeminiSecrets(api_key="owr_token")) is None
+    assert resolve_api_key(_GeminiSecrets(api_key="AIza-stored")) == "AIza-stored"
+
+    # Env-first, same contract as the Anthropic/OpenAI resolvers.
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-env")
+    assert resolve_api_key(_GeminiSecrets(api_key="AIza-stored")) == "AIza-env"
+
+
+def test_resolve_relay_token_env_then_store(monkeypatch):
+    from coworker.providers.gemini_provider import relay_headers, resolve_relay_token
+
+    monkeypatch.delenv("OPENWORKER_RELAY_TOKEN", raising=False)
+    assert resolve_relay_token(None) is None
+    assert resolve_relay_token(_GeminiSecrets(relay_token="owr_stored")) == "owr_stored"
+    # Anything without the prefix is malformed; report "signed out" rather than passing it on.
+    assert resolve_relay_token(_GeminiSecrets(relay_token="AIza-oops")) is None
+    # The key slot is not a fallback — that is the ambiguity the split exists to remove.
+    assert resolve_relay_token(_GeminiSecrets(api_key="owr_token")) is None
+
+    monkeypatch.setenv("OPENWORKER_RELAY_TOKEN", "owr_env")
+    assert resolve_relay_token(_GeminiSecrets(relay_token="owr_stored")) == "owr_env"
+    assert relay_headers(None) == {"Authorization": "Bearer owr_env"}
+
+
 # -- relay base URL (gemini-relay multi-user rollout) -------------------------------
 
 
@@ -494,11 +539,9 @@ def test_resolve_base_url_precedence(monkeypatch):
     monkeypatch.delenv("GOOGLE_GEMINI_BASE_URL", raising=False)
 
 
-def test_ensure_client_uses_relay_base_url_by_default(monkeypatch):
+def _capture_sdk_client(monkeypatch) -> dict:
     from google import genai
 
-    monkeypatch.delenv("GOOGLE_GEMINI_BASE_URL", raising=False)
-    monkeypatch.setenv("GEMINI_API_KEY", "AIza-x")
     captured: dict = {}
 
     class _FakeSDKClient:
@@ -506,25 +549,61 @@ def test_ensure_client_uses_relay_base_url_by_default(monkeypatch):
             captured.update(kwargs)
 
     monkeypatch.setattr(genai, "Client", _FakeSDKClient)
-    client = GeminiProvider()._ensure_client()
-    assert isinstance(client, _FakeSDKClient)
+    return captured
+
+
+def test_ensure_client_sends_both_credentials_to_the_relay(monkeypatch):
+    """The key goes in the slot Google reads; the login rides its own header.
+
+    This is the load-bearing detail of the whole split — the relay identifies the caller
+    from `Authorization` and forwards `x-goog-api-key` (which the SDK builds from `api_key`)
+    to Google untouched.
+    """
+    monkeypatch.delenv("GOOGLE_GEMINI_BASE_URL", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-x")
+    monkeypatch.setenv("OPENWORKER_RELAY_TOKEN", "owr_login")
+    captured = _capture_sdk_client(monkeypatch)
+
+    GeminiProvider()._ensure_client()
     assert captured["api_key"] == "AIza-x"
     assert captured["http_options"].base_url == "https://gemini.smjtools.com"
+    assert captured["http_options"].headers == {"Authorization": "Bearer owr_login"}
+
+
+def test_ensure_client_refuses_the_relay_without_a_login(monkeypatch):
+    """Signed out against the relay is a 401 nobody can act on. Say so locally instead."""
+    monkeypatch.delenv("GOOGLE_GEMINI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENWORKER_RELAY_TOKEN", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-x")
+    _capture_sdk_client(monkeypatch)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        GeminiProvider()._ensure_client()
+    assert "登录" in str(excinfo.value)
+    assert "API key" not in str(excinfo.value)  # the key half is fine — do not muddy it
+
+
+def test_ensure_client_names_both_missing_halves(monkeypatch):
+    monkeypatch.delenv("GOOGLE_GEMINI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENWORKER_RELAY_TOKEN", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    _capture_sdk_client(monkeypatch)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        GeminiProvider()._ensure_client()
+    assert "API key" in str(excinfo.value) and "登录" in str(excinfo.value)
 
 
 def test_ensure_client_honors_explicit_base_url_override(monkeypatch):
-    from google import genai
-
+    """A non-relay base URL needs no login — that is the debug path to Google direct."""
     monkeypatch.setenv("GEMINI_API_KEY", "AIza-x")
-    captured: dict = {}
+    monkeypatch.delenv("OPENWORKER_RELAY_TOKEN", raising=False)
+    captured = _capture_sdk_client(monkeypatch)
 
-    class _FakeSDKClient:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-    monkeypatch.setattr(genai, "Client", _FakeSDKClient)
     GeminiProvider(base_url="https://custom.example")._ensure_client()
     assert captured["http_options"].base_url == "https://custom.example"
+    assert captured["http_options"].headers is None
 
 
 def test_build_gemini_forwards_hidden_base_url_override():
