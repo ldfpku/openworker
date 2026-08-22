@@ -63,14 +63,25 @@ $ConfPath = Join-Path $WorkerDir "wrangler.jsonc"
 # ---- 改配置。按字面替换，保留 jsonc 的注释和格式 ----
 $raw = [System.IO.File]::ReadAllText($ConfPath)
 $before = $raw
+
+# 先确认两个键确实存在，再谈替换。这两件事必须分开判断 —— 用「文本没变」来推断「键没找到」
+# 会让「重跑一遍相同的值」（完全正常的操作，比如重新部署）报成配置错误。踩过一次。
+foreach ($key in @("ACCESS_TEAM_DOMAIN", "ACCESS_AUD")) {
+    if ($raw -notmatch ('"' + $key + '"\s*:\s*"[^"]*"')) {
+        Write-Error "没能在 $ConfPath 里找到 $key 这个键。"
+        exit 1
+    }
+}
+
 $raw = [regex]::Replace($raw, '("ACCESS_TEAM_DOMAIN"\s*:\s*)"[^"]*"', "`${1}""$domain""")
 $raw = [regex]::Replace($raw, '("ACCESS_AUD"\s*:\s*)"[^"]*"', "`${1}""$audClean""")
+
 if ($raw -eq $before) {
-    Write-Error "没能在 $ConfPath 里找到 ACCESS_TEAM_DOMAIN / ACCESS_AUD 两个键。"
-    exit 1
+    Write-Host "wrangler.jsonc 里已经是这两个值，无需改动。" -ForegroundColor DarkGray
+} else {
+    [System.IO.File]::WriteAllText($ConfPath, $raw)
+    Write-Host "已写入 wrangler.jsonc：" -ForegroundColor Green
 }
-[System.IO.File]::WriteAllText($ConfPath, $raw)
-Write-Host "已写入 wrangler.jsonc：" -ForegroundColor Green
 Write-Host "  ACCESS_TEAM_DOMAIN = $domain"
 Write-Host "  ACCESS_AUD         = $audClean"
 
@@ -97,13 +108,12 @@ Write-Host "`n验证：" -ForegroundColor Cyan
 $base = "https://gemini.smjtools.com"
 
 function Probe($label, $url, $expect, $note) {
-    try {
-        $r = Invoke-WebRequest -Uri $url -MaximumRedirection 0 -SkipHttpErrorCheck -TimeoutSec 20
-        $code = $r.StatusCode
-    } catch {
-        # 老版本 PowerShell 把 3xx/4xx 当异常
-        $code = $_.Exception.Response.StatusCode.value__
-    }
+    # 用 curl.exe 而不是 Invoke-WebRequest：后者配 -MaximumRedirection 0 时，3xx 既不正常返回
+    # 也不抛出带 .Response 的异常，两种取状态码的写法都拿到空值 —— 一个真实的 302 被报成
+    # FAIL。curl.exe 从 Windows 10 起随系统自带，%{http_code} 对 3xx 就是老老实实给 302。
+    $code = 0
+    $out = & curl.exe -s -o NUL --max-time 20 -w "%{http_code}" $url 2>$null
+    if ($out -match '^\d+$') { $code = [int]$out }
     $ok = ($code -eq $expect)
     $mark = if ($ok) { "OK  " } else { "FAIL" }
     $color = if ($ok) { "Green" } else { "Red" }
@@ -116,11 +126,12 @@ $b = Probe "/v1beta/models" "$base/v1beta/models" 401 "未登录应被拒"
 $c = Probe "/login/probe" "$base/login/probe" 302 "应跳 Cloudflare 登录页"
 
 if ($c) {
-    try {
-        $r = Invoke-WebRequest -Uri "$base/login/probe" -MaximumRedirection 0 -SkipHttpErrorCheck -TimeoutSec 20
-        $loc = $r.Headers.Location
-        if ($loc) { Write-Host "       跳转到：$loc" -ForegroundColor DarkGray }
-    } catch { }
+    $loc = & curl.exe -s -o NUL --max-time 20 -w "%{redirect_url}" "$base/login/probe" 2>$null
+    if ($loc) {
+        # 只取 host+path：查询串上挂着一个很长的 meta JWT，整串打出来会刷屏
+        $short = ($loc -split '\?')[0]
+        Write-Host "       跳转到：$short" -ForegroundColor DarkGray
+    }
 }
 
 Write-Host ""
