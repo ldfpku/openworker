@@ -87,7 +87,16 @@ export function itemsFromMessages(messages: ConversationMessage[]): Item[] {
             : m.kind === "compacted"
               ? // The subtle "compacted here" divider (OPE-27) — the transcript itself is intact.
                 { kind: "notice", tone: "info", text: m.text || t("Context compacted") }
-              : { kind: "notice", tone: "warn", text: t("Error: {{message}}", { message: m.text || t("unknown") }), retriable: true },
+              : m.kind === "mcp_error"
+                ? // A configured MCP server failed to start for this session — informational,
+                  // NOT retriable (retry re-runs the model turn, which can't fix a dead server).
+                  { kind: "notice", tone: "warn", text: m.text || t("An MCP server failed to start") }
+                : {
+                    kind: "notice",
+                    tone: "warn",
+                    text: t("Error: {{message}}", { message: m.text || t("unknown") }),
+                    retriable: true,
+                  },
       );
     }
     // system messages are omitted; tool-result messages are folded into the tool row above

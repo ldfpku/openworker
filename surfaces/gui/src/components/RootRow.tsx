@@ -5,7 +5,7 @@ import { baseName } from "../paths";
 
 // One directory row, shared by the composer popover and the session start panel. The primary is the
 // session's bound workspace — the repo/folder for Code/Ops (shown by name), or a throwaway scratch
-// for Cowork (shown as "Temporary space"). It's always read-write and can't be removed.
+// for Cowork (shown as "Temporary folder"). It's always read-write and can't be removed.
 export function RootRow({
   root,
   busy,
@@ -25,7 +25,7 @@ export function RootRow({
   const { t } = useTranslation();
   const label = root.primary
     ? scratchPrimary
-      ? t("Temporary space")
+      ? t("Temporary folder")
       : baseName(root.path)
     : root.label;
   return (

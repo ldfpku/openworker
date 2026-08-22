@@ -385,11 +385,19 @@ export function InboxItemCard({
             onClick={() =>
               onResolve(
                 item.id,
-                JSON.stringify({ granted: true, path: item.data?.path || "", writable: !!item.data?.writable }),
+                JSON.stringify({
+                  granted: true,
+                  path: item.data?.path || "",
+                  writable: item.data?.primary ? true : !!item.data?.writable,
+                }),
               )
             }
           >
-            {item.data?.path ? t("Grant") : t("Grant (no folder)")}
+            {item.data?.path
+              ? item.data?.primary
+                ? t("Make workspace")
+                : t("Grant")
+              : t("Grant (no folder)")}
           </button>
           <button className={BTN_BORDERED} onClick={() => onResolve(item.id, JSON.stringify({ granted: false }))}>
             {t("Deny")}

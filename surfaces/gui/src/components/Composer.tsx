@@ -54,6 +54,10 @@ interface Props {
   // session; after the first turn the fact lives in the topbar subtitle (§22) — no
   // interactive-then-disabled control.
   running: boolean;
+  // A proposal gate (team/items) is awaiting the user: the engine is suspended,
+  // so `running` is true — but typing must stay possible, because a typed reply
+  // IS an answer (decline-with-feedback). Unblocks Send while the gate is up.
+  gateOpen?: boolean;
   connected: boolean;
   // False when the default model's provider has no key — the composer shows a "connect a model"
   // banner and routes sends to setup (preserving the draft) instead of dropping them.
@@ -158,7 +162,14 @@ export function Composer(props: Props) {
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = "auto";
-    const max = parseFloat(getComputedStyle(el).lineHeight || "22") * 4;
+    // The cap must include the vertical PADDING: scrollHeight does, so a
+    // padding-blind cap left the box ~20px short and scrolled the top padding
+    // (plus the first line) out of the clip while typing (OPE-106). Six lines —
+    // team briefs outgrew four.
+    const cs = getComputedStyle(el);
+    const pad =
+      (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+    const max = (parseFloat(cs.lineHeight) || 22) * 6 + pad;
     const next = Math.min(el.scrollHeight, max);
     el.style.height = `${Math.max(next, 24)}px`;
     el.style.overflowY = el.scrollHeight > max ? "auto" : "hidden";
@@ -330,7 +341,7 @@ export function Composer(props: Props) {
     const t = (skill ? text.slice(skill.length + 1) : text).trim();
     if (
       (!t && attachments.length === 0 && !skill) ||
-      props.running ||
+      (props.running && !props.gateOpen) ||
       dictation?.recording ||
       dictationBusy
     )
@@ -525,7 +536,11 @@ export function Composer(props: Props) {
         <textarea
           ref={textareaRef}
           className="w-full block px-3.5 pt-3.5 pb-1.5 text-[14.5px]"
-          placeholder={props.placeholder || t("Ask the coworker…  (drop or paste files)")}
+          placeholder={
+            props.gateOpen
+              ? t("Reply to adjust the proposal — or use the buttons above")
+              : props.placeholder || t("Ask the coworker…  (drop or paste files)")
+          }
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKey}
@@ -662,8 +677,8 @@ export function Composer(props: Props) {
             </button>
           )}
 
-          {/* send / stop */}
-          {props.running ? (
+          {/* send / stop — a pending gate re-opens Send: the reply resolves it */}
+          {props.running && !props.gateOpen ? (
             <button className="btn danger" onClick={props.onInterrupt}>
               {t("⏹ Stop")}
             </button>

@@ -200,7 +200,7 @@ export function GalleryModal({
       )}
 
       <div className="text-[11px] uppercase tracking-[0.05em] text-faint font-semibold mb-2">
-        {t("All personas")}
+        {t("All coworkers")}
       </div>
       <div className="space-y-2">
         {visible.map((p) => {
@@ -244,15 +244,17 @@ export function GalleryModal({
             {source === "team"
               ? t("Nothing shared with your team yet.")
               : q
-              ? t("No personas match your search.")
-              : t("No personas published yet.")}
+              ? t("No coworkers match your search.")
+              : t("No coworkers published yet.")}
           </div>
         )}
       </div>
 
       {source !== "team" && teamCount === 0 && (
         <div className="mt-5 pt-3 border-t border-line text-[12px] text-faint" data-testid="gallery-team-teaser">
-          {t("From your team — nothing shared yet. Publishing a persona to your teammates is coming soon.")}
+          {t(
+            "From your team — nothing shared yet. Publishing a coworker to your teammates is coming soon.",
+          )}
         </div>
       )}
     </div>
@@ -372,7 +374,7 @@ export function GalleryModal({
       <div className="absolute left-1/2 top-[6vh] -translate-x-1/2 w-[720px] max-w-[94vw] max-h-[88vh] rounded-xl2 border border-line bg-panel shadow-2xl overflow-hidden flex flex-col">
         <div className="px-5 pt-4 pb-3 border-b border-line flex items-center gap-3 shrink-0">
           <div className="min-w-0 flex-1">
-            <div className="text-[15px] font-semibold">{t("Persona Gallery")}</div>
+            <div className="text-[15px] font-semibold">{t("Coworker Gallery")}</div>
             <div className="text-[12px] text-muted">
               {t("Curated coworkers · installs stay disabled until you approve them")}
             </div>
@@ -381,7 +383,7 @@ export function GalleryModal({
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder={t("Search personas")}
+              placeholder={t("Search coworkers")}
               className="w-[180px] px-3 py-1.5 rounded-lg border border-line bg-paper text-[12.5px] text-ink outline-none focus:border-accent"
             />
           )}
