@@ -5,10 +5,15 @@
 （AI/SVG），导出后**同名替换**即可，代码零改动。
 
 > 这份是**供 openworker 使用的副本**。改完这里的图之后要跑一次
-> `.venv\Scripts\python.exe gemini-relay\scripts\gen_brand_assets.py`，
+> `.venv\Scripts\python.exe gemini-relay\scripts\gen_brand_assets.py`（需要 Pillow），
 > 它会重新生成两份 base64 内联副本——`gemini-relay/worker/src/brand.ts`（中转登录页 +
 > 公开的 `/brand/` 地址）和 `coworker/brand_assets.py`（本机登录回调页）。GUI 侧直接
 > `import` 本目录的 webp，不需要额外步骤。
+>
+> **只维护 webp 一套源文件。** 生成脚本会自动转出 png 并一并公开在 `/brand/*.png`——
+> 因为 Cloudflare 的 logo 字段校验扩展名、直接拒收 webp
+> （`logo_url must match the following: "/[^]+(.png|.svg|.jpg|.jpeg)$/"`）。
+> 凡是填给 Cloudflare 的地址都用 png，我们自己的页面用 webp。
 
 | 文件 | 规格 | 用途 |
 |---|---|---|

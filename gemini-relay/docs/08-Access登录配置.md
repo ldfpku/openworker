@@ -137,21 +137,31 @@ Zero Trust ▸ **Settings ▸ Custom Pages ▸ Login page**（控制台改版后
 
 | 字段 | 填什么 |
 | --- | --- |
-| Logo | `https://gemini.smjtools.com/brand/logo.webp` |
+| Logo | `https://gemini.smjtools.com/brand/logo.png` |
 | Background color | `#1F7A3C`（品牌绿；深绿 `#0A3A1B`、浅绿 `#58B96C` 见 `surfaces/gui/src/brand/README.md`） |
 
+> **一定要用 `.png`，不能用 `.webp`。** Cloudflare 的 logo 字段校验文件扩展名，webp 直接被拒：
+> `logo_url must match the following: "/[^]+(.png|.svg|.jpg|.jpeg)$/"`。它连图片都不会去取，
+> 所以这不是"图挂了"而是"格式不收"。App Launcher 那个 logo 字段同样如此。
+
 Logo 那一栏要的是 URL 而不是上传，所以 Worker 直接把品牌图片公开在 `/brand/` 下
-（`worker/src/brand.ts`，同一份字节也内联在 Worker 自己的提示页里）。三个可用地址：
+（`worker/src/brand.ts`，同一份字节也内联在 Worker 自己的提示页里）。每个标记都有 webp 和
+png 两份，**给 Cloudflare 填的一律用 png**：
 
 ```
-https://gemini.smjtools.com/brand/logo.webp        # 640x160 黑字，浅色底
-https://gemini.smjtools.com/brand/logo-dark.webp   # 640x160 白字，深色底
-https://gemini.smjtools.com/brand/favicon.webp     # 64x64
+https://gemini.smjtools.com/brand/logo.png         # 640x160 黑字，浅色底 —— 登录页用这个
+https://gemini.smjtools.com/brand/logo-mark.png    # 256x256 方形 —— App Launcher 用这个
+https://gemini.smjtools.com/brand/logo-dark.png    # 640x160 白字，深色底
+https://gemini.smjtools.com/brand/favicon.png      # 64x64
 ```
+
+（`.webp` 同名地址也在，体积更小，供我们自己的页面用。）
 
 换 logo 的流程：替换 `surfaces/gui/src/brand/` 下的同名 webp，跑一次
-`.venv\Scripts\python.exe gemini-relay\scripts\gen_brand_assets.py` 重新生成内联副本，
-再 `wrangler deploy`。URL 不变，Access 那边不用动（边缘缓存 1 天）。
+`.venv\Scripts\python.exe gemini-relay\scripts\gen_brand_assets.py`——它会顺带把 png
+转出来，不需要你自己维护第二套源文件——再 `wrangler deploy`。URL 不变，Access 那边不用动
+（边缘缓存 1 天）。生成脚本需要 Pillow：
+`uv pip install --python .venv/Scripts/python.exe pillow`。
 
 ## 步骤 4：把 team domain 和 AUD 填进 wrangler.jsonc
 
