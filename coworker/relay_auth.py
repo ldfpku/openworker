@@ -2,11 +2,12 @@
 
 Signing in establishes WHO you are, not what you may spend. The colleague proves they own an
 allow-listed mailbox — Cloudflare emails them a one-time PIN — and the relay hands back a
-token that is only good against the relay. They still bring their own Gemini API key; the
-token is what lets the relay attribute and cap usage per person (`worker/src/quota.ts`).
+token that is only good against the relay. They separately carry a Gemini API key issued to
+them by the administrator; the token is what lets the relay attribute and cap usage per
+person (`worker/src/quota.ts`).
 
 The token lands in the `provider:gemini` secret profile under `relay_token`, deliberately
-NOT in `api_key`: that slot holds the person's own Google key, which the SDK sends as
+NOT in `api_key`: that slot holds their Gemini key, which the SDK sends as
 `x-goog-api-key` and the relay forwards untouched.
 
 Shape (mirrors `cloud.py`'s Auth0 flow, and RFC 8252 for native apps):

@@ -5,11 +5,11 @@
  * now comes from a Cloudflare Access One-time PIN sign-in: the colleague proves they own an
  * allow-listed mailbox, and the relay issues them a token that is only good for this relay.
  *
- * The token answers "who is this", nothing else. It is NOT a Gemini credential: everyone
- * pays with their own Google key, which travels separately in `x-goog-api-key` and is
- * forwarded upstream untouched (index.ts). Splitting the two is what makes the counting
- * gate possible — the relay can attribute and cap usage by verified mailbox while never
- * holding a credential that could bill anybody.
+ * The token answers "who is this", nothing else. It is NOT a Gemini credential: each
+ * person carries their own distinct Gemini key, which travels separately in
+ * `x-goog-api-key` and is forwarded upstream untouched (index.ts). Splitting the two is
+ * what makes the counting gate possible — the relay attributes and caps usage by verified
+ * mailbox, and never has to hold a credential itself.
  *
  * The browser leg and the app leg are joined by OAuth 2.0's authorization-code + PKCE shape,
  * which is also what RFC 8252 prescribes for native apps:

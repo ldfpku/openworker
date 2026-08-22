@@ -1,11 +1,15 @@
 /**
  * Per-person request and token limits — the counting gate.
  *
- * Everyone now pays with their own Gemini key (index.ts forwards it untouched), so this is
- * not about protecting a shared wallet. It is about the two things a relay is uniquely
- * placed to do: stop a runaway agent loop before it has burned a colleague's quota for the
- * day, and give the administrator one dial per person that does not require touching
- * anybody's Google account.
+ * Each person carries a distinct Gemini key (index.ts forwards it untouched), all issued
+ * from one company Google account. So this gate is the thing standing between one runaway
+ * agent loop and the company's bill — and, because it counts against a VERIFIED MAILBOX
+ * rather than against a key, rotating or swapping a key cannot reset anyone's counter.
+ *
+ * It is not airtight and is not meant to be: a person who lifts their key off their own
+ * laptop can call Google directly and skip this entirely. What bounds that is the other
+ * half of the design — one key per person means Google's own per-key usage view shows who,
+ * and revoking one key in the Google console cuts off exactly one person.
  *
  * Counters live in D1 rather than KV because KV has no atomic increment and its writes are
  * eventually consistent across colos — two requests from different edges would both read

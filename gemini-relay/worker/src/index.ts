@@ -11,9 +11,11 @@
  *   Authorization: Bearer owr_...   who you are.   Minted by this Worker after a Cloudflare
  *                                   Access One-time PIN login (auth.ts). Consumed here and
  *                                   stripped — Google never sees it.
- *   x-goog-api-key: AIza...         who pays.      The caller's own Google key. Forwarded
- *                                   untouched. The relay never stores one and holds no key
- *                                   of its own, so it cannot bill anyone.
+ *   x-goog-api-key: AIza...         who pays.      The caller's own Gemini key — one per
+ *                                   person, issued by the administrator from the company
+ *                                   Google account and named after them. Forwarded
+ *                                   untouched; the relay stores none of them and holds no
+ *                                   key of its own.
  *
  * Identity being Worker-verified rather than client-claimed is what makes the counting gate
  * (quota.ts) mean anything: limits are keyed on a mailbox somebody proved they own, so
@@ -582,8 +584,8 @@ export default {
       return apiError(
         400,
         "INVALID_ARGUMENT",
-        "OpenWorker 中转：登录成功，但还没有填自己的 Gemini API key。" +
-          "去 https://aistudio.google.com/apikey 申请一个，填进「设置 ▸ 模型 ▸ Gemini」的 API key 里。"
+        "OpenWorker 中转：登录成功，但还没有填 Gemini API key。" +
+          "找管理员要一把（每人一把、以你的名字命名），填进「设置 ▸ 模型 ▸ Gemini」的 API key 里。"
       );
     }
     if (upstreamKey.startsWith(TOKEN_PREFIX)) {

@@ -116,10 +116,12 @@ def resolve_api_key(secrets: Any = None) -> Optional[str]:
     SecretStore `provider:gemini` profile. Same env-first contract as the Anthropic and
     OpenAI resolvers.
 
-    This is not the relay login. Everyone brings their own Google key; signing in to the
-    company relay only says who you are, and that token lives in the same profile under
-    `relay_token` (see `resolve_relay_token`). The two travel in different headers and
-    neither substitutes for the other.
+    This is not the relay login. Each person holds a DISTINCT Gemini key — issued by the
+    administrator out of one company Google account and named after them, so per-person
+    usage is visible on Google's side too — while signing in to the relay only says who you
+    are. That token lives in the same profile under `relay_token`
+    (see `resolve_relay_token`). The two travel in different headers and neither
+    substitutes for the other.
     """
     import os
 
@@ -501,7 +503,7 @@ class GeminiProvider(ProviderClient):
             missing = []
             if not key:
                 missing.append(
-                    "还没有填自己的 Gemini API key（在 https://aistudio.google.com/apikey 申请，"
+                    "还没有填 Gemini API key（找管理员要一把，"
                     "填进「设置 ▸ 模型 ▸ Gemini」）"
                 )
             if base_url == RELAY_BASE_URL and not headers:

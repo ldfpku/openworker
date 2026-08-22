@@ -204,7 +204,9 @@ export function RelaySignIn({ tp, onChanged }: { tp: string; onChanged?: () => v
           )}
         </p>
         <p className="text-[11.5px] text-faint mt-1">
-          {t("Step 2: paste your own Gemini API key below. Signing in says who you are; the key is what Google bills.")}
+          {t(
+            "Step 2: paste the Gemini API key your administrator issued you. Signing in says who you are; the key is what calls Google.",
+          )}
         </p>
         <p className="text-[11.5px] text-faint mt-1">{t("Relay: {{host}}", { host })}</p>
         {(error || status.verify_error) && (
@@ -242,7 +244,9 @@ export function RelaySignIn({ tp, onChanged }: { tp: string; onChanged?: () => v
           told to bring. */}
       {!status.has_api_key && (
         <p className="text-[11.5px] text-danger mt-2" data-testid={`${tp}-relay-needs-key`}>
-          {t("Almost there — paste your own Gemini API key in the field below. The relay can't call Google without it.")}
+          {t(
+            "Almost there — paste the Gemini API key your administrator issued you in the field below. The relay can't call Google without it.",
+          )}
         </p>
       )}
       {status.stale_relay && (

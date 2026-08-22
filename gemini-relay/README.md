@@ -13,7 +13,7 @@ openworker (google-genai 2.16.0, httpx 0.28.1)
    │  登录：系统浏览器 → /login/<sid> → Cloudflare Access 一次性验证码
    │        → 302 回本机回环 → 换到登录令牌 owr_…（存本机 secrets.json）
    │  调用：HTTPS 直连（SNI=gemini.smjtools.com，无需 v2rayN；中转地址内置在 provider 代码里）
-   │        authorization: Bearer owr_…（登录令牌）+ x-goog-api-key: AIza…（他自己的 key）
+   │        authorization: Bearer owr_…（登录令牌）+ x-goog-api-key: AIza…（他专属的那把 key）
    ▼
 Cloudflare Worker @ gemini.smjtools.com   ← 自定义域名，反向代理 + 令牌准入 + 按人限额 + D1 用量流水
    │  /login/*      ← 被 Access 保护（唯一一条），验签 Access JWT 取邮箱，查 KV 名单，签发令牌
@@ -32,12 +32,13 @@ Gemini API（出口 IP 为 Cloudflare 边缘）
 
 ## 前提条件
 
-（以下都是**管理员**一次性要做的事；同事需要准备两样：一个在允许名单里的邮箱，和一把自己的 Gemini API key。）
+（以下都是**管理员**一次性要做的事；同事需要两样，都由你给：一个在允许名单里的邮箱，和一把以他名字命名的 Gemini API key。）
 
 - Cloudflare 账号，`smjtools.com` 这个 zone 和 gemini-relay 这个 Worker 都在这个账号下（`norm.ns.cloudflare.com` / `georgia.ns.cloudflare.com`）。整套信任模型的地基就是这一条。
 - 已开通 Cloudflare Zero Trust（免费方案够用），用来做 Access 一次性验证码登录。
 - 本机已装 Node.js + npm（`npx wrangler` 依赖 npm）。
-- **不需要**任何 Gemini API Key 放进中转——每个人带自己的。你自己那把只是用来冒烟测试。
+- 一个能开 Gemini API 的 **Google 账号**：全公司的 key 都从它签发，账单也记在它头上。
+  **中转本身不需要放任何 key**——它只在转发的瞬间经手，不存储。
 
 ## 快速开始（管理员视角）
 
@@ -88,7 +89,7 @@ cd ..\..
 
 ### 5. 分发 openworker
 
-同事拿到 openworker 之后要做两件事，都在 **设置 ▸ 模型 ▸ Gemini** 这一页：点「登录」用公司邮箱收验证码，再填上自己的 Gemini API key（https://aistudio.google.com/apikey 免费申请）。不需要设环境变量、不需要跑任何脚本。名单维护（加人/删人/调额度/查用量）见 [docs/07-多用户与用量统计.md](docs/07-多用户与用量统计.md)。
+同事拿到 openworker 之后要做两件事，都在 **设置 ▸ 模型 ▸ Gemini** 这一页：点「登录」用公司邮箱收验证码，再填上你发给他的 Gemini API key。不需要设环境变量、不需要跑任何脚本。名单维护（加人/删人/调额度/查用量）见 [docs/07-多用户与用量统计.md](docs/07-多用户与用量统计.md)。
 
 > 遗留脚本说明：`scripts\set-relay-env.ps1` 和 `scripts\start-openworker-cn.ps1` 是 v1 时代靠环境变量接线的产物，v2 起已不需要。保留仅作调试用途——它们设置的 `GOOGLE_GEMINI_BASE_URL` 现在是**优先级高于内置常量的调试覆盖**，设了会盖住代码里的默认值，排错前记得清理（`set-relay-env.ps1 -Uninstall`）。
 
@@ -114,9 +115,11 @@ cd ..\..
 | 头 | 内容 | 谁消费 |
 | --- | --- | --- |
 | `Authorization: Bearer owr_...` | 登录令牌，只对本中转有效 | 中转自己，转发前剥掉 |
-| `x-goog-api-key: AIza...` | **调用方自己的** Gemini key | Google，中转原样转发、不改不存 |
+| `x-goog-api-key: AIza...` | **这个人专属的** Gemini key（管理员签发，以他名字命名） | Google，中转原样转发、不改不存 |
 
-**为什么不合成一把。** 中转要能回答「这次调用是谁发的」——用于记账，也用于按人限额。如果凭证就是 Gemini key，那么换一把 key 就换了个身份，计数器归零，限额形同虚设。反过来，如果中转代持一把共享 key，它就成了一个可以被一次性偷走的凭证集合，而且谁跑飞了全公司一起承担。拆成「验证过的邮箱 + 各自的 key」，两个问题同时消失。
+**为什么不合成一把。** 中转要能回答「这次调用是谁发的」——用于记账，也用于按人限额。如果凭证就是 Gemini key，那么换一把 key 就换了个身份，计数器归零，限额形同虚设。
+
+**为什么 key 一人一把而不是全公司共享一把。** 共享一把的话，Google 那边只看得到一个总数，吊销任何人都要全员换 key，而且中转就得代持一个可以被一次性偷走的东西。一人一把命名 key 换来：Google 后台按 key 显示用量（一本独立于我们 D1 的第二本账）、删一把正好切断一个人、中转仍然什么都不存。
 
 实现上：
 
