@@ -88,9 +88,20 @@ Zero Trust ▸ **Access controls ▸ Applications** ▸ Add an application ▸ *
 | Session Duration | 24 小时（够长，令牌本身有自己的 30 天有效期） |
 | Subdomain | `gemini` |
 | Domain | `smjtools.com` |
-| **Path** | **`login`** |
+| **Path** | **`login/*`** |
 
-**Path 一定要填 `login`。** 子路径会自动包含进来（`/login/<sid>` 因此被保护），而 `/auth/*`、`/v1beta/*`、`/healthz` 都不在 `/login` 底下，保持公开——这正是我们要的：
+**Path 一定要填 `login/*`，那个星号不能少。** Cloudflare 的
+[Application paths](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/app-paths/)
+说得很明确：不带通配符的 Path 是**精确匹配**。填 `login` 只会保护 `/login` 这一个 URL，
+而我们真正需要保护的是 `/login/<sid>`——那才是签发一次性授权码的地方。
+
+填错的后果还特别不好查：Access 根本不介入 `/login/<sid>`，于是没有 `cf-access-jwt-assertion`
+头，Worker 验签失败，同事看到的是「身份校验没通过」，而控制台里一切看起来都正常。
+
+反过来，通配符**不覆盖父路径**，所以 `/login`（不带 sid）不受保护。这没问题：那个 URL 只会
+返回一句「请从 OpenWorker 里发起登录」的提示页，不签发任何东西。
+
+`/auth/*`、`/v1beta/*`、`/healthz` 都不在 `/login/` 底下，保持公开——这正是我们要的：
 
 - `/login/*` 是**浏览器**流量，需要 Access 拦下来做验证码。
 - `/v1beta/*` 是 google-genai SDK 发的**程序化**流量。要是它也被 Access 保护，SDK 会收到一个 302 到登录页，然后以各种难懂的方式失败。
