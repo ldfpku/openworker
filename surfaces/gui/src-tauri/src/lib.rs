@@ -81,6 +81,8 @@ fn tr(locale: ShellLocale, key: &'static str) -> &'static str {
         "no update available" => "没有可用更新",
         _ => key,
     }
+}
+
 /// Directories where user-installed CLIs live but launchd's PATH never looks. Used to
 /// repair PATH when the login-shell probe can't run (broken profile, exotic shell).
 #[cfg(not(target_os = "windows"))]
