@@ -62,8 +62,9 @@ def _nonstreaming_timeout(max_tokens: int) -> Any:
         ValueError: Streaming is required for operations that may take longer than 10 minutes.
 
     Its estimate is linear in max_tokens (`3600 * max_tokens / 128_000`), so anything above
-    ~21.3k trips it, and DEFAULT_MAX_TOKENS is 32000. A separate table caps some legacy
-    models (Opus 4/4.1) at 8192 for non-streaming, which trips even at modest ceilings.
+    ~21.3k trips it, and DEFAULT_MAX_TOKENS is 32000. (The SDK also pins a handful of
+    retired Opus 4/4.1 ids to 8192 for non-streaming — this app selects none of them, but
+    it is why lowering the default ceiling would not be a general fix.)
 
     The guard only fires when the caller supplies no timeout, so passing one is the SDK's
     own escape hatch. We are overriding a 10-minute *heuristic*, NOT loosening a network
@@ -94,22 +95,22 @@ def _nonstreaming_timeout(max_tokens: int) -> Any:
 DEFAULT_THINKING_BUDGET = 8192
 
 # API drift (2026): thinking config is MODEL-FAMILY specific.
-# - Pre-4.6 models (Haiku 4.5, Sonnet 4.5, Opus 4.5 and older): thinking needs
+# - The 4.5 generation (Haiku 4.5, Sonnet 4.5, Opus 4.5): thinking needs
 #   {"type": "enabled", "budget_tokens": N}.
 # - 4.6+ and the Claude 5 family (Fable/Mythos 5, Opus 4.8/4.7, Sonnet 5, the 4.6 pair):
 #   budget_tokens is deprecated/REMOVED (hard 400 on 4.7+: '"thinking.type.enabled" is
 #   not supported for this model') — use {"type": "adaptive"}. Fable 5 thinking is
 #   always on and can't be disabled. `display: "summarized"` is required to get trace
 #   text on 4.7+ (default "omitted" streams thinking blocks with EMPTY text).
+#
+# Only the 4.5 generation is listed. The Claude 2/3 and 4.0/4.1 entries that used to sit
+# here are gone from every catalog this app can reach, and nothing in the repo selected
+# them; a custom id from that era now gets the adaptive shape, which those models would
+# reject — an acceptable trade for not carrying a table nobody can exercise.
 _BUDGET_THINKING_PREFIXES = (
     "claude-haiku-4-5",
     "claude-sonnet-4-5",
     "claude-opus-4-5",
-    "claude-opus-4-1",
-    "claude-opus-4-0",
-    "claude-sonnet-4-0",
-    "claude-3",
-    "claude-2",
 )
 
 

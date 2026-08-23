@@ -8,9 +8,16 @@ version = "0.0.0"
 description = "Agent coworker platform — provider-agnostic agentic coworker runtime"
 requires-python = ">=3.10"
 dependencies = [
-    "openai>=1.0",
-    "anthropic>=0.40",  # native Claude Messages API provider
-    "google-genai>=1.0",  # native Gemini provider
+    # The Responses API (`client.responses.create`, used by openai_responses.py) landed
+    # in 1.66, so the old `>=1.0` floor named versions this app cannot run on at all.
+    # Floor set to the tested major instead.
+    "openai>=3",
+    # 1.0 is a floor, not a nicety: it moved off `httpx` onto `httpx2`, and this project
+    # depends on plain httpx as well, so on an older anthropic both are importable and the
+    # provider's `anthropic.Timeout` would be the wrong class. `>=0.40` previously let CI
+    # resolve 1.0 while a dev venv stayed on 0.125 — a major version apart.
+    "anthropic>=1.0",  # native Claude Messages API provider
+    "google-genai>=2",  # native Gemini provider; 2.x is what CI and dev both run
     "google-auth>=2.23",  # Vertex credentials (service account / ADC / MaaS bearer)
     "textual>=1.0",
     "fastapi>=0.110",
