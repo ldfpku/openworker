@@ -4,6 +4,7 @@ objects, the same pattern test_providers.py uses for the OpenAI SDK."""
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -11,6 +12,7 @@ import pytest
 from coworker.providers import AnthropicProvider, capabilities_for
 from coworker.providers.anthropic_provider import (
     DEFAULT_MAX_TOKENS,
+    _nonstreaming_timeout,
     convert_messages,
     convert_tools,
 )
@@ -686,3 +688,87 @@ def test_whole_chain_refusal_raises_friendly_error():
     with pytest.raises(RuntimeError) as err:
         provider.complete(model="claude-fable-5", messages=[{"role": "user", "content": "x"}])
     assert "safety filter" in str(err.value) and "cyber" in str(err.value)
+
+
+# -- SDK client-side guards -----------------------------------------------------------
+#
+# These drive a REAL anthropic SDK client over a mock transport instead of _FakeClient.
+# The fake swallows **kwargs and runs none of the SDK's own client-side checks, which is
+# precisely why the guard below went unnoticed: complete() raised for every Claude model
+# at the default ceiling while this whole file stayed green.
+
+
+def _sdk_client(seen: list):
+    """A real `anthropic.Anthropic` whose transport records requests instead of sending
+    them. Requests only land in `seen` if the SDK let the call past its own checks."""
+    import httpx
+    from anthropic import Anthropic
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-sonnet-4-6",
+                "content": [{"type": "text", "text": "hello"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+        )
+
+    return Anthropic(
+        api_key="sk-ant-test",
+        http_client=httpx.Client(transport=httpx.MockTransport(handle)),
+    )
+
+
+def test_complete_at_default_max_tokens_reaches_the_wire():
+    """Regression: the SDK refuses a NON-streaming create it estimates at over 10 minutes
+    — client-side, before any request goes out. The estimate is linear in max_tokens and
+    DEFAULT_MAX_TOKENS sits over the line, so this raised `ValueError: Streaming is
+    required for operations that may take longer than 10 minutes` for EVERY Claude model,
+    taking POST /v1/chat/completions (the one caller that leaves max_tokens defaulted)
+    down with it. stream() was always fine — streaming is exempt from the guard."""
+    seen: list = []
+    turn = AnthropicProvider(client=_sdk_client(seen)).complete(
+        model="claude-sonnet-4-6", messages=[{"role": "user", "content": "hi"}]
+    )
+    assert turn.text == "hello"
+    assert len(seen) == 1  # reached the transport instead of raising client-side
+    assert json.loads(seen[0].content)["max_tokens"] == DEFAULT_MAX_TOKENS
+
+
+def test_complete_beta_fallback_path_clears_the_guard_too():
+    """Fable routes through `client.beta.messages.create` — a separate SDK method
+    carrying its own copy of the same guard."""
+    seen: list = []
+    AnthropicProvider(client=_sdk_client(seen)).complete(
+        model="claude-fable-5", messages=[{"role": "user", "content": "hi"}]
+    )
+    assert len(seen) == 1
+
+
+def test_stream_leaves_the_sdk_timeout_alone():
+    """The guard is non-streaming-only, so the override must not leak into stream():
+    a wedged stream should still give up on the SDK's own schedule."""
+    fake = _FakeClient(events=[])
+    list(
+        AnthropicProvider(client=fake).stream(
+            model="m", messages=[{"role": "user", "content": "x"}]
+        )
+    )
+    assert "timeout" not in fake.kwargs
+
+
+def test_nonstreaming_timeout_tracks_the_sdk_estimate():
+    """The override grants the SDK's own extrapolation of how long that many tokens could
+    take (an hour at the 128k ceiling), floored at its 10-minute default — it is not a
+    network timeout loosened to some round number."""
+    assert _nonstreaming_timeout(8192).read == 600.0  # small calls keep the default
+    assert _nonstreaming_timeout(DEFAULT_MAX_TOKENS).read == 900.0
+    assert _nonstreaming_timeout(128_000).read == 3600.0
+    # A dead network must still fail fast rather than hang for the whole read budget.
+    assert _nonstreaming_timeout(DEFAULT_MAX_TOKENS).connect == 5.0

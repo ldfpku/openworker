@@ -52,6 +52,36 @@ def _usage_from(usage: Any) -> Optional[TokenUsage]:
 # accept ≥32k output.
 DEFAULT_MAX_TOKENS = 32000
 
+
+def _nonstreaming_timeout(max_tokens: int) -> Any:
+    """Per-request timeout for NON-streaming completes, to opt out of an SDK guard.
+
+    The SDK refuses a non-streaming `messages.create` outright — client-side, before any
+    request goes out — when it estimates the call could exceed 10 minutes:
+
+        ValueError: Streaming is required for operations that may take longer than 10 minutes.
+
+    Its estimate is linear in max_tokens (`3600 * max_tokens / 128_000`), so anything above
+    ~21.3k trips it, and DEFAULT_MAX_TOKENS is 32000. A separate table caps some legacy
+    models (Opus 4/4.1) at 8192 for non-streaming, which trips even at modest ceilings.
+
+    The guard only fires when the caller supplies no timeout, so passing one is the SDK's
+    own escape hatch. We are overriding a 10-minute *heuristic*, NOT loosening a network
+    timeout: the number below is the SDK's own extrapolation of how long this many tokens
+    could take, so a request gets exactly the time it may legitimately need and no more.
+    `connect` stays at the SDK's 5s so a dead network still fails fast.
+
+    This lives at the call site rather than on the client because AnthropicProvider serves
+    three client sources — the lazily built native one plus the AnthropicBedrock and
+    AnthropicVertex clients that BedrockProvider/VertexProvider inject — and all three hit
+    the same guard. It also leaves stream()'s timeout at the SDK default, since streaming
+    is exempt and has no reason to wait longer.
+    """
+    import httpx
+
+    return httpx.Timeout(max(600.0, 3600.0 * int(max_tokens) / 128_000), connect=5.0)
+
+
 # Extended thinking is ON by default (owner call 2026-07-23: no user-facing setting —
 # most users wouldn't know what a budget is; a per-turn composer control is future work).
 # The provider profile's `thinking_budget` remains a hidden override: a number replaces
@@ -470,6 +500,8 @@ class AnthropicProvider(ProviderClient):
             model=model, messages=messages, tools=tools, settings=settings
         )
         client = self._ensure_client()
+        # Non-streaming only: opts out of the SDK's 10-minute refusal (see _nonstreaming_timeout).
+        kwargs.setdefault("timeout", _nonstreaming_timeout(kwargs["max_tokens"]))
         if _needs_refusal_fallback(model):
             response = client.beta.messages.create(
                 **kwargs,
