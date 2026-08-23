@@ -76,10 +76,15 @@ def _nonstreaming_timeout(max_tokens: int) -> Any:
     AnthropicVertex clients that BedrockProvider/VertexProvider inject — and all three hit
     the same guard. It also leaves stream()'s timeout at the SDK default, since streaming
     is exempt and has no reason to wait longer.
-    """
-    import httpx
 
-    return httpx.Timeout(max(600.0, 3600.0 * int(max_tokens) / 128_000), connect=5.0)
+    The class comes from the SDK, not from `httpx`: anthropic 1.0 moved to `httpx2`, and
+    since this project depends on plain `httpx` as well, both are importable and reaching
+    for the wrong one is a type error rather than a fallback. `anthropic.Timeout` is
+    whichever is right for the installed version.
+    """
+    from anthropic import Timeout
+
+    return Timeout(max(600.0, 3600.0 * int(max_tokens) / 128_000), connect=5.0)
 
 
 # Extended thinking is ON by default (owner call 2026-07-23: no user-facing setting —

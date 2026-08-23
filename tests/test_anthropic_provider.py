@@ -698,15 +698,41 @@ def test_whole_chain_refusal_raises_friendly_error():
 # at the default ceiling while this whole file stayed green.
 
 
+def _sdk_httpx():
+    """The httpx package the installed anthropic SDK binds to.
+
+    anthropic 1.0 moved from `httpx` to `httpx2` and type-checks `http_client` against
+    its own. This project depends on plain `httpx` too, so both are importable and the
+    wrong one is a TypeError, not a fallback — which is exactly how this file passed
+    locally on 0.125 and failed CI on 1.0. Ask the SDK instead of guessing.
+    """
+    import importlib
+
+    from anthropic import Anthropic
+
+    for name in ("httpx2", "httpx"):
+        try:
+            mod = importlib.import_module(name)
+        except ModuleNotFoundError:
+            continue
+        try:
+            Anthropic(api_key="probe", http_client=mod.Client())
+        except TypeError:
+            continue
+        return mod
+    raise RuntimeError("no importable httpx that this anthropic SDK accepts")
+
+
 def _sdk_client(seen: list):
     """A real `anthropic.Anthropic` whose transport records requests instead of sending
     them. Requests only land in `seen` if the SDK let the call past its own checks."""
-    import httpx
     from anthropic import Anthropic
 
-    def handle(request: httpx.Request) -> httpx.Response:
+    hx = _sdk_httpx()
+
+    def handle(request):
         seen.append(request)
-        return httpx.Response(
+        return hx.Response(
             200,
             json={
                 "id": "msg_1",
@@ -721,7 +747,7 @@ def _sdk_client(seen: list):
 
     return Anthropic(
         api_key="sk-ant-test",
-        http_client=httpx.Client(transport=httpx.MockTransport(handle)),
+        http_client=hx.Client(transport=hx.MockTransport(handle)),
     )
 
 
