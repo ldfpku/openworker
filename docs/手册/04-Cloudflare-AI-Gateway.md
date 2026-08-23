@@ -49,11 +49,16 @@ Cloudflare 控制台 ▸ **AI** ▸ **AI Gateway** ▸ Create Gateway。名字�
 
 **My Profile** ▸ **API Tokens** ▸ **Create Token** ▸ Custom token。
 
-- 权限只给一条：**Account ▸ Workers AI ▸ Run**（Edit 也行，但用不上）。
+- 权限只给一条：**Account ▸ Workers AI ▸ Read**。
 - Account Resources 限定到这一个账号。
 - 建完只显示一次，存好。
 
-> **这把 token 会发给同事。** 它能花账户里的额度，所以：权限只给 Workers AI Run（不要给
+> **别选成 AI Gateway 的权限。** Workers AI 只有 Read / Edit 两项；Read / Run / Edit
+> 那三项属于「AI Gateway」，是另一个产品。应用打的是 `/accounts/{id}/ai/*` 这一族接口，
+> 官方文档写明它们要的是 Workers AI 权限，**只给 AI Gateway 权限会 401（错误码 10000）**。
+> Read 这个名字看着像只读，但在 Workers AI 里它就是「能跑推理」的那一项。
+>
+> **这把 token 会发给同事。** 它能花账户里的额度，所以：只给上面那一条（不要给
 > Zone / Workers Scripts / R2 那些）、给 token 设过期时间、每人一把并按人命名，
 > 这样 Cloudflare 后台能看到谁在用、要停谁的时候删掉那一把就行。
 >
@@ -194,7 +199,7 @@ BytePlus / 火山方舟、Meta Muse Spark 那几个是**目录里根本没有**�
 
 | 现象 | 多半是 |
 | --- | --- |
-| 测试报「Cloudflare 拒绝了这个 token」 | token 抄错，或者建的时候没给 Workers AI Run 权限 |
+| 测试报「Cloudflare 拒绝了这个 token」 | token 抄错，或者权限选成了 AI Gateway 而不是 **Workers AI ▸ Read** |
 | 测试报「Cloudflare 上没有这个账号 ID」 | 账号 ID 抄错。跑 `npx wrangler whoami` 对一下 |
 | 测试报「没有 AI Gateway 额度」 | 去 Billing 充值 |
 | 报「不在 AI Gateway 额度覆盖范围内」 | 真的不覆盖，只有 inkling 是这种。见第 5 节 |

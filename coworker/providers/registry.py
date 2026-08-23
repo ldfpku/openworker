@@ -584,8 +584,9 @@ DESCRIPTORS: list[ProviderDescriptor] = [
                 "api_token",
                 "Cloudflare API token",
                 secret=True,
-                help="My Profile ▸ API Tokens ▸ Create Token. It needs the Workers AI "
-                "Run permission on this account — nothing else.",
+                help="My Profile ▸ API Tokens ▸ Create Token ▸ Custom token. One "
+                "permission: Account ▸ Workers AI ▸ Read. (An AI Gateway permission "
+                "is NOT enough — it 401s.)",
             ),
             ProviderField(
                 "gateway_id",
@@ -834,8 +835,9 @@ def _verify_aigw(fields: dict[str, Any], timeout: float) -> dict[str, Any]:
     if resp.status_code in (401, 403):
         return {
             "ok": False,
-            "error": "Cloudflare rejected the token — check it, and that it has the "
-            "Workers AI Run permission on this account.",
+            "error": "Cloudflare rejected the token — check it, and that it grants "
+            "Account ▸ Workers AI ▸ Read on this account. An AI Gateway permission "
+            "alone is not enough.",
         }
     if resp.status_code == 404 or "could not route" in body:
         return {"ok": False, "error": "No such account ID on Cloudflare."}
