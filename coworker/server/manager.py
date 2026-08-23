@@ -2958,6 +2958,13 @@ class SessionManager:
             from ..providers.gemini_provider import resolve_relay_token
 
             merged["relay_token"] = resolve_relay_token(self.secrets) or ""
+        if name == "aigw":
+            # Same reason as the relay above: the OAuth session is not a form field, and
+            # Test has to use the credential a real call would use — otherwise a colleague
+            # who signed in (and typed nothing) gets told to sign in.
+            from .. import aigw_auth
+
+            merged["oauth_token"] = aigw_auth.access_token(self.secrets) or ""
         return verify_provider_key(
             name, api_key=api_key, base_url=merged.get("base_url", ""), fields=merged
         )

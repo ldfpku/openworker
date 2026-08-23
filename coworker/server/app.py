@@ -1654,6 +1654,38 @@ def create_app(manager: SessionManager) -> FastAPI:
             )
         )
 
+    @app.post("/v1/aigw/login")
+    def aigw_login(body: Optional[dict] = None) -> dict[str, Any]:
+        """Start AI Gateway sign-in (Cloudflare Access Managed OAuth).
+
+        No callback route here, unlike the relay above: Cloudflare pins the redirect URI
+        down to its port and the packaged sidecar's port is random, so `aigw_auth` runs its
+        own one-shot listener on a registered port and this endpoint only opens the
+        browser. The pane then polls `/v1/aigw/status`.
+        """
+        import webbrowser
+
+        from .. import aigw_auth
+
+        out = aigw_auth.begin_login(
+            manager.secrets, str((body or {}).get("base_url") or "")
+        )
+        if out.get("ok"):
+            webbrowser.open(out["login_url"])
+        return out
+
+    @app.get("/v1/aigw/status")
+    async def aigw_status() -> dict[str, Any]:
+        from .. import aigw_auth
+
+        return await asyncio.to_thread(lambda: aigw_auth.status(manager.secrets))
+
+    @app.post("/v1/aigw/logout")
+    async def aigw_logout() -> dict[str, Any]:
+        from .. import aigw_auth
+
+        return await asyncio.to_thread(lambda: aigw_auth.logout(manager.secrets))
+
     @app.post("/v1/connectors/{name}/connect-managed")
     async def connector_connect_managed(
         name: str, body: Optional[dict] = None

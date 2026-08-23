@@ -69,6 +69,9 @@ Access 通过之后，网关会把登录者的身份写进请求元数据（`cf.
 
 ### 1.4 打开动态客户端注册
 
+**不做这一步，同事那边的「登录」按钮就是废的**——注册端点会一直返回 404，浏览器转个
+不停，而且报错完全指不到这里。
+
 这一步分两半：能在控制台点的，和**只能走 API** 的。
 
 **先在控制台点：Zero Trust ▸ Access controls ▸ Applications ▸ 该应用 ▸ 右侧三个点 ▸
@@ -181,34 +184,43 @@ curl -s -o /dev/null -w "%{http_code}\n" https://gateway.smjtools.com/ -H "User-
 
 ---
 
-## 2 · 同事：两步
+## 2 · 同事：填一个地址，点一次登录
 
-**设置 ▸ 模型 ▸ Cloudflare AI Gateway**，两个框：
+不用装任何东西，不用申请任何密钥，不用粘贴任何字符串。
 
-| 框 | 填什么 |
-| --- | --- |
-| 网关地址 | 管理员给的域名，例如 `https://gateway.smjtools.com`。只填主机名 |
-| Access 会话 | 用工作邮箱登录后拿到的那一串 |
+1. **设置 ▸ 模型 ▸ Cloudflare AI Gateway**
+2. 「网关地址」填管理员给的域名，例如 `https://gateway.smjtools.com`。**只填主机名**，
+   后面的路径应用自己会加
+3. 点卡片上的 **登录**。浏览器会弹出来走一次公司的 Access 登录，登完那个标签页会自己
+   显示「登录成功」，回到应用就已经是「✓ 已登录」了
+4. 点 **测试**——它会真的调一次最便宜的模型（不到一厘钱），所以测试通过就等于真能用
+5. 在上方的模型选择器里挑一个 `· via Cloudflare` 结尾的模型
 
-拿会话的办法，命令行装一次 [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)：
+登录之后就不用再管了：应用后台每 15 分钟悄悄续一次令牌，**两周**之内不会再问你。
+续签的每一次 Cloudflare 都会重新核对你还在不在允许名单里——所以两周这个时长是安全的，
+一个人离职或被移出名单，最迟下一次续签就失效。
+
+> **登录按钮是灰的**，说明网关地址还没填。登录就是往那个地址去的，先填地址。
+
+<details>
+<summary>没有浏览器的机器（少数情况）</summary>
+
+服务器、容器这类开不了浏览器的环境，还可以用旧办法：装一次
+[cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)，
 
 ```bash
 cloudflared access login https://gateway.smjtools.com
 ```
 
-浏览器会弹出来收验证码，登录成功后：
-
 ```bash
 cloudflared access token -app=https://gateway.smjtools.com
 ```
 
-把输出整串粘进「Access 会话」。点 **测试**——它会真的调一次最便宜的模型（不到一厘钱），
-所以测试通过就等于真能用。
+把输出整串粘进「Access 会话」那个框。**这种会话每天都会失效**，失效后测试会报
+「Access 会话无效」，得重跑第二条命令再粘一次。能登录就别用这条路。
 
-然后在会话上方的模型选择器里挑一个 `· via Cloudflare` 结尾的模型。
-
-> **会话会过期**（默认 24 小时，管理员可以调到最长一个月）。过期后测试会报
-> 「Access 会话无效」，重跑上面第二条命令、重新粘一次即可。
+两者同时存在时，应用优先用登录拿到的那个。
+</details>
 
 ---
 
@@ -326,7 +338,11 @@ Gemini 那句 `Missing or invalid Authorization header` 就是这么来的——
 
 | 现象 | 多半是 |
 | --- | --- |
-| 测试报「Access 会话无效」 | 会话过期了，重跑 `cloudflared access token` 再粘一次 |
+| 「登录」按钮是灰的 | 网关地址还没填。登录就是往那个地址去的 |
+| 点了登录，浏览器一直转 | 管理员没开动态客户端注册，注册端点会返回 404。见 1.4 |
+| 报「本机 53682… 端口都被占用了」 | 别的程序占了回调端口。Cloudflare 只认注册过的端口，换不了，得先关掉占用的程序 |
+| 登录完又变回「未登录」 | 授权被拒，或者你不在 Access 策略的允许名单里。找管理员 |
+| 测试报「Access 会话无效」 | 粘贴的那种会话过期了（每天）。点「登录」换成会自动续期的 |
 | 测试报「这个地址上没有网关」 | 网关地址抄错，或者自定义域还没生效 |
 | 测试报「额度用完了」 | 去 Billing 充值 |
 | `403 Your request was blocked.` | 边缘的「阻止 AI 机器人」打的，不是 Access。见 1.5 |

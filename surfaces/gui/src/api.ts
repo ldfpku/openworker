@@ -796,6 +796,67 @@ export async function relayLogout(): Promise<{ ok: boolean }> {
   return res.json();
 }
 
+/** Cloudflare AI Gateway sign-in (Access Managed OAuth). Same shape as the relay above,
+ *  minus the quota block — the gateway meters spend on Cloudflare's side, not ours. */
+export interface GatewayStatus {
+  signed_in: boolean;
+  /** A browser sign-in is open right now. */
+  pending: boolean;
+  /** Unix seconds; 0 when the server did not state one. */
+  expires_at: number;
+  registered: boolean;
+  error?: string;
+  /** Still on the old `cloudflared` paste. Signed in is strictly better, but this stops
+   *  the pane nagging someone who is, in fact, working. */
+  pasted_session: boolean;
+}
+
+export async function getGatewayStatus(): Promise<GatewayStatus> {
+  const res = await fetch(`${httpBase()}/v1/aigw/status`);
+  return res.json();
+}
+
+export async function gatewayLogin(
+  baseUrl?: string,
+): Promise<{ ok: boolean; login_url?: string; error?: string }> {
+  // The sidecar opens the system browser; the GUI just polls status after. `base_url` is
+  // passed so Sign in works from a form the user has typed but not yet saved.
+  const res = await fetch(`${httpBase()}/v1/aigw/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ base_url: baseUrl || "" }),
+  });
+  return res.json();
+}
+
+/** Poll until the browser sign-in lands (or the bound runs out). Mirrors
+ *  waitForRelaySignIn: fast at first, because the user is watching. */
+export function waitForGatewaySignIn(
+  onDone: (s: GatewayStatus | null) => void,
+): () => void {
+  let cancelled = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let polls = 0;
+  const tick = async () => {
+    polls += 1;
+    const s = await getGatewayStatus().catch(() => null);
+    if (cancelled) return;
+    if (s?.signed_in) return onDone(s);
+    if (polls >= 90) return onDone(null); // 40×500ms + 50×2s ≈ 2min
+    timer = setTimeout(tick, polls < 40 ? 500 : 2000);
+  };
+  timer = setTimeout(tick, 500);
+  return () => {
+    cancelled = true;
+    if (timer) clearTimeout(timer);
+  };
+}
+
+export async function gatewayLogout(): Promise<{ ok: boolean }> {
+  const res = await fetch(`${httpBase()}/v1/aigw/logout`, { method: "POST" });
+  return res.json();
+}
+
 export async function connectManaged(
   name: string,
   options?: { access?: "read" | "write" },

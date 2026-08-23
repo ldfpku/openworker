@@ -26,6 +26,7 @@ from .aigateway_provider import (
     AIGatewayProvider,
     PROBE_MODEL,
     access_headers,
+    bearer_headers,
     resolve_settings,
     wire_url,
 )
@@ -204,9 +205,19 @@ def _build_aigw(profile: dict[str, Any], secrets: Any) -> ProviderClient:
         thinking_budget = int(str((profile or {}).get("thinking_budget") or "").strip())
     except ValueError:
         thinking_budget = None
+    # The OAuth session is not a profile field: it lives in the SecretStore and rotates on
+    # its own ~15-minute schedule, so the provider gets a reader rather than a value and
+    # picks up a silent refresh on the very next request. `secrets` is absent in a few
+    # headless assembly paths, where the pasted session (or the env var) is all there is.
+    def read_session() -> str:
+        from ..aigw_auth import access_token as current
+
+        return current(secrets)
+
     return AIGatewayProvider(
         base_url=base_url,
         access_token=access_token,
+        token_provider=read_session if secrets is not None else None,
         thinking_budget=thinking_budget,
     )
 
@@ -585,9 +596,14 @@ DESCRIPTORS: list[ProviderDescriptor] = [
                 "access_token",
                 "Access session",
                 secret=True,
-                help="Sign in with your work email, then paste the session here. From "
-                "a terminal: `cloudflared access login <gateway address>` once, then "
-                "`cloudflared access token -app=<gateway address>`.",
+                # Optional since sign-in landed: the ordinary route is the button above
+                # this form, which leaves nothing to type. Kept required=False so Test
+                # does not refuse a colleague who signed in and has no pasted value.
+                required=False,
+                help="Only needed if you cannot sign in above — for a headless machine "
+                "with no browser. From a terminal: `cloudflared access login <gateway "
+                "address>` once, then `cloudflared access token -app=<gateway address>`. "
+                "Signing in is better: this kind of session lapses daily.",
             ),
         ],
         build=_build_aigw,
@@ -802,9 +818,13 @@ def _verify_aigw(fields: dict[str, Any], timeout: float) -> dict[str, Any]:
     base_url, access_token = resolve_settings(fields or {})
     if not base_url:
         return {"ok": False, "error": "Enter the gateway address."}
-    if not access_token:
-        return {"ok": False, "error": "Sign in to get an Access session."}
-    headers = access_headers(access_token)
+    # Signed in beats pasted, exactly as the provider decides it at call time — otherwise
+    # Test would keep exercising a stale typed session that real calls no longer use.
+    # Injected by manager.verify_provider, which is the one holding the SecretStore.
+    oauth_token = str((fields or {}).get("oauth_token") or "").strip()
+    if not oauth_token and not access_token:
+        return {"ok": False, "error": "Sign in to the gateway first."}
+    headers = bearer_headers(oauth_token) if oauth_token else access_headers(access_token)
     headers["cf-aig-skip-cache"] = "true"
     try:
         resp = httpx.post(

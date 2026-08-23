@@ -127,13 +127,86 @@ def test_the_sdk_user_agent_is_replaced_on_every_wire():
     "kwargs,missing",
     [
         ({"base_url": "", "access_token": "t"}, "gateway address"),
-        ({"base_url": BASE, "access_token": ""}, "Access session"),
+        ({"base_url": BASE, "access_token": ""}, "not signed in"),
     ],
 )
 def test_missing_settings_say_which_one(kwargs, missing):
     p = AIGatewayProvider(**kwargs)
     with pytest.raises(RuntimeError, match=missing):
         p._client_for("x/y")
+
+
+# -- the OAuth session ---------------------------------------------------------------
+# Signing in supersedes the pasted JWT, and the two credentials ride different headers:
+# an OAuth bearer goes where Access's own challenge asks for it (`Authorization: Bearer`),
+# a pasted session stays on `cf-access-token`.
+
+
+def test_an_oauth_session_travels_as_a_bearer_not_as_a_pasted_session():
+    p = AIGatewayProvider(base_url=BASE, token_provider=lambda: "oauth-tok")
+    for model in ("anthropic/claude-haiku-4-5", "openai/gpt-5.6-sol", "x/y"):
+        headers = p._client_for(model)._default_headers
+        assert headers["Authorization"] == "Bearer oauth-tok"
+        assert "cf-access-token" not in headers
+
+
+def test_signing_in_wins_over_a_session_left_from_the_old_flow():
+    p = AIGatewayProvider(
+        base_url=BASE, access_token=SESSION, token_provider=lambda: "oauth-tok"
+    )
+    headers = p._client_for("x/y")._default_headers
+    assert headers["Authorization"] == "Bearer oauth-tok"
+    assert "cf-access-token" not in headers
+
+
+def test_the_pasted_session_still_works_when_nobody_has_signed_in():
+    # The old route has to keep working: a colleague mid-migration, or a headless run
+    # where no browser can be opened, still has only the pasted JWT.
+    p = AIGatewayProvider(base_url=BASE, access_token=SESSION, token_provider=lambda: "")
+    headers = p._client_for("x/y")._default_headers
+    assert headers["cf-access-token"] == SESSION
+    assert "Authorization" not in headers
+
+
+def test_a_broken_sign_in_falls_back_instead_of_taking_the_provider_down():
+    def boom() -> str:
+        raise RuntimeError("secret store unreadable")
+
+    p = AIGatewayProvider(base_url=BASE, access_token=SESSION, token_provider=boom)
+    assert p._client_for("x/y")._default_headers["cf-access-token"] == SESSION
+
+
+def test_a_refreshed_token_reaches_the_next_request():
+    # The credential is baked into each sub-client's headers at build time, so a silent
+    # refresh is only real if the cached sub-clients are dropped. Without this the
+    # provider would keep presenting the expired bearer until the app restarted.
+    tokens = iter(["first", "first", "second"])
+    p = AIGatewayProvider(base_url=BASE, token_provider=lambda: next(tokens))
+    first = p._client_for("x/y")
+    assert first._default_headers["Authorization"] == "Bearer first"
+    assert p._client_for("x/y") is first  # unchanged token reuses the sub-client
+    second = p._client_for("x/y")
+    assert second is not first
+    assert second._default_headers["Authorization"] == "Bearer second"
+
+
+def test_rotation_never_evicts_an_injected_client():
+    spy = object()
+    tokens = iter(["a", "b"])
+    p = AIGatewayProvider(
+        base_url=BASE, token_provider=lambda: next(tokens), clients={"chat": spy}
+    )
+    assert p._client_for("x/y") is spy
+    assert p._client_for("x/y") is spy
+
+
+def test_the_anthropic_wire_leaves_the_authorization_slot_to_access():
+    # The Anthropic SDK's `auth_token` would claim `Authorization: Bearer <placeholder>`,
+    # colliding with the Access bearer; under OAuth the placeholder moves to `x-api-key`.
+    signed_in = AIGatewayProvider(base_url=BASE, token_provider=lambda: "oauth-tok")
+    assert signed_in._client_for("anthropic/claude-haiku-4-5")._auth_token is None
+    pasted = AIGatewayProvider(base_url=BASE, access_token=SESSION)
+    assert pasted._client_for("anthropic/claude-haiku-4-5")._auth_token is not None
 
 
 @pytest.mark.parametrize(
@@ -404,19 +477,21 @@ def test_descriptor_is_registered_with_a_curated_default():
     assert f"aigw:{d.recommended_model}" in MATRIX
 
 
-def test_both_settings_are_required_before_the_provider_counts_as_set_up():
+def test_the_address_is_the_only_thing_anyone_has_to_type():
+    # Since sign-in landed, the pasted session is a fallback for machines that cannot open
+    # a browser — so the address alone is a complete setup, and a session without an
+    # address still has nowhere to go.
     d = get_descriptor("aigw")
+    assert descriptor_configured(d, {"base_url": BASE}) is True
     assert descriptor_configured(d, {"base_url": BASE, "access_token": "t"}) is True
-    # A session with no address has nowhere to go, and vice versa.
     assert descriptor_configured(d, {"access_token": "t"}) is False
-    assert descriptor_configured(d, {"base_url": BASE}) is False
 
 
 @pytest.mark.parametrize(
     "fields,expected",
     [
         ({}, "gateway address"),
-        ({"base_url": BASE}, "Access session"),
+        ({"base_url": BASE}, "Sign in"),
     ],
 )
 def test_test_button_reports_missing_fields_without_a_round_trip(
@@ -430,3 +505,27 @@ def test_test_button_reports_missing_fields_without_a_round_trip(
     )
     out = verify_provider_key("aigw", fields=fields)
     assert out["ok"] is False and expected in out["error"]
+
+
+def test_test_exercises_the_credential_a_real_call_would_use(monkeypatch):
+    # Test has to prefer the signed-in session exactly as the provider does. Probing with
+    # a leftover pasted value would report success against a credential nothing else uses.
+    seen: dict = {}
+
+    class _Resp:
+        status_code = 200
+        text = "{}"
+
+    def fake_post(url, headers=None, **kwargs):
+        seen.update(headers or {})
+        return _Resp()
+
+    monkeypatch.setattr("httpx.post", fake_post)
+    out = verify_provider_key(
+        "aigw",
+        fields={"base_url": BASE, "access_token": "stale", "oauth_token": "fresh"},
+    )
+    assert out["ok"] is True
+    assert seen["Authorization"] == "Bearer fresh"
+    assert "cf-access-token" not in seen
+    assert seen["cf-aig-skip-cache"] == "true"

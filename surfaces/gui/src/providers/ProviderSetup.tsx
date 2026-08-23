@@ -10,12 +10,17 @@ import {
 import { useTranslation } from "react-i18next";
 import i18n from "../i18n";
 import { openExternal } from "../tauri";
+import { GatewaySignIn } from "./GatewaySignIn";
 import { PROVIDER_LOGOS, providerRank } from "./logos";
 import { RelaySignIn } from "./RelaySignIn";
 
 /** The one provider whose credential comes from signing in to the company relay instead of
  *  from an API key field (see RelaySignIn). */
 const RELAY_PROVIDER = "gemini";
+
+/** The AI Gateway signs in too, but its login IS the credential rather than one half of
+ *  it — the field below the card is a fallback for browserless machines (GatewaySignIn). */
+const GATEWAY_PROVIDER = "aigw";
 
 // The provider gallery ⇄ key form, shared by Onboarding step 1 (§39) and
 // Settings ▸ Models (UX-021) so the two can never drift apart visually. The hook
@@ -383,6 +388,21 @@ export function ProviderForm({
       </div>
     ) : null;
 
+  // The gateway's card sits in the same slot, but for the opposite reason: here the login
+  // is the ONLY credential most people need, so it leads and the fields below it are the
+  // exception path. It reads the address straight out of the live form so Sign in works
+  // the moment it is typed, without waiting for a save.
+  const gatewayCard =
+    sel === GATEWAY_PROVIDER ? (
+      <div className="mt-3 mb-1">
+        <GatewaySignIn
+          tp={tp}
+          baseUrl={ps.fields["base_url"] || ""}
+          onChanged={ps.refreshProviders}
+        />
+      </div>
+    ) : null;
+
   const fieldRow = (f: ProviderFieldT, testable: boolean) => (
     <div key={f.key}>
       <label className={label}>{t(f.label)}</label>
@@ -434,6 +454,7 @@ export function ProviderForm({
     <div>
       {header}
       {relayCard}
+      {gatewayCard}
 
       {fieldsAll
         .filter(

@@ -10,7 +10,10 @@ module:
     request carrying only `cf-access-token` returns 200 with real billed cost. Colleagues
     therefore need no Cloudflare credential of their own, which is the whole point: an
     `AI Gateway Run` token cannot be scoped to one gateway, so per-person tokens would
-    have bought an audit trail and no isolation at all.
+    have bought an audit trail and no isolation at all. There are two ways to present
+    that session, and this module treats them as equals: an OAuth bearer obtained by
+    signing in (`aigw_auth`, renews itself, nothing to paste) or a `cloudflared`-printed
+    JWT typed into Settings (lapses daily). The former wins when both are present.
   * **Spend is attributed per person for free.** Access stamps the authenticated user
     onto every request as `cf.user_id`, which drives the gateway's User Insights page and
     per-user spend limits. Nothing has to be passed from the client.
@@ -54,11 +57,14 @@ previous answer and make a broken probe look healthy.
 
 from __future__ import annotations
 
+import logging
 import os
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from .base import ModelCapabilities, ProviderClient
 from .capabilities import capabilities_for
+
+logger = logging.getLogger(__name__)
 
 ENV_BASE_URL = "CLOUDFLARE_AIGW_BASE_URL"
 ENV_ACCESS_TOKEN = "CLOUDFLARE_AIGW_ACCESS_TOKEN"
@@ -128,6 +134,22 @@ def access_headers(access_token: str) -> dict[str, str]:
     return headers
 
 
+def bearer_headers(token: str) -> dict[str, str]:
+    """The same, for an OAuth session from `aigw_auth`.
+
+    Managed OAuth asks for its token in the slot its own challenge names —
+    `WWW-Authenticate: Bearer realm="OAuth"` — which is a different header from the pasted
+    JWT's `cf-access-token`. Access accepts either (both verified against the live gateway
+    on 2026-08-23, on all three wires and with no vendor credential present at all), so
+    each credential simply travels where its own protocol says it should.
+    """
+    headers = {"User-Agent": _user_agent()}
+    value = (token or "").strip()
+    if value:
+        headers["Authorization"] = f"Bearer {value}"
+    return headers
+
+
 def resolve_settings(profile: dict[str, Any]) -> tuple[str, str]:
     """(base_url, access_token) from the stored profile, else the environment.
 
@@ -178,6 +200,7 @@ class AIGatewayProvider(ProviderClient):
         *,
         base_url: str = "",
         access_token: str = "",
+        token_provider: Optional[Callable[[], str]] = None,
         thinking_budget: Optional[int] = None,
         clients: Optional[dict[str, ProviderClient]] = None,
     ):
@@ -186,21 +209,49 @@ class AIGatewayProvider(ProviderClient):
         # this provider's own message rather than OpenAI's. Tests inject `clients`.
         self._base_url = normalise_base(base_url)
         self._access_token = (access_token or "").strip()
+        # Asked once per request for the current OAuth bearer, so a silent refresh takes
+        # effect immediately. Returns "" when nobody has signed in, which is why the
+        # pasted session below stays a live fallback rather than being replaced.
+        self._token_provider = token_provider
         self._thinking_budget = thinking_budget
         self._clients: dict[str, ProviderClient] = dict(clients or {})
+        # Injected sub-clients belong to the caller (tests): never evict them on rotation.
+        self._injected = set(self._clients)
+        self._built_with: Optional[str] = None
 
-    def _build(self, wire: str) -> ProviderClient:
+    def _credential(self) -> tuple[str, str]:
+        """`(kind, value)` for this moment — `bearer` for an OAuth session, `session` for
+        a pasted JWT, `("", "")` when neither is set up.
+
+        OAuth wins when present because it is the one that renews itself; a pasted session
+        left over from the old flow keeps working until it lapses.
+        """
+        if self._token_provider is not None:
+            try:
+                token = (self._token_provider() or "").strip()
+            except Exception:  # noqa: BLE001 - a broken sign-in must not mask the paste
+                logger.debug("aigw: token provider failed", exc_info=True)
+                token = ""
+            if token:
+                return ("bearer", token)
+        if self._access_token:
+            return ("session", self._access_token)
+        return ("", "")
+
+    def _build(self, wire: str, kind: str, credential: str) -> ProviderClient:
         if not self._base_url:
             raise RuntimeError(
                 "Cloudflare AI Gateway is missing its gateway address — add it in "
                 "Settings ▸ Models."
             )
-        if not self._access_token:
+        if not credential:
             raise RuntimeError(
-                "Cloudflare AI Gateway has no Access session — sign in again in "
-                "Settings ▸ Models."
+                "Cloudflare AI Gateway is not signed in — open Settings ▸ Models and "
+                "press Sign in."
             )
-        headers = access_headers(self._access_token)
+        headers = bearer_headers(credential) if kind == "bearer" else access_headers(
+            credential
+        )
         base = wire_url(self._base_url, wire)
         if wire == "messages":
             from .anthropic_provider import AnthropicProvider, DEFAULT_THINKING_BUDGET
@@ -210,9 +261,19 @@ class AIGatewayProvider(ProviderClient):
                 if self._thinking_budget is None
                 else self._thinking_budget
             )
+            # `auth_token` makes the SDK claim `Authorization: Bearer` for its own
+            # placeholder — the very slot an OAuth session needs. Handing it `api_key`
+            # instead moves the placeholder to `x-api-key` (equally ignored under Unified
+            # Billing) and leaves `Authorization` to Access, so nothing depends on which
+            # of the two headers the SDK happens to merge last.
+            upstream = (
+                {"api_key": _UNUSED_UPSTREAM_KEY}
+                if kind == "bearer"
+                else {"auth_token": _UNUSED_UPSTREAM_KEY}
+            )
             return AnthropicProvider(
                 base_url=base,
-                auth_token=_UNUSED_UPSTREAM_KEY,
+                **upstream,
                 default_headers=headers,
                 thinking_budget=budget,
                 # Off here: the beta names its fallback by a bare Anthropic model id and
@@ -240,9 +301,23 @@ class AIGatewayProvider(ProviderClient):
 
     def _client_for(self, model: str) -> ProviderClient:
         wire = wire_for(model)
+        # Resolved once per call and threaded into `_build`: asking twice would double
+        # every silent-refresh check on the request path.
+        kind, credential = self._credential()
+        if self._token_provider is not None:
+            # The credential is baked into each sub-client's default headers at build
+            # time, so a silent refresh has to invalidate them or every later call would
+            # keep presenting the expired bearer. Rebuilding is cheap — these are lazy
+            # wrappers — and only happens on the ~15-minute refresh boundary.
+            stamp = f"{kind}:{credential}"
+            if stamp != self._built_with:
+                self._clients = {
+                    w: c for w, c in self._clients.items() if w in self._injected
+                }
+                self._built_with = stamp
         client = self._clients.get(wire)
         if client is None:
-            client = self._build(wire)
+            client = self._build(wire, kind, credential)
             self._clients[wire] = client
         return client
 
