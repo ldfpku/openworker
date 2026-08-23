@@ -291,6 +291,7 @@ class OpenAIResponsesProvider(ProviderClient):
         api_key: Optional[str] = None,
         secrets: Any = None,
         base_url: Optional[str] = None,
+        default_headers: Optional[dict[str, str]] = None,
         reasoning_summary: bool = True,
     ):
         # Same deferred-client contract as OpenAIProvider: built lazily so an engine can be
@@ -301,6 +302,9 @@ class OpenAIResponsesProvider(ProviderClient):
         self._api_key = api_key
         self._secrets = secrets
         self._base_url = (base_url or "").strip().rstrip("/") or None
+        # Extra headers for endpoints that want more than a bearer token (Cloudflare AI
+        # Gateway's `cf-aig-gateway-id`); see OpenAIProvider for the same knob.
+        self._default_headers = dict(default_headers or {}) or None
         if not isinstance(reasoning_summary, bool):
             raise TypeError("reasoning_summary must be a bool")
         self._reasoning_summary = reasoning_summary
@@ -320,6 +324,8 @@ class OpenAIResponsesProvider(ProviderClient):
             kwargs = {"api_key": key}
             if self._base_url:
                 kwargs["base_url"] = self._base_url
+            if self._default_headers:
+                kwargs["default_headers"] = self._default_headers
             self._client = OpenAI(**kwargs)
         return self._client
 

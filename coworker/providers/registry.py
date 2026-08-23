@@ -12,7 +12,8 @@ Chat Completions path), `anthropic` (native Messages API via
 `AnthropicProvider`), `gemini` (native Google GenAI API via `GeminiProvider`), `bedrock`
 (models in the user's own AWS account — Claude natively, everything else via Converse),
 `vertex` (the user's own GCP project — Gemini and Claude natively, open-weight via the
-MaaS endpoint), and `ollama` (local, OpenAI-compatible `/v1`).
+MaaS endpoint), `aigw` (Cloudflare AI Gateway — many vendors on one Cloudflare token,
+`aigateway_provider.py`), and `ollama` (local, OpenAI-compatible `/v1`).
 """
 
 from __future__ import annotations
@@ -21,6 +22,12 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from .aigateway_provider import (
+    AIGatewayProvider,
+    PROBE_MODEL,
+    openai_base_url,
+    resolve_settings,
+)
 from .anthropic_provider import AnthropicProvider
 from .base import ProviderClient
 from .bedrock_provider import BedrockProvider
@@ -181,6 +188,26 @@ def _build_vertex(profile: dict[str, Any], secrets: Any) -> ProviderClient:
         auth_method=get("auth_method"),
         service_account_json=get("service_account_json"),
         api_key=get("vertex_api_key"),
+    )
+
+
+def _build_aigw(profile: dict[str, Any], secrets: Any) -> ProviderClient:
+    # No SecretStore fallback and no shared key: the Cloudflare token is meaningless to
+    # every other provider, and every other provider's key is meaningless here. Missing
+    # values are tolerated at build time (same deferred contract as the rest) — the
+    # provider names what is missing on the first real call.
+    account_id, api_token, gateway_id = resolve_settings(profile or {})
+    # thinking_budget: same hidden override as the direct Anthropic provider, applied to
+    # the gateway's Claude rows. Absent/invalid → the Anthropic default.
+    try:
+        thinking_budget = int(str((profile or {}).get("thinking_budget") or "").strip())
+    except ValueError:
+        thinking_budget = None
+    return AIGatewayProvider(
+        account_id=account_id,
+        api_token=api_token,
+        gateway_id=gateway_id,
+        thinking_budget=thinking_budget,
     )
 
 
@@ -541,6 +568,41 @@ DESCRIPTORS: list[ProviderDescriptor] = [
         blurb="Runs models inside your own Google Cloud project. Gemini and Claude use "
         "their native APIs; open-weight models go through the Vertex MaaS endpoint.",
     ),
+    ProviderDescriptor(
+        name="aigw",
+        title="Cloudflare AI Gateway",
+        needs_key=True,
+        fields=[
+            ProviderField(
+                "account_id",
+                "Cloudflare account ID",
+                secret=False,
+                help="32 hex characters. On any zone's Overview page in the dashboard, "
+                "or run `wrangler whoami`.",
+            ),
+            ProviderField(
+                "api_token",
+                "Cloudflare API token",
+                secret=True,
+                help="My Profile ▸ API Tokens ▸ Create Token. It needs the Workers AI "
+                "Run permission on this account — nothing else.",
+            ),
+            ProviderField(
+                "gateway_id",
+                "Gateway name",
+                secret=False,
+                required=False,
+                default="openworker-agw",
+                placeholder="openworker-agw",
+                help="Which gateway logs, caches and rate-limits these calls. Leave "
+                "blank to fall back to the account's default gateway.",
+            ),
+        ],
+        build=_build_aigw,
+        recommended_model="anthropic/claude-sonnet-4.6",
+        blurb="One Cloudflare token instead of one key per vendor — OpenAI, Claude, "
+        "Grok, DeepSeek, Qwen and more, billed from your AI Gateway credits.",
+    ),
     # Ark has two intentionally separate provider identities. BytePlus pay-as-you-go and
     # Volcengine Agent Plan use different regions, endpoints, credentials, and model catalogs;
     # combining them would let one provider profile route a model to the wrong service.
@@ -724,6 +786,68 @@ def detect_provider(api_key: str) -> Optional[str]:
     if key.startswith(("sk-", "sk_")):
         return "openai"
     return None
+
+
+def _verify_aigw(fields: dict[str, Any], timeout: float) -> dict[str, Any]:
+    """One-token generation against the cheapest Workers AI model.
+
+    There is no read-only probe that proves what actually matters here. Listing gateways
+    needs an AI Gateway Read permission the app never uses, so a token scoped correctly
+    for inference would fail the test and a token that passes it might still not infer.
+    A real (sub-cent) completion exercises the whole path — token, account, gateway
+    header, billing — which is the same bet the Ark descriptor makes.
+    """
+    import httpx
+
+    from .aigateway_provider import gateway_headers
+
+    account_id, api_token, gateway_id = resolve_settings(fields or {})
+    if not account_id:
+        return {"ok": False, "error": "Enter your Cloudflare account ID."}
+    if not api_token:
+        return {"ok": False, "error": "Enter a Cloudflare API token."}
+    headers = {"Authorization": f"Bearer {api_token}"}
+    headers.update(gateway_headers(gateway_id))
+    try:
+        resp = httpx.post(
+            openai_base_url(account_id) + "/chat/completions",
+            headers=headers,
+            json={
+                "model": PROBE_MODEL,
+                "messages": [{"role": "user", "content": "Reply with OK."}],
+                "max_tokens": 1,
+            },
+            timeout=timeout,
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": f"Couldn't reach Cloudflare ({exc.__class__.__name__}).",
+        }
+    if resp.status_code < 300:
+        return {"ok": True}
+    body = (resp.text or "").lower()
+    if resp.status_code in (401, 403):
+        return {
+            "ok": False,
+            "error": "Cloudflare rejected the token — check it, and that it has the "
+            "Workers AI Run permission on this account.",
+        }
+    if resp.status_code == 404 or "could not route" in body:
+        return {"ok": False, "error": "No such account ID on Cloudflare."}
+    if "gateway" in body and "not found" in body:
+        return {
+            "ok": False,
+            "error": f"The token works, but this account has no gateway named "
+            f"'{gateway_id}'.",
+        }
+    if resp.status_code == 402 or "credit" in body:
+        return {
+            "ok": False,
+            "error": "The token works, but the account has no AI Gateway credits — "
+            "top up in AI ▸ AI Gateway ▸ Billing.",
+        }
+    return {"ok": False, "error": f"Cloudflare returned HTTP {resp.status_code}."}
 
 
 def _verify_bedrock(fields: dict[str, Any], timeout: float) -> dict[str, Any]:
@@ -925,6 +1049,8 @@ def verify_provider_key(
         return _verify_bedrock(fields or {}, timeout)
     if name == "vertex":
         return _verify_vertex(fields or {}, timeout)
+    if name == "aigw":
+        return _verify_aigw(fields or {}, timeout)
     try:
         if name == "anthropic":
             resp = httpx.get(

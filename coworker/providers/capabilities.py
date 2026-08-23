@@ -1,7 +1,8 @@
 """Per-model capability probe.
 
 A heuristic table for now (refined as we probe real providers/endpoints). Accepts
-either bare model names (`gpt-5.5`) or provider-qualified ones (`openai:gpt-5.5`).
+either bare model names (`gpt-5.5`) or provider-qualified ones (`openai:gpt-5.5`,
+`aigw:anthropic/claude-sonnet-4.6`).
 """
 
 from __future__ import annotations
@@ -28,6 +29,20 @@ def capabilities_for(model: str) -> ModelCapabilities:
         return ModelCapabilities(
             tools=True, vision=False, parallel_tool_calls=False, streaming=True
         )
+
+    # Cloudflare AI Gateway ids are `<author>/<model>`, so the name heuristics below —
+    # which all key on a vendor's model name — would otherwise only ever see the author.
+    # Judge the model half instead. Claude and GPT do take images through the gateway
+    # (probed on the wire 2026-08-23); no inline PDF part was verified anywhere on it, so
+    # `pdf` stays off and pdf_support.py rasterizes pages for the models that can see.
+    if provider == "aigw":
+        author, _, rest = name.partition("/")
+        if author == "anthropic" or rest.startswith(("gpt-5", "gpt-4")):
+            return ModelCapabilities(
+                tools=True, vision=True, parallel_tool_calls=True, streaming=True
+            )
+        # Workers AI ids carry a publisher segment too (`@cf/zai-org/glm-5.2`).
+        name = rest.rsplit("/", 1)[-1]
 
     # Cloud-account providers (custom-added ids; curated ones answered from the matrix).
     # The family segment decides: Claude keeps its native capabilities; everything else

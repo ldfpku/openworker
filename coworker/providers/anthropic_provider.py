@@ -108,8 +108,20 @@ _BUDGET_THINKING_PREFIXES = (
 )
 
 
+def _family(model: str) -> str:
+    """A model id reduced to Anthropic's own spelling of the family name.
+
+    The same model reaches this provider two ways: `claude-haiku-4-5` straight from
+    Anthropic, and `anthropic/claude-haiku-4.5` when routed through Cloudflare AI Gateway
+    (author prefix, dots instead of dashes). Every family check below picks a *different
+    request shape* — budget vs adaptive thinking, refusal fallback on or off — so reading
+    the gateway spelling as "unknown family" is a silent 400, not a missing nicety.
+    """
+    return model.rsplit("/", 1)[-1].replace(".", "-")
+
+
 def _uses_budget_thinking(model: str) -> bool:
-    return model.startswith(_BUDGET_THINKING_PREFIXES)
+    return _family(model).startswith(_BUDGET_THINKING_PREFIXES)
 
 
 # Fable/Mythos 5 run safety classifiers that can decline benign-adjacent requests
@@ -121,7 +133,7 @@ _FALLBACK_MODEL = "claude-opus-4-8"
 
 
 def _needs_refusal_fallback(model: str) -> bool:
-    return model.startswith(("claude-fable", "claude-mythos"))
+    return _family(model).startswith(("claude-fable", "claude-mythos"))
 
 
 def _raise_on_refusal(stop_reason: Any, raw: Any) -> None:
@@ -420,6 +432,10 @@ class AnthropicProvider(ProviderClient):
         api_key: Optional[str] = None,
         secrets: Any = None,
         thinking_budget: Optional[int] = None,
+        base_url: Optional[str] = None,
+        auth_token: Optional[str] = None,
+        default_headers: Optional[dict[str, str]] = None,
+        refusal_fallback: bool = True,
     ):
         # Mirrors OpenAIProvider: the SDK client is built lazily so engines can be assembled
         # before any key exists; the key resolves at call time (explicit → env → SecretStore).
@@ -430,19 +446,42 @@ class AnthropicProvider(ProviderClient):
         self._secrets = secrets
         self.default_model = default_model
         self.thinking_budget = thinking_budget or 0
+        # Gateway knobs. `base_url` + `auth_token` point the same SDK at a proxy that
+        # authenticates with a bearer token instead of an Anthropic key (Cloudflare AI
+        # Gateway); `default_headers` carries that proxy's routing header. `refusal_fallback`
+        # is off there because the beta endpoint's `fallbacks` names a model by Anthropic's
+        # own id, which a proxy with its own namespace would not recognize.
+        self._base_url = (base_url or "").strip().rstrip("/") or None
+        self._auth_token = (auth_token or "").strip() or None
+        self._default_headers = dict(default_headers or {}) or None
+        self._refusal_fallback = bool(refusal_fallback)
+
+    def _use_refusal_fallback(self, model: str) -> bool:
+        return self._refusal_fallback and _needs_refusal_fallback(model)
 
     def _ensure_client(self) -> Any:
         if self._client is None:
             # Lazy import so the SDK is only required when actually talking to Anthropic.
             from anthropic import Anthropic
 
-            key = self._api_key or resolve_api_key(self._secrets)
-            if not key:
-                raise RuntimeError(
-                    "No Anthropic API key configured. Set ANTHROPIC_API_KEY in the environment, "
-                    "or add your key in Manage → Configure Models."
-                )
-            self._client = Anthropic(api_key=key)
+            kwargs: dict[str, Any] = {}
+            if self._base_url:
+                kwargs["base_url"] = self._base_url
+            if self._default_headers:
+                kwargs["default_headers"] = self._default_headers
+            if self._auth_token:
+                # A proxy that authenticates with `Authorization: Bearer` rather than
+                # `x-api-key`; there is no Anthropic key in this configuration at all.
+                kwargs["auth_token"] = self._auth_token
+            else:
+                key = self._api_key or resolve_api_key(self._secrets)
+                if not key:
+                    raise RuntimeError(
+                        "No Anthropic API key configured. Set ANTHROPIC_API_KEY in the "
+                        "environment, or add your key in Manage → Configure Models."
+                    )
+                kwargs["api_key"] = key
+            self._client = Anthropic(**kwargs)
         return self._client
 
     def _request_kwargs(
@@ -502,7 +541,7 @@ class AnthropicProvider(ProviderClient):
         client = self._ensure_client()
         # Non-streaming only: opts out of the SDK's 10-minute refusal (see _nonstreaming_timeout).
         kwargs.setdefault("timeout", _nonstreaming_timeout(kwargs["max_tokens"]))
-        if _needs_refusal_fallback(model):
+        if self._use_refusal_fallback(model):
             response = client.beta.messages.create(
                 **kwargs,
                 betas=[_FALLBACK_BETA],
@@ -569,7 +608,7 @@ class AnthropicProvider(ProviderClient):
         )
         kwargs["stream"] = True
         client = self._ensure_client()
-        if _needs_refusal_fallback(model):
+        if self._use_refusal_fallback(model):
             events = client.beta.messages.create(
                 **kwargs,
                 betas=[_FALLBACK_BETA],

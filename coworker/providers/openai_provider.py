@@ -145,6 +145,7 @@ class OpenAIProvider(ProviderClient):
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         secrets: Any = None,
+        default_headers: Optional[dict[str, str]] = None,
     ):
         # The SDK client is built lazily on first use, NOT at construction. This lets an engine
         # be assembled before any key exists — the desktop app lets you enter the key in Settings
@@ -155,10 +156,13 @@ class OpenAIProvider(ProviderClient):
         # `base_url` points the same OpenAI SDK at any OpenAI-compatible endpoint — used by the
         # provider router for Ollama (`http://localhost:11434/v1`, with a placeholder key) and,
         # later, other OpenAI-shaped backends. When None, behavior is identical to stock OpenAI.
+        # `default_headers` rides along for endpoints that need more than a bearer token —
+        # Cloudflare AI Gateway wants `cf-aig-gateway-id` on every request to pick the gateway.
         self._client = client
         self._api_key = api_key
         self._base_url = base_url
         self._secrets = secrets
+        self._default_headers = dict(default_headers or {}) or None
         self.default_model = default_model
 
     def _ensure_client(self) -> Any:
@@ -175,6 +179,8 @@ class OpenAIProvider(ProviderClient):
             kwargs: dict[str, Any] = {"api_key": key}
             if self._base_url:
                 kwargs["base_url"] = self._base_url
+            if self._default_headers:
+                kwargs["default_headers"] = self._default_headers
             self._client = OpenAI(**kwargs)
         return self._client
 

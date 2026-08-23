@@ -510,8 +510,16 @@ def test_matrix_labels_and_custom_model_fallback():
     assert labels["together:zai-org/GLM-5.2"] == "GLM-5.2 · via Together"
     assert labels["zai:glm-5.2"] == "GLM-5.2 · Z AI"
     # Deliberately small: agent-capable current models only (owner call, 2026-07-04).
-    assert len(MATRIX) < 60
+    # The per-provider bound is the one that matters — the GUI's pickers filter by
+    # provider, so that is the list a human actually reads. The total is a sprawl alarm.
+    from collections import Counter
+
+    assert len(MATRIX) < 90
     assert all(e.caps.tools for e in MATRIX.values())
+    per_provider = Counter(
+        mid.split(":", 1)[0] if ":" in mid else "openai" for mid in MATRIX
+    )
+    assert max(per_provider.values()) <= 24, per_provider
     # A custom (unlisted) reseller model falls back to the conservative default — usable,
     # but at the user's own risk (no parallel tool calls assumed).
     caps = capabilities_for("together:some-org/Brand-New-Model")

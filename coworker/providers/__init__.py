@@ -1,3 +1,4 @@
+from .aigateway_provider import AIGatewayProvider
 from .anthropic_provider import AnthropicProvider
 from .bedrock_provider import BedrockProvider
 from .base import (
@@ -31,6 +32,7 @@ __all__ = [
     "ProviderClient",
     "StreamChunk",
     "ToolCall",
+    "AIGatewayProvider",
     "AnthropicProvider",
     "BedrockProvider",
     "GeminiProvider",

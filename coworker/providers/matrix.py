@@ -19,6 +19,11 @@ the id refresh.
 Resellers: Together + Fireworks + OpenRouter. TODO: add Groq entries here AND its
 descriptor in ``registry.py`` once the current provider surface is tested — deliberately
 deferred to bound how much needs verifying at once.
+
+``aigw:`` rows reach the same labs through Cloudflare AI Gateway on one Cloudflare token
+instead of one key per vendor (``aigateway_provider.py``). Their ids are Cloudflare's own
+``author/model`` strings, kept verbatim rather than translated from the vendor spelling —
+the author segment is what selects the request wire.
 """
 
 from __future__ import annotations
@@ -36,6 +41,13 @@ _AGENTIC = ModelCapabilities(
 # no inline file part — checked 2026-07-17), so those fall back via pdf_support.py.
 _AGENTIC_VISION = ModelCapabilities(
     tools=True, vision=True, pdf=True, parallel_tool_calls=True, streaming=True
+)
+# Sees images but has no verified inline-PDF part: the compat vendors that ship a vision
+# model, and everything routed through Cloudflare AI Gateway (image input confirmed on the
+# wire 2026-08-23; a PDF part was never probed there, so it is not claimed). PDFs still
+# work — pdf_support.py rasterizes pages and sends them as images.
+_AGENTIC_IMAGE = ModelCapabilities(
+    tools=True, vision=True, parallel_tool_calls=True, streaming=True
 )
 
 
@@ -136,12 +148,7 @@ MATRIX: dict[str, ModelEntry] = {
     # Muse Spark (Meta Model API, public preview 2026-07-09): multimodal + tools via
     # their OpenAI-compat surface. Vision yes; PDFs unverified over compat — falls
     # back via pdf_support.py like the other compat vendors.
-    "meta:muse-spark-1.1": ModelEntry(
-        "Muse Spark 1.1 · Meta",
-        ModelCapabilities(
-            tools=True, vision=True, parallel_tool_calls=True, streaming=True
-        ),
-    ),
+    "meta:muse-spark-1.1": ModelEntry("Muse Spark 1.1 · Meta", _AGENTIC_IMAGE),
     "zai:glm-5.2": ModelEntry("GLM-5.2 · Z AI", _AGENTIC, 128_000),
     "deepseek:deepseek-v4-flash": ModelEntry(
         "DeepSeek V4 Flash · DeepSeek", _AGENTIC, 128_000
@@ -162,11 +169,7 @@ MATRIX: dict[str, ModelEntry] = {
     # Kimi K3 on Together (landed late July 2026): 1M window, native vision; PDFs
     # unverified over the compat surface (falls back via pdf_support.py, like Muse Spark).
     "together:moonshotai/Kimi-K3": ModelEntry(
-        "Kimi K3 · via Together",
-        ModelCapabilities(
-            tools=True, vision=True, parallel_tool_calls=True, streaming=True
-        ),
-        1_000_000,
+        "Kimi K3 · via Together", _AGENTIC_IMAGE, 1_000_000
     ),
     "together:moonshotai/Kimi-K2.7-Code": ModelEntry(
         "Kimi K2.7 Code · via Together", _AGENTIC, 256_000
@@ -251,6 +254,92 @@ MATRIX: dict[str, ModelEntry] = {
     "vertex:openweight/qwen/qwen3-coder-480b-a35b-instruct-maas": ModelEntry(
         "Qwen3 Coder · Vertex AI", _AGENTIC, 256_000
     ),
+    # -- Cloudflare AI Gateway ----------------------------------------------------
+    # Same labs as above, reached on ONE Cloudflare token and billed against the
+    # account's prepaid AI Gateway credits — no per-vendor key to hand out, and the
+    # gateway's dashboard shows who spent what. Ids are Cloudflare's `author/model`
+    # strings verbatim (note the dots where Anthropic itself writes dashes); the author
+    # segment picks the request wire, see `aigateway_provider.wire_for`.
+    #
+    # Every row below was called live on 2026-08-23 with a tool definition attached and
+    # answered 200. Context windows come from the vendor row they mirror, or from the
+    # Workers AI catalog's own `context_window` property for the `@cf/` rows.
+    #
+    # Google is deliberately absent even though the gateway carries it: this fork already
+    # reaches Gemini through its own relay, and two routes to one vendor in one picker is
+    # a support ticket waiting to happen.
+    "aigw:openai/gpt-5.6-terra": ModelEntry(
+        "GPT-5.6 Terra · via Cloudflare", _AGENTIC_IMAGE, 400_000
+    ),
+    "aigw:openai/gpt-5.6-luna": ModelEntry(
+        "GPT-5.6 Luna · via Cloudflare", _AGENTIC_IMAGE, 400_000
+    ),
+    "aigw:openai/gpt-5.5": ModelEntry(
+        "GPT-5.5 · via Cloudflare", _AGENTIC_IMAGE, 400_000
+    ),
+    "aigw:anthropic/claude-sonnet-4.6": ModelEntry(
+        "Claude Sonnet 4.6 · via Cloudflare", _AGENTIC_IMAGE, 200_000
+    ),
+    "aigw:anthropic/claude-haiku-4.5": ModelEntry(
+        "Claude Haiku 4.5 · via Cloudflare", _AGENTIC_IMAGE, 200_000
+    ),
+    "aigw:xai/grok-4.3": ModelEntry("Grok 4.3 · via Cloudflare", _AGENTIC, 256_000),
+    "aigw:deepseek/deepseek-v4-pro": ModelEntry(
+        "DeepSeek V4 Pro · via Cloudflare", _AGENTIC, 128_000
+    ),
+    "aigw:deepseek/deepseek-v4-flash": ModelEntry(
+        "DeepSeek V4 Flash · via Cloudflare", _AGENTIC, 128_000
+    ),
+    "aigw:moonshotai/kimi-k2.6": ModelEntry(
+        "Kimi K2.6 · via Cloudflare", _AGENTIC, 256_000
+    ),
+    # The one row whose 200 was never actually seen: every probe hit the gateway's
+    # wholesale rate limit first. That still proves the id resolves and is billable (an
+    # unknown id answers "Model not found" long before billing), so it stays — but it is
+    # the first row to re-check on a refresh.
+    "aigw:moonshotai/kimi-k3": ModelEntry(
+        "Kimi K3 · via Cloudflare", _AGENTIC, 1_000_000
+    ),
+    "aigw:alibaba/qwen3-max": ModelEntry(
+        "Qwen3 Max · via Cloudflare", _AGENTIC, 256_000
+    ),
+    # MiniMax M2.5 (the direct-vendor row above) is not in Cloudflare's catalog; M2.7 and
+    # M3 are its successors there. Neither vendor page was re-read for a window, so the
+    # context meter hides rather than guessing.
+    "aigw:minimax/m2.7": ModelEntry("MiniMax M2.7 · via Cloudflare", _AGENTIC),
+    "aigw:minimax/m3": ModelEntry("MiniMax M3 · via Cloudflare", _AGENTIC),
+    # Workers AI models — same gateway, same token, but Cloudflare's own hosting rather
+    # than a passthrough to the lab. Kept because they cover matrix entries the
+    # third-party side of the gateway does not carry.
+    "aigw:@cf/zai-org/glm-5.2": ModelEntry(
+        "GLM-5.2 · via Cloudflare", _AGENTIC, 262_144
+    ),
+    "aigw:@cf/moonshotai/kimi-k2.7-code": ModelEntry(
+        "Kimi K2.7 Code · via Cloudflare", _AGENTIC, 262_144
+    ),
+    "aigw:@cf/qwen/qwen3.8-27b": ModelEntry(
+        "Qwen3.8 27B · via Cloudflare", _AGENTIC, 262_144
+    ),
+    "aigw:@cf/nvidia/nemotron-3-120b-a12b": ModelEntry(
+        "Nemotron 3 120B · via Cloudflare", _AGENTIC, 256_000
+    ),
+    # Cloudflare hosts Llama 4 Scout, not the Maverick the reseller rows above carry.
+    "aigw:@cf/meta/llama-4-scout-17b-16e-instruct": ModelEntry(
+        "Llama 4 Scout · via Cloudflare", _AGENTIC, 131_000
+    ),
+    # Stands in for the Mistral Large row above: Cloudflare has no `mistral/` third-party
+    # author at all, only this Workers AI build. A smaller model, named honestly.
+    "aigw:@cf/mistralai/mistral-small-3.1-24b-instruct": ModelEntry(
+        "Mistral Small 3.1 · via Cloudflare", _AGENTIC, 128_000
+    ),
+    # Deliberately NOT listed, all confirmed 2026-08-23 by calling them:
+    #   openai/gpt-5.6-sol, anthropic/claude-fable-5, anthropic/claude-opus-4.8
+    #     — in Cloudflare's catalog but answer 402: the flagships are not on Unified
+    #       Billing. Store that vendor's key on the gateway (BYOK) and they light up;
+    #       until then a curated row would just be a broken entry in the picker.
+    #   thinkingmachines/inkling — answers "not available via unified billing" outright.
+    #   meta/muse-spark, ark/*, ark-agent-plan-cn/* — no such author in the catalog.
+    # Users can still type any of these as a custom model once BYOK is configured.
 }
 
 
