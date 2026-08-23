@@ -33,19 +33,21 @@ _NO_QUOTA = (
     "credit balance is too low",
     "billing hard limit",
 )
-# Cloudflare AI Gateway has a failure the other vendors don't: a model can sit in the
-# catalog, resolve, and still refuse to run on the account's prepaid credits until that
-# vendor's own key is stored on the gateway. Verbatim body (code 2021, 2026-08-23):
-# "This model is not available via unified billing. Please use BYOK." Its sibling,
-# "Wholesale rate limit exceeded for this gateway", is the shared pool being busy — the
-# same fix unblocks it, so both name BYOK.
-# Not covered: some models answer a bare HTTP 402 with no body text to match on. Those
-# keep their raw error rather than being guessed at.
-_NEEDS_BYOK = (
-    "not available via unified billing",
-    "please use byok",
-)
+# Cloudflare AI Gateway answers HTTP 402 for two unrelated reasons, and only the body
+# tells them apart (verbatim, code 2021, 2026-08-23):
+#
+#   "This model is not available via unified billing. Please use BYOK."
+#       → permanent: this model is not on Unified Billing at all.
+#   "Wholesale rate limit exceeded for this gateway. Please reduce request rate or use BYOK."
+#       → transient: the shared wholesale pool for that model is busy right now.
+#
+# Both sentences end in "BYOK", which is exactly how the two got conflated once already —
+# three perfectly good flagship models were cut from the matrix because a burst of probes
+# tripped the rate limiter and the bare status code was read as unavailability. So match
+# the halves that actually differ, and check the transient one FIRST: telling a user to
+# go configure BYOK when they only need to wait ten seconds is the worse wrong answer.
 _GATEWAY_BUSY = ("wholesale rate limit exceeded",)
+_NEEDS_BYOK = ("not available via unified billing",)
 
 
 def friendly_model_error(model: str, exc: Exception) -> Optional[str]:
@@ -56,17 +58,16 @@ def friendly_model_error(model: str, exc: Exception) -> Optional[str]:
         "gradually or require a plan upgrade. Pick a different model, or check "
         "the provider's console for availability."
     )
-    if any(marker in text for marker in _NEEDS_BYOK):
-        return (
-            f"{model} is in Cloudflare's catalog but isn't covered by AI Gateway "
-            "credits — store that vendor's own API key on the gateway (BYOK), or pick "
-            "a different model."
-        )
     if any(marker in text for marker in _GATEWAY_BUSY):
         return (
-            f"Cloudflare's shared capacity for {model} is saturated right now — try "
-            "again in a moment, or store that vendor's own API key on the gateway "
-            "(BYOK) to stop sharing the pool."
+            f"Cloudflare's shared capacity for {model} is busy right now — try again in "
+            "a moment. If it keeps happening, store that vendor's own API key on the "
+            "gateway (BYOK) to stop sharing the pool."
+        )
+    if any(marker in text for marker in _NEEDS_BYOK):
+        return (
+            f"{model} isn't covered by AI Gateway credits — store that vendor's own API "
+            "key on the gateway (BYOK), or pick a different model."
         )
     if any(marker in text for marker in _NO_QUOTA):
         return (

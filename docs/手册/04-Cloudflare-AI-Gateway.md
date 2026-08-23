@@ -92,9 +92,12 @@ npx wrangler whoami
 
 | 模型 | 网关 id | 上下文 | 看图 |
 | --- | --- | --- | --- |
+| GPT-5.6 Sol | `openai/gpt-5.6-sol` | 400k | ✅ |
 | GPT-5.6 Terra | `openai/gpt-5.6-terra` | 400k | ✅ |
 | GPT-5.6 Luna | `openai/gpt-5.6-luna` | 400k | ✅ |
 | GPT-5.5 | `openai/gpt-5.5` | 400k | ✅ |
+| Claude Fable 5 | `anthropic/claude-fable-5` | 1M | ✅ |
+| Claude Opus 4.8 | `anthropic/claude-opus-4.8` | 200k | ✅ |
 | Claude Sonnet 4.6 | `anthropic/claude-sonnet-4.6` | 200k | ✅ |
 | Claude Haiku 4.5 | `anthropic/claude-haiku-4.5` | 200k | ✅ |
 | Grok 4.3 | `xai/grok-4.3` | 256k | |
@@ -149,21 +152,32 @@ npx wrangler whoami
 选择器里没有的也可以手填（**添加自定义模型**），格式就是上表那种 `厂商/模型名`。
 Cloudflare 的完整目录在 <https://developers.cloudflare.com/ai/models/>。
 
-有三个明明在目录里、却调不通的，都是同一个原因——**旗舰型号不在统一计费范围内**：
-
-```
-openai/gpt-5.6-sol
-anthropic/claude-fable-5
-anthropic/claude-opus-4.8
-thinkingmachines/inkling
-```
-
-调它们会返回 402，或者一句 `This model is not available via unified billing. Please use BYOK.`
-应用会把这句翻成人话。**要用就得配 BYOK**：网关设置里存一把该厂商自己的 API key
-（alias 必须叫 `default`，别的 alias 在统一计费这条路上不生效）。配好之后把上面的 id
-手填进去就能用，代码不用改。
+目录里只有 **一个** 模型真的用不了：`thinkingmachines/inkling`。它回的是
+`This model is not available via unified billing. Please use BYOK.`——真不在统一计费里。
+要用就在网关里存一把 Thinking Machines 自己的 key（**alias 必须叫 `default`**，别的 alias
+在统一计费这条路上不生效），然后手填 id，代码不用改。
 
 BytePlus / 火山方舟、Meta Muse Spark 那几个是**目录里根本没有**，不是配置问题。
+
+### ⚠ 402 有两个意思，别搞混
+
+这一条是踩出来的：起初有三个旗舰（`gpt-5.6-sol`、`claude-fable-5`、`claude-opus-4.8`）
+被判定为「不在统一计费里」而没有进列表，**结论是错的**。它们只是在密集探测下撞了限流，
+放慢速度后全部 200、正常计费。
+
+两句话状态码都是 402，都以 BYOK 结尾，但意思相反：
+
+| 正文 | 含义 | 怎么办 |
+| --- | --- | --- |
+| `This model is not available via unified billing.` | 永久性，真的不覆盖 | 配 BYOK |
+| `Wholesale rate limit exceeded for this gateway.` | 临时性，共享池忙 | 等几秒重试 |
+
+统一计费的池子是**按模型共享**的，越贵越热门的型号越容易撞。应用会把这两句分开翻译。
+判断一个模型能不能用，**一定要看正文，不能只看状态码**，而且要一个一个慢慢试。
+正文在网关日志里存着（Logs ▸ 点开某条 ▸ `response_head`）。
+
+如果某个模型你们天天用、天天撞限流，那才是配 BYOK 的正当理由——存了自己的 key 就不跟别人
+挤同一个池子。
 
 ---
 
@@ -183,8 +197,8 @@ BytePlus / 火山方舟、Meta Muse Spark 那几个是**目录里根本没有**�
 | 测试报「Cloudflare 拒绝了这个 token」 | token 抄错，或者建的时候没给 Workers AI Run 权限 |
 | 测试报「Cloudflare 上没有这个账号 ID」 | 账号 ID 抄错。跑 `npx wrangler whoami` 对一下 |
 | 测试报「没有 AI Gateway 额度」 | 去 Billing 充值 |
-| 某个模型报 BYOK | 见第 5 节，这个型号不在统一计费里 |
-| 报「共享容量已满」 | 统一计费是共享池，等一会儿再试；常用就配 BYOK 独占 |
+| 报「不在 AI Gateway 额度覆盖范围内」 | 真的不覆盖，只有 inkling 是这种。见第 5 节 |
+| 报「共享容量忙」 | 临时的，等几秒重试；天天撞就配 BYOK 独占一个池子 |
 | 调用成功但 Logs 里没有 | 网关名填错了，请求落到账号的 `default` 网关去了 |
 | 一切正常但没走网关 | 同上。网关名留空就是有意用默认网关 |
 

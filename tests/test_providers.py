@@ -519,7 +519,9 @@ def test_matrix_labels_and_custom_model_fallback():
     per_provider = Counter(
         mid.split(":", 1)[0] if ":" in mid else "openai" for mid in MATRIX
     )
-    assert max(per_provider.values()) <= 24, per_provider
+    # The gateway fronts a dozen labs at once, so its list is legitimately the longest
+    # here; the bound is set to catch someone pasting a whole catalog, not to police it.
+    assert max(per_provider.values()) <= 30, per_provider
     # A custom (unlisted) reseller model falls back to the conservative default — usable,
     # but at the user's own risk (no parallel tool calls assumed).
     caps = capabilities_for("together:some-org/Brand-New-Model")

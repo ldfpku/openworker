@@ -599,6 +599,10 @@ DESCRIPTORS: list[ProviderDescriptor] = [
             ),
         ],
         build=_build_aigw,
+        # Not the flagship, unlike every other provider's recommendation. Fable 5 and
+        # Opus 4.8 both work here, but this is one shared prepaid balance for the whole
+        # company and Fable 5 costs roughly 7x Sonnet per token — a default everyone
+        # inherits is the wrong place to spend that. Anyone who wants it just picks it.
         recommended_model="anthropic/claude-sonnet-4.6",
         blurb="One Cloudflare token instead of one key per vendor — OpenAI, Claude, "
         "Grok, DeepSeek, Qwen and more, billed from your AI Gateway credits.",

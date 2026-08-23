@@ -268,6 +268,9 @@ MATRIX: dict[str, ModelEntry] = {
     # Google is deliberately absent even though the gateway carries it: this fork already
     # reaches Gemini through its own relay, and two routes to one vendor in one picker is
     # a support ticket waiting to happen.
+    "aigw:openai/gpt-5.6-sol": ModelEntry(
+        "GPT-5.6 Sol · via Cloudflare", _AGENTIC_IMAGE, 400_000
+    ),
     "aigw:openai/gpt-5.6-terra": ModelEntry(
         "GPT-5.6 Terra · via Cloudflare", _AGENTIC_IMAGE, 400_000
     ),
@@ -276,6 +279,12 @@ MATRIX: dict[str, ModelEntry] = {
     ),
     "aigw:openai/gpt-5.5": ModelEntry(
         "GPT-5.5 · via Cloudflare", _AGENTIC_IMAGE, 400_000
+    ),
+    "aigw:anthropic/claude-fable-5": ModelEntry(
+        "Claude Fable 5 · via Cloudflare", _AGENTIC_IMAGE, 1_000_000
+    ),
+    "aigw:anthropic/claude-opus-4.8": ModelEntry(
+        "Claude Opus 4.8 · via Cloudflare", _AGENTIC_IMAGE, 200_000
     ),
     "aigw:anthropic/claude-sonnet-4.6": ModelEntry(
         "Claude Sonnet 4.6 · via Cloudflare", _AGENTIC_IMAGE, 200_000
@@ -293,10 +302,6 @@ MATRIX: dict[str, ModelEntry] = {
     "aigw:moonshotai/kimi-k2.6": ModelEntry(
         "Kimi K2.6 · via Cloudflare", _AGENTIC, 256_000
     ),
-    # The one row whose 200 was never actually seen: every probe hit the gateway's
-    # wholesale rate limit first. That still proves the id resolves and is billable (an
-    # unknown id answers "Model not found" long before billing), so it stays — but it is
-    # the first row to re-check on a refresh.
     "aigw:moonshotai/kimi-k3": ModelEntry(
         "Kimi K3 · via Cloudflare", _AGENTIC, 1_000_000
     ),
@@ -332,14 +337,20 @@ MATRIX: dict[str, ModelEntry] = {
     "aigw:@cf/mistralai/mistral-small-3.1-24b-instruct": ModelEntry(
         "Mistral Small 3.1 · via Cloudflare", _AGENTIC, 128_000
     ),
-    # Deliberately NOT listed, all confirmed 2026-08-23 by calling them:
-    #   openai/gpt-5.6-sol, anthropic/claude-fable-5, anthropic/claude-opus-4.8
-    #     — in Cloudflare's catalog but answer 402: the flagships are not on Unified
-    #       Billing. Store that vendor's key on the gateway (BYOK) and they light up;
-    #       until then a curated row would just be a broken entry in the picker.
-    #   thinkingmachines/inkling — answers "not available via unified billing" outright.
+    # Deliberately NOT listed, both confirmed 2026-08-23 by calling them:
+    #   thinkingmachines/inkling — the one model that really is off Unified Billing;
+    #     it answers "This model is not available via unified billing. Please use BYOK."
+    #     Store a Thinking Machines key on the gateway and it works as a custom model.
     #   meta/muse-spark, ark/*, ark-agent-plan-cn/* — no such author in the catalog.
-    # Users can still type any of these as a custom model once BYOK is configured.
+    #
+    # A WARNING for whoever refreshes this list. HTTP 402 here means two different
+    # things, and only the response body tells them apart:
+    #     "This model is not available via unified billing."      → really unavailable
+    #     "Wholesale rate limit exceeded for this gateway."        → just busy
+    # The wholesale pool is shared per model and the top tiers saturate fast, so probing
+    # in a burst makes perfectly good models look unavailable — three rows above were
+    # wrongly cut on exactly that mistake. Re-probe one at a time before deleting a row,
+    # and read the body (the gateway's own log keeps it under `response_head`).
 }
 
 

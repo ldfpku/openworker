@@ -197,7 +197,8 @@ def test_curated_capabilities(model, vision):
         # Custom (non-curated) ids fall through to the heuristics, which have to look past
         # the author segment or they would only ever see "openai" / "@cf".
         ("aigw:openai/gpt-4.1-mini", True),
-        ("aigw:anthropic/claude-opus-4.8", True),
+        # In Cloudflare's catalog, deliberately not curated by us.
+        ("aigw:anthropic/claude-opus-4.5", True),
         ("aigw:deepseek/deepseek-v9", False),
         ("aigw:@cf/qwen/qwen3-30b-a3b-fp8", False),
     ],
@@ -260,20 +261,37 @@ def test_request_kwargs_pick_the_right_thinking_shape(model, expected):
 # -- errors -------------------------------------------------------------------------
 
 
+# Both 402 bodies end in "BYOK", and reading the transient one as the permanent one is
+# not hypothetical: three flagship models were cut from the matrix on exactly that
+# mistake, because a burst of probes tripped the rate limiter and only the status code
+# was looked at. These pin the two apart, in both directions.
+
+BUSY = "2021: Wholesale rate limit exceeded for this gateway. Please reduce request rate or use BYOK."
+UNAVAILABLE = "2021: This model is not available via unified billing. Please use BYOK."
+
+
 def test_byok_only_models_say_so():
-    msg = friendly_model_error(
-        "aigw:thinkingmachines/inkling",
-        Exception("2021: This model is not available via unified billing. Please use BYOK."),
-    )
+    msg = friendly_model_error("aigw:thinkingmachines/inkling", Exception(UNAVAILABLE))
     assert msg and "BYOK" in msg
+    assert "try again" not in msg  # permanent — do not tell them to wait
 
 
-def test_shared_capacity_exhaustion_is_not_reported_as_no_access():
-    msg = friendly_model_error(
-        "aigw:moonshotai/kimi-k3",
-        Exception("2021: Wholesale rate limit exceeded for this gateway."),
-    )
-    assert msg and "again in a moment" in msg
+def test_a_busy_pool_is_not_reported_as_an_unavailable_model():
+    msg = friendly_model_error("aigw:moonshotai/kimi-k3", Exception(BUSY))
+    assert msg and "try again in a moment" in msg
+    # The killer detail: this message also says "use BYOK", so a sloppy marker would
+    # match it and send the user off to configure a key they do not need.
+    assert "isn't covered" not in msg
+
+
+def test_the_flagships_are_curated_not_written_off():
+    # They answered 402 under a burst of probes and were briefly (wrongly) excluded.
+    for mid in (
+        "aigw:openai/gpt-5.6-sol",
+        "aigw:anthropic/claude-fable-5",
+        "aigw:anthropic/claude-opus-4.8",
+    ):
+        assert mid in MATRIX, f"{mid} works on Unified Billing — verified 2026-08-23"
 
 
 def test_unrelated_errors_still_pass_through_untranslated():

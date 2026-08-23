@@ -29,9 +29,11 @@ vendor's own spelling. The author segment is what selects the wire, and Cloudfla
 spelling differs from the vendor's often enough (dots for dashes on Claude) that
 translating would be a bug factory. See `matrix.py` for the curated set.
 
-**Not everything in the catalog is on Unified Billing.** A model can be listed and still
-answer 402 / "not available via unified billing" until a provider key is stored on the
-gateway (BYOK). `errors.py` turns both shapes into a sentence that names the fix.
+**HTTP 402 means two different things here**, and only the body says which: a model that
+is genuinely off Unified Billing ("not available via unified billing"), or the shared
+wholesale pool for that model simply being busy ("wholesale rate limit exceeded"). The
+second is transient and the flagships hit it easily. `errors.py` keeps them apart; do not
+conclude a model is unavailable from the status code alone.
 """
 
 from __future__ import annotations
@@ -148,9 +150,12 @@ class AIGatewayProvider(ProviderClient):
                 auth_token=self._api_token,
                 default_headers=headers,
                 thinking_budget=budget,
-                # The refusal-fallback beta names its fallback by Anthropic's own model id
-                # (`claude-opus-4-8`), which is not the gateway's spelling — and that model
-                # is BYOK-only here anyway. Plain Messages endpoint instead.
+                # Off here: the beta names its fallback by Anthropic's own model id
+                # (`claude-opus-4-8`), which is not what the gateway calls that model
+                # (`anthropic/claude-opus-4.8`), and whether the gateway serves the beta
+                # endpoint at all is unverified. Consequence, since Fable 5 IS available
+                # here: a safety-classifier refusal surfaces as an error instead of being
+                # silently re-served on Opus, the way the direct Anthropic path does it.
                 refusal_fallback=False,
             )
         if wire == "responses":
