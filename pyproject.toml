@@ -46,7 +46,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio", "httpx"]
+# httpx2 is anthropic 1.0's http layer; the SDK type-checks http_client against it, so
+# the provider tests that drive a real SDK client over a mock transport need it by name.
+dev = ["pytest>=8", "pytest-asyncio", "httpx", "httpx2"]
 # Inbound messaging listeners (outbound send_message needs only httpx, already a core dep).
 # aiohttp is slack-bolt's Socket Mode transport at runtime (and the FakeSlack test harness
 # drives the real handler) — declare it so CI installs it, not just transitively.
