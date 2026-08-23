@@ -13,3 +13,6 @@ dist/
 # so the filled-in roster stays on the admin's machine — only roster.example.csv ships.
 gemini-relay/scripts/roster.csv
 .research/proxy-guard/README.pdf
+# Per-colleague AI Gateway tokens issued by issue_aigw_tokens.py. Live credentials
+# plus the staff list, in a public fork — the script refuses to write if this is missing.
+gemini-relay/scripts/aigw-tokens.env
