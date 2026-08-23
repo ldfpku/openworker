@@ -1,154 +1,272 @@
 # Cloudflare AI Gateway 手册
 
-> **读者**：管理员（配置那一次）和所有使用者（选模型那一步）。
-> **什么时候读**：想在 Gemini 之外用 GPT / Claude / Grok / DeepSeek 这些模型的时候。
-> **和 Gemini 中转什么关系**：两套东西，各管各的，见下一节。
+> **读者**：管理员（配置那一次）和所有使用者（登录那一步）。
+> **什么时候读**：想用 GPT / Claude / Gemini 而不想自己配 API key 的时候。
+> **同事要准备什么**：工作邮箱。没了。
 
 ---
 
 ## 0 · 它和 Gemini 中转是两回事
 
-| | Gemini 中转（`gemini.smjtools.com`） | Cloudflare AI Gateway |
+| | Gemini 中转（`gemini.smjtools.com`） | AI Gateway（`gateway.smjtools.com`） |
 | --- | --- | --- |
-| 覆盖哪些模型 | 只有 Gemini | 除 Gemini 外的一大半：OpenAI、Claude、Grok、DeepSeek、Qwen、Kimi、MiniMax… |
-| 同事要几样凭证 | 两样：登录（验证码）+ 他自己那把 Gemini key | 一样：一个 Cloudflare API token |
-| 谁付钱 | 公司的 Google 账号，按 key 分人看 | 公司 Cloudflare 账号里的 AI Gateway 预付额度 |
+| 覆盖哪些模型 | 只有 Gemini，但是全系 | GPT、Claude、Gemini（3.x 的一部分） |
+| 同事要几样凭证 | 两样：登录 + 他自己那把 Gemini key | 一样：登录 |
+| 谁付钱 | 公司的 Google 账号 | 公司 Cloudflare 账号的预付额度 |
+| 按人统计 | 我们自己写的记账表 | Cloudflare 的「用户洞察」，Access 自动带身份 |
 | 我们写了多少代码 | 一整个 Worker（认人 / 转发 / 记账 / 限额） | 零。Cloudflare 自己就是那个 Worker |
 
-**为什么留着两套**：Gemini 中转能做到「每人一把 key、按人限额」，那是我们自己写的闸门；
-AI Gateway 现在是一个账号一本账，分不到人头。反过来 AI Gateway 一把 token 就能用十几家
-模型，Gemini 中转做不到。所以模型选择器里 **Gemini 走中转、别家走网关**，
-两边不重叠——同一个厂商出现两条路只会变成工单。
+**为什么两边都有 Gemini**：中转那条是给有个人优惠的人用的，也更全；网关这条统一计费只覆盖
+Gemini 3.x 的一部分（见第 3 节）。模型选择器里两条都在，标签结尾不一样——
+`· Google` 是直连，`· via Cloudflare` 是网关。
 
 ---
 
 ## 1 · 管理员：一次性配置
 
-### 1.1 建网关
+同事一侧的「零配置」，代价是管理员这边要把下面五件都做完。做完之后加人只是往 Access
+策略里加一个邮箱。
 
-Cloudflare 控制台 ▸ **AI** ▸ **AI Gateway** ▸ Create Gateway。名字用 **`openworker-agw`**
-（应用里预填的就是这个，改了的话每个同事都得手填）。
+### 1.1 网关和自定义域
+
+Cloudflare 控制台 ▸ **AI** ▸ **AI Gateway** ▸ Create Gateway，名字 **`openworker-agw`**。
+
+然后在这个网关的 **域名** 页 ▸ **Add Domain**，挂一个自己 zone 上的子域，
+例如 `gateway.smjtools.com`。**自定义域不是可选项**，是整套方案的地基：
+Access 只能保护自己 zone 上的主机名，而 Access 是这里唯一的认证方式。
 
 建议开的：
 
 | 设置 | 值 | 为什么 |
 | --- | --- | --- |
-| Authenticated Gateway | 开 | 不开的话知道账号 ID 的人就能白嫖你的额度 |
-| Cache TTL | `86400` | 同样的提问一天内不重复计费 |
-| Rate limiting | `100 / 60s` | 有人的自动循环跑飞时的兜底 |
 | Logs | 开 | 谁在什么时候调了什么模型，只能靠它 |
+| Rate limiting | `100 / 60s` | 有人的自动循环跑飞时的兜底 |
+| 成本限制 | 按人头设 | 见 6.2 |
+| 缓存 | **调试期关掉** | 见下面的警告 |
+
+> **缓存会把排查引到沟里。** 开着缓存时，同样的请求第二次直接返回上一次的答案，日志里
+> `cached: true`、成本 0、输出 0 token。探测一个模型能不能用时这会给出假的成功。
+> 排查期间要么关掉，要么每个请求带 `cf-aig-skip-cache: true`。
 
 ### 1.2 充值
 
-**AI** ▸ **AI Gateway** ▸ **Billing** 里加信用卡并充值。第三方模型走的是 Unified Billing
-（统一计费）：从这个余额里扣，**不需要给每家厂商配 key**。
+**AI** ▸ **AI Gateway** ▸ **Billing** 加信用卡并充值。第三方模型走 Unified Billing
+（统一计费）：从这个余额扣，**不需要给每家厂商配 key**。买额度时收 5% 手续费，
+推理单价与直连各家一致、无加价。
 
-顺手把 **Spending limit** 设上。额度是预付的，跑飞了就是真金白银。
+### 1.3 Access 应用
 
-### 1.3 建 API token
+网关的 **Access** 页会引导你给这个域名建一个 Access 应用，或者去
+**Zero Trust ▸ Access controls ▸ Applications** 建一个 self-hosted 应用，
+目标填 `gateway.smjtools.com`，策略挂公司的员工邮箱名单。
 
-**My Profile** ▸ **API Tokens** ▸ **Create Token** ▸ Custom token。
+这一步之后，**同事就不需要任何 Cloudflare API token 了**。官方文档的原话：
 
-- 权限只给一条：**Account ▸ Workers AI ▸ Read**。
-- Account Resources 限定到这一个账号。
-- 建完只显示一次，存好。
+> The client does not need to send an AI Gateway token for that request.
 
-> **别选成 AI Gateway 的权限。** Workers AI 只有 Read / Edit 两项；Read / Run / Edit
-> 那三项属于「AI Gateway」，是另一个产品。应用打的是 `/accounts/{id}/ai/*` 这一族接口，
-> 官方文档写明它们要的是 Workers AI 权限，**只给 AI Gateway 权限会 401（错误码 10000）**。
-> Read 这个名字看着像只读，但在 Workers AI 里它就是「能跑推理」的那一项。
->
-> **这把 token 会发给同事。** 它能花账户里的额度，所以：只给上面那一条（不要给
-> Zone / Workers Scripts / R2 那些）、给 token 设过期时间、每人一把并按人命名，
-> 这样 Cloudflare 后台能看到谁在用、要停谁的时候删掉那一把就行。
->
-> 一把 token 全公司共用也能跑，但那样 Logs 里所有请求长得一模一样，出事查不出是谁。
+Access 通过之后，网关会把登录者的身份写进请求元数据（`cf.user_id`），
+「用户洞察」和按人预算就是靠它，客户端一个字都不用传。
 
-### 1.4 找账号 ID
+### 1.4 打开动态客户端注册
+
+这一步分两半：能在控制台点的，和**只能走 API** 的。
+
+**先在控制台点：Zero Trust ▸ Access controls ▸ Applications ▸ 该应用 ▸ 右侧三个点 ▸
+Edit ▸ 其他设置**（中文界面把 Advanced settings 译成「其他设置」，是顶部那个标签，
+不是下面「全部 / 目标 / 策略 …」那排筛选条）**▸ 托管 OAuth**：
+
+| 开关 | 设成 | 为什么 |
+| --- | --- | --- |
+| 托管 OAuth | 开 | 桌面端要走 OAuth，不是浏览器 Cookie |
+| 允许 localhost 客户端 | 开 | 桌面应用的回调落在 `localhost` |
+| 允许回环客户端 | 开 | 同上，`127.0.0.1` |
+| 允许的重定向 URI | **留空** | 见下 |
+| 访问令牌有效期 | `15 minutes` | 短命令牌 + 自动续期，Cloudflare 对 CLI 的推荐 |
+| 授权会话持续时间 | 下拉框里最接近两周的一档 | 见下 |
+
+> **Allowed redirect URIs 留空。** 桌面应用每次回调用的是随机端口，写死一个 URI 不管用；
+> 而 localhost / loopback 两个开关就是为这个场景准备的。
+> 尤其**不要**把 `https://playground.ai.cloudflare.com/*` 加进去——那等于允许
+> Cloudflare 的公开 playground 替你的网关拿令牌。官方文档的示例里有这一行，别照抄。
+
+**然后必须走一次 API。** 控制台**不暴露** `dynamic_client_registration.enabled`
+这个字段——上面那些开关只写了 `allow_any_on_localhost` / `allow_any_on_loopback`，
+主开关仍是 `false`，注册端点会一直返回 `404`。这一步只能用 API 补。
+
+Access 应用只有 `PUT`，没有 `PATCH`，而 **`PUT` 是整体替换**：
+body 必须带上 `GET` 回来的所有字段。**尤其是 `policies`——漏了它，应用就没有 Allow
+策略了，默认拒绝，所有人（包括你自己）当场被锁在外面。**
 
 ```bash
-npx wrangler whoami
+curl "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/access/apps/$APP_ID" \
+  --request GET --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
 ```
 
-32 位十六进制那一串。控制台任意一个站点的 Overview 页面右下角也有。
+把上面 `GET` 到的字段原样填进 `PUT`，只改 `oauth_configuration`：
+
+```json
+{
+  "oauth_configuration": {
+    "enabled": true,
+    "dynamic_client_registration": {
+      "enabled": true,
+      "allow_any_on_localhost": true,
+      "allow_any_on_loopback": true
+    },
+    "grant": { "session_duration": "336h", "access_token_lifetime": "15m" }
+  }
+}
+```
+
+token 需要 `Access: Apps and Policies Write` 权限（AI Gateway 作用域的 token 用不了）。
+
+顺带一提：`336h`（两周）在控制台下拉框里通常没有这一档，但 API 接受任意时长。
+Cloudflare 对 CLI / agent 场景的建议就是 1–2 周。
+
+验证——注册端点该从 `404` 变成 `201` 并带回一个 `client_id`：
+
+```bash
+curl -s -w "\n%{http_code}\n" -X POST \
+  "https://<团队名>.cloudflareaccess.com/cdn-cgi/access/oauth/registration" \
+  -H "Content-Type: application/json" \
+  -d '{"client_name":"probe","redirect_uris":["http://localhost:53682/callback"],
+       "grant_types":["authorization_code","refresh_token"],
+       "response_types":["code"],"token_endpoint_auth_method":"none"}'
+```
+
+> 这个探测会**真的注册出一个客户端**，而且 Cloudflare 没有列出或删除已注册客户端的 API，
+> 删不掉。它是公共客户端，没人走浏览器授权就什么也做不了，但心里有数。
+
+改完记得确认 `aud` 没变——变了的话所有已签发的 JWT 会一起失效。
+
+### 1.5 给网关域名开「AI 机器人」例外
+
+**这一条不做的话，用标准 SDK 的客户端一定连不上，而且报错完全指不到原因。**
+
+OpenAI 和 Anthropic 的 Python SDK 默认 User-Agent 是 `OpenAI/Python 1.2.3` 这种形状，
+正好命中 Cloudflare 的 AI 爬虫特征，请求在**边缘**就被打回
+`403 Your request was blocked.`，Access、网关、模型统统还没轮到。
+
+拦它的是 **Security ▸ Bots ▸ 阻止 AI 机器人**（zone 设置 `ai_bots_protection`），
+既不是 WAF 托管规则集，也不是 Bot Fight Mode——认清这点很重要，因为
+[Bot Fight Mode 不走规则引擎，Skip 对它无效](https://developers.cloudflare.com/bots/get-started/bot-fight-mode/#rules)，
+而 AI 机器人拦截走，能 Skip。两个特征可以认它：响应体是 25 字节纯文本
+（不是 WAF 那张 HTML 拦截页），以及拿 `GPTBot/1.0` 试一下会跟 SDK 的 UA 一起被拦。
+
+别关 zone 级的开关——同一个 zone 上通常还挂着真站点。只给网关域名开口子：
+
+**Security ▸ Security rules ▸ Create rule ▸ Custom rules**
+
+| 字段 | 值 |
+| --- | --- |
+| Rule name | `Skip AI-bot block for AI Gateway` |
+| 表达式 | `(http.host eq "gateway.smjtools.com")` |
+| 动作 | Skip ▸ **All Super Bot Fight Mode rules** |
+| Place at | First |
+
+只勾 Super Bot Fight Mode 这一项就够（AI 机器人拦截跑在 `http_request_sbfm` 阶段）。
+别顺手把 `waf`、`rateLimit`、`bic` 一起跳了，网关用不着放这么宽。
+
+验证：下面这条该从 `403` 变成 `401`。`401` 表示已经穿过边缘、到了 Access——
+这个域名上 `401` 是正常的「还没给凭据」，不是错误。
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" https://gateway.smjtools.com/ -H "User-Agent: GPTBot/1.0"
+```
+
+顺带确认作用域没写宽：同 zone 的其它主机拿同样的 UA 试，应该**仍然**是 `403`。
+
+应用这边同时也把 UA 改成了 `openworker/<版本>`，两道保险：规则万一被删客户端仍然能跑，
+而且网关日志里的 UA 会直接告诉你请求是哪个客户端发的。
 
 ---
 
-## 2 · 同事：应用里怎么填
+## 2 · 同事：两步
 
-**设置 ▸ 模型 ▸ Cloudflare AI Gateway**，三个框：
+**设置 ▸ 模型 ▸ Cloudflare AI Gateway**，两个框：
 
 | 框 | 填什么 |
 | --- | --- |
-| Cloudflare 账号 ID | 管理员给的那 32 位 |
-| Cloudflare API token | 管理员发给你的那一把 |
-| 网关名称 | 已预填 `openworker-agw`，不用动 |
+| 网关地址 | 管理员给的域名，例如 `https://gateway.smjtools.com`。只填主机名 |
+| Access 会话 | 用工作邮箱登录后拿到的那一串 |
 
-点 **测试**。它会真的调一次最便宜的模型（不到一厘钱），所以测试通过就等于真能用——
-不是只验证了 token 格式对不对。
+拿会话的办法，命令行装一次 [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)：
 
-然后在会话上方的模型选择器里挑一个「· via Cloudflare」结尾的模型。
+```bash
+cloudflared access login https://gateway.smjtools.com
+```
+
+浏览器会弹出来收验证码，登录成功后：
+
+```bash
+cloudflared access token -app=https://gateway.smjtools.com
+```
+
+把输出整串粘进「Access 会话」。点 **测试**——它会真的调一次最便宜的模型（不到一厘钱），
+所以测试通过就等于真能用。
+
+然后在会话上方的模型选择器里挑一个 `· via Cloudflare` 结尾的模型。
+
+> **会话会过期**（默认 24 小时，管理员可以调到最长一个月）。过期后测试会报
+> 「Access 会话无效」，重跑上面第二条命令、重新粘一次即可。
 
 ---
 
 ## 3 · 能用哪些模型
 
-下表每一行都在 2026-08-23 真调过一次，带工具定义，返回 200。
+下表每一行都在 2026-08-23 通过 `gateway.smjtools.com` 真调过，带工具定义，返回 200。
 
-| 模型 | 网关 id | 上下文 | 看图 |
-| --- | --- | --- | --- |
-| GPT-5.6 Sol | `openai/gpt-5.6-sol` | 400k | ✅ |
-| GPT-5.6 Terra | `openai/gpt-5.6-terra` | 400k | ✅ |
-| GPT-5.6 Luna | `openai/gpt-5.6-luna` | 400k | ✅ |
-| GPT-5.5 | `openai/gpt-5.5` | 400k | ✅ |
-| Claude Fable 5 | `anthropic/claude-fable-5` | 1M | ✅ |
-| Claude Opus 4.8 | `anthropic/claude-opus-4.8` | 200k | ✅ |
-| Claude Sonnet 4.6 | `anthropic/claude-sonnet-4.6` | 200k | ✅ |
-| Claude Haiku 4.5 | `anthropic/claude-haiku-4.5` | 200k | ✅ |
-| Grok 4.3 | `xai/grok-4.3` | 256k | |
-| DeepSeek V4 Pro | `deepseek/deepseek-v4-pro` | 128k | |
-| DeepSeek V4 Flash | `deepseek/deepseek-v4-flash` | 128k | |
-| Kimi K2.6 | `moonshotai/kimi-k2.6` | 256k | |
-| Kimi K3 | `moonshotai/kimi-k3` | 1M | |
-| Qwen3 Max | `alibaba/qwen3-max` | 256k | |
-| MiniMax M2.7 / M3 | `minimax/m2.7`、`minimax/m3` | — | |
-| GLM-5.2 | `@cf/zai-org/glm-5.2` | 256k | |
-| Kimi K2.7 Code | `@cf/moonshotai/kimi-k2.7-code` | 256k | |
-| Qwen3.8 27B | `@cf/qwen/qwen3.8-27b` | 256k | |
-| Nemotron 3 120B | `@cf/nvidia/nemotron-3-120b-a12b` | 256k | |
-| Llama 4 Scout | `@cf/meta/llama-4-scout-17b-16e-instruct` | 131k | |
-| Mistral Small 3.1 | `@cf/mistralai/mistral-small-3.1-24b-instruct` | 128k | |
+| 模型 | 网关 id | 上下文 |
+| --- | --- | --- |
+| GPT-5.6 Sol | `openai/gpt-5.6-sol` | 400k |
+| GPT-5.6 Terra | `openai/gpt-5.6-terra` | 400k |
+| GPT-5.6 Luna | `openai/gpt-5.6-luna` | 400k |
+| Claude Opus 5 | `anthropic/claude-opus-5` | — |
+| Claude Sonnet 5 | `anthropic/claude-sonnet-5` | — |
+| Claude Fable 5 | `anthropic/claude-fable-5` | 1M |
+| Claude Haiku 4.5 | `anthropic/claude-haiku-4-5` | 200k |
+| Gemini 3.6 Flash | `google-ai-studio/gemini-3.6-flash` | 1M |
+| Gemini 3.1 Pro | `google-ai-studio/gemini-3.1-pro-preview` | 1M |
+| Gemini 3.1 Flash-Lite | `google-ai-studio/gemini-3.1-flash-lite` | 1M |
+| Gemini 3 Flash | `google-ai-studio/gemini-3-flash-preview` | 1M |
 
-`@cf/` 开头的是 Cloudflare 自己托管的（Workers AI），其余是转发给厂商的。用起来一样。
+全部支持看图。PDF 走本地转图片的老路（`pdf_support.py`），能看图就能读 PDF。
 
-「看图」那列空着不等于不支持，只是**没实测过**，所以应用不会声称支持。PDF 一律走本地
-转图片的老路（`pdf_support.py`），能看图的模型就能读 PDF。
+Opus 5 和 Sonnet 5 的上下文留空，是因为没去核对厂商文档——宁可让界面上的上下文进度条
+隐藏，也不编一个分母出来。
 
-### 上下文窗口那一列
-
-数字来自对应厂商行或 Workers AI 目录自己的 `context_window`。MiniMax 两行留空是因为
-没去核对厂商文档——宁可让界面上的上下文进度条隐藏，也不编一个分母出来。
+**Gemini 只有四个，而且比直连那条少。** 统一计费在网关这条路上只覆盖 Gemini 的一部分：
+`gemini-3.7-flash`、`3.5-flash`、`3.5-flash-lite`、`3-flash`、`3.1-pro`（不带 `-preview`
+的写法）都不覆盖。要全系 Gemini 就用直连那条（`· Google` 结尾的那些）。
 
 ---
 
-## 4 · 为什么模型 id 长这样
+## 4 · 模型 id 为什么长这样
 
-`aigw:anthropic/claude-sonnet-4.6` 拆成三段：
+`aigw:anthropic/claude-haiku-4-5` 拆成三段：
 
 - `aigw:` —— 应用内部的路由前缀，选择器里看不到。
 - `anthropic` —— **厂商段**。它决定用哪种请求格式，不只是个标签。
-- `claude-sonnet-4.6` —— Cloudflare 写法的模型名。**注意是点不是横杠**，Anthropic 自己写
-  `claude-sonnet-4-6`。我们不做翻译，照抄 Cloudflare 的写法，翻译只会翻出 bug。
+- `claude-haiku-4-5` —— **厂商自己的写法**。
 
-厂商段决定的那件事：网关虽然叫「OpenAI 兼容」，但只对一部分厂商成立。实测下来是三条线：
+第三段有个坑：Cloudflare 的 REST API 把这个模型叫 `claude-haiku-4.5`（点），
+但自定义域这条路是把模型名**原样**转给厂商的，所以要用 Anthropic 自己的
+`claude-haiku-4-5`（横杠）。写错了 Anthropic 会亲自提醒你：
+`model: claude-sonnet-4.6 was not found. Did you mean claude-sonnet-4-6?`
 
-| 厂商段 | 走哪条 | 实测到的坑 |
-| --- | --- | --- |
-| `anthropic/` | Anthropic Messages | chat/completions 会把 OpenAI 格式的 `tools` 原样丢给 Anthropic，直接被拒 |
-| `openai/` | OpenAI Responses | 整个 GPT-5.6 系列在 chat/completions 上一律 `Invalid value at input` |
-| 其他（含 `@cf/`） | OpenAI Chat Completions | 正常 |
+厂商段决定的那件事——实测下来是三条线：
 
-代码里就是 `coworker/providers/aigateway_provider.py` 的 `wire_for()`。
+| 厂商段 | 走哪条 | 前缀 | 实测到的坑 |
+| --- | --- | --- | --- |
+| `anthropic/` | `…/anthropic` + Messages | 剥掉 | — |
+| `openai/` | `…/openai/v1` + Responses | 剥掉 | GPT-5.6 带工具时 chat/completions 会被 OpenAI 自己拒绝 |
+| 其他 | `…/compat` + Chat Completions | **保留** | 没有前缀会得到 `2008 Invalid provider` |
+
+`/compat` 是真正的 OpenAI 兼容翻译层：OpenAI 形状的 `tools` 进去，标准 `tool_calls`
+出来，Anthropic 和 Gemini 都如此，`stream: true` 也是标准 SSE。
+
+代码里就是 `coworker/providers/aigateway_provider.py` 的 `wire_for()` 和
+`upstream_model()`。
 
 ---
 
@@ -157,41 +275,50 @@ npx wrangler whoami
 选择器里没有的也可以手填（**添加自定义模型**），格式就是上表那种 `厂商/模型名`。
 Cloudflare 的完整目录在 <https://developers.cloudflare.com/ai/models/>。
 
-目录里只有 **一个** 模型真的用不了：`thinkingmachines/inkling`。它回的是
-`This model is not available via unified billing. Please use BYOK.`——真不在统一计费里。
-要用就在网关里存一把 Thinking Machines 自己的 key（**alias 必须叫 `default`**，别的 alias
-在统一计费这条路上不生效），然后手填 id，代码不用改。
+但**目录里有不等于这条路上能用**。判断的唯一可靠办法是看网关日志里的 `wholesale` 字段：
 
-BytePlus / 火山方舟、Meta Muse Spark 那几个是**目录里根本没有**，不是配置问题。
+- `wholesale: true` —— 这次请求走了统一计费，能用。
+- `wholesale: false` —— 网关决定不替这个模型付钱，于是把请求裸转给厂商，
+  厂商回一句缺凭据的错。**这是覆盖范围的问题，不是你配置错了**，配 BYOK 才能用。
 
-### ⚠ 402 有两个意思，别搞混
+Gemini 那句 `Missing or invalid Authorization header` 就是这么来的——听着像鉴权问题，
+实际是覆盖问题。
 
-这一条是踩出来的：起初有三个旗舰（`gpt-5.6-sol`、`claude-fable-5`、`claude-opus-4.8`）
-被判定为「不在统一计费里」而没有进列表，**结论是错的**。它们只是在密集探测下撞了限流，
-放慢速度后全部 200、正常计费。
+### ⚠ 三种误读探测结果的方式
 
-两句话状态码都是 402，都以 BYOK 结尾，但意思相反：
+判断一个模型能不能用时，这三个都踩过：
 
-| 正文 | 含义 | 怎么办 |
+| 现象 | 看着像 | 实际是 |
 | --- | --- | --- |
-| `This model is not available via unified billing.` | 永久性，真的不覆盖 | 配 BYOK |
-| `Wholesale rate limit exceeded for this gateway.` | 临时性，共享池忙 | 等几秒重试 |
+| 402 `Wholesale rate limit exceeded` | 不覆盖 | 共享池忙，等几秒重试 |
+| 402 `not available via unified billing` | 同上 | 这个才是真不覆盖 |
+| 2002 `Failed to parse model output` | 模型坏了 | 空补全。Gemini 会先思考再回答，`max_tokens` 给小了就没输出，给 800 再试 |
+| 400 `User Input Error`（图片） | 不支持看图 | 图片本身的问题，1×1 的 PNG 会被直接拒 |
+| 200 但 `cached: true` | 成功 | 缓存重放，这次请求根本没发生 |
 
-统一计费的池子是**按模型共享**的，越贵越热门的型号越容易撞。应用会把这两句分开翻译。
-判断一个模型能不能用，**一定要看正文，不能只看状态码**，而且要一个一个慢慢试。
-正文在网关日志里存着（Logs ▸ 点开某条 ▸ `response_head`）。
-
-如果某个模型你们天天用、天天撞限流，那才是配 BYOK 的正当理由——存了自己的 key 就不跟别人
-挤同一个池子。
+统一计费的池子是**按模型共享**的，越贵越热门越容易撞。所以**探测要一个一个慢慢来**，
+密集打会把好模型测成坏的。正文在网关日志里存着（Logs ▸ 点开某条 ▸ `response_head`）。
 
 ---
 
 ## 6 · 看用量
 
-**AI** ▸ **AI Gateway** ▸ `openworker-agw` ▸ Logs / Analytics。每条请求都有模型、token 数、
-耗时、缓存命中。按 token 分不了人——除非 1.3 节说的「每人一把命名 token」你照做了。
+### 6.1 按人看花了多少
 
-费用在 Billing 页，和 Logs 是同一份数据的两种看法。
+**AI** ▸ **AI Gateway** ▸ `openworker-agw` ▸ **用户洞察**。因为流量是从 Access 保护的
+自定义域进来的，每条请求都带着登录者的身份，这一页会直接列出每个人的花费、token 数、
+最常用的模型。不需要客户端上报任何东西。
+
+**日志** 页可以按同样的身份筛选。
+
+### 6.2 给每个人单独的预算
+
+网关的 **成本限制** ▸ 新增规则 ▸ **Limit by metadata**，键填 `cf.user_id`，
+选 **Split by value**，然后设金额和时间窗。这样每个人拿到的是各自独立的预算，
+不是大家抢一个池子。
+
+> 注意语义会变：原来 `$X/天` 是全员合计，改成 split 之后是**每人** `$X/天`。
+> 别直接沿用旧数字。
 
 ---
 
@@ -199,13 +326,14 @@ BytePlus / 火山方舟、Meta Muse Spark 那几个是**目录里根本没有**�
 
 | 现象 | 多半是 |
 | --- | --- |
-| 测试报「Cloudflare 拒绝了这个 token」 | token 抄错，或者权限选成了 AI Gateway 而不是 **Workers AI ▸ Read** |
-| 测试报「Cloudflare 上没有这个账号 ID」 | 账号 ID 抄错。跑 `npx wrangler whoami` 对一下 |
-| 测试报「没有 AI Gateway 额度」 | 去 Billing 充值 |
-| 报「不在 AI Gateway 额度覆盖范围内」 | 真的不覆盖，只有 inkling 是这种。见第 5 节 |
+| 测试报「Access 会话无效」 | 会话过期了，重跑 `cloudflared access token` 再粘一次 |
+| 测试报「这个地址上没有网关」 | 网关地址抄错，或者自定义域还没生效 |
+| 测试报「额度用完了」 | 去 Billing 充值 |
+| `403 Your request was blocked.` | 边缘的「阻止 AI 机器人」打的，不是 Access。见 1.5 |
 | 报「共享容量忙」 | 临时的，等几秒重试；天天撞就配 BYOK 独占一个池子 |
-| 调用成功但 Logs 里没有 | 网关名填错了，请求落到账号的 `default` 网关去了 |
-| 一切正常但没走网关 | 同上。网关名留空就是有意用默认网关 |
+| 模型报缺 Authorization | 这个模型不在统一计费覆盖里，见第 5 节 |
+| 「用户洞察」是空的 | 流量没走自定义域，或者用的是 service token（它的身份是空的） |
+| 调用成功但日志里没有 | 走到账号的 `default` 网关去了——地址填错了 |
 
 ---
 
@@ -214,5 +342,6 @@ BytePlus / 火山方舟、Meta Muse Spark 那几个是**目录里根本没有**�
 - [01-管理员初始化手册](./01-管理员初始化手册.md) —— Gemini 中转那一套
 - [03-用户手册](./03-用户手册.md) —— 装应用、登录、日常使用
 - Cloudflare 官方：[AI Gateway](https://developers.cloudflare.com/ai-gateway/)、
-  [REST API](https://developers.cloudflare.com/ai-gateway/usage/rest-api/)、
+  [Cloudflare Access](https://developers.cloudflare.com/ai-gateway/configuration/cloudflare-access/)、
+  [自定义域](https://developers.cloudflare.com/ai-gateway/configuration/custom-domains/)、
   [Unified Billing](https://developers.cloudflare.com/ai-gateway/features/unified-billing/)

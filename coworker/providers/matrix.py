@@ -20,10 +20,12 @@ Resellers: Together + Fireworks + OpenRouter. TODO: add Groq entries here AND it
 descriptor in ``registry.py`` once the current provider surface is tested — deliberately
 deferred to bound how much needs verifying at once.
 
-``aigw:`` rows reach the same labs through Cloudflare AI Gateway on one Cloudflare token
-instead of one key per vendor (``aigateway_provider.py``). Their ids are Cloudflare's own
-``author/model`` strings, kept verbatim rather than translated from the vendor spelling —
-the author segment is what selects the request wire.
+``aigw:`` rows reach OpenAI, Anthropic and Google through the shared account's Cloudflare
+AI Gateway instead of one key per vendor (``aigateway_provider.py``), billed against that
+account's Unified Billing credits. Their ids are Cloudflare's own ``author/model`` strings,
+kept verbatim rather than translated from the vendor spelling — the author segment is what
+selects the request wire. The gateway carries far more than these three labs; the narrow
+scope is an owner call, see the section comment.
 """
 
 from __future__ import annotations
@@ -255,19 +257,25 @@ MATRIX: dict[str, ModelEntry] = {
         "Qwen3 Coder · Vertex AI", _AGENTIC, 256_000
     ),
     # -- Cloudflare AI Gateway ----------------------------------------------------
-    # Same labs as above, reached on ONE Cloudflare token and billed against the
-    # account's prepaid AI Gateway credits — no per-vendor key to hand out, and the
-    # gateway's dashboard shows who spent what. Ids are Cloudflare's `author/model`
+    # Reached through the account's AI Gateway and billed against its prepaid Unified
+    # Billing credits — no per-vendor key to hand out, and the gateway's own User
+    # Insights page attributes spend per person. Ids are Cloudflare's `author/model`
     # strings verbatim (note the dots where Anthropic itself writes dashes); the author
     # segment picks the request wire, see `aigateway_provider.wire_for`.
     #
-    # Every row below was called live on 2026-08-23 with a tool definition attached and
-    # answered 200. Context windows come from the vendor row they mirror, or from the
-    # Workers AI catalog's own `context_window` property for the `@cf/` rows.
+    # Scope is deliberately narrow: the three labs whose models people here actually ask
+    # for, and only their text and vision models. The gateway carries a dozen more
+    # authors plus Workers AI, and image/TTS/realtime models on top of that; carrying all
+    # of it turned the picker into a catalog nobody could navigate. Anything dropped is
+    # one matrix row away from coming back.
     #
-    # Google is deliberately absent even though the gateway carries it: this fork already
-    # reaches Gemini through its own relay, and two routes to one vendor in one picker is
-    # a support ticket waiting to happen.
+    # Every row below was called live on 2026-08-23 and answered 200 — with a tool
+    # definition attached, and for the Google rows an inline image part as well;
+    # gemini-3.5-flash's logged response body carries a real `tool_calls` entry.
+    #
+    # The GPT-5.6 tiers only answer on the Responses wire. On chat/completions OpenAI
+    # itself refuses: "Function tools with reasoning_effort are not supported for
+    # gpt-5.6-sol in /v1/chat/completions." That is why `wire_for` exists.
     "aigw:openai/gpt-5.6-sol": ModelEntry(
         "GPT-5.6 Sol · via Cloudflare", _AGENTIC_IMAGE, 400_000
     ),
@@ -277,80 +285,72 @@ MATRIX: dict[str, ModelEntry] = {
     "aigw:openai/gpt-5.6-luna": ModelEntry(
         "GPT-5.6 Luna · via Cloudflare", _AGENTIC_IMAGE, 400_000
     ),
-    "aigw:openai/gpt-5.5": ModelEntry(
-        "GPT-5.5 · via Cloudflare", _AGENTIC_IMAGE, 400_000
+    # Opus 5 and Sonnet 5 exist only on the gateway — the direct `anthropic:` rows above
+    # are still on the 4.x line. No vendor page was read for their context windows, so
+    # they stay None and the GUI's fill meter hides rather than inventing a denominator.
+    "aigw:anthropic/claude-opus-5": ModelEntry(
+        "Claude Opus 5 · via Cloudflare", _AGENTIC_IMAGE
+    ),
+    "aigw:anthropic/claude-sonnet-5": ModelEntry(
+        "Claude Sonnet 5 · via Cloudflare", _AGENTIC_IMAGE
     ),
     "aigw:anthropic/claude-fable-5": ModelEntry(
         "Claude Fable 5 · via Cloudflare", _AGENTIC_IMAGE, 1_000_000
     ),
-    "aigw:anthropic/claude-opus-4.8": ModelEntry(
-        "Claude Opus 4.8 · via Cloudflare", _AGENTIC_IMAGE, 200_000
-    ),
-    "aigw:anthropic/claude-sonnet-4.6": ModelEntry(
-        "Claude Sonnet 4.6 · via Cloudflare", _AGENTIC_IMAGE, 200_000
-    ),
-    "aigw:anthropic/claude-haiku-4.5": ModelEntry(
+    # Dashes, not the dots Cloudflare's REST API uses: on the gateway's own domain the
+    # model id is forwarded to Anthropic untouched. Anthropic says so itself — "model:
+    # claude-sonnet-4.6 was not found. Did you mean claude-sonnet-4-6?".
+    "aigw:anthropic/claude-haiku-4-5": ModelEntry(
         "Claude Haiku 4.5 · via Cloudflare", _AGENTIC_IMAGE, 200_000
     ),
-    "aigw:xai/grok-4.3": ModelEntry("Grok 4.3 · via Cloudflare", _AGENTIC, 256_000),
-    "aigw:deepseek/deepseek-v4-pro": ModelEntry(
-        "DeepSeek V4 Pro · via Cloudflare", _AGENTIC, 128_000
-    ),
-    "aigw:deepseek/deepseek-v4-flash": ModelEntry(
-        "DeepSeek V4 Flash · via Cloudflare", _AGENTIC, 128_000
-    ),
-    "aigw:moonshotai/kimi-k2.6": ModelEntry(
-        "Kimi K2.6 · via Cloudflare", _AGENTIC, 256_000
-    ),
-    "aigw:moonshotai/kimi-k3": ModelEntry(
-        "Kimi K3 · via Cloudflare", _AGENTIC, 1_000_000
-    ),
-    "aigw:alibaba/qwen3-max": ModelEntry(
-        "Qwen3 Max · via Cloudflare", _AGENTIC, 256_000
-    ),
-    # MiniMax M2.5 (the direct-vendor row above) is not in Cloudflare's catalog; M2.7 and
-    # M3 are its successors there. Neither vendor page was re-read for a window, so the
-    # context meter hides rather than guessing.
-    "aigw:minimax/m2.7": ModelEntry("MiniMax M2.7 · via Cloudflare", _AGENTIC),
-    "aigw:minimax/m3": ModelEntry("MiniMax M3 · via Cloudflare", _AGENTIC),
-    # Workers AI models — same gateway, same token, but Cloudflare's own hosting rather
-    # than a passthrough to the lab. Kept because they cover matrix entries the
-    # third-party side of the gateway does not carry.
-    "aigw:@cf/zai-org/glm-5.2": ModelEntry(
-        "GLM-5.2 · via Cloudflare", _AGENTIC, 262_144
-    ),
-    "aigw:@cf/moonshotai/kimi-k2.7-code": ModelEntry(
-        "Kimi K2.7 Code · via Cloudflare", _AGENTIC, 262_144
-    ),
-    "aigw:@cf/qwen/qwen3.8-27b": ModelEntry(
-        "Qwen3.8 27B · via Cloudflare", _AGENTIC, 262_144
-    ),
-    "aigw:@cf/nvidia/nemotron-3-120b-a12b": ModelEntry(
-        "Nemotron 3 120B · via Cloudflare", _AGENTIC, 256_000
-    ),
-    # Cloudflare hosts Llama 4 Scout, not the Maverick the reseller rows above carry.
-    "aigw:@cf/meta/llama-4-scout-17b-16e-instruct": ModelEntry(
-        "Llama 4 Scout · via Cloudflare", _AGENTIC, 131_000
-    ),
-    # Stands in for the Mistral Large row above: Cloudflare has no `mistral/` third-party
-    # author at all, only this Workers AI build. A smaller model, named honestly.
-    "aigw:@cf/mistralai/mistral-small-3.1-24b-instruct": ModelEntry(
-        "Mistral Small 3.1 · via Cloudflare", _AGENTIC, 128_000
-    ),
-    # Deliberately NOT listed, both confirmed 2026-08-23 by calling them:
-    #   thinkingmachines/inkling — the one model that really is off Unified Billing;
-    #     it answers "This model is not available via unified billing. Please use BYOK."
-    #     Store a Thinking Machines key on the gateway and it works as a custom model.
-    #   meta/muse-spark, ark/*, ark-agent-plan-cn/* — no such author in the catalog.
+    # Gemini 3.x and up only (owner call), and note the `google-ai-studio/` author — on
+    # this host `google/` answers `2008 Invalid provider`. The prefix is not decoration:
+    # `/compat` needs it to pick a provider, so unlike the two wires above it is sent
+    # upstream intact (`aigateway_provider.upstream_model`).
     #
-    # A WARNING for whoever refreshes this list. HTTP 402 here means two different
-    # things, and only the response body tells them apart:
-    #     "This model is not available via unified billing."      → really unavailable
-    #     "Wholesale rate limit exceeded for this gateway."        → just busy
-    # The wholesale pool is shared per model and the top tiers saturate fast, so probing
-    # in a burst makes perfectly good models look unavailable — three rows above were
-    # wrongly cut on exactly that mistake. Re-probe one at a time before deleting a row,
-    # and read the body (the gateway's own log keeps it under `response_head`).
+    # THIS IS A SHORTER LIST THAN THE `gemini:` ROWS ABOVE, deliberately. Cloudflare's
+    # Unified Billing covers only part of the line on this path, and the gateway's own log
+    # says which: a `wholesale: false` entry means it declined to bill the request and
+    # proxied it bare, at which point Google answers "Missing or invalid Authorization
+    # header" — an error about credentials that is really about coverage. Confirmed
+    # uncovered here, twice each with caching off: 3-flash, 3.1-pro, 3.5-flash,
+    # 3.5-flash-lite, 3.7-flash. Re-probe before assuming that is still true.
+    #
+    # Two of the four keep the `-preview` suffix Google's own API still carries. That is
+    # the vendor's spelling and this path forwards it verbatim; dropping it 404s.
+    #
+    # Both routes to Gemini are kept on purpose: the direct one is cheaper for whoever
+    # has a personal Google discount and carries the full line, the gateway one is what a
+    # colleague on the shared account gets. The label says which is which.
+    "aigw:google-ai-studio/gemini-3.6-flash": ModelEntry(
+        "Gemini 3.6 Flash · via Cloudflare", _AGENTIC_IMAGE, 1_048_576
+    ),
+    "aigw:google-ai-studio/gemini-3.1-pro-preview": ModelEntry(
+        "Gemini 3.1 Pro · via Cloudflare", _AGENTIC_IMAGE, 1_048_576
+    ),
+    "aigw:google-ai-studio/gemini-3.1-flash-lite": ModelEntry(
+        "Gemini 3.1 Flash-Lite · via Cloudflare", _AGENTIC_IMAGE, 1_048_576
+    ),
+    "aigw:google-ai-studio/gemini-3-flash-preview": ModelEntry(
+        "Gemini 3 Flash · via Cloudflare", _AGENTIC_IMAGE, 1_048_576
+    ),
+    # THREE WAYS TO MISREAD A PROBE, all three paid for once already. Before you delete
+    # a row because it "does not work", rule these out — and read the response body, not
+    # the status code. The gateway's own log keeps the body under `response_head`
+    # (GET /accounts/{id}/ai-gateway/gateways/{gw}/logs/{log_id}).
+    #
+    #   HTTP 402 means two different things, and only the body says which:
+    #       "This model is not available via unified billing."   → really unavailable
+    #       "Wholesale rate limit exceeded for this gateway."    → just busy
+    #     The wholesale pool is shared per model and the top tiers saturate fast, so
+    #     probing in a burst makes perfectly good models look dead. Go one at a time.
+    #
+    #   2002 "Failed to parse model output" is usually an empty completion, not a broken
+    #     model: the Gemini rows think before answering and the thinking spends
+    #     `max_tokens`. Give a probe 800 tokens before concluding anything.
+    #
+    #   "User Input Error" on a vision probe is usually the image. A 1x1 PNG is rejected
+    #     outright; a real one goes through.
 }
 
 

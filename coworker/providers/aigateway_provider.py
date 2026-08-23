@@ -1,39 +1,55 @@
-"""Cloudflare AI Gateway — one Cloudflare token, many vendors' models.
+"""Cloudflare AI Gateway — GPT, Claude and Gemini on one Access login.
 
-Cloudflare's AI REST API fronts OpenAI, Anthropic, xAI, DeepSeek, Alibaba, MiniMax,
-Moonshot and Cloudflare's own Workers AI behind a single host, billed against the
-account's prepaid AI Gateway credits (Unified Billing). For this fork that solves the
-same problem the Gemini relay solves — mainland China cannot reach most vendors
-directly — but for every vendor at once, and without handing each colleague a
-per-vendor API key: they get one Cloudflare token, and the gateway's own dashboard
-shows who spent what.
+The gateway sits on a custom domain of the company's own zone (`gateway.smjtools.com`)
+with Cloudflare Access in front of it. That single choice decides everything else in this
+module:
 
-**Three wires, not one.** The endpoint family is OpenAI-shaped in name only; each
-provider keeps its native request schema, verified against the live API 2026-08-23:
+  * **No API token anywhere.** Access is the authentication. Cloudflare's own words:
+    "The client does not need to send an AI Gateway token for that request." Each caller
+    presents their personal Access session and nothing else — verified 2026-08-23, a
+    request carrying only `cf-access-token` returns 200 with real billed cost. Colleagues
+    therefore need no Cloudflare credential of their own, which is the whole point: an
+    `AI Gateway Run` token cannot be scoped to one gateway, so per-person tokens would
+    have bought an audit trail and no isolation at all.
+  * **Spend is attributed per person for free.** Access stamps the authenticated user
+    onto every request as `cf.user_id`, which drives the gateway's User Insights page and
+    per-user spend limits. Nothing has to be passed from the client.
+  * **Billing is the account's.** Third-party models are paid from the account's prepaid
+    Unified Billing credits; no per-vendor key is stored on the gateway.
 
-  anthropic/*   → POST {base}/v1/messages          Anthropic Messages
-                  (OpenAI-style `{"type": "function"}` tools are rejected outright —
-                   the gateway forwards `tools` to Anthropic unchanged)
-  openai/*      → POST {base}/v1/responses         OpenAI Responses
-                  (chat/completions answers "Invalid value at input" for the whole
-                   GPT-5.6 family; Responses serves them fine)
-  everything    → POST {base}/v1/chat/completions  OpenAI Chat Completions
-  else            (deepseek, xai, alibaba, minimax, moonshotai, and @cf/… Workers AI)
+**Three wires, and the model id is spelled differently on each.** This is the part that
+bites. Every path below was called live against the real gateway on 2026-08-23:
 
-Those are the three wires this app already speaks, so this module is a dispatcher over
-the existing providers rather than a fourth implementation. Streaming and tool calling
-were confirmed on all three.
+    author        wire         URL                              model sent upstream
+    ───────────────────────────────────────────────────────────────────────────────
+    anthropic/    messages     {base}/anthropic  (+ /v1/messages) prefix STRIPPED,
+                                                                  vendor spelling
+    openai/       responses    {base}/openai/v1  (+ /responses)   prefix STRIPPED
+    everything    chat         {base}/compat (+ /chat/completions) prefix KEPT —
+    else                                                          `/compat` requires it
 
-**Model ids are the gateway's, verbatim** — `aigw:anthropic/claude-sonnet-4.6`, not the
-vendor's own spelling. The author segment is what selects the wire, and Cloudflare's
-spelling differs from the vendor's often enough (dots for dashes on Claude) that
-translating would be a bug factory. See `matrix.py` for the curated set.
+`/compat` is a genuine OpenAI-compatible translation layer, not a router: OpenAI-shaped
+`tools` go in and standard `tool_calls` come out even for Anthropic, and `stream: true`
+returns ordinary SSE. It still cannot serve the GPT-5.6 tiers with tools, because OpenAI
+itself refuses — "Function tools with reasoning_effort are not supported for gpt-5.6-sol
+in /v1/chat/completions. To use function tools, use /v1/responses" — which is why the
+`responses` wire exists rather than collapsing everything onto `/compat`.
 
-**HTTP 402 means two different things here**, and only the body says which: a model that
-is genuinely off Unified Billing ("not available via unified billing"), or the shared
-wholesale pool for that model simply being busy ("wholesale rate limit exceeded"). The
-second is transient and the flagships hit it easily. `errors.py` keeps them apart; do not
-conclude a model is unavailable from the status code alone.
+**Vendor spelling, not Cloudflare's.** On this host the gateway forwards the model id to
+the vendor untouched, so Anthropic wants dashes where Cloudflare's REST API writes dots:
+`claude-haiku-4-5`, not `claude-haiku-4.5`. Anthropic says so itself — "model:
+claude-sonnet-4.6 was not found. Did you mean claude-sonnet-4-6?". The matrix carries the
+spelling that goes on the wire, so nothing here translates.
+
+**The SDKs' placeholder credentials are harmless.** Both SDKs insist on *some* key and
+will send `Authorization: Bearer …` / `x-api-key: …`; the gateway ignores them whenever
+Unified Billing applies (checked with a deliberate junk value on all three wires).
+
+**Reading a failure.** `errors.py` keeps the two meanings of 402 apart. Beyond that, the
+gateway's own log is the source of truth: `GET /accounts/{id}/ai-gateway/gateways/{gw}/
+logs` carries a `wholesale` field saying whether Unified Billing was applied to that
+exact request, and a `cached` field — the gateway's response cache will happily replay a
+previous answer and make a broken probe look healthy.
 """
 
 from __future__ import annotations
@@ -44,39 +60,76 @@ from typing import Any, Optional
 from .base import ModelCapabilities, ProviderClient
 from .capabilities import capabilities_for
 
-# The AI REST API lives under the account, not on gateway.ai.cloudflare.com. The older
-# `/{gateway}/compat/chat/completions` host is documented as deprecated for single-model
-# calls and is not a Unified Billing endpoint — it needs a provider key per request.
-API_ROOT = "https://api.cloudflare.com/client/v4"
+ENV_BASE_URL = "CLOUDFLARE_AIGW_BASE_URL"
+ENV_ACCESS_TOKEN = "CLOUDFLARE_AIGW_ACCESS_TOKEN"
 
-ENV_ACCOUNT_ID = "CLOUDFLARE_ACCOUNT_ID"
-ENV_API_TOKEN = "CLOUDFLARE_API_TOKEN"
-ENV_GATEWAY_ID = "CLOUDFLARE_AI_GATEWAY_ID"
+# The Test button's probe. Cheap, and on the wire most likely to be misconfigured
+# (`/compat`, where the provider prefix has to survive).
+PROBE_MODEL = "anthropic/claude-haiku-4-5"
 
-# Cheapest text model in the Workers AI catalog — the Test button's one-token probe.
-PROBE_MODEL = "@cf/meta/llama-3.2-1b-instruct"
+# Access takes the session in this header; `cloudflared access token` prints exactly what
+# goes in it. Not `Authorization` — that slot belongs to the upstream vendor.
+ACCESS_HEADER = "cf-access-token"
+
+# Neither SDK will build a client without a credential, and the gateway ignores whatever
+# is in that slot. Named so it is obvious in a packet capture that it means nothing.
+_UNUSED_UPSTREAM_KEY = "unused-access-authenticates-this"
+
+# Both SDKs default to a User-Agent of the form `OpenAI/Python 1.2.3` / `Anthropic/Python
+# 1.2.3`, which Cloudflare's bot signatures classify as an AI crawler. On a zone with that
+# protection on, every request dies at the edge as `403 Your request was blocked.` — long
+# before Access, the gateway, or the model. Verified 2026-08-23: those two UAs 403 while
+# `openworker/…`, `curl/8.0` and even a bare `OpenAI` all pass.
+#
+# Saying who we actually are is the honest fix as well as the working one — the caller is
+# this app, not a generic SDK — and AI Gateway logs the user agent, so it doubles as
+# "which client sent this" in the gateway's own records.
+def _user_agent() -> str:
+    from .. import __version__
+
+    return f"openworker/{__version__}"
+
+_WIRE_PATHS = {
+    "messages": "/anthropic",
+    "responses": "/openai/v1",
+    "chat": "/compat",
+}
 
 
-def ai_base_url(account_id: str) -> str:
-    """Root the Anthropic SDK wants: it appends `/v1/messages` itself."""
-    return f"{API_ROOT}/accounts/{account_id.strip()}/ai"
+def normalise_base(base_url: str) -> str:
+    """Trim a pasted gateway URL down to its origin.
+
+    People paste whatever the dashboard showed them, which may carry a path. Everything
+    here is built by appending, so a stray `/compat` or trailing slash would produce
+    `…/compat/compat/chat/completions` and a 404 nobody enjoys diagnosing.
+    """
+    url = (base_url or "").strip().rstrip("/")
+    if not url:
+        return ""
+    if "://" not in url:
+        url = "https://" + url
+    scheme, _, rest = url.partition("://")
+    host, _, _path = rest.partition("/")
+    return f"{scheme}://{host}"
 
 
-def openai_base_url(account_id: str) -> str:
-    """Root the OpenAI SDK wants: it appends `/chat/completions` or `/responses`."""
-    return ai_base_url(account_id) + "/v1"
+def wire_url(base_url: str, wire: str) -> str:
+    """Base URL for one wire, in the form its SDK expects to append to."""
+    return normalise_base(base_url) + _WIRE_PATHS[wire]
 
 
-def gateway_headers(gateway_id: str) -> dict[str, str]:
-    """`cf-aig-gateway-id` picks the gateway. Required for Workers AI models; without it
-    third-party calls land in the account's auto-created `default` gateway, which has
-    none of the caching, rate limiting, or spend rules configured on ours."""
-    gid = (gateway_id or "").strip()
-    return {"cf-aig-gateway-id": gid} if gid else {}
+def access_headers(access_token: str) -> dict[str, str]:
+    """Everything this provider adds to a request: the Access session, and a User-Agent
+    that will not be mistaken for an AI crawler (see `_user_agent`)."""
+    headers = {"User-Agent": _user_agent()}
+    token = (access_token or "").strip()
+    if token:
+        headers[ACCESS_HEADER] = token
+    return headers
 
 
-def resolve_settings(profile: dict[str, Any]) -> tuple[str, str, str]:
-    """(account_id, api_token, gateway_id) from the stored profile, else the environment.
+def resolve_settings(profile: dict[str, Any]) -> tuple[str, str]:
+    """(base_url, access_token) from the stored profile, else the environment.
 
     Same precedence as every other provider — an explicitly saved value wins, and the env
     vars let a headless/CI run work without touching the SecretStore.
@@ -86,19 +139,15 @@ def resolve_settings(profile: dict[str, Any]) -> tuple[str, str, str]:
     def pick(key: str, env: str) -> str:
         return (str(p.get(key) or "").strip()) or os.environ.get(env, "").strip()
 
-    return (
-        pick("account_id", ENV_ACCOUNT_ID),
-        pick("api_token", ENV_API_TOKEN),
-        pick("gateway_id", ENV_GATEWAY_ID),
-    )
+    return (pick("base_url", ENV_BASE_URL), pick("access_token", ENV_ACCESS_TOKEN))
 
 
 def wire_for(model: str) -> str:
     """Which of the three request schemas this gateway model id needs.
 
-    Keyed on the author segment, because that is what Cloudflare routes on. Workers AI
-    ids (`@cf/zai-org/glm-5.2`) have `@cf` as their author and take Chat Completions,
-    which is also the fallback for every author we have not special-cased.
+    Keyed on the author segment, because that is what the gateway routes on. Anything not
+    special-cased takes Chat Completions on `/compat`, which is where Gemini lives
+    (`google-ai-studio/…`) along with every other provider the gateway fronts.
     """
     author = model.split("/", 1)[0].strip().lower() if "/" in model else ""
     if author == "anthropic":
@@ -108,35 +157,51 @@ def wire_for(model: str) -> str:
     return "chat"
 
 
+def upstream_model(model: str, wire: str) -> str:
+    """The model id as the upstream endpoint wants to see it.
+
+    The provider-native wires talk to the vendor's own API, which has never heard of
+    Cloudflare's `author/` namespace and 404s on it. `/compat` is the opposite: the prefix
+    is how it picks a provider, and without one it answers `2008 Invalid provider`.
+    """
+    if wire == "chat":
+        return model
+    _author, _, bare = model.partition("/")
+    return bare or model
+
+
 class AIGatewayProvider(ProviderClient):
     """Routes each model to the sub-client whose wire the gateway expects for it."""
 
     def __init__(
         self,
         *,
-        account_id: str = "",
-        api_token: str = "",
-        gateway_id: str = "",
+        base_url: str = "",
+        access_token: str = "",
         thinking_budget: Optional[int] = None,
         clients: Optional[dict[str, ProviderClient]] = None,
     ):
-        # Sub-clients are built eagerly (they are cheap dataclass-ish wrappers whose own SDK
-        # clients stay lazy), so a missing credential surfaces on the first real call with
+        # Sub-clients are built lazily per wire (they are cheap wrappers whose own SDK
+        # clients stay lazy too), so a missing setting surfaces on the first real call with
         # this provider's own message rather than OpenAI's. Tests inject `clients`.
-        self._account_id = (account_id or "").strip()
-        self._api_token = (api_token or "").strip()
-        self._gateway_id = (gateway_id or "").strip()
+        self._base_url = normalise_base(base_url)
+        self._access_token = (access_token or "").strip()
         self._thinking_budget = thinking_budget
         self._clients: dict[str, ProviderClient] = dict(clients or {})
 
     def _build(self, wire: str) -> ProviderClient:
-        if not self._account_id or not self._api_token:
-            missing = "account ID" if not self._account_id else "API token"
+        if not self._base_url:
             raise RuntimeError(
-                f"Cloudflare AI Gateway is missing its {missing} — add it in "
+                "Cloudflare AI Gateway is missing its gateway address — add it in "
                 "Settings ▸ Models."
             )
-        headers = gateway_headers(self._gateway_id)
+        if not self._access_token:
+            raise RuntimeError(
+                "Cloudflare AI Gateway has no Access session — sign in again in "
+                "Settings ▸ Models."
+            )
+        headers = access_headers(self._access_token)
+        base = wire_url(self._base_url, wire)
         if wire == "messages":
             from .anthropic_provider import AnthropicProvider, DEFAULT_THINKING_BUDGET
 
@@ -146,31 +211,30 @@ class AIGatewayProvider(ProviderClient):
                 else self._thinking_budget
             )
             return AnthropicProvider(
-                base_url=ai_base_url(self._account_id),
-                auth_token=self._api_token,
+                base_url=base,
+                auth_token=_UNUSED_UPSTREAM_KEY,
                 default_headers=headers,
                 thinking_budget=budget,
-                # Off here: the beta names its fallback by Anthropic's own model id
-                # (`claude-opus-4-8`), which is not what the gateway calls that model
-                # (`anthropic/claude-opus-4.8`), and whether the gateway serves the beta
-                # endpoint at all is unverified. Consequence, since Fable 5 IS available
-                # here: a safety-classifier refusal surfaces as an error instead of being
-                # silently re-served on Opus, the way the direct Anthropic path does it.
+                # Off here: the beta names its fallback by a bare Anthropic model id and
+                # whether the gateway serves that beta endpoint at all is unverified.
+                # Consequence, since Fable 5 IS available here: a safety-classifier refusal
+                # surfaces as an error instead of being silently re-served on Opus, the way
+                # the direct Anthropic path does it.
                 refusal_fallback=False,
             )
         if wire == "responses":
             from .openai_responses import OpenAIResponsesProvider
 
             return OpenAIResponsesProvider(
-                api_key=self._api_token,
-                base_url=openai_base_url(self._account_id),
+                api_key=_UNUSED_UPSTREAM_KEY,
+                base_url=base,
                 default_headers=headers,
             )
         from .openai_provider import OpenAIProvider
 
         return OpenAIProvider(
-            api_key=self._api_token,
-            base_url=openai_base_url(self._account_id),
+            api_key=_UNUSED_UPSTREAM_KEY,
+            base_url=base,
             default_headers=headers,
         )
 
@@ -191,8 +255,9 @@ class AIGatewayProvider(ProviderClient):
         tools: Optional[list[dict[str, Any]]] = None,
         **settings: Any,
     ):
+        wire = wire_for(model)
         return self._client_for(model).complete(
-            model=model, messages=messages, tools=tools, **settings
+            model=upstream_model(model, wire), messages=messages, tools=tools, **settings
         )
 
     def stream(
@@ -203,8 +268,9 @@ class AIGatewayProvider(ProviderClient):
         tools: Optional[list[dict[str, Any]]] = None,
         **settings: Any,
     ):
+        wire = wire_for(model)
         return self._client_for(model).stream(
-            model=model, messages=messages, tools=tools, **settings
+            model=upstream_model(model, wire), messages=messages, tools=tools, **settings
         )
 
     def capabilities(self, model: str) -> ModelCapabilities:

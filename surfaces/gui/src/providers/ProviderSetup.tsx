@@ -28,7 +28,9 @@ export const KEY_HELP: Record<string, { url: string; label: string }> = {
   anthropic: { url: "https://console.anthropic.com/settings/keys", label: "console.anthropic.com" },
   openai: { url: "https://platform.openai.com/api-keys", label: "platform.openai.com" },
   gemini: { url: "https://aistudio.google.com/apikey", label: "aistudio.google.com" },
-  aigw: { url: "https://dash.cloudflare.com/profile/api-tokens", label: "dash.cloudflare.com" },
+  // No entry for `aigw` on purpose: there is no key to fetch. It authenticates with the
+  // user's own Access login against a gateway address their administrator gives them, so
+  // a "get your API key here" link would send them somewhere with nothing to collect.
   ark: { url: "https://console.byteplus.com/ark/region:ark+ap-southeast-1/apiKey", label: "console.byteplus.com" },
   "ark-agent-plan-cn": { url: "https://console.volcengine.com/ark/region:cn-beijing/openManagement?LLM=%7B%7D&advancedActiveKey=agentPlan", label: "console.volcengine.com" },
   openrouter: { url: "https://openrouter.ai/keys", label: "openrouter.ai" },

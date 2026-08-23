@@ -25,8 +25,9 @@ from typing import Any, Callable, Optional
 from .aigateway_provider import (
     AIGatewayProvider,
     PROBE_MODEL,
-    openai_base_url,
+    access_headers,
     resolve_settings,
+    wire_url,
 )
 from .anthropic_provider import AnthropicProvider
 from .base import ProviderClient
@@ -192,11 +193,11 @@ def _build_vertex(profile: dict[str, Any], secrets: Any) -> ProviderClient:
 
 
 def _build_aigw(profile: dict[str, Any], secrets: Any) -> ProviderClient:
-    # No SecretStore fallback and no shared key: the Cloudflare token is meaningless to
-    # every other provider, and every other provider's key is meaningless here. Missing
-    # values are tolerated at build time (same deferred contract as the rest) — the
-    # provider names what is missing on the first real call.
-    account_id, api_token, gateway_id = resolve_settings(profile or {})
+    # No SecretStore fallback and no shared key: an Access session is meaningless to every
+    # other provider, and every other provider's key is meaningless here. Missing values
+    # are tolerated at build time (same deferred contract as the rest) — the provider names
+    # what is missing on the first real call.
+    base_url, access_token = resolve_settings(profile or {})
     # thinking_budget: same hidden override as the direct Anthropic provider, applied to
     # the gateway's Claude rows. Absent/invalid → the Anthropic default.
     try:
@@ -204,9 +205,8 @@ def _build_aigw(profile: dict[str, Any], secrets: Any) -> ProviderClient:
     except ValueError:
         thinking_budget = None
     return AIGatewayProvider(
-        account_id=account_id,
-        api_token=api_token,
-        gateway_id=gateway_id,
+        base_url=base_url,
+        access_token=access_token,
         thinking_budget=thinking_budget,
     )
 
@@ -574,39 +574,30 @@ DESCRIPTORS: list[ProviderDescriptor] = [
         needs_key=True,
         fields=[
             ProviderField(
-                "account_id",
-                "Cloudflare account ID",
+                "base_url",
+                "Gateway address",
                 secret=False,
-                help="32 hex characters. On any zone's Overview page in the dashboard, "
-                "or run `wrangler whoami`.",
+                placeholder="https://gateway.example.com",
+                help="The gateway's own domain, from your administrator. Just the "
+                "host — the paths are added for you.",
             ),
             ProviderField(
-                "api_token",
-                "Cloudflare API token",
+                "access_token",
+                "Access session",
                 secret=True,
-                help="My Profile ▸ API Tokens ▸ Create Token ▸ Custom token. One "
-                "permission: Account ▸ Workers AI ▸ Read. (An AI Gateway permission "
-                "is NOT enough — it 401s.)",
-            ),
-            ProviderField(
-                "gateway_id",
-                "Gateway name",
-                secret=False,
-                required=False,
-                default="openworker-agw",
-                placeholder="openworker-agw",
-                help="Which gateway logs, caches and rate-limits these calls. Leave "
-                "blank to fall back to the account's default gateway.",
+                help="Sign in with your work email, then paste the session here. From "
+                "a terminal: `cloudflared access login <gateway address>` once, then "
+                "`cloudflared access token -app=<gateway address>`.",
             ),
         ],
         build=_build_aigw,
         # Not the flagship, unlike every other provider's recommendation. Fable 5 and
-        # Opus 4.8 both work here, but this is one shared prepaid balance for the whole
+        # Opus 5 both work here, but this is one shared prepaid balance for the whole
         # company and Fable 5 costs roughly 7x Sonnet per token — a default everyone
         # inherits is the wrong place to spend that. Anyone who wants it just picks it.
-        recommended_model="anthropic/claude-sonnet-4.6",
-        blurb="One Cloudflare token instead of one key per vendor — OpenAI, Claude, "
-        "Grok, DeepSeek, Qwen and more, billed from your AI Gateway credits.",
+        recommended_model="anthropic/claude-sonnet-5",
+        blurb="Sign in with your work email — no API key of your own. GPT, Claude and "
+        "Gemini, billed to the shared account.",
     ),
     # Ark has two intentionally separate provider identities. BytePlus pay-as-you-go and
     # Volcengine Agent Plan use different regions, endpoints, credentials, and model catalogs;
@@ -794,66 +785,75 @@ def detect_provider(api_key: str) -> Optional[str]:
 
 
 def _verify_aigw(fields: dict[str, Any], timeout: float) -> dict[str, Any]:
-    """One-token generation against the cheapest Workers AI model.
+    """One short generation through the gateway's own domain.
 
-    There is no read-only probe that proves what actually matters here. Listing gateways
-    needs an AI Gateway Read permission the app never uses, so a token scoped correctly
-    for inference would fail the test and a token that passes it might still not infer.
-    A real (sub-cent) completion exercises the whole path — token, account, gateway
-    header, billing — which is the same bet the Ark descriptor makes.
+    There is no read-only probe worth running here. The thing most likely to be wrong is
+    the Access session — expired, or copied from a different app — and Access answers a
+    HEAD the same way it answers anything else. A real (sub-cent) completion exercises the
+    whole path at once: Access, the custom domain, the `/compat` prefix rule, and Unified
+    Billing. Same bet the Ark descriptor makes.
+
+    `cf-aig-skip-cache` matters more than it looks: the gateway caches responses, so
+    without it a second Test press can replay the first one and report success against a
+    session that has since expired.
     """
     import httpx
 
-    from .aigateway_provider import gateway_headers
-
-    account_id, api_token, gateway_id = resolve_settings(fields or {})
-    if not account_id:
-        return {"ok": False, "error": "Enter your Cloudflare account ID."}
-    if not api_token:
-        return {"ok": False, "error": "Enter a Cloudflare API token."}
-    headers = {"Authorization": f"Bearer {api_token}"}
-    headers.update(gateway_headers(gateway_id))
+    base_url, access_token = resolve_settings(fields or {})
+    if not base_url:
+        return {"ok": False, "error": "Enter the gateway address."}
+    if not access_token:
+        return {"ok": False, "error": "Sign in to get an Access session."}
+    headers = access_headers(access_token)
+    headers["cf-aig-skip-cache"] = "true"
     try:
         resp = httpx.post(
-            openai_base_url(account_id) + "/chat/completions",
+            wire_url(base_url, "chat") + "/chat/completions",
             headers=headers,
             json={
                 "model": PROBE_MODEL,
                 "messages": [{"role": "user", "content": "Reply with OK."}],
-                "max_tokens": 1,
+                "max_tokens": 16,
             },
             timeout=timeout,
         )
     except Exception as exc:
         return {
             "ok": False,
-            "error": f"Couldn't reach Cloudflare ({exc.__class__.__name__}).",
+            "error": f"Couldn't reach the gateway ({exc.__class__.__name__}). Check the "
+            "address.",
         }
     if resp.status_code < 300:
         return {"ok": True}
     body = (resp.text or "").lower()
-    if resp.status_code in (401, 403):
+    # Access answers an unauthenticated request with its own HTML login page, not JSON —
+    # so a 302/403 here is nearly always a stale session rather than anything upstream.
+    if resp.status_code in (301, 302, 401, 403) or "cloudflare access" in body:
         return {
             "ok": False,
-            "error": "Cloudflare rejected the token — check it, and that it grants "
-            "Account ▸ Workers AI ▸ Read on this account. An AI Gateway permission "
-            "alone is not enough.",
+            "error": "Your Access session isn't valid — sign in again to refresh it. "
+            "(Sessions expire; this is the usual cause.)",
         }
     if resp.status_code == 404 or "could not route" in body:
-        return {"ok": False, "error": "No such account ID on Cloudflare."}
-    if "gateway" in body and "not found" in body:
+        return {"ok": False, "error": "No gateway at that address — check the host."}
+    if "invalid provider" in body:
         return {
             "ok": False,
-            "error": f"The token works, but this account has no gateway named "
-            f"'{gateway_id}'.",
+            "error": "The gateway is reachable but rejected the model's provider "
+            "prefix. This is an app bug, not a setting — please report it.",
         }
     if resp.status_code == 402 or "credit" in body:
         return {
             "ok": False,
-            "error": "The token works, but the account has no AI Gateway credits — "
-            "top up in AI ▸ AI Gateway ▸ Billing.",
+            "error": "You're signed in, but the shared account is out of AI Gateway "
+            "credits — ask your administrator to top up.",
         }
-    return {"ok": False, "error": f"Cloudflare returned HTTP {resp.status_code}."}
+    if resp.status_code == 429:
+        return {
+            "ok": False,
+            "error": "Rate limited right now — wait a moment and press Test again.",
+        }
+    return {"ok": False, "error": f"The gateway returned HTTP {resp.status_code}."}
 
 
 def _verify_bedrock(fields: dict[str, Any], timeout: float) -> dict[str, Any]:

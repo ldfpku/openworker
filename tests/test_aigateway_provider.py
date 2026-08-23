@@ -1,11 +1,12 @@
 """Cloudflare AI Gateway provider — wire dispatch, credential plumbing, curated ids.
 
 Deliberately offline. WHICH model ids the gateway serves was settled by calling the live
-API (the findings are recorded in `matrix.py`); a test cannot re-litigate that without a
-token and a bill. What can regress silently is everything around it: sending Anthropic a
-request shaped for OpenAI, dropping the `cf-aig-gateway-id` header so calls land in the
-wrong gateway, or reading `anthropic/claude-haiku-4.5` as an unknown Claude family and
-picking a thinking config it rejects. Those are what these cover.
+API (the findings are recorded in `matrix.py`); a test cannot re-litigate that without an
+Access session and a bill. What can regress silently is everything around it: sending
+Anthropic a request shaped for OpenAI, forwarding a model id with the `author/` prefix on
+a wire that 404s on it (or stripping it on the one wire that requires it), or reading
+`anthropic/claude-haiku-4-5` as an unknown Claude family and picking a thinking config it
+rejects. Those are what these cover.
 """
 
 from __future__ import annotations
@@ -15,11 +16,12 @@ import pytest
 from coworker.providers import capabilities_for
 from coworker.providers.aigateway_provider import (
     AIGatewayProvider,
-    ai_base_url,
-    gateway_headers,
-    openai_base_url,
+    access_headers,
+    normalise_base,
     resolve_settings,
+    upstream_model,
     wire_for,
+    wire_url,
 )
 from coworker.providers.anthropic_provider import (
     AnthropicProvider,
@@ -37,13 +39,12 @@ from coworker.providers.registry import (
 )
 from coworker.providers.router import ProviderRouter
 
-ACCOUNT = "0" * 32
+BASE = "https://gateway.example.com"
+SESSION = "access-jwt"
 
 
 def _provider(**kw) -> AIGatewayProvider:
-    return AIGatewayProvider(
-        account_id=ACCOUNT, api_token="cf-token", gateway_id="openworker-agw", **kw
-    )
+    return AIGatewayProvider(base_url=BASE, access_token=SESSION, **kw)
 
 
 # -- wire selection ----------------------------------------------------------------
@@ -81,67 +82,127 @@ def test_sub_clients_are_cached_per_wire_not_per_model():
 # -- credentials and routing headers -----------------------------------------------
 
 
-def test_openai_wires_get_the_v1_base_and_the_gateway_header():
+def test_each_wire_gets_its_own_path_under_the_gateway_domain():
+    # Each SDK appends its own suffix, so these bases stop at different depths: the
+    # Anthropic SDK adds `/v1/messages`, the OpenAI ones add `/responses` and
+    # `/chat/completions`. Off-by-one here is a 404 nobody enjoys diagnosing.
     p = _provider()
-    for model in ("openai/gpt-5.5", "@cf/zai-org/glm-5.2"):
-        client = p._client_for(model)
-        assert client._base_url == openai_base_url(ACCOUNT)
-        assert client._base_url.endswith("/ai/v1")
-        assert client._api_key == "cf-token"
-        assert client._default_headers == {"cf-aig-gateway-id": "openworker-agw"}
+    assert p._client_for("anthropic/claude-haiku-4-5")._base_url == BASE + "/anthropic"
+    assert p._client_for("openai/gpt-5.6-sol")._base_url == BASE + "/openai/v1"
+    assert (
+        p._client_for("google-ai-studio/gemini-3.6-flash")._base_url == BASE + "/compat"
+    )
 
 
-def test_anthropic_wire_uses_bearer_auth_and_the_unsuffixed_base():
-    # The Anthropic SDK appends `/v1/messages` itself, so its base stops at `/ai` — and it
-    # authenticates with a bearer token here, not the `x-api-key` header a real Anthropic
-    # key would use. Getting either wrong is a 404 or a 401, not a subtle bug, but both
-    # are one keystroke away.
-    client = _provider()._client_for("anthropic/claude-haiku-4.5")
-    assert client._base_url == ai_base_url(ACCOUNT)
-    assert client._base_url.endswith("/ai")
-    assert client._auth_token == "cf-token"
-    assert client._api_key is None
-    assert client._default_headers == {"cf-aig-gateway-id": "openworker-agw"}
+def test_every_wire_authenticates_with_the_access_session_only():
+    # Access is the authentication; the SDKs' own credential slots carry a placeholder
+    # the gateway ignores. A real token appearing in any of them would be a regression
+    # towards the per-person-token design this replaced.
+    p = _provider()
+    for model in ("anthropic/claude-haiku-4-5", "openai/gpt-5.6-sol", "x/y"):
+        assert p._client_for(model)._default_headers["cf-access-token"] == SESSION
+    assert p._client_for("openai/gpt-5.6-sol")._api_key != SESSION
+    anthropic = p._client_for("anthropic/claude-haiku-4-5")
+    assert anthropic._api_key is None and anthropic._auth_token != SESSION
 
 
-def test_no_gateway_name_means_no_header_rather_than_an_empty_one():
-    # An empty `cf-aig-gateway-id` is not the same as omitting it; Cloudflare falls back
-    # to the account's default gateway only when the header is absent.
-    assert gateway_headers("") == {}
-    assert gateway_headers("  ") == {}
-    client = AIGatewayProvider(account_id=ACCOUNT, api_token="t")._client_for("xai/x")
-    assert client._default_headers is None
+def test_access_header_is_omitted_rather_than_sent_empty():
+    assert "cf-access-token" not in access_headers("")
+    assert "cf-access-token" not in access_headers("  ")
+
+
+def test_the_sdk_user_agent_is_replaced_on_every_wire():
+    # `OpenAI/Python …` and `Anthropic/Python …` match Cloudflare's AI-crawler bot
+    # signatures; on a protected zone the edge answers 403 "Your request was blocked."
+    # before Access even runs. Verified live 2026-08-23 — this override is what makes the
+    # provider work at all there, so it is asserted rather than left to a comment.
+    p = _provider()
+    for model in ("anthropic/claude-haiku-4-5", "openai/gpt-5.6-sol", "x/y"):
+        ua = p._client_for(model)._default_headers["User-Agent"]
+        assert ua.startswith("openworker/")
+        assert "/Python" not in ua
 
 
 @pytest.mark.parametrize(
     "kwargs,missing",
     [
-        ({"account_id": "", "api_token": "t"}, "account ID"),
-        ({"account_id": ACCOUNT, "api_token": ""}, "API token"),
+        ({"base_url": "", "access_token": "t"}, "gateway address"),
+        ({"base_url": BASE, "access_token": ""}, "Access session"),
     ],
 )
-def test_missing_credentials_say_which_one(kwargs, missing):
+def test_missing_settings_say_which_one(kwargs, missing):
     p = AIGatewayProvider(**kwargs)
     with pytest.raises(RuntimeError, match=missing):
-        p._client_for("xai/grok-4.3")
+        p._client_for("x/y")
+
+
+@pytest.mark.parametrize(
+    "pasted",
+    [
+        "https://gateway.example.com",
+        "https://gateway.example.com/",
+        # What the dashboard actually shows people, and what they paste.
+        "https://gateway.example.com/compat/chat/completions",
+        "gateway.example.com",
+    ],
+)
+def test_a_pasted_url_is_trimmed_back_to_its_origin(pasted):
+    assert normalise_base(pasted) == BASE
+    assert wire_url(pasted, "chat") == BASE + "/compat"
 
 
 def test_profile_beats_environment(monkeypatch):
-    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "env-account")
-    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "env-token")
-    monkeypatch.setenv("CLOUDFLARE_AI_GATEWAY_ID", "env-gateway")
-    assert resolve_settings({"account_id": ACCOUNT, "api_token": "tok"}) == (
-        ACCOUNT,
-        "tok",
-        "env-gateway",  # not in the profile, so the env still supplies it
+    monkeypatch.setenv("CLOUDFLARE_AIGW_BASE_URL", "https://env.example.com")
+    monkeypatch.setenv("CLOUDFLARE_AIGW_ACCESS_TOKEN", "env-session")
+    assert resolve_settings({"base_url": BASE}) == (
+        BASE,
+        "env-session",  # not in the profile, so the env still supplies it
     )
 
 
 def test_environment_fills_in_an_empty_profile(monkeypatch):
-    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "env-account")
-    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "env-token")
-    monkeypatch.delenv("CLOUDFLARE_AI_GATEWAY_ID", raising=False)
-    assert resolve_settings({}) == ("env-account", "env-token", "")
+    monkeypatch.setenv("CLOUDFLARE_AIGW_BASE_URL", "https://env.example.com")
+    monkeypatch.setenv("CLOUDFLARE_AIGW_ACCESS_TOKEN", "env-session")
+    assert resolve_settings({}) == ("https://env.example.com", "env-session")
+
+
+@pytest.mark.parametrize(
+    "model,sent",
+    [
+        # Provider-native wires reach the vendor's own API, which has never heard of
+        # Cloudflare's `author/` namespace.
+        ("anthropic/claude-haiku-4-5", "claude-haiku-4-5"),
+        ("openai/gpt-5.6-sol", "gpt-5.6-sol"),
+        # `/compat` is the opposite: the prefix is how it picks a provider, and without
+        # one it answers `2008 Invalid provider`.
+        ("google-ai-studio/gemini-3.6-flash", "google-ai-studio/gemini-3.6-flash"),
+        ("bare-model-no-author", "bare-model-no-author"),
+    ],
+)
+def test_the_prefix_is_stripped_on_exactly_the_wires_that_reject_it(model, sent):
+    assert upstream_model(model, wire_for(model)) == sent
+
+
+def test_the_transformed_id_is_what_reaches_the_sub_client():
+    # The stripping is useless if `complete`/`stream` forward the routed id anyway.
+    seen: dict[str, Any] = {}
+
+    class Spy:
+        def complete(self, *, model, messages, tools=None, **kw):
+            seen["complete"] = model
+
+        def stream(self, *, model, messages, tools=None, **kw):
+            seen["stream"] = model
+
+    p = AIGatewayProvider(
+        base_url=BASE,
+        access_token=SESSION,
+        clients={"messages": Spy(), "chat": Spy()},
+    )
+    p.complete(model="anthropic/claude-haiku-4-5", messages=[])
+    p.stream(model="google-ai-studio/gemini-3.6-flash", messages=[])
+    assert seen["complete"] == "claude-haiku-4-5"
+    assert seen["stream"] == "google-ai-studio/gemini-3.6-flash"
 
 
 # -- model ids ----------------------------------------------------------------------
@@ -150,6 +211,8 @@ def test_environment_fills_in_an_empty_profile(monkeypatch):
 def test_router_hands_the_provider_the_gateway_id_verbatim():
     # The gateway's own id must survive routing intact — including the `@cf/` publisher
     # segment, whose slashes must not be mistaken for anything the router should strip.
+    # `@cf/` models are no longer curated, but a user can still type one as a custom id,
+    # and that is exactly the shape most likely to break the split.
     router = ProviderRouter()
     assert router._provider_name("aigw:@cf/zai-org/glm-5.2") == "aigw"
     assert router._bare("aigw:@cf/zai-org/glm-5.2") == "@cf/zai-org/glm-5.2"
@@ -165,29 +228,63 @@ def test_every_curated_gateway_row_is_an_author_qualified_id():
         assert MATRIX[full_id].label.endswith("· via Cloudflare")
 
 
-def test_no_google_models_ride_the_gateway():
-    # Gemini already has its own relay in this fork; two routes to one vendor in one
-    # picker is the support ticket this exclusion exists to prevent.
+def test_gateway_rows_stay_within_the_three_curated_labs():
+    # Owner call: the gateway carries a dozen authors plus Workers AI, and adding rows is
+    # a one-line temptation. The picker is the thing being protected, so the boundary is
+    # asserted rather than left to review.
     for full_id in MATRIX:
-        if full_id.startswith("aigw:"):
-            assert "google" not in full_id and "gemini" not in full_id
+        if not full_id.startswith("aigw:"):
+            continue
+        author = full_id.split(":", 1)[1].split("/", 1)[0]
+        assert author in {"openai", "anthropic", "google-ai-studio"}, full_id
+
+
+def test_gateway_rows_are_text_and_vision_only():
+    # No image-generation, TTS, transcription or realtime models: this app drives them as
+    # chat models and would mislabel anything else. Every row is tool-capable too — a
+    # model that cannot call tools is useless to the agent loop.
+    for full_id in MATRIX:
+        if not full_id.startswith("aigw:"):
+            continue
+        caps = capabilities_for(full_id)
+        assert caps.tools and caps.streaming and caps.vision, full_id
+        bare = full_id.split(":", 1)[1]
+        assert not any(
+            marker in bare
+            for marker in ("tts", "whisper", "image", "-live", "realtime", "embed")
+        ), full_id
+
+
+def test_gateway_gemini_rows_are_a_subset_of_the_direct_ones():
+    # Same spelling on both routes, `-preview` suffixes and all — this path forwards the
+    # id to Google verbatim. But a strict SUBSET, not a copy: Unified Billing covers only
+    # part of the line here (see the matrix comment), and 2.5 is deliberately direct-only.
+    # A new gateway row that is not also a direct row is almost certainly a typo.
+    direct_3x = {
+        m.split(":", 1)[1] for m in MATRIX if m.startswith("gemini:gemini-3")
+    }
+    gateway = {
+        m.split("/", 1)[1] for m in MATRIX if m.startswith("aigw:google-ai-studio/")
+    }
+    assert gateway and gateway <= direct_3x, sorted(gateway - direct_3x)
+    assert not any(m.startswith("aigw:google-ai-studio/gemini-2") for m in MATRIX)
 
 
 @pytest.mark.parametrize(
-    "model,vision",
+    "model",
     [
-        ("aigw:anthropic/claude-sonnet-4.6", True),
-        ("aigw:openai/gpt-5.5", True),
-        ("aigw:@cf/zai-org/glm-5.2", False),
-        ("aigw:xai/grok-4.3", False),
+        "aigw:anthropic/claude-sonnet-5",
+        "aigw:openai/gpt-5.6-sol",
+        "aigw:google-ai-studio/gemini-3.6-flash",
     ],
 )
-def test_curated_capabilities(model, vision):
+def test_curated_capabilities(model):
+    assert model in MATRIX
     caps = capabilities_for(model)
-    assert caps.tools and caps.streaming
-    assert caps.vision is vision
+    assert caps.tools and caps.streaming and caps.vision
     # Inline PDF parts were never probed on the gateway, so none of these claim it —
-    # pdf_support.py rasterizes instead, which needs vision, not pdf.
+    # pdf_support.py rasterizes instead, which needs vision, not pdf. Note the `gemini:`
+    # rows DO claim pdf; the gateway ones deliberately do not.
     assert caps.pdf is False
 
 
@@ -289,7 +386,7 @@ def test_the_flagships_are_curated_not_written_off():
     for mid in (
         "aigw:openai/gpt-5.6-sol",
         "aigw:anthropic/claude-fable-5",
-        "aigw:anthropic/claude-opus-4.8",
+        "aigw:anthropic/claude-opus-5",
     ):
         assert mid in MATRIX, f"{mid} works on Unified Billing — verified 2026-08-23"
 
@@ -307,26 +404,26 @@ def test_descriptor_is_registered_with_a_curated_default():
     assert f"aigw:{d.recommended_model}" in MATRIX
 
 
-def test_both_credentials_are_required_before_the_provider_counts_as_set_up():
+def test_both_settings_are_required_before_the_provider_counts_as_set_up():
     d = get_descriptor("aigw")
-    assert descriptor_configured(d, {"account_id": ACCOUNT, "api_token": "t"}) is True
-    # A token with no account has nowhere to go; the gateway name is optional.
-    assert descriptor_configured(d, {"api_token": "t"}) is False
-    assert descriptor_configured(d, {"account_id": ACCOUNT}) is False
+    assert descriptor_configured(d, {"base_url": BASE, "access_token": "t"}) is True
+    # A session with no address has nowhere to go, and vice versa.
+    assert descriptor_configured(d, {"access_token": "t"}) is False
+    assert descriptor_configured(d, {"base_url": BASE}) is False
 
 
 @pytest.mark.parametrize(
     "fields,expected",
     [
-        ({}, "account ID"),
-        ({"account_id": ACCOUNT}, "API token"),
+        ({}, "gateway address"),
+        ({"base_url": BASE}, "Access session"),
     ],
 )
 def test_test_button_reports_missing_fields_without_a_round_trip(
     fields, expected, monkeypatch
 ):
-    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
-    monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_AIGW_BASE_URL", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_AIGW_ACCESS_TOKEN", raising=False)
     monkeypatch.setattr(
         "httpx.post",
         lambda *a, **k: pytest.fail("verify should not call out with fields missing"),
