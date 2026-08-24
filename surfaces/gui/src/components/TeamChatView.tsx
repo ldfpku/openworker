@@ -3,7 +3,9 @@
 // posts as [User] (which wakes every member; agent posts wake mentions only).
 // No derived board-event clusters (owner call, eighth pass): status lives on the
 // board rail one click away — this surface is pure messages.
+import { isComposing } from "../ime";
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { getTeamChat, postTeamChat, type TeamChat } from "../api";
 import { Icon } from "./Icon";
 
@@ -29,6 +31,7 @@ function clock(ts: string): string {
 }
 
 export function TeamChatView({ teamId, onClose }: { teamId: string; onClose: () => void }) {
+  const { t } = useTranslation();
   const [chat, setChat] = useState<TeamChat | null>(null);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -45,7 +48,7 @@ export function TeamChatView({ teamId, onClose }: { teamId: string; onClose: () 
   }, [chat?.messages.length]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape" && !isComposing(e)) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -72,26 +75,34 @@ export function TeamChatView({ teamId, onClose }: { teamId: string; onClose: () 
     // the sidebar stays interactive; back or Esc returns to the session.
     <div className="chat-view" data-testid="teamchat-view">
       <div className="chat-view-head">
-        <button className="artifact-icon-btn" onClick={onClose} aria-label="Back to session" title="Back">
+        <button
+          className="artifact-icon-btn"
+          onClick={onClose}
+          aria-label={t("Back to session")}
+          title={t("Back")}
+        >
           <Icon name="arrowLeft" size={16} />
         </button>
         <div className="board-overlay-title">
           <span className="chat-hash">#</span>
-          <span>team chat</span>
-          <span className="board-overlay-space">questions &amp; consensus — status lives on the board</span>
+          <span>{t("team chat")}</span>
+          <span className="board-overlay-space">
+            {t("questions & consensus — status lives on the board")}
+          </span>
         </div>
       </div>
       <div className="chat-view-body">
         <div className="chat-scroll">
           {messages.length === 0 && (
             <div className="chat-empty">
-              No messages yet. Agents post here only when something needs a reply —
-              @mention a coworker to reach it.
+              {t(
+                "No messages yet. Agents post here only when something needs a reply — @mention a coworker to reach it.",
+              )}
             </div>
           )}
           {messages.map((m, i) => {
             const grouped = i > 0 && messages[i - 1].author === m.author;
-            const label = m.author_role === "user" ? "You" : m.author;
+            const label = m.author_role === "user" ? t("You") : m.author;
             return (
               <div className={"chat-msg" + (grouped ? " grouped" : "")} key={m.seq}>
                 {!grouped && (
@@ -114,15 +125,16 @@ export function TeamChatView({ teamId, onClose }: { teamId: string; onClose: () 
           <input
             className="chat-input"
             data-testid="chat-input"
-            placeholder="Message # team chat…  (posts as you — every member sees it)"
+            placeholder={t("Message # team chat…  (posts as you — every member sees it)")}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
+              if (isComposing(e)) return;
               if (e.key === "Enter") send();
             }}
           />
           <button className="btn primary" data-testid="chat-send" disabled={busy || !draft.trim()} onClick={send}>
-            Send
+            {t("Send")}
           </button>
         </div>
       </div>

@@ -1,3 +1,4 @@
+import { isComposing } from "../ime";
 import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { InboxItem } from "../api";
@@ -203,6 +204,7 @@ function QuestionBlock({ spec, onAnswer }: { spec: QSpec; onAnswer: (a: string) 
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
+              if (isComposing(e)) return;
               if (e.key === "Enter" && text.trim()) onAnswer(text);
             }}
           />

@@ -1,3 +1,4 @@
+import { isComposing } from "../ime";
 import { useRef, useState } from "react";
 import { useEffect } from "react";
 import {
@@ -191,7 +192,7 @@ export function SkillsTab({
               <div
                 role="menu"
                 className="absolute right-0 top-full mt-1.5 w-80 rounded-xl2 border border-line bg-panel shadow-xl z-20 p-1.5"
-                onKeyDown={(e) => e.key === "Escape" && setAddOpen(false)}
+                onKeyDown={(e) => e.key === "Escape" && !isComposing(e) && setAddOpen(false)}
               >
                 <button
                   role="menuitem"

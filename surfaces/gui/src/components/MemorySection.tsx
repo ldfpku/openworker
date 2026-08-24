@@ -1,3 +1,4 @@
+import { isComposing } from "../ime";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -236,6 +237,7 @@ function MemoryRow({ entry, onChanged }: { entry: MemoryEntry; onChanged: () => 
           autoFocus
           className="w-full px-3 py-2 rounded-lg border border-line bg-paper text-[13px] text-ink outline-none focus:border-accent resize-y leading-relaxed"
           onKeyDown={(e) => {
+            if (isComposing(e)) return;
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               void save();

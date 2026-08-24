@@ -1,3 +1,4 @@
+import { isComposing } from "../ime";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { Persona } from "../api";
@@ -65,6 +66,8 @@ export function SearchModal({
   };
 
   const onKey = (e: React.KeyboardEvent) => {
+    // Escape / the arrows / Enter all drive the IME's candidate list while it is up.
+    if (isComposing(e)) return;
     if (e.key === "Escape") {
       e.preventDefault();
       onClose();

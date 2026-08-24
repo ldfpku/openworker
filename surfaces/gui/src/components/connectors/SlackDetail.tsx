@@ -1,3 +1,4 @@
+import { isComposing } from "../../ime";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -448,7 +449,7 @@ function PersonPicker({
             value={q}
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Escape") setOpen(false);
+              if (e.key === "Escape" && !isComposing(e)) setOpen(false);
             }}
           />
           <div className="max-h-56 overflow-y-auto py-1">

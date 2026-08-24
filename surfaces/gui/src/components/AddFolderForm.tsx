@@ -1,3 +1,4 @@
+import { isComposing } from "../ime";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { chooseFolder } from "../tauri";
@@ -63,6 +64,7 @@ export function AddFolderForm({
           spellCheck={false}
           onChange={(e) => setPath(e.target.value)}
           onKeyDown={(e) => {
+            if (isComposing(e)) return;
             if (e.key === "Enter") submit();
             else if (e.key === "Escape") reset();
           }}

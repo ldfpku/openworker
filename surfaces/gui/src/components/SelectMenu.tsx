@@ -1,3 +1,4 @@
+import { isComposing } from "../ime";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Icon } from "./Icon";
@@ -28,7 +29,7 @@ export function SelectMenu({
   const [open, setOpen] = useState(false);
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && !isComposing(e) && setOpen(false);
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [open]);

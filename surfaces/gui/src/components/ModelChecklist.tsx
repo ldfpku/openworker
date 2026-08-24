@@ -1,3 +1,4 @@
+import { isComposing } from "../ime";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { addModel, getSettings, removeModel, setDefaultModel } from "../api";
@@ -134,7 +135,7 @@ export function ModelChecklist({
           spellCheck={false}
           autoComplete="off"
           onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && add()}
+          onKeyDown={(e) => e.key === "Enter" && !isComposing(e) && add()}
         />
         <button className="btn-primary sm" onClick={add} disabled={!draft.trim()}>
           {t("Add")}

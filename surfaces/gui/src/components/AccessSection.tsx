@@ -9,6 +9,7 @@
 // row before it. Deep links (intro "Configure ›", onboarding "Start working") bump `openKey`
 // to expand it and scroll it into view.
 
+import { isComposing } from "../ime";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -339,7 +340,7 @@ export function AccessSection({
                       value={query}
                       onChange={(e) => setQuery(e.target.value)}
                       onKeyDown={(e) => {
-                        if (e.key === "Escape") {
+                        if (e.key === "Escape" && !isComposing(e)) {
                           setAdding(false);
                           setQuery("");
                         }

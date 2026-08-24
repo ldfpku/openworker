@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import { useTranslation } from "react-i18next";
 import type { Attachment, SessionUsage } from "../types";
 import { isPdfFile, readFile } from "../attach";
+import { isComposing } from "../ime";
 import { getSettings, inspectPdf, sessionSkills, type SessionSkillRow } from "../api";
 import { formatTokens, totalTokens } from "../usage";
 import { Dropdown, type Option } from "./Dropdown";
@@ -358,6 +359,9 @@ export function Composer(props: Props) {
   };
 
   const onKey = (e: React.KeyboardEvent) => {
+    // Mid-composition every key below belongs to the input method, not to us: Enter commits
+    // the candidate, the arrows move through it, Escape cancels it. Bail before any of them.
+    if (isComposing(e)) return;
     if (slashQuery !== null) {
       if (e.key === "ArrowDown") {
         e.preventDefault();

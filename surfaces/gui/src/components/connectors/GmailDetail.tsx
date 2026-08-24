@@ -1,3 +1,4 @@
+import { isComposing } from "../../ime";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -221,6 +222,7 @@ function ChipListRow({
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
+            if (isComposing(e)) return;
             if (e.key === "Enter") add();
           }}
           onBlur={() => draft.trim() && add()}

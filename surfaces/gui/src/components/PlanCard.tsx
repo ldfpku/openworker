@@ -1,3 +1,4 @@
+import { isComposing } from "../ime";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { Item } from "../types";
@@ -38,6 +39,7 @@ export function PlanCard({
             autoFocus
             onChange={(e) => setFeedback(e.target.value)}
             onKeyDown={(e) => {
+              if (isComposing(e)) return;
               if (e.key === "Enter" && feedback.trim()) onRespond(false, undefined, feedback.trim());
             }}
           />

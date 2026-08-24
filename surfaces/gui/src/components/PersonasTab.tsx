@@ -1,3 +1,4 @@
+import { isComposing } from "../ime";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -292,7 +293,7 @@ export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) =>
                   placeholder="https://github.com/acme/ops-coworker"
                   value={src}
                   onChange={(e) => setSrc(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && install()}
+                  onKeyDown={(e) => e.key === "Enter" && !isComposing(e) && install()}
                 />
                 <button className={BTN_ACCENT} disabled={busy || !src.trim()} onClick={install}>
                   {busy ? "Installing…" : "Install"}

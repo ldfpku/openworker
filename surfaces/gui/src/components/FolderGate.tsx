@@ -1,3 +1,4 @@
+import { isComposing } from "../ime";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getRecentWorkspaces, openWorkspace, type RecentWorkspace } from "../api";
@@ -54,7 +55,7 @@ export function FolderGate({ onChoose, onCancel, create }: Props) {
             placeholder={t("/path/to/your/project")}
             value={path}
             onChange={(e) => setPath(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && open(path, create)}
+            onKeyDown={(e) => e.key === "Enter" && !isComposing(e) && open(path, create)}
             autoFocus
           />
           <button className="btn" onClick={browse} title={t("Pick a folder")}>

@@ -1,3 +1,4 @@
+import { isComposing } from "../ime";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -258,7 +259,7 @@ export function Sidebar(props: Props) {
   };
   useEffect(() => {
     if (!rowMenu) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && closeRowMenu();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && !isComposing(e) && closeRowMenu();
     // Scrolling an ANCESTOR of the anchor row detaches the fixed menu from it — dismiss.
     // Filter by containment: unrelated scrollers (the transcript auto-follow during a
     // streaming turn fires constantly) must not close the menu.
@@ -573,6 +574,7 @@ export function Sidebar(props: Props) {
             onBlur={commitRename}
             onKeyDown={(e) => {
               e.stopPropagation();
+              if (isComposing(e)) return;
               if (e.key === "Enter") commitRename();
               else if (e.key === "Escape") setEditingId(null);
             }}
@@ -648,6 +650,7 @@ export function Sidebar(props: Props) {
             onBlur={commitRename}
             onKeyDown={(e) => {
               e.stopPropagation();
+              if (isComposing(e)) return;
               if (e.key === "Enter") commitRename();
               else if (e.key === "Escape") setEditingId(null);
             }}

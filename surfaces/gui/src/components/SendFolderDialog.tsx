@@ -1,4 +1,6 @@
+import { isComposing } from "../ime";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { getRecentWorkspaces, openWorkspace, type RecentWorkspace } from "../api";
 import { chooseFolder } from "../tauri";
 import { baseName } from "../paths";
@@ -16,6 +18,7 @@ interface Props {
 }
 
 export function SendFolderDialog({ coworkerName, onPick, onTemp, onCancel }: Props) {
+  const { t } = useTranslation();
   const [recents, setRecents] = useState<RecentWorkspace[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -26,7 +29,7 @@ export function SendFolderDialog({ coworkerName, onPick, onTemp, onCancel }: Pro
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCancel();
+      if (e.key === "Escape" && !isComposing(e)) onCancel();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -36,7 +39,7 @@ export function SendFolderDialog({ coworkerName, onPick, onTemp, onCancel }: Pro
     setError("");
     const res = await openWorkspace(path);
     if (res.ok) onPick(res.path, res.git_branch);
-    else setError(res.error || "could not open that folder");
+    else setError(res.error || t("could not open that folder"));
   };
 
   const browse = async () => {
@@ -52,10 +55,10 @@ export function SendFolderDialog({ coworkerName, onPick, onTemp, onCancel }: Pro
         onClick={(e) => e.stopPropagation()}
       >
         <h3 className="text-[14.5px] font-semibold text-ink mb-1">
-          Where should {coworkerName} work?
+          {t("Where should {{name}} work?", { name: coworkerName })}
         </h3>
         <p className="text-[12.5px] text-muted mb-3">
-          Code work happens inside a folder — pick your project, or start somewhere temporary.
+          {t("Code work happens inside a folder — pick your project, or start somewhere temporary.")}
         </p>
         {recents
           .filter((w) => w.exists)
@@ -78,7 +81,7 @@ export function SendFolderDialog({ coworkerName, onPick, onTemp, onCancel }: Pro
             onClick={() => void browse()}
             disabled={busy}
           >
-            Choose a folder…
+            {t("Choose a folder…")}
           </button>
           <button
             className="flex-1 text-center text-[12.5px] px-2.5 py-2 rounded-lg bg-accent text-white font-semibold hover:opacity-95"
@@ -90,13 +93,14 @@ export function SendFolderDialog({ coworkerName, onPick, onTemp, onCancel }: Pro
             }}
             disabled={busy}
           >
-            Use temporary folder
+            {t("Use temporary folder")}
           </button>
         </div>
         {error && <div className="mt-2 text-[11.5px] text-warnInk">{error}</div>}
         <p className="text-[11px] text-faint mt-2.5">
-          A temporary folder is created only when you send, with git ready — you can save it as a
-          project later. Your message sends as soon as you choose.
+          {t(
+            "A temporary folder is created only when you send, with git ready — you can save it as a project later. Your message sends as soon as you choose.",
+          )}
         </p>
       </div>
     </div>

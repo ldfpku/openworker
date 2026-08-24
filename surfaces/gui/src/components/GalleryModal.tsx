@@ -1,3 +1,4 @@
+import { isComposing } from "../ime";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -93,7 +94,7 @@ export function GalleryModal({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape" && !isComposing(e)) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

@@ -8,8 +8,11 @@
 //    only: Mark done / Request changes… (review), Remove (queued), Reopen.
 // Both render the same Board data App owns; mutations go through the /board
 // endpoints and act as the USER.
+import { isComposing } from "../ime";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { Board, BoardItem, BoardItemDetail, BoardTimelineEvent } from "../api";
+import i18n from "../i18n";
 import { Icon } from "./Icon";
 
 // Rail display order: needs-attention first (mock UX-030: "blocked on top").
@@ -34,10 +37,11 @@ export function boardSummary(board: Board): string {
   const counts: Record<string, number> = {};
   for (const item of board.items) counts[item.state] = (counts[item.state] || 0) + 1;
   const parts: string[] = [];
-  if (counts.blocked) parts.push(`${counts.blocked} blocked`);
-  if (counts.review) parts.push(`${counts.review} review`);
-  if (counts.in_progress) parts.push(`${counts.in_progress} in progress`);
-  if (counts.open) parts.push(`${counts.open} open`);
+  if (counts.blocked) parts.push(i18n.t("{{count}} blocked", { count: counts.blocked }));
+  if (counts.review) parts.push(i18n.t("{{count}} review", { count: counts.review }));
+  if (counts.in_progress)
+    parts.push(i18n.t("{{count}} in progress", { count: counts.in_progress }));
+  if (counts.open) parts.push(i18n.t("{{count}} open", { count: counts.open }));
   return parts.join(" · ");
 }
 
@@ -51,6 +55,7 @@ export function BoardSection({
   // Row click deep-opens the overlay on that item's detail (falls back to expand).
   onOpenItem?: (id: number) => void;
 }) {
+  const { t } = useTranslation();
   // The rail shows ACTIVE work only (owner ruling 2026-08-16): a project board
   // outlives its sessions, so finished history from a past effort would greet
   // every fresh session as a long stale list. Done/canceled sit behind a quiet
@@ -72,18 +77,18 @@ export function BoardSection({
     <div className="board-rail" data-testid="board-rail">
       {groups.length === 0 && (
         <div className="board-rail-quiet" data-testid="board-rail-quiet">
-          No active work
+          {t("No active work")}
         </div>
       )}
       {groups.map((group) => (
         <div key={group.state}>
-          <div className="board-group">{group.label}</div>
+          <div className="board-group">{t(group.label)}</div>
           {group.items.map((item) => (
             <button
               className="board-row"
               key={item.id}
               onClick={() => (onOpenItem ? onOpenItem(item.id) : onExpand())}
-              title="Open item"
+              title={t("Open item")}
             >
               <span className={dotClass(item.state)} />
               <span className="board-row-main">
@@ -102,7 +107,9 @@ export function BoardSection({
           data-testid="board-finished-toggle"
           onClick={() => setShowFinished((v) => !v)}
         >
-          {showFinished ? "Hide finished" : `${finished} finished · show`}
+          {showFinished
+            ? t("Hide finished")
+            : t("{{count}} finished · show", { count: finished })}
         </button>
       )}
     </div>
@@ -140,11 +147,12 @@ export function BoardOverlay({
   onOpenWorker?: (actor: string) => void;
   initialItem?: number | null;
 }) {
+  const { t } = useTranslation();
   const [detail, setDetail] = useState<BoardItemDetail | null>(null);
   const [showFinished, setShowFinished] = useState(false);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape" && !isComposing(e)) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -191,7 +199,7 @@ export function BoardOverlay({
       <span className="board-lrow-end">
         {item.assignee}
         {item.state === "blocked" && (
-          <> · blocked{item.blocker ? `: ${item.blocker}` : ""}</>
+          <> · {item.blocker ? t("blocked: {{blocker}}", { blocker: item.blocker }) : t("blocked")}</>
         )}
       </span>
     </button>
@@ -203,10 +211,15 @@ export function BoardOverlay({
         <div className="board-overlay-head">
           <div className="board-overlay-title">
             <Icon name="table" size={16} />
-            <span>Board</span>
+            <span>{t("Board")}</span>
             <span className="board-overlay-space">{board.name}</span>
           </div>
-          <button className="artifact-icon-btn" onClick={onClose} aria-label="Close board" title="Close">
+          <button
+            className="artifact-icon-btn"
+            onClick={onClose}
+            aria-label={t("Close board")}
+            title={t("Close")}
+          >
             <Icon name="x" size={16} />
           </button>
         </div>
@@ -214,12 +227,12 @@ export function BoardOverlay({
           <div className="board-list">
             {sections.map((section) => (
               <div key={section.label}>
-                <div className="board-lsec">{section.label}</div>
+                <div className="board-lsec">{t(section.label)}</div>
                 {section.items.map(row)}
               </div>
             ))}
             {sections.length === 0 && (
-              <div className="board-rail-quiet">No active work</div>
+              <div className="board-rail-quiet">{t("No active work")}</div>
             )}
             {finished.length > 0 && (
               <>
@@ -229,12 +242,12 @@ export function BoardOverlay({
                   onClick={() => setShowFinished((v) => !v)}
                 >
                   {showFinished
-                    ? "Hide finished"
-                    : `${finished.length} finished · show`}
+                    ? t("Hide finished")
+                    : t("{{count}} finished · show", { count: finished.length })}
                 </button>
                 {showFinished && (
                   <div>
-                    <div className="board-lsec">Finished</div>
+                    <div className="board-lsec">{t("Finished")}</div>
                     {finished.map(row)}
                   </div>
                 )}
@@ -278,6 +291,7 @@ function ItemDetail({
   loadAttachment?: (stored: string) => Promise<string | null>;
   onOpenWorker?: (actor: string) => void;
 }) {
+  const { t } = useTranslation();
   // "Request changes…" discloses a comment box; the verdict rides the transition.
   const [changesOpen, setChangesOpen] = useState(false);
   const [changesText, setChangesText] = useState("");
@@ -292,7 +306,7 @@ function ItemDetail({
       </div>
       <div className="board-detail-meta">
         <span className={"board-detail-st st-" + detail.state}>
-          {STATE_LABEL[detail.state] || detail.state}
+          {STATE_LABEL[detail.state] ? t(STATE_LABEL[detail.state]) : detail.state}
         </span>
         {detail.assignee && (
           <>
@@ -302,7 +316,7 @@ function ItemDetail({
                 className="board-detail-worker"
                 data-testid="board-open-worker"
                 onClick={() => onOpenWorker(detail.assignee)}
-                title="Open this coworker's session"
+                title={t("Open this coworker's session")}
               >
                 {detail.assignee} ↗
               </button>
@@ -311,15 +325,15 @@ function ItemDetail({
             )}
           </>
         )}
-        {" · filed by "}
-        {detail.creator}
+        {" · "}
+        {t("filed by {{creator}}", { creator: detail.creator })}
       </div>
       {detail.description && (
         <div className="board-detail-desc">{detail.description}</div>
       )}
       {detail.criteria && (
         <div className="board-detail-crit">
-          <span className="board-detail-label">Done when</span> — {detail.criteria}
+          <span className="board-detail-label">{t("Done when")}</span> — {detail.criteria}
         </div>
       )}
       <div className="board-tl">
@@ -352,6 +366,7 @@ function NoteComposer({
   detail: BoardItemDetail;
   onAddNote: (item: number, body: string) => Promise<void>;
 }) {
+  const { t } = useTranslation();
   const [text, setText] = useState("");
   useEffect(() => setText(""), [detail.id]);
   const submit = async () => {
@@ -364,11 +379,12 @@ function NoteComposer({
     <input
       className="board-note-input"
       data-testid="board-note-input"
-      placeholder="Add a note…"
-      title="Leaves a note on the item — never changes its state"
+      placeholder={t("Add a note…")}
+      title={t("Leaves a note on the item — never changes its state")}
       value={text}
       onChange={(e) => setText(e.target.value)}
       onKeyDown={(e) => {
+        if (isComposing(e)) return;
         if (e.key === "Enter") void submit();
       }}
     />
@@ -390,6 +406,7 @@ function DetailActions({
   changesText: string;
   setChangesText: (v: string) => void;
 }) {
+  const { t } = useTranslation();
   if (detail.state === "review") {
     return (
       <div className="board-detail-actions">
@@ -397,7 +414,7 @@ function DetailActions({
           <div className="board-changes" data-testid="board-changes">
             <textarea
               autoFocus
-              placeholder="What needs to change?"
+              placeholder={t("What needs to change?")}
               value={changesText}
               onChange={(e) => setChangesText(e.target.value)}
             />
@@ -411,10 +428,10 @@ function DetailActions({
                   onTransition(detail.id, "in_progress", changesText.trim())
                 }
               >
-                Request changes
+                {t("Request changes")}
               </button>
               <button className="board-btn ghost" onClick={() => setChangesOpen(false)}>
-                Cancel
+                {t("Cancel")}
               </button>
             </div>
           </div>
@@ -424,10 +441,10 @@ function DetailActions({
               className="board-btn primary"
               onClick={() => onTransition(detail.id, "done")}
             >
-              Mark done
+              {t("Mark done")}
             </button>
             <button className="board-btn ghost" onClick={() => setChangesOpen(true)}>
-              Request changes…
+              {t("Request changes…")}
             </button>
           </>
         )}
@@ -438,7 +455,7 @@ function DetailActions({
     return (
       <div className="board-detail-actions">
         <button className="board-btn ghost" onClick={() => onTransition(detail.id, "open")}>
-          Reopen
+          {t("Reopen")}
         </button>
       </div>
     );
@@ -447,7 +464,7 @@ function DetailActions({
   return (
     <div className="board-detail-actions">
       <button className="board-btn ghost" onClick={() => onTransition(detail.id, "canceled")}>
-        Remove
+        {t("Remove")}
       </button>
     </div>
   );
@@ -456,15 +473,17 @@ function DetailActions({
 function timelineLine(event: BoardTimelineEvent): string {
   switch (event.kind) {
     case "created":
-      return "filed this";
+      return i18n.t("filed this");
     case "assigned":
-      return `assigned to ${event.assignee}`;
+      return i18n.t("assigned to {{assignee}}", { assignee: String(event.assignee) });
     case "claimed":
-      return "claimed this";
-    case "moved":
-      return event.to === "in_progress" ? "started" : `moved to ${(STATE_LABEL[event.to || ""] || event.to || "").toLowerCase()}`;
+      return i18n.t("claimed this");
+    case "moved": {
+      const label = STATE_LABEL[event.to || ""] ? i18n.t(STATE_LABEL[event.to || ""]) : event.to || "";
+      return event.to === "in_progress" ? i18n.t("started") : i18n.t("moved to {{state}}", { state: label.toLowerCase() });
+    }
     case "comment":
-      return "commented";
+      return i18n.t("commented");
     default:
       return event.kind;
   }

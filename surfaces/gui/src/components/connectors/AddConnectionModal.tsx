@@ -1,3 +1,4 @@
+import { isComposing } from "../../ime";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -49,7 +50,7 @@ export function AddConnectionModal({
   const [pane, setPane] = useState<"one" | "manual">("one");
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && !isComposing(e) && onClose();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);

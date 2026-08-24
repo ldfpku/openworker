@@ -1,3 +1,4 @@
+import { isComposing } from "../ime";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -158,6 +159,7 @@ export function ChannelPicker({
         }}
         onBlur={() => setFocused(false)}
         onKeyDown={(e) => {
+          if (isComposing(e)) return;
           if (e.key === "Escape") setOpen(false);
           if (e.key === "Enter" && onSubmit) {
             setOpen(false);
