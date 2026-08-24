@@ -1,6 +1,6 @@
 # 手册
 
-三本，按角色分。找不到答案再往深处的 [gemini-relay/docs/](../../gemini-relay/docs/) 翻。
+四本，按角色分。找不到答案再往深处的 [gemini-relay/docs/](../../gemini-relay/docs/) 翻。
 
 | 手册 | 读者 | 什么时候读 |
 | --- | --- | --- |
@@ -20,7 +20,8 @@
 两样都由管理员给。中转自己一把 key 都不存。
 
 **Gemini 以外的模型**（GPT、Claude、Grok、DeepSeek…）不走这条路，走 Cloudflare AI
-Gateway：一个 Cloudflare token，费用从账号的预付额度里扣，我们一行转发代码都不用写。
+Gateway：同事填一个网关地址、点一次登录，没有密钥要发；费用从账号的预付额度里扣，
+我们一行转发代码都不用写。
 见 [04-Cloudflare-AI-Gateway](./04-Cloudflare-AI-Gateway.md)。两条路刻意不重叠——
 Gemini 只走中转，别家只走网关。
 

@@ -4,7 +4,7 @@
 
 ## 一句话
 
-不再依赖 v2rayN 本地代理：openworker 经由自己在 Cloudflare 上的自定义域名 `gemini.smjtools.com` 做反向代理，直连 Gemini API。v3 起中转面向公司十来人共用，**同事什么都不用填**：他们用公司邮箱走 Cloudflare Access 的一次性验证码登录，Worker 校验通过后签发一个只对本中转有效的登录令牌；上游 Gemini API key 由 Worker 统一持有，谁也不需要去申请。每次请求的 token 用量按登录邮箱记进 D1。
+不再依赖 v2rayN 本地代理：openworker 经由自己在 Cloudflare 上的自定义域名 `gemini.smjtools.com` 做反向代理，直连 Gemini API。中转面向公司十来人共用，同事需要两样东西，**都由管理员发放**：一个在允许名单里的公司邮箱（走 Cloudflare Access 一次性验证码登录，Worker 校验通过后签发一个只对本中转有效的登录令牌），和一把以他本人命名的 Gemini API key。**中转自己一把 key 都不存**——它只在转发的瞬间经手。每次请求的 token 用量按登录邮箱记进 D1。
 
 ## 架构
 
@@ -95,7 +95,7 @@ cd ..\..
 
 ## 文档索引
 
-按角色分的三本手册在 [docs/手册/](../docs/手册/)（管理员初始化 / 运维 / 用户）。下面这些是深度文档：
+按角色分的四本手册在 [docs/手册/](../docs/手册/)（管理员初始化 / 运维 / 用户 / Cloudflare AI Gateway）。下面这些是深度文档：
 
 | 文档 | 内容 |
 | --- | --- |

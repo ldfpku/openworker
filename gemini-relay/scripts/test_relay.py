@@ -3,9 +3,9 @@
 Verifies that gemini.smjtools.com correctly relays both the sync and the streaming
 Gemini API calls, and that the streaming response really arrives incrementally
 (SSE chunks over time) rather than being buffered somewhere and delivered all at
-once. Modeled on the style of `.research/test_proxy.py` (manual .env parsing, one
-genai.Client per run, OK/FAIL + elapsed-time printing) but exercises the relay's
-GOOGLE_GEMINI_BASE_URL override instead of a forward HTTPS_PROXY.
+once. Deliberately standalone — manual .env parsing, one genai.Client per run,
+OK/FAIL + elapsed-time printing — and exercises the relay's GOOGLE_GEMINI_BASE_URL
+override rather than a forward HTTPS_PROXY.
 
 Run with the hermes-agent venv — the interpreter that actually backs openworker
 today (see gemini-relay/docs/01-背景与结论.md):
@@ -76,7 +76,7 @@ _PROXY_ENV_VARS = (
 def _read_key_from_dotenv(path: Path) -> str | None:
     """Manually parse a `GEMINI_API_KEY=` line out of a .env file. Deliberately not
     routed through coworker's SecretStore — this script runs standalone, outside the
-    app (mirrors .research/test_proxy.py's own manual line parsing)."""
+    app."""
     if not path.is_file():
         return None
     for line in path.read_text(encoding="utf-8").splitlines():

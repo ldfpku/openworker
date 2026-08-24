@@ -12,7 +12,6 @@ dist/
 # The real relay roster: colleagues' names and personal mailboxes. This fork is PUBLIC,
 # so the filled-in roster stays on the admin's machine — only roster.example.csv ships.
 gemini-relay/scripts/roster.csv
-.research/proxy-guard/README.pdf
 
 # Throwaway local diagnostics (probe scripts, one-off dumps) — never committed.
 /scratch/

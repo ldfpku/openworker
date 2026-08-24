@@ -1,121 +1,168 @@
-# OpenWorker
+# OpenWorker 中文版
 
-**[openworker.com](https://openworker.com)** · [Download](#download) · [Issues](https://github.com/andrewyng/openworker/issues)
+> **English** — A Simplified-Chinese build of **[andrewyng/openworker](https://github.com/andrewyng/openworker)**, with model access routed through Cloudflare so it works from mainland China. For the original English app, go upstream.
 
-<a href="https://trendshift.io/repositories/91434?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-91434" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/91434/daily?language=Python" alt="andrewyng%2Fopenworker | Trendshift" width="250" height="55"/></a>
+**OpenWorker 是一个装在你自己电脑上的 AI 助手。** 它读写你授权的文件夹、用你连上的工具、多步骤地把一件事做完——交给你的是**成品**：一份排好版的文档、一条带数字的回复、一张理顺的日程，而不是一段对话。
 
-> **Beta** - OpenWorker is in open beta: fully usable, updates itself, and we're actively polishing rough edges. [Issues](https://github.com/andrewyng/openworker/issues) welcome.
+界面是简体中文的，模型走公司统一的通路，你不需要自己申请任何海外账号。
 
-**AI that gets your everyday tasks done.** OpenWorker is an open-source AI coworker that lives on your desktop and delivers **finished work**, not just chat: a polished document, a Slack reply with the numbers, an updated calendar, a triaged inbox.
+---
 
-It runs on your machine and doesn't lock you into any model: bring your own API key for OpenAI, Anthropic, Google, or an open-weight provider, or run fully local with Ollama. Your data leaves your machine only through the model and integrations *you* choose.
+## 能做什么
 
-[![How OpenWorker works](docs/assets/how-it-works.png)](https://openworker.com)
+- **出成品。** 文档、表格、报告、网页，直接落成文件，能打开、能发出去。
+- **用你每天用的工具。** GitHub、Slack、Jira、Notion、Linear、HubSpot、Outlook、monday.com、Gmail、Google 日历等 40 个连接器，加上**你的终端和本地文件**。任何支持 [MCP](https://modelcontextprotocol.io/) 的工具也能接进来，逐个授权。
+- **在 Slack 里使唤它。** 在频道里 `@OpenWorker`，它在你桌面上开一个会话干活，答案回到原来的话题串里。
+- **定时干活。** 早报、周报、盯着某个频道——按时跑，结果连完整过程一起留在应用里。
+- **动手前先问你。** 写文件、发消息、执行命令都要你点头。无人值守时它把要问的事攒进收件箱，不会自作主张。
 
-## Download
+---
 
-[**⬇ macOS (Apple Silicon)**](https://download.openworker.com/mac)
-<sub>macOS 12+ · signed & notarized · auto-updates</sub>
+## 安装
 
-[**⬇ Windows 10/11 (x64)**](https://download.openworker.com/windows)
-<sub>builds are not yet code-signed, so SmartScreen will warn; signing is in progress</sub>
+> ⚠️ **v0.1.8 还是草稿 Release，尚未发布**，下面的链接暂时取不到东西。发布后即可下载。
 
-Open the app, add a model key (or point it at Ollama), and ask for something real.
+**[github.com/ldfpku/openworker/releases](https://github.com/ldfpku/openworker/releases)**
 
-## How it works
+| 系统 | 装哪个 |
+| --- | --- |
+| Windows 10/11 (x64) | `OpenWorker-windows-setup.exe` |
+| macOS (Apple 芯片) | `OpenWorker-macos-arm64.dmg` |
+| macOS (Intel) | `OpenWorker-macos-x64.dmg` |
 
-1. Tell OpenWorker the outcome you want - "prepare a customer brief," "untangle my calendar," "draft a report," "check where the release stands across Jira and GitHub."
-2. It breaks the task into steps and works across your desktop, files, and connected apps.
-3. Before anything consequential - sending a message, changing a calendar, running a command - it checks in and you approve or redirect.
-4. You get the finished deliverable, not a to-do list.
+**首次打开会被系统拦一下，这是正常的**——安装包没有买代码签名证书：
 
-Under the hood:
+- **Windows**：弹出「Windows 已保护你的电脑」，点 **「更多信息」→「仍要运行」**。
+- **macOS**：先在终端跑一次 `xattr -cr /Applications/OpenWorker.app`，然后正常打开。
 
-```text
-┌────────────────────────────────────────────────┐
-│              OpenWorker desktop app            │  native shell + GUI
-├────────────────────────────────────────────────┤
-│           local agent server (Python)          │  engine · tools · connectors - built on aisuite
-├───────────────┬────────────────┬───────────────┤
-│  your files   │   your tools   │  your model   │  everything runs with your keys,
-│  & terminal   │ 25+ connectors │  any provider │  on your machine
-└───────────────┴────────────────┴───────────────┘
-```
+装好之后应用会自己更新，不用再手动下载。
 
-## What it can do
+> **别去 `download.openworker.com` 下载。** 那是上游的英文原版；装上之后它的自动更新会把中文版覆盖掉。
 
-- **Produce real deliverables** - documents, spreadsheets, reports, and web pages land as files you can open and share.
-- **Work from Slack** - mention `@OpenWorker` in a channel; a session opens on your desktop, the work happens with your tools, and the answer comes back as a thread reply.
-- **Use your everyday tools** - 25+ integrations including GitHub, Slack, Jira, Notion, Linear, HubSpot, Outlook, monday.com, Gmail, and Google Calendar, plus your **terminal and local files**. Any tool reachable over [MCP](https://modelcontextprotocol.io/) plugs in too, with per-tool control.
-- **Run on a schedule** - automations for recurring work: a morning brief, a weekly report, a standing watch over a channel. Runs land in the app with full transcripts.
-- **Ask before acting** - writes, sends, and shell commands are approval-gated. Unattended runs park their asks in an inbox instead of acting on their own.
+---
 
-## Bring your own model
+## 第一次使用
 
-Model access is yours: pick a provider, paste your key, switch anytime. Supported out of the box:
+### 你需要管理员给你什么
 
-**OpenAI · Anthropic · Google Gemini · BytePlus Ark · Volcengine Ark Agent Plan · Inkling (Thinking Machines) · GLM (Z.ai) · DeepSeek · Kimi (Moonshot) · Qwen · MiniMax · Mistral · Grok (xAI)** - plus open-weight models via **Together** and **Fireworks**, and fully local models via **Ollama**.
+| | |
+| --- | --- |
+| **一个登记过的公司邮箱** | 用来证明「你是名单里的人」。就是管理员发安装包给你时用的那个。 |
+| **一把以你名字命名的 Gemini API key** | 调用 Google 模型的凭证，管理员发给你，不用自己申请。 |
+| **一个网关地址** | 只有要用 Gemini 以外的模型才需要。形如 `https://gateway.公司域名`，**不是密钥**，填一次就完了。 |
 
-A curated model list marks what we've verified for tool-calling work. Adding any model string works at your own risk.
+**前两样是 Gemini 用的，缺一样都不行**——只登录不填 key、或只填 key 不登录，都会报错：登录说明你是谁，key 才是真正去调模型的凭证。
 
-## Privacy
+> 发给你的 key **是公司的**：别转给别人、别贴进群聊、别提交进任何代码仓库。它以你的名字命名，用了多少一目了然；真出事对得上号的就是你那一把。
 
-OpenWorker is local-first. Everything lives on your machine: the agent loop, your conversations, connector tokens, and model keys - all in the app's local secret store. The only cloud piece is a small service that brokers OAuth handshakes for connectors. You can always use the App without signing-in - use the connectors via manually-created credentials/API-keys.
+### 配置模型
 
-## Run from source
+打开 **设置 ▸ 模型**，两条路按需要选：
 
-Prerequisites: Python 3.10+, Node 20+, and (for the desktop shell) the Rust toolchain via [rustup](https://rustup.rs/).
+| | **Gemini** | **GPT / Claude / 其他** |
+| --- | --- | --- |
+| 怎么开通 | 点「登录」→ 浏览器收验证码 → 再填上管理员给你的 key | 先填**网关地址** → 点「登录」→ 浏览器里验明身份 |
+| 要填东西吗 | 要填那把 key | 只填那个地址，**没有密钥** |
+| 之后 | 令牌到期会提示重新登录 | 两周内自动续期，不用管 |
+
+> 网关那张卡片上的「登录」按钮是灰的，说明地址还没填——登录就是往那个地址去的，先填地址。
+
+两条路都不需要你安装任何额外软件，也不需要你自己的任何 Cloudflare 账号。
+
+**能用哪些模型**：精选清单里 69 个型号，覆盖 OpenAI、Anthropic、Google Gemini、DeepSeek、Kimi、通义千问、MiniMax、Z.ai (GLM)、xAI Grok、Mistral、火山方舟等，也可以指向本机的 **Ollama** 完全离线跑。清单之外的模型串也能手填，效果自负。
+
+---
+
+## 界面语言
+
+**设置 ▸ 通用 ▸ 语言**：自动 / English / 中文。
+
+默认「自动」跟随系统语言——系统是中文就是中文界面。选择只影响这台机器。
+
+---
+
+## 语音输入
+
+点输入框旁边的麦克风说话即可，**中英文自动识别**，不用先选语种。语音识别在你自己电脑上跑，录音不上传。
+
+首次使用会下载一次识别模型（约 148 MB），走国内镜像，一般一两分钟。
+
+---
+
+## 已知问题
+
+- **托盘菜单改语言后要重启**才会变。
+- **日期和时间跟随系统语言**，不跟应用内的语言设置走。
+- **Windows 安装向导是英文的**，一路 Next 即可。
+
+---
+
+## 出了问题怎么办
+
+先翻 **[用户手册](docs/手册/03-用户手册.md)**——常见的九种情况都在里面，大多数自己两下就能解决。
+
+还是不行就找管理员，或者在 **[Issues](https://github.com/ldfpku/openworker/issues)** 里提。
+
+**完整文档**（[docs/手册/](docs/手册/)）：
+
+| 手册 | 谁读 |
+| --- | --- |
+| [01-管理员初始化手册](docs/手册/01-管理员初始化手册.md) | 从零把这套东西搭起来的人 |
+| [02-运维手册](docs/手册/02-运维手册.md) | 日常加人删人、调额度、查用量的人 |
+| [03-用户手册](docs/手册/03-用户手册.md) | **所有使用者** |
+| [04-Cloudflare-AI-Gateway](docs/手册/04-Cloudflare-AI-Gateway.md) | 想用 Gemini 以外的模型 |
+
+---
+
+## 从源码运行
+
+前置：Python 3.10+、Node 20、Rust 工具链（[rustup](https://rustup.rs/)）。
 
 ```shell
-git clone https://github.com/andrewyng/openworker
+git clone https://github.com/ldfpku/openworker
 cd openworker
-
-# 1. One-time bootstrap - creates the Python venv at .venv
-#    (on Windows, run from Git Bash or WSL)
-bash packaging/setup_dev_env.sh
-
-# 2. Start the local agent server
-.venv/bin/openworker-server --cwd ~/some/project --port 8765
-#    (Windows: .venv\Scripts\openworker-server.exe)
-
-# 3. In a second terminal, start the UI
-cd surfaces/gui
-npm install
-npm run dev        # browser UI on the Vite dev port
 ```
 
-The standalone server creates a per-launch token at
-`<state-dir>/sidecar-8765.token`; Vite reads that user-only file when it starts.
-For direct API calls, send its value in the `X-OpenWorker-Token` header. The
-desktop app uses an in-memory launch token instead and never writes it to disk.
+建 Python 环境——**Windows 用 uv**（`packaging/setup_dev_env.sh` 只能在 macOS / Linux 上跑）：
 
-To run the full desktop app instead of the browser UI, replace step 3 with `npm run tauri dev` (from `surfaces/gui/`) - the Tauri shell launches the window and supervises the server itself.
+```powershell
+uv sync --extra messaging --extra dev
+```
 
-Tests: `.venv/bin/pytest` (server), `npm test` and `npm run e2e` in `surfaces/gui` (GUI unit + hermetic end-to-end). Desktop bundles are built with `packaging/build_dmg.sh` / `packaging/build_windows.ps1`.
+（两个 `--extra` 是消息接入和测试依赖，对应 macOS 脚本装的 `[messaging,dev]`——`uv sync` 光秃秃跑不装 extras，之后跑测试会找不到 pytest。）
 
-## Repository layout
+macOS / Linux：
 
-| Directory | What's in it |
-|---|---|
-| `coworker/` | Python backend - agent engine, model providers, connectors, MCP client, memory, automations |
-| `surfaces/gui/` | Desktop app - React UI + Tauri shell that supervises the server |
-| `stt/` | Speech-to-text sidecar (Rust) for voice input |
-| `packaging/` | Installer builds (macOS DMG, Windows), auto-update manifest, dev bootstrap |
-| `docs/` | Design specs and decision logs |
-| `tests/` | Backend test suite |
+```shell
+bash packaging/setup_dev_env.sh
+```
 
-## Built on aisuite
+然后起服务端和界面：
 
-OpenWorker's engine is built on [**aisuite**](https://github.com/andrewyng/aisuite), a lightweight Python library providing a unified chat-completions API across LLM providers and an agents layer with tools, toolkits, and MCP support. If you want to build your own agent harness rather than use ours, start there; this repo is a working reference for what aisuite can carry.
+```shell
+# 1. 本地 agent 服务
+.venv/bin/openworker-server --cwd ~/some/project --port 8765
+#    Windows: .venv\Scripts\openworker-server.exe
 
-OpenWorker was originally developed inside the aisuite repository before moving to its own home here; thanks to the aisuite contributors whose work it builds on.
+# 2. 另开一个终端
+cd surfaces/gui
+npm install
+npm run dev            # 浏览器界面
+npm run tauri dev      # 或者完整桌面应用
+```
 
-## Contributing
+测试：后端 `pytest tests`；界面在 `surfaces/gui` 下 `npm test` 和 `npm run e2e`。
 
-Contributions and bug reports are welcome - open an [issue](https://github.com/andrewyng/openworker/issues) or a pull request. The app updates itself, so fixes reach installs quickly.
-For any PR, please attach screenshots of what was broken and how it is fixed now. We will shortly add features that you can contribute to.
-Please note that we are actively developing based off a internal list and goal, so we may not approve PRs that add features that are already under-development or deviates from our vision.
+---
 
-## License
+## 隐私
 
-MIT - see [LICENSE](LICENSE).
+会话内容、连接器令牌、模型 key 都只存在你自己电脑上。
+
+两处例外，值得你知道：**模型请求会经过公司的 Cloudflare 中转和网关**——中转会按你的邮箱记录每次请求用了多少 token（用来分摊成本和限额），但**不记录请求和回复的内容**。具体记了什么、留多久，写在[用户手册](docs/手册/03-用户手册.md)里。
+
+---
+
+## 许可
+
+MIT，版权归 Andrew Ng (2024)，见 [LICENSE](LICENSE)。
