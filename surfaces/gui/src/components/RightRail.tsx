@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+// boardChip() is a plain function, not a component, so it cannot use the hook.
+import i18n from "../i18n";
 // Emits the asset URL only; the worker itself loads lazily with the pdfjs chunk.
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import {
@@ -466,11 +468,11 @@ function boardChip(board: Board): { text: string; attention: boolean } {
   const counts: Record<string, number> = {};
   for (const item of board.items) counts[item.state] = (counts[item.state] || 0) + 1;
   const attn: string[] = [];
-  if (counts.blocked) attn.push(`${counts.blocked} blocked`);
-  if (counts.review) attn.push(`${counts.review} review`);
+  if (counts.blocked) attn.push(i18n.t("{{count}} blocked", { count: counts.blocked }));
+  if (counts.review) attn.push(i18n.t("{{count}} review", { count: counts.review }));
   if (attn.length) return { text: attn.join(" · "), attention: true };
   const active = (counts.in_progress || 0) + (counts.open || 0);
-  return { text: active ? `${active} active` : "", attention: false };
+  return { text: active ? i18n.t("{{count}} active", { count: active }) : "", attention: false };
 }
 
 function ProgressSummary({ running, toolNames, todo }: { running: boolean; toolNames: string[]; todo: TodoItem[] }) {
