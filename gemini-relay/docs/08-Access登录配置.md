@@ -127,6 +127,23 @@ Zero Trust ▸ **Access controls ▸ Applications** ▸ Add an application ▸ *
 
 > Access 策略是**默认拒绝**的：没有命中 Allow 的邮箱收不到验证码，登录页也过不去。
 
+> ⚠️ **一个邮箱一条 Include 规则，不要拼成逗号串。**
+> `Emails` 选择器精确匹配**单个**地址。把 `a@x.com, b@y.com, …` 整串粘进同一个框，Cloudflare 会
+> 原样存成一个谁都匹配不上的字面值 —— 全员收不到验证码，**而且不报任何错**：登录页照样显示
+> 「A code has been emailed to you」。这是[官方行为](https://developers.cloudflare.com/cloudflare-one/integrations/identity-providers/one-time-pin/)：
+> 被拒的用户不会收到邮件，页面文案不变。
+
+控制台会把多条规则渲染成一行逗号列表，肉眼分不出对错，所以配完**用 API 核一遍** `include` 的形状
+（`GET /accounts/{account_id}/access/apps/{app_id}/policies`）：
+
+```jsonc
+// 对：一个邮箱一个对象
+"include": [ { "email": { "email": "a@x.com" } }, { "email": { "email": "b@y.com" } } ]
+
+// 错：一个对象塞了一整串 —— 这条规则谁都匹配不上，等于名单是空的
+"include": [ { "email": { "email": "a@x.com, b@y.com" } } ]
+```
+
 ## 步骤 3.5：给登录页挂上公司 logo（可选但建议）
 
 同事真正会盯着看的页面是 Cloudflare 的验证码登录页——默认长着 Cloudflare 的样子，没有

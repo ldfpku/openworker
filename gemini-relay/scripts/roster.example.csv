@@ -6,6 +6,6 @@
 # 建议：日常上限留空就好。给管理员和总经理放开 rpd/tpd（-1）但**保留 rpm 默认值**——
 # 每分钟那道闸是防自动循环跑飞的，不是用来省钱的，谁都不该关掉。
 # 把这个文件复制成 roster.csv 再填真实名单 —— roster.csv 已在 .gitignore 里，不会进仓库。
-alice@example.com,张三,技术研发部,lead,,,
-bob@example.com,李四,生产制造部,staff,,,
+alice@example.com,张三,部门甲,lead,,,
+bob@example.com,李四,部门乙,staff,,,
 admin@example.com,王五,,admin,,-1,-1

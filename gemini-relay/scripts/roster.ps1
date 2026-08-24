@@ -69,7 +69,8 @@
     列出名单全部条目。
 
 .PARAMETER AccessList
-    打印 Access 策略用的邮箱列表（一行一个 + 一行逗号分隔，两种格式都给）。
+    打印 Access 策略用的邮箱列表，一行一个。Access 的 Emails 选择器精确匹配单个地址，
+    所以是一个邮箱一条 Include 规则，不能拼成逗号串塞进同一条。
 
 .PARAMETER Force
     仅对 -Remove 生效：跳过确认提示直接删除，供脚本化/非交互场景使用。
@@ -300,7 +301,11 @@ function Write-AccessReminder {
     Write-Host "下一步：把这些邮箱同步到 Cloudflare Access 策略（Zero Trust ▸ Access ▸ Applications" -ForegroundColor Yellow
     Write-Host "▸ gemini-relay-login ▸ Policies ▸ Include ▸ Emails），否则他们收不到验证码：" -ForegroundColor Yellow
     Write-Host ""
-    Write-Host ($Emails -join ", ")
+    $Emails | ForEach-Object { Write-Host "  $_" }
+    Write-Host ""
+    Write-Host "一个邮箱一条 Include 规则。不要拼成逗号串粘进同一个框 —— Emails 选择器是精确" -ForegroundColor Yellow
+    Write-Host "匹配单个地址，拼起来会存成一个谁都匹配不上的字面值，结果是全员收不到验证码，而" -ForegroundColor Yellow
+    Write-Host "登录页照样显示「A code has been emailed to you」，不报任何错。" -ForegroundColor Yellow
     Write-Host ""
     Write-Host "详细步骤见 gemini-relay/docs/08-Access登录配置.md。"
 }
@@ -412,8 +417,9 @@ try {
             Write-Host ""
             $emails | ForEach-Object { Write-Host "  $_" }
             Write-Host ""
-            Write-Host "逗号分隔（方便一次粘贴）："
-            Write-Host ($emails -join ", ")
+            Write-Host "一个邮箱一条 Include 规则。" -ForegroundColor Yellow
+            Write-Host "不要把它们用逗号拼成一串粘进同一个框：Emails 选择器精确匹配单个地址，拼起来会" -ForegroundColor Yellow
+            Write-Host "存成一个谁都匹配不上的字面值 —— 全员收不到验证码，而登录页照样显示「已发送」。" -ForegroundColor Yellow
         }
 
     } else {
