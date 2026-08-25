@@ -51,14 +51,12 @@ class Config:
     cloud_auth_domain: str = "opencoworker.us.auth0.com"
     cloud_client_id: str = "g1l4Q1lhYWmyS03qPSf4KEJGrgq02Qam"
     cloud_audience: str = "https://api.opencoworker.app"
-    # Managed relay WebSocket endpoint (Slack/GitHub inbound). Defaults to the
-    # PRODUCTION relay so a fresh install relays out of the box — an empty
-    # default shipped once as "connected but relay OFF" on every machine
-    # without a hand-edited config.toml. Empty override ⇒ relay disabled
-    # (manual Socket Mode still works); dev/BYO deployments point elsewhere.
-    cloud_relay_ws_url: str = (
-        "wss://l4z1paxb83.execute-api.us-east-1.amazonaws.com/ocw-connect"
-    )
+    # Managed relay WebSocket endpoint (Slack/GitHub inbound). Upstream defaults
+    # to THEIR production relay; this fork ships it empty on purpose: a fresh
+    # install must never dial the upstream cloud (the updater-endpoints rule
+    # applied to the relay). Empty ⇒ relay disabled (manual Socket Mode still
+    # works); point it at your own relay deployment via config.toml to enable.
+    cloud_relay_ws_url: str = ""
 
 
 _FIELDS = {

@@ -132,13 +132,14 @@ def test_build_engine_respects_max_iterations(tmp_path):
         engine.executor.close()
 
 
-def test_cloud_endpoints_default_to_production():
-    """A fresh install must work without a hand-edited config.toml. An empty
-    relay default shipped once as "connected but relay OFF" on every machine
-    but the developer's — the managed install succeeded (HTTPS via broker)
-    while inbound relaying silently never started."""
+def test_cloud_relay_defaults_off_in_fork():
+    """This fork must never dial the upstream cloud out of the box: the managed
+    relay endpoint ships EMPTY (upstream defaults to their production relay —
+    reverting this line on a merge makes every install hammer their relay with
+    doomed 401s). Only a hand-edited config.toml pointing at a BYO deployment
+    turns relaying on — the updater-endpoints rule applied to the relay."""
     from coworker.config import Config
 
     cfg = Config()
     assert cfg.cloud_base_url == "https://api.openworker.com"
-    assert cfg.cloud_relay_ws_url.startswith("wss://")
+    assert cfg.cloud_relay_ws_url == ""

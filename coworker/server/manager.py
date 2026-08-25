@@ -3760,6 +3760,11 @@ class SessionManager:
         # out by provider tag. Built lazily on the first relay adapter.
         relay_ws_url = getattr(cloud_config, "cloud_relay_ws_url", "") or None
         relay_hub = None
+        if relay_ws_url and not await asyncio.to_thread(_relay_token):
+            # No usable cloud session: every relay dial is a guaranteed 401, so
+            # treat it as "no endpoint" — relay-mode connectors log one skip
+            # hint instead of hammering the relay with doomed connects.
+            relay_ws_url = None
         if relay_ws_url:
             from ..connectors.relay_client import RelayHub
 
