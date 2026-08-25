@@ -33,7 +33,12 @@ from .aigateway_provider import (
 from .anthropic_provider import AnthropicProvider
 from .base import ProviderClient
 from .bedrock_provider import BedrockProvider
-from .gemini_provider import GeminiProvider, RELAY_TOKEN_PREFIX, resolve_base_url
+from .gemini_provider import (
+    GeminiProvider,
+    RELAY_TOKEN_PREFIX,
+    resolve_base_url,
+    wrong_key_error,
+)
 from .openai_provider import OpenAIProvider
 from .openai_responses import OpenAIResponsesProvider
 from .vertex_provider import VertexProvider
@@ -1044,6 +1049,19 @@ def _verify_vertex(fields: dict[str, Any], timeout: float) -> dict[str, Any]:
     return {"ok": False, "error": f"Vertex AI returned HTTP {resp.status_code}."}
 
 
+def _google_error_message(resp: Any) -> str:
+    """The `message` out of a Google-shaped `{"error": {...}}` body, else "" (non-JSON
+    bodies, test fakes without a .json)."""
+    try:
+        parsed = resp.json()
+    except (ValueError, AttributeError):
+        return ""
+    if not isinstance(parsed, dict):
+        return ""
+    error = parsed.get("error")
+    return str(error.get("message") or "").strip() if isinstance(error, dict) else ""
+
+
 def relay_headers_from(fields: dict[str, Any]) -> dict[str, str]:
     """`Authorization: Bearer` for the company Gemini relay, out of an already-merged field
     map. Test runs before anything is saved, so the caller (manager.verify_provider) is the
@@ -1089,6 +1107,11 @@ def verify_provider_key(
             # own Google key (what Test is actually validating) and the relay login says who
             # is asking. Testing while signed out earns a 401 from the relay, which is the
             # honest answer — that call would fail for real too.
+            shape = wrong_key_error(key)
+            if shape:
+                # A different Google credential in the key slot (Vertex "AQ." console
+                # token, …): the relay would forward it and Google answers an OAuth riddle.
+                return {"ok": False, "error": shape}
             gemini_headers = {"x-goog-api-key": key}
             gemini_headers.update(relay_headers_from(fields or {}))
             resp = httpx.get(
@@ -1137,15 +1160,16 @@ def verify_provider_key(
 
     if resp.status_code < 300:
         return {"ok": True}
+    if name == "gemini":
+        # The relay's refusals arrive as a Google-shaped JSON envelope whose `message` was
+        # written for exactly this moment (not signed in / login revoked / over quota) —
+        # pass it through instead of flattening everything into "Invalid API key.".
+        detail = _google_error_message(resp)
+        if detail:
+            return {"ok": False, "error": detail}
     if resp.status_code in (401, 403):
         if name == "ollama":
             return {"ok": False, "error": "Server rejected the request."}
-        if name == "gemini" and resp.status_code == 403:
-            return {
-                "ok": False,
-                "error": "This key is not registered with the company relay yet — "
-                "ask the admin to add it.",
-            }
         return {"ok": False, "error": "Invalid API key."}
     if resp.status_code == 404 and name == "ollama":
         return {

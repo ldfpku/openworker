@@ -108,6 +108,34 @@ RELAY_TOKEN_PREFIX = "owr_"
 #: The relay login, for scripts and CI that have no SecretStore (scripts/test_relay.py).
 RELAY_TOKEN_ENV = "OPENWORKER_RELAY_TOKEN"
 
+#: Every Gemini Developer API key AI Studio mints starts with this (unchanged across Google
+#: API keys for years). The key slot attracts OTHER Google credentials — a Vertex express
+#: "AQ." console token is the live example (owner-hit 2026-08-25) — and generativelanguage
+#: answers those with an English ACCESS_TOKEN_TYPE_UNSUPPORTED 401 that reads as "login
+#: broken". Kept in sync with GOOGLE_KEY_PREFIX in gemini-relay/worker/src/index.ts.
+GOOGLE_KEY_PREFIX = "AIza"
+
+
+def wrong_key_error(key: str) -> Optional[str]:
+    """Why this string cannot be a Gemini Developer API key — None when it looks right.
+
+    Prefix-only: real validation stays with Google. The point is that someone who pasted a
+    Vertex console token gets one actionable sentence instead of Google's OAuth riddle.
+    """
+    if key.startswith(GOOGLE_KEY_PREFIX):
+        return None
+    kind = (
+        "这是 Google Cloud / Vertex 侧的令牌，不是同一种东西"
+        if key.startswith("AQ.")
+        else "不像 AI Studio 签发的 key"
+    )
+    return (
+        f"Gemini API key 不对：AI Studio 的 key 一定以「{GOOGLE_KEY_PREFIX}」开头，"
+        f"现在填的以「{key[:6]}…」开头（{kind}）。"
+        "请找管理员在 https://aistudio.google.com/apikey 重新签发，"
+        "填进「设置 ▸ 模型 ▸ Gemini」。"
+    )
+
 
 def resolve_api_key(secrets: Any = None) -> Optional[str]:
     """Resolve the caller's OWN Gemini API key — the credential Google bills.
@@ -174,16 +202,38 @@ def resolve_base_url(explicit: Optional[str] = None) -> str:
     return RELAY_BASE_URL
 
 
-def relay_headers(secrets: Any = None) -> dict[str, str]:
+def relay_headers(secrets: Any = None, base_url: Optional[str] = None) -> dict[str, str]:
     """The extra request headers the company relay needs, or `{}` when signed out.
 
     The relay wants two credentials on every call and the SDK only has one slot for a
     credential: `api_key` becomes `x-goog-api-key`, which the relay forwards to Google
     untouched. The login token therefore rides `Authorization: Bearer` via
     `HttpOptions.headers`, which the relay consumes and strips.
+
+    The token only means something to the relay, so when the caller says where the request
+    is headed (`base_url`), any other host — the `GOOGLE_GEMINI_BASE_URL` debug channel,
+    Google direct — gets `{}` instead: a stray `Bearer owr_…` reaching Google earns the same
+    opaque ACCESS_TOKEN_TYPE_UNSUPPORTED 401 a wrong-kind key does. `None` keeps the old
+    "assume the relay" behavior for callers that resolve the base themselves.
     """
     token = resolve_relay_token(secrets)
-    return {"Authorization": f"Bearer {token}"} if token else {}
+    if not token:
+        return {}
+    if base_url is not None and base_url.rstrip("/") not in _relay_hosts(secrets):
+        return {}
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _relay_hosts(secrets: Any = None) -> set[str]:
+    """Base URLs that ARE the relay: the compiled-in default, plus whichever relay the
+    stored token was actually minted by (they differ during a relay migration)."""
+    hosts = {RELAY_BASE_URL}
+    if secrets is not None:
+        profile = secrets.get("provider:gemini") or {}
+        issuer = (profile.get("relay_base_url") or "").strip().rstrip("/")
+        if issuer:
+            hosts.add(issuer)
+    return hosts
 
 
 def _image_part(url: str) -> Optional[dict[str, Any]]:
@@ -496,7 +546,7 @@ class GeminiProvider(ProviderClient):
 
             key = self._api_key or resolve_api_key(self._secrets)
             base_url = resolve_base_url(self._base_url)
-            headers = relay_headers(self._secrets)
+            headers = relay_headers(self._secrets, base_url)
             # Going through the company relay takes BOTH: the login says who you are, the
             # key says who pays. Missing either one is a 401/400 from the relay that reads
             # as "Gemini is broken", so say which half is missing while we still can.
@@ -510,6 +560,11 @@ class GeminiProvider(ProviderClient):
                 missing.append("还没有登录公司中转（「设置 ▸ 模型 ▸ Gemini」里用工作邮箱收验证码）")
             if missing:
                 raise RuntimeError("；".join(missing) + "。")
+            wrong = wrong_key_error(key)
+            if wrong:
+                # Present but a different Google credential — through the relay this would
+                # come back as Google's English 401, so refuse before it leaves the machine.
+                raise RuntimeError(wrong)
 
             self._client = genai.Client(
                 api_key=key,

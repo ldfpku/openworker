@@ -46,6 +46,12 @@ import {
 
 const UPSTREAM = "https://generativelanguage.googleapis.com";
 
+// Every Gemini Developer API key starts with this. The key slot attracts OTHER Google
+// credentials — a Vertex express "AQ." console token is the live example (owner-hit
+// 2026-08-25) — and Google answers those with an English ACCESS_TOKEN_TYPE_UNSUPPORTED
+// 401 that reads as "login broken". Kept in sync with gemini_provider.GOOGLE_KEY_PREFIX.
+const GOOGLE_KEY_PREFIX = "AIza";
+
 // The google-genai SDK only ever calls /v1beta/... (api_version default); /upload covers the
 // Files API in case it is used later. Everything else (scanners, typos) gets a 404.
 const ALLOWED_PATH = /^\/(upload\/)?(v1|v1beta|v1alpha)\//;
@@ -602,6 +608,25 @@ export default {
         400,
         "INVALID_ARGUMENT",
         "OpenWorker 中转：客户端版本过旧——它把登录令牌当成 API key 发了过来。请升级 OpenWorker。"
+      );
+    }
+    if (!upstreamKey.startsWith(GOOGLE_KEY_PREFIX)) {
+      // A different Google credential in the key slot. Distinct from the owr_ case above:
+      // that is OUR token misplaced by an old client (fix: upgrade), this is the wrong
+      // thing copied out of a Google console (fix: issue a real AI Studio key).
+      const latencyMs = Date.now() - t0;
+      ctx.waitUntil(
+        recordRejected(
+          env, user.email, model, kind, 400, tokenHash12, latencyMs, "wrong-key-kind",
+          user.name, user.dept
+        )
+      );
+      return apiError(
+        400,
+        "INVALID_ARGUMENT",
+        "OpenWorker 中转：填的不是 AI Studio 的 Gemini API key——那种一定以「AIza」开头，" +
+          `现在这把以「${upstreamKey.slice(0, 6)}…」开头（像是 Google Cloud / Vertex 侧的令牌）。` +
+          "请找管理员在 aistudio.google.com/apikey 重新签发，填进「设置 ▸ 模型 ▸ Gemini」。"
       );
     }
 

@@ -99,14 +99,44 @@ def test_verify_gemini_uses_relay_and_header_auth(monkeypatch):
     assert "params" not in cap
 
 
-def test_verify_gemini_403_reports_unregistered_key(monkeypatch):
+def test_verify_gemini_surfaces_the_relays_own_words(monkeypatch):
+    """The v3 relay refuses in a Google-shaped JSON envelope whose message was written for
+    the person (not signed in / login revoked / over quota) — Test passes it through
+    instead of flattening every 4xx into "Invalid API key."."""
+    message = "OpenWorker 中转：登录已失效（过期、被吊销，或已不在允许名单里），请重新登录。"
+
+    def fake_get(url, **kwargs):
+        return SimpleNamespace(
+            status_code=403,
+            json=lambda: {
+                "error": {"code": 403, "message": message, "status": "PERMISSION_DENIED"}
+            },
+        )
+
+    monkeypatch.setattr("httpx.get", fake_get)
+    res = verify_provider_key("gemini", api_key="AIzaSy-x")
+    assert res == {"ok": False, "error": message}
+
+
+def test_verify_gemini_non_json_error_still_maps(monkeypatch):
+    # a fake with no .json at all — the passthrough must degrade to the generic mapping
     _patch_get(monkeypatch, status=403)
     res = verify_provider_key("gemini", api_key="AIza-x")
-    assert res == {
-        "ok": False,
-        "error": "This key is not registered with the company relay yet — "
-        "ask the admin to add it.",
-    }
+    assert res == {"ok": False, "error": "Invalid API key."}
+
+
+def test_verify_gemini_rejects_a_wrong_kind_of_key_before_the_network(monkeypatch):
+    """An "AQ." Vertex console token in the key slot took the provider down with Google's
+    English ACCESS_TOKEN_TYPE_UNSUPPORTED 401 (owner-hit 2026-08-25) — Test must name the
+    real mistake without spending the network call."""
+
+    def fake_get(url, **kwargs):
+        raise AssertionError("shape check must answer before any network call")
+
+    monkeypatch.setattr("httpx.get", fake_get)
+    res = verify_provider_key("gemini", api_key="AQ.Ab8-console-token")
+    assert res["ok"] is False
+    assert "AIza" in res["error"] and "AQ.Ab8" in res["error"]
 
 
 def test_verify_ollama_uses_v1_models_no_key(monkeypatch):

@@ -520,6 +520,27 @@ def test_resolve_relay_token_env_then_store(monkeypatch):
     assert relay_headers(None) == {"Authorization": "Bearer owr_env"}
 
 
+def test_relay_headers_attach_only_toward_the_relay(monkeypatch):
+    """The login token means nothing to any other host — Google answers a stray
+    `Bearer owr_…` with the same OAuth-riddle 401 a wrong-kind key earns."""
+    from coworker.providers.gemini_provider import RELAY_BASE_URL, relay_headers
+
+    monkeypatch.setenv("OPENWORKER_RELAY_TOKEN", "owr_env")
+    assert relay_headers(None, RELAY_BASE_URL) == {"Authorization": "Bearer owr_env"}
+    assert relay_headers(None, "https://generativelanguage.googleapis.com") == {}
+
+    # …except the relay the token was actually minted by (recorded at sign-in), which
+    # may differ from the compiled-in default during a relay migration.
+    monkeypatch.delenv("OPENWORKER_RELAY_TOKEN")
+    secrets = _GeminiSecrets(
+        relay_token="owr_stored", relay_base_url="https://alt-relay.example"
+    )
+    assert relay_headers(secrets, "https://alt-relay.example/") == {
+        "Authorization": "Bearer owr_stored"
+    }
+    assert relay_headers(secrets, "https://other.example") == {}
+
+
 # -- relay base URL (gemini-relay multi-user rollout) -------------------------------
 
 
@@ -604,6 +625,31 @@ def test_ensure_client_honors_explicit_base_url_override(monkeypatch):
     GeminiProvider(base_url="https://custom.example")._ensure_client()
     assert captured["http_options"].base_url == "https://custom.example"
     assert captured["http_options"].headers is None
+
+
+def test_ensure_client_keeps_the_login_token_off_non_relay_hosts(monkeypatch):
+    """Signed in AND overriding the base away from the relay: the token must stay home —
+    forwarded to Google it turns every call into an ACCESS_TOKEN_TYPE_UNSUPPORTED 401."""
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-x")
+    monkeypatch.setenv("OPENWORKER_RELAY_TOKEN", "owr_login")
+    captured = _capture_sdk_client(monkeypatch)
+
+    GeminiProvider(base_url="https://custom.example")._ensure_client()
+    assert captured["http_options"].headers is None
+
+
+def test_ensure_client_rejects_a_wrong_kind_of_key(monkeypatch):
+    """A Vertex express "AQ." console token in the key slot (owner-hit 2026-08-25):
+    present, but a different Google credential — name the mistake locally instead of
+    letting Google answer its English OAuth riddle."""
+    monkeypatch.delenv("GOOGLE_GEMINI_BASE_URL", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "AQ.Ab8-console-token")
+    monkeypatch.setenv("OPENWORKER_RELAY_TOKEN", "owr_login")
+    _capture_sdk_client(monkeypatch)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        GeminiProvider()._ensure_client()
+    assert "AIza" in str(excinfo.value) and "AQ.Ab8" in str(excinfo.value)
 
 
 def test_build_gemini_forwards_hidden_base_url_override():
