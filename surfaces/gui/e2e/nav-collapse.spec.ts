@@ -23,6 +23,10 @@ test("collapse hides the sidebar and reclaims the width; reveal button docks it 
 test("⌘B toggles the sidebar collapse", async ({ page }) => {
   await page.goto("/");
   const app = page.locator(".app");
+  // goto resolves on window load, which can beat React's mount — the ⌘B keydown listener only
+  // exists once the boot splash yields to the real app render, so a too-early press is dropped.
+  await expect(app).not.toHaveClass(/boot-splash/);
+  await expect(page.locator(".sidebar")).toBeVisible();
   await page.keyboard.press("Meta+b");
   await expect(app).toHaveClass(/nav-collapsed/);
   await page.keyboard.press("Meta+b");
