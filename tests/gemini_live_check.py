@@ -21,8 +21,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 MODEL = "gemini-3.5-flash-lite"
 PROMPT = "just reply ok"
 
-# 已知的两种「key 是新版 auth key 但没设 API 限制」的拒绝形态（2026-08-27 实测定性）。
-_RESTRICTION_REASONS = ("ACCESS_TOKEN_TYPE_UNSUPPORTED", "API_KEY_SERVICE_BLOCKED")
+# 已知的两种「key 是新版 auth key 但这一把不可用」的拒绝形态（2026-08-27 实测定性：
+# 一把健康的 AQ. key 在普通 x-goog-api-key 通道直接就能用，报这两种错说明 key 本身不行）。
+_UNUSABLE_KEY_REASONS = ("ACCESS_TOKEN_TYPE_UNSUPPORTED", "API_KEY_SERVICE_BLOCKED")
 
 
 def _read_key_from_dotenv(path: Path) -> str | None:
@@ -36,11 +37,10 @@ def _read_key_from_dotenv(path: Path) -> str | None:
 
 
 def _hint(error_text: str) -> str | None:
-    if any(reason in error_text for reason in _RESTRICTION_REASONS):
+    if any(reason in error_text for reason in _UNUSABLE_KEY_REASONS):
         return (
-            "判读：Google 认得这把 key，但它的 API 限制还没配置（未限制的 key 会被拒收）。"
-            "去 aistudio.google.com/api-keys 打开这把 key 的设置，"
-            "选「Restrict to Gemini API only」保存，几分钟后重跑本脚本。"
+            "判读：Google 认得这是新版 auth key，但拒收这一把——多半已失效或复制不完整。"
+            "去 aistudio.google.com/api-keys 重新完整复制（或新建）一把，更新 .env 后重跑。"
         )
     if "API_KEY_INVALID" in error_text:
         return "判读：Google 不认这把 key（拼错/被删/复制不完整）。"

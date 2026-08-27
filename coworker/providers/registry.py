@@ -1044,20 +1044,22 @@ def _verify_vertex(fields: dict[str, Any], timeout: float) -> dict[str, Any]:
     return {"ok": False, "error": f"Vertex AI returned HTTP {resp.status_code}."}
 
 
-#: Google 401 reasons that mean "the key is an AI Studio auth key (`AQ.…`) whose API
-#: restriction hasn't been configured" — seen live 2026-08-27 with a fresh AI Studio key:
-#: `x-goog-api-key` earns ACCESS_TOKEN_TYPE_UNSUPPORTED, `Bearer` earns
-#: API_KEY_SERVICE_BLOCKED, and even the newest google-genai SDK gets the same until the
-#: key's restriction is set. The fix lives in the AI Studio console, so say that.
-_NEW_KEY_RESTRICTION_REASONS = frozenset(
+#: Google 401 reasons that mean "Google recognizes an AI Studio auth key (`AQ.…`) but will
+#: not serve THIS one" — `x-goog-api-key` earns ACCESS_TOKEN_TYPE_UNSUPPORTED, `Bearer`
+#: earns API_KEY_SERVICE_BLOCKED. A healthy auth key sails through the plain header form
+#: and the relay untouched (verified live 2026-08-27), so these mean the key itself is
+#: dead, mis-copied, or simply the wrong one. Docs float a "Restrict to Gemini API only"
+#: console fix, but no such switch exists in the AI Studio UI (owner checked 2026-08-27) —
+#: point at the key, not at settings nobody can find.
+_UNUSABLE_KEY_REASONS = frozenset(
     {"ACCESS_TOKEN_TYPE_UNSUPPORTED", "API_KEY_SERVICE_BLOCKED"}
 )
 
-_NEW_KEY_RESTRICTION_HINT = (
-    "Google 拒绝了这把 key：它是 AI Studio 新版 auth key（AQ. 开头），"
-    "但还没设置 API 限制，Google 现在会拒收未限制的 key。"
-    "管理员在 https://aistudio.google.com/api-keys 打开这把 key 的设置，"
-    "把限制设为「Restrict to Gemini API only」，保存后再试。"
+_UNUSABLE_KEY_HINT = (
+    "Google 认得出这是 AI Studio 新版 auth key（AQ. 开头），但拒收了这一把——"
+    "通常是 key 已失效、复制不完整，或粘的不是可用的那把。"
+    "请到 https://aistudio.google.com/api-keys 重新完整复制一遍粘进来；"
+    "还不行就让管理员新建一把再发你。"
 )
 
 
@@ -1183,8 +1185,8 @@ def verify_provider_key(
         # pass it through instead of flattening everything into "Invalid API key.". An
         # unconfigured AI Studio auth key additionally gets the console-side fix spelled out.
         detail, reason = _google_error_detail(resp)
-        if reason in _NEW_KEY_RESTRICTION_REASONS:
-            return {"ok": False, "error": _NEW_KEY_RESTRICTION_HINT}
+        if reason in _UNUSABLE_KEY_REASONS:
+            return {"ok": False, "error": _UNUSABLE_KEY_HINT}
         if detail:
             return {"ok": False, "error": detail}
     if resp.status_code in (401, 403):

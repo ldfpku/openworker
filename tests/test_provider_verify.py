@@ -125,11 +125,11 @@ def test_verify_gemini_non_json_error_still_maps(monkeypatch):
     assert res == {"ok": False, "error": "Invalid API key."}
 
 
-def test_verify_gemini_maps_unrestricted_auth_key_to_console_fix(monkeypatch):
-    """A fresh AI Studio `AQ.…` auth key with no API restriction set: Google answers 401
-    ACCESS_TOKEN_TYPE_UNSUPPORTED (header form) / API_KEY_SERVICE_BLOCKED (bearer form)
-    — verified live 2026-08-27, latest SDK included. The fix is in the AI Studio console
-    ("Restrict to Gemini API only"), so Test must say that instead of relaying the riddle."""
+def test_verify_gemini_maps_unusable_auth_key_to_a_key_swap_hint(monkeypatch):
+    """An unusable AI Studio `AQ.…` auth key (dead / mis-copied / the wrong one): Google
+    answers 401 ACCESS_TOKEN_TYPE_UNSUPPORTED (header form) / API_KEY_SERVICE_BLOCKED
+    (bearer form) — verified live 2026-08-27; a healthy auth key sails through untouched.
+    Test must say "this key — recopy or reissue it" instead of relaying the riddle."""
     for reason in ("ACCESS_TOKEN_TYPE_UNSUPPORTED", "API_KEY_SERVICE_BLOCKED"):
 
         def fake_get(url, _reason=reason, **kwargs):
@@ -153,7 +153,7 @@ def test_verify_gemini_maps_unrestricted_auth_key_to_console_fix(monkeypatch):
         monkeypatch.setattr("httpx.get", fake_get)
         res = verify_provider_key("gemini", api_key="AQ.Ab8-auth-key")
         assert res["ok"] is False
-        assert "Restrict to Gemini API only" in res["error"]
+        assert "拒收了这一把" in res["error"]
 
 
 def test_verify_ollama_uses_v1_models_no_key(monkeypatch):

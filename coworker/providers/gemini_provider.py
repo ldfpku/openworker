@@ -110,11 +110,13 @@ RELAY_TOKEN_ENV = "OPENWORKER_RELAY_TOKEN"
 
 # NOTE on key formats (learned the hard way, 2026-08-27): AI Studio now mints two kinds of
 # key — legacy `AIza…` standard keys AND `AQ.…` auth keys (service-account-bound; every NEW
-# AI Studio key is one). Never gate on the prefix: an `AQ.` key is legitimate. When Google
-# answers 401 ACCESS_TOKEN_TYPE_UNSUPPORTED / API_KEY_SERVICE_BLOCKED for one, the key's
-# API restriction hasn't been configured in AI Studio ("Restrict to Gemini API only") —
-# a console-side fix, not a client-side one. verify_provider_key maps those reasons to a
-# hint; the chat path passes Google's own words through.
+# AI Studio key is one). Never gate on the prefix: an `AQ.` key is legitimate, and a healthy
+# one works through plain `x-goog-api-key` (and the relay) untouched. When Google answers
+# 401 ACCESS_TOKEN_TYPE_UNSUPPORTED / API_KEY_SERVICE_BLOCKED for one, THAT key is unusable
+# (dead / mis-copied / the wrong one) — swap the key. There is no client-side fix, and no
+# "Restrict to Gemini API only" switch exists in the AI Studio UI despite what docs imply.
+# verify_provider_key maps those reasons to a hint; the chat path passes Google's words
+# through. First diagnostic is always tests/gemini_live_check.py (bypasses relay + app).
 
 
 def resolve_api_key(secrets: Any = None) -> Optional[str]:
