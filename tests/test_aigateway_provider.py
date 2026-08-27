@@ -16,6 +16,7 @@ import pytest
 from coworker.providers import capabilities_for
 from coworker.providers.aigateway_provider import (
     AIGatewayProvider,
+    DEFAULT_BASE_URL,
     access_headers,
     normalise_base,
     resolve_settings,
@@ -237,6 +238,16 @@ def test_environment_fills_in_an_empty_profile(monkeypatch):
     monkeypatch.setenv("CLOUDFLARE_AIGW_BASE_URL", "https://env.example.com")
     monkeypatch.setenv("CLOUDFLARE_AIGW_ACCESS_TOKEN", "env-session")
     assert resolve_settings({}) == ("https://env.example.com", "env-session")
+
+
+def test_the_company_gateway_is_the_address_of_last_resort(monkeypatch):
+    # Zero config is a complete setup (owner call 2026-08-27): with nothing stored and
+    # nothing in the environment, the built-in company gateway answers — which is what
+    # lets the settings pane drop the address field entirely. The session has no such
+    # default: an address can be public, a credential cannot.
+    monkeypatch.delenv("CLOUDFLARE_AIGW_BASE_URL", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_AIGW_ACCESS_TOKEN", raising=False)
+    assert resolve_settings({}) == (DEFAULT_BASE_URL, "")
 
 
 @pytest.mark.parametrize(
@@ -477,34 +488,42 @@ def test_descriptor_is_registered_with_a_curated_default():
     assert f"aigw:{d.recommended_model}" in MATRIX
 
 
-def test_the_address_is_the_only_thing_anyone_has_to_type():
-    # Since sign-in landed, the pasted session is a fallback for machines that cannot open
-    # a browser — so the address alone is a complete setup, and a session without an
-    # address still has nowhere to go.
+def test_the_pane_has_no_fields_left_to_type():
+    # The company gateway's address is baked in (owner call 2026-08-27), and signing in is
+    # the credential — so the descriptor declares no form at all. A field reappearing here
+    # would resurrect the "fill the address, paste a session" chore the pane just shed.
     d = get_descriptor("aigw")
-    assert descriptor_configured(d, {"base_url": BASE}) is True
-    assert descriptor_configured(d, {"base_url": BASE, "access_token": "t"}) is True
-    assert descriptor_configured(d, {"access_token": "t"}) is False
+    assert d.fields == []
 
 
-@pytest.mark.parametrize(
-    "fields,expected",
-    [
-        ({}, "gateway address"),
-        ({"base_url": BASE}, "Sign in"),
-    ],
-)
-def test_test_button_reports_missing_fields_without_a_round_trip(
-    fields, expected, monkeypatch
-):
+def test_configured_means_holding_a_credential_not_an_address(monkeypatch):
+    # With the address baked in it can no longer count toward "configured" — otherwise a
+    # fresh install would read "✓ Connected" before anyone signed in. What counts is a
+    # credential: the sign-in state aigw_auth keeps inside the profile, a pasted session,
+    # or the env session a headless machine sets.
+    monkeypatch.delenv("CLOUDFLARE_AIGW_ACCESS_TOKEN", raising=False)
+    d = get_descriptor("aigw")
+    assert descriptor_configured(d, {}) is False
+    assert descriptor_configured(d, {"base_url": BASE}) is False
+    assert descriptor_configured(d, {"access_token": "t"}) is True
+    assert descriptor_configured(d, {"oauth": {"access_token": "a"}}) is True
+    assert descriptor_configured(d, {"oauth": {"refresh_token": "r"}}) is True
+    monkeypatch.setenv("CLOUDFLARE_AIGW_ACCESS_TOKEN", "env-session")
+    assert descriptor_configured(d, {}) is True
+
+
+def test_test_button_asks_for_a_sign_in_not_an_address(monkeypatch):
+    # No settings at all: the built-in address fills itself in, so the only thing Test can
+    # be missing is a credential — and it must say so without a network round trip.
     monkeypatch.delenv("CLOUDFLARE_AIGW_BASE_URL", raising=False)
     monkeypatch.delenv("CLOUDFLARE_AIGW_ACCESS_TOKEN", raising=False)
     monkeypatch.setattr(
         "httpx.post",
-        lambda *a, **k: pytest.fail("verify should not call out with fields missing"),
+        lambda *a, **k: pytest.fail("verify should not call out without a credential"),
     )
-    out = verify_provider_key("aigw", fields=fields)
-    assert out["ok"] is False and expected in out["error"]
+    out = verify_provider_key("aigw", fields={})
+    assert out["ok"] is False and "Sign in" in out["error"]
+    assert "address" not in out["error"]  # nothing to fill any more — never ask for it
 
 
 def test_test_exercises_the_credential_a_real_call_would_use(monkeypatch):

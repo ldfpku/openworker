@@ -1,8 +1,10 @@
 """Cloudflare AI Gateway — GPT, Claude and Gemini on one Access login.
 
 The gateway sits on a custom domain of the company's own zone (`gateway.smjtools.com`)
-with Cloudflare Access in front of it. That single choice decides everything else in this
-module:
+with Cloudflare Access in front of it. That address is baked in as `DEFAULT_BASE_URL`
+(owner call 2026-08-27: nothing to fill in, nothing to configure — signing in is the whole
+setup), overridable per profile/env for a fork or a staging gateway. The custom-domain +
+Access choice decides everything else in this module:
 
   * **No API token anywhere.** Access is the authentication. Cloudflare's own words:
     "The client does not need to send an AI Gateway token for that request." Each caller
@@ -68,6 +70,13 @@ logger = logging.getLogger(__name__)
 
 ENV_BASE_URL = "CLOUDFLARE_AIGW_BASE_URL"
 ENV_ACCESS_TOKEN = "CLOUDFLARE_AIGW_ACCESS_TOKEN"
+
+# The company gateway, the address of last resort in `resolve_settings` — which is what
+# lets the settings pane drop the address field entirely. Publishing the host is fine:
+# it is Access-protected (an anonymous visitor gets a login page) and, unlike the
+# `gateway.ai.cloudflare.com/v1/{account}/...` form, carries no account id — that stays
+# out of this public fork.
+DEFAULT_BASE_URL = "https://gateway.smjtools.com"
 
 # The Test button's probe. Cheap, and on the wire most likely to be misconfigured
 # (`/compat`, where the provider prefix has to survive).
@@ -151,17 +160,22 @@ def bearer_headers(token: str) -> dict[str, str]:
 
 
 def resolve_settings(profile: dict[str, Any]) -> tuple[str, str]:
-    """(base_url, access_token) from the stored profile, else the environment.
+    """(base_url, access_token) from the stored profile, else the environment, else — for
+    the address only — the built-in company gateway.
 
     Same precedence as every other provider — an explicitly saved value wins, and the env
-    vars let a headless/CI run work without touching the SecretStore.
+    vars let a headless/CI run work without touching the SecretStore. The
+    `DEFAULT_BASE_URL` tail is what makes a fresh install zero-config: sign in and go.
     """
     p = profile or {}
 
     def pick(key: str, env: str) -> str:
         return (str(p.get(key) or "").strip()) or os.environ.get(env, "").strip()
 
-    return (pick("base_url", ENV_BASE_URL), pick("access_token", ENV_ACCESS_TOKEN))
+    return (
+        pick("base_url", ENV_BASE_URL) or DEFAULT_BASE_URL,
+        pick("access_token", ENV_ACCESS_TOKEN),
+    )
 
 
 def wire_for(model: str) -> str:

@@ -816,15 +816,17 @@ export async function getGatewayStatus(): Promise<GatewayStatus> {
   return res.json();
 }
 
-export async function gatewayLogin(
-  baseUrl?: string,
-): Promise<{ ok: boolean; login_url?: string; error?: string }> {
-  // The sidecar opens the system browser; the GUI just polls status after. `base_url` is
-  // passed so Sign in works from a form the user has typed but not yet saved.
+export async function gatewayLogin(): Promise<{
+  ok: boolean;
+  login_url?: string;
+  error?: string;
+}> {
+  // The sidecar opens the system browser; the GUI just polls status after. No address to
+  // send — the company gateway is baked into the sidecar (DEFAULT_BASE_URL).
   const res = await fetch(`${httpBase()}/v1/aigw/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ base_url: baseUrl || "" }),
+    body: JSON.stringify({}),
   });
   return res.json();
 }

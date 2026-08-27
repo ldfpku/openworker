@@ -20,8 +20,8 @@
 两样都由管理员给。中转自己一把 key 都不存。
 
 **Gemini 以外的模型**（GPT、Claude、Grok、DeepSeek…）不走这条路，走 Cloudflare AI
-Gateway：同事填一个网关地址、点一次登录，没有密钥要发；费用从账号的预付额度里扣，
-我们一行转发代码都不用写。
+Gateway：同事点一次登录就行——网关地址内置在应用里，没有密钥要发、没有东西要填；
+费用从账号的预付额度里扣，我们一行转发代码都不用写。
 见 [04-Cloudflare-AI-Gateway](./04-Cloudflare-AI-Gateway.md)。两条路刻意不重叠——
 Gemini 只走中转，别家只走网关。
 

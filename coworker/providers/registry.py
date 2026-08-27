@@ -12,12 +12,13 @@ Chat Completions path), `anthropic` (native Messages API via
 `AnthropicProvider`), `gemini` (native Google GenAI API via `GeminiProvider`), `bedrock`
 (models in the user's own AWS account — Claude natively, everything else via Converse),
 `vertex` (the user's own GCP project — Gemini and Claude natively, open-weight via the
-MaaS endpoint), `aigw` (Cloudflare AI Gateway — many vendors on one Cloudflare token,
-`aigateway_provider.py`), and `ollama` (local, OpenAI-compatible `/v1`).
+MaaS endpoint), `aigw` (Cloudflare AI Gateway — many vendors on one work-account sign-in,
+address baked in, `aigateway_provider.py`), and `ollama` (local, OpenAI-compatible `/v1`).
 """
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
@@ -37,6 +38,8 @@ from .gemini_provider import GeminiProvider, RELAY_TOKEN_PREFIX, resolve_base_ur
 from .openai_provider import OpenAIProvider
 from .openai_responses import OpenAIResponsesProvider
 from .vertex_provider import VertexProvider
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 
@@ -583,29 +586,13 @@ DESCRIPTORS: list[ProviderDescriptor] = [
         name="aigw",
         title="Cloudflare AI Gateway",
         needs_key=True,
-        fields=[
-            ProviderField(
-                "base_url",
-                "Gateway address",
-                secret=False,
-                placeholder="https://gateway.example.com",
-                help="The gateway's own domain, from your administrator. Just the "
-                "host — the paths are added for you.",
-            ),
-            ProviderField(
-                "access_token",
-                "Access session",
-                secret=True,
-                # Optional since sign-in landed: the ordinary route is the button above
-                # this form, which leaves nothing to type. Kept required=False so Test
-                # does not refuse a colleague who signed in and has no pasted value.
-                required=False,
-                help="Only needed if you cannot sign in above — for a headless machine "
-                "with no browser. From a terminal: `cloudflared access login <gateway "
-                "address>` once, then `cloudflared access token -app=<gateway address>`. "
-                "Signing in is better: this kind of session lapses daily.",
-            ),
-        ],
+        # No form at all (owner call 2026-08-27): the company gateway's address is baked
+        # into the app (aigateway_provider.DEFAULT_BASE_URL) and signing in IS the
+        # credential, so there is nothing left to type. The old routes still work without
+        # a field — `resolve_settings` keeps honouring a previously stored profile and the
+        # CLOUDFLARE_AIGW_* env vars (headless machines paste a `cloudflared` session
+        # there now).
+        fields=[],
         build=_build_aigw,
         # Not the flagship, unlike every other provider's recommendation. Fable 5 and
         # Opus 5 both work here, but this is one shared prepaid balance for the whole
@@ -775,6 +762,18 @@ def descriptor_configured(d: ProviderDescriptor, profile: dict[str, Any]) -> boo
     if not d.needs_key:
         return True  # keyless (Ollama) — usable out of the box
     profile = profile or {}
+    if d.name == "aigw":
+        # Fieldless: the address is baked in and never counts. Configured means "holds a
+        # credential" — a completed sign-in (aigw_auth keeps its OAuth state inside this
+        # profile) or the legacy pasted/env Access session. Anything else would show a
+        # fresh install as "✓ Connected" before anyone signed in.
+        from ..aigw_auth import OAUTH_FIELD
+
+        oauth = profile.get(OAUTH_FIELD)
+        signed_in = isinstance(oauth, dict) and bool(
+            oauth.get("access_token") or oauth.get("refresh_token")
+        )
+        return signed_in or bool(resolve_settings(profile)[1])
     if any(f.key == "api_key" for f in d.fields):
         return bool(profile.get("api_key")) or bool(
             d.env_key and os.environ.get(d.env_key)
@@ -815,9 +814,9 @@ def _verify_aigw(fields: dict[str, Any], timeout: float) -> dict[str, Any]:
     """
     import httpx
 
+    # Never empty: `resolve_settings` falls back to the built-in company gateway, which is
+    # why there is no address to ask for here (or anywhere else in the pane).
     base_url, access_token = resolve_settings(fields or {})
-    if not base_url:
-        return {"ok": False, "error": "Enter the gateway address."}
     # Signed in beats pasted, exactly as the provider decides it at call time — otherwise
     # Test would keep exercising a stale typed session that real calls no longer use.
     # Injected by manager.verify_provider, which is the one holding the SecretStore.
@@ -838,10 +837,13 @@ def _verify_aigw(fields: dict[str, Any], timeout: float) -> dict[str, Any]:
             timeout=timeout,
         )
     except Exception as exc:
+        # Static string on purpose: interpolating the exception class would defeat the
+        # GUI's word-for-word translation table, and ConnectError/ReadTimeout tells a
+        # colleague nothing their network status doesn't.
+        logger.debug("aigw verify: unreachable: %s", exc)
         return {
             "ok": False,
-            "error": f"Couldn't reach the gateway ({exc.__class__.__name__}). Check the "
-            "address.",
+            "error": "Couldn't reach the gateway — check your network and try again.",
         }
     if resp.status_code < 300:
         return {"ok": True}
@@ -855,7 +857,13 @@ def _verify_aigw(fields: dict[str, Any], timeout: float) -> dict[str, Any]:
             "(Sessions expire; this is the usual cause.)",
         }
     if resp.status_code == 404 or "could not route" in body:
-        return {"ok": False, "error": "No gateway at that address — check the host."}
+        # The address is baked in, so this is never a typo on the user's side any more —
+        # it means the custom-domain mapping (or the gateway behind it) is broken.
+        return {
+            "ok": False,
+            "error": "The built-in gateway address didn't answer as a gateway — tell "
+            "your administrator (the domain mapping may be broken).",
+        }
     if "invalid provider" in body:
         return {
             "ok": False,

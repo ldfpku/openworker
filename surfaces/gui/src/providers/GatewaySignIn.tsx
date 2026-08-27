@@ -4,6 +4,8 @@ import {
   gatewayLogin,
   gatewayLogout,
   getGatewayStatus,
+  setProvider,
+  verifyProvider,
   waitForGatewaySignIn,
   type GatewayStatus,
 } from "../api";
@@ -11,13 +13,11 @@ import logoDark from "../brand/logo-dark.webp";
 import logoLight from "../brand/logo.webp";
 
 // The AI Gateway's identity pane. Unlike the Gemini relay's card (RelaySignIn), this one
-// REPLACES the credential field rather than sitting above it: signing in is the whole
-// credential here, and the "Access session" input below is only a fallback for a machine
-// that cannot open a browser.
-//
-// The gateway address has to exist before anyone can sign in — it is what the OAuth
-// discovery documents are fetched from — so the button stays disabled, and says why, until
-// the field below has something in it.
+// IS the whole setup: the gateway's address is baked into the app (owner call 2026-08-27)
+// and signing in is the only credential, so the provider declares no fields and nothing
+// renders below this card. That hands the card the two jobs the field row used to carry —
+// a finished sign-in saves the provider (which is what puts the recommended model in the
+// composer), and the Test button lives here, on the signed-in state.
 
 const CARD = "rounded-xl border border-line bg-paper/60 px-4 py-3.5";
 
@@ -34,11 +34,9 @@ function CompanyMark() {
 
 export function GatewaySignIn({
   tp,
-  baseUrl,
   onChanged,
 }: {
   tp: string;
-  baseUrl: string;
   onChanged?: () => void;
 }) {
   const { t } = useTranslation();
@@ -46,6 +44,9 @@ export function GatewaySignIn({
   const [status, setStatus] = useState<GatewayStatus | null | undefined>(undefined);
   const [waiting, setWaiting] = useState(false);
   const [error, setError] = useState("");
+  const [test, setTest] = useState<{ state: "idle" | "testing" | "ok" | "error"; msg?: string }>(
+    { state: "idle" },
+  );
   const cancelRef = useRef<(() => void) | null>(null);
 
   const load = () => getGatewayStatus().then(setStatus).catch(() => setStatus(null));
@@ -58,7 +59,7 @@ export function GatewaySignIn({
   const signIn = async () => {
     setError("");
     setWaiting(true);
-    const out = await gatewayLogin(baseUrl).catch(() => ({
+    const out = await gatewayLogin().catch(() => ({
       ok: false,
       error: t("unreachable"),
     }));
@@ -72,7 +73,12 @@ export function GatewaySignIn({
       setWaiting(false);
       if (s?.signed_in) {
         setStatus(s);
-        onChanged?.();
+        // What Test & save used to do for this provider: an empty save is the whole
+        // save (there are no fields), and it is what runs the server-side conveniences —
+        // the recommended model lands in the composer right after signing in.
+        void setProvider("aigw", {})
+          .catch(() => undefined)
+          .finally(() => onChanged?.());
       } else {
         // The listener may have recorded why (the person declined, the exchange failed);
         // that is more useful than our generic timeout line, so ask before guessing.
@@ -95,9 +101,23 @@ export function GatewaySignIn({
     cancelRef.current?.();
     setWaiting(false);
     setError("");
+    setTest({ state: "idle" });
     await gatewayLogout().catch(() => undefined);
     await load();
     onChanged?.();
+  };
+
+  // The provider has no field row, so the usual in-form Test button has nowhere to live;
+  // this is the same probe (one sub-cent completion through the gateway) offered from the
+  // signed-in card instead.
+  const runTest = async () => {
+    setTest({ state: "testing" });
+    const res = await verifyProvider("aigw", {}).catch(() => ({
+      ok: false,
+      error: t("unreachable"),
+    }));
+    if (res.ok) setTest({ state: "ok" });
+    else setTest({ state: "error", msg: res.error || t("couldn't verify") });
   };
 
   if (status === undefined) {
@@ -151,18 +171,37 @@ export function GatewaySignIn({
             {error}
           </p>
         )}
-        <button
-          className="mt-3 text-[12.5px] text-danger/80 hover:text-danger hover:underline underline-offset-2"
-          data-testid={`${tp}-aigw-signout`}
-          onClick={() => void signOut()}
-        >
-          {t("Sign out")}
-        </button>
+        {test.state === "ok" && (
+          <p className="text-[11.5px] text-ok mt-2" data-testid={`${tp}-aigw-test-ok`}>
+            {t("✓ Test passed — a real (sub-cent) model call went through.")}
+          </p>
+        )}
+        {test.state === "error" && (
+          <p className="text-[11.5px] text-danger mt-2" data-testid={`${tp}-aigw-test-error`}>
+            {test.msg}
+          </p>
+        )}
+        <div className="mt-3 flex items-center gap-4">
+          <button
+            className="px-4 py-1.5 rounded-lg border border-line text-[12.5px] font-medium text-ink hover:border-lineStrong disabled:opacity-40"
+            data-testid={`${tp}-aigw-test`}
+            disabled={test.state === "testing"}
+            onClick={() => void runTest()}
+          >
+            {test.state === "testing" ? "…" : t("Test")}
+          </button>
+          <button
+            className="text-[12.5px] text-danger/80 hover:text-danger hover:underline underline-offset-2"
+            data-testid={`${tp}-aigw-signout`}
+            onClick={() => void signOut()}
+          >
+            {t("Sign out")}
+          </button>
+        </div>
       </div>
     );
   }
 
-  const ready = Boolean((baseUrl || "").trim());
   return (
     <div className={CARD} data-testid={`${tp}-aigw-signin`}>
       {/* The company mark, so it reads as "our own gateway" rather than some third-party
@@ -176,26 +215,20 @@ export function GatewaySignIn({
       <button
         className="mt-3 px-4 py-1.5 rounded-lg border border-accent bg-accent text-white text-[13px] font-medium hover:brightness-105 disabled:opacity-40"
         data-testid={`${tp}-aigw-signin-button`}
-        disabled={waiting || !ready}
+        disabled={waiting}
         onClick={() => void signIn()}
       >
         {waiting ? t("Check your browser…") : t("Sign in")}
       </button>
-      {!ready && (
-        <p className="text-[11.5px] text-faint mt-2" data-testid={`${tp}-aigw-needs-address`}>
-          {t("Enter the gateway address below first — that's where sign-in happens.")}
-        </p>
-      )}
       {/* Someone already working via the old paste must not be told they are "not set up";
           the honest framing is that signing in is an upgrade they can take whenever. */}
-      {ready && status.pasted_session && (
+      {status.pasted_session ? (
         <p className="text-[11.5px] text-faint mt-2" data-testid={`${tp}-aigw-pasted`}>
           {t(
             "You're currently using a pasted session, which lapses daily. Signing in replaces it and renews on its own.",
           )}
         </p>
-      )}
-      {ready && !status.pasted_session && (
+      ) : (
         <p className="text-[11.5px] text-faint mt-2">
           {t("A browser window opens for your work account, then you're done.")}
         </p>

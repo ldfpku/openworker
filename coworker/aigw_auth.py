@@ -47,7 +47,6 @@ import base64
 import hashlib
 import http.server
 import logging
-import os
 import secrets as _secrets
 import threading
 import time
@@ -143,7 +142,10 @@ def _discover(base_url: str) -> dict[str, str]:
 
     origin = normalise_base(base_url)
     if not origin:
-        raise RuntimeError("没有网关地址，先在 设置 ▸ 模型 里填上再登录。")
+        # Unreachable through begin_login since the company gateway became the built-in
+        # default; kept for direct callers. No "fill it in Settings" advice — that field
+        # no longer exists, and pointing at a nonexistent control is worse than nothing.
+        raise RuntimeError("没有网关地址——内置默认丢了，这是应用的 bug，请反馈。")
 
     with httpx.Client(timeout=_HTTP_TIMEOUT, follow_redirects=True) as client:
         resource_doc = client.get(origin + "/.well-known/oauth-protected-resource")
@@ -394,9 +396,11 @@ def begin_login(secrets: SecretStore, base_url: str = "") -> dict[str, Any]:
     global _pending, _last_error
 
     if not base_url:
-        base_url = str(_profile(secrets).get("base_url") or "").strip()
-    if not base_url:
-        base_url = os.environ.get("CLOUDFLARE_AIGW_BASE_URL", "").strip()
+        # Profile → env → the built-in company gateway: the same chain the provider itself
+        # resolves, which is why the pane can offer Sign in with nothing typed anywhere.
+        from .providers.aigateway_provider import resolve_settings
+
+        base_url, _ = resolve_settings(_profile(secrets))
 
     try:
         meta = _discover(base_url)

@@ -306,3 +306,40 @@ def test_the_oauth_state_never_clobbers_the_rest_of_the_profile():
     assert profile["base_url"] == "https://gw.example"
     assert profile["thinking_budget"] == "2048"
     assert profile[aigw_auth.OAUTH_FIELD]["access_token"] == "b"
+
+
+# -- where a sign-in aims ---------------------------------------------------------------
+
+
+def test_begin_login_defaults_to_the_company_gateway(monkeypatch):
+    # Nothing stored, nothing in the env: sign-in must aim at the built-in address rather
+    # than refuse for lack of a setting — the pane no longer has anywhere to type one.
+    from coworker.providers.aigateway_provider import DEFAULT_BASE_URL
+
+    monkeypatch.delenv("CLOUDFLARE_AIGW_BASE_URL", raising=False)
+    seen: dict[str, str] = {}
+
+    def fake_discover(base_url: str) -> dict[str, str]:
+        seen["base_url"] = base_url
+        raise RuntimeError("stop before any network")
+
+    monkeypatch.setattr(aigw_auth, "_discover", fake_discover)
+    out = aigw_auth.begin_login(FakeSecrets())
+    assert out["ok"] is False  # the stub stopped it — aiming is what's under test
+    assert seen["base_url"] == DEFAULT_BASE_URL
+
+
+def test_begin_login_still_honours_a_stored_or_passed_address(monkeypatch):
+    # The default is a fallback, not an override: a fork (or a staging gateway) that stored
+    # its own address must keep signing in there.
+    seen: dict[str, str] = {}
+
+    def fake_discover(base_url: str) -> dict[str, str]:
+        seen["base_url"] = base_url
+        raise RuntimeError("stop before any network")
+
+    monkeypatch.setattr(aigw_auth, "_discover", fake_discover)
+    aigw_auth.begin_login(_store({}, base_url="https://own.example"))
+    assert seen["base_url"] == "https://own.example"
+    aigw_auth.begin_login(FakeSecrets(), base_url="https://passed.example")
+    assert seen["base_url"] == "https://passed.example"

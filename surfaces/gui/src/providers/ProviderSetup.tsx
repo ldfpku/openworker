@@ -19,7 +19,7 @@ import { RelaySignIn } from "./RelaySignIn";
 const RELAY_PROVIDER = "gemini";
 
 /** The AI Gateway signs in too, but its login IS the credential rather than one half of
- *  it — the field below the card is a fallback for browserless machines (GatewaySignIn). */
+ *  it — and its address is baked in, so its pane is the card alone (GatewaySignIn). */
 const GATEWAY_PROVIDER = "aigw";
 
 // The provider gallery ⇄ key form, shared by Onboarding step 1 (§39) and
@@ -388,18 +388,14 @@ export function ProviderForm({
       </div>
     ) : null;
 
-  // The gateway's card sits in the same slot, but for the opposite reason: here the login
-  // is the ONLY credential most people need, so it leads and the fields below it are the
-  // exception path. It reads the address straight out of the live form so Sign in works
-  // the moment it is typed, without waiting for a save.
+  // The gateway's card sits in the same slot, but for the opposite reason: its address is
+  // baked into the app and the login is the whole credential, so the provider declares no
+  // fields and this card IS the entire pane — sign-in saves the provider, and Test lives
+  // on the signed-in card.
   const gatewayCard =
     sel === GATEWAY_PROVIDER ? (
       <div className="mt-3 mb-1">
-        <GatewaySignIn
-          tp={tp}
-          baseUrl={ps.fields["base_url"] || ""}
-          onChanged={ps.refreshProviders}
-        />
+        <GatewaySignIn tp={tp} onChanged={ps.refreshProviders} />
       </div>
     ) : null;
 
