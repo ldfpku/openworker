@@ -33,12 +33,7 @@ from .aigateway_provider import (
 from .anthropic_provider import AnthropicProvider
 from .base import ProviderClient
 from .bedrock_provider import BedrockProvider
-from .gemini_provider import (
-    GeminiProvider,
-    RELAY_TOKEN_PREFIX,
-    resolve_base_url,
-    wrong_key_error,
-)
+from .gemini_provider import GeminiProvider, RELAY_TOKEN_PREFIX, resolve_base_url
 from .openai_provider import OpenAIProvider
 from .openai_responses import OpenAIResponsesProvider
 from .vertex_provider import VertexProvider
@@ -1049,17 +1044,44 @@ def _verify_vertex(fields: dict[str, Any], timeout: float) -> dict[str, Any]:
     return {"ok": False, "error": f"Vertex AI returned HTTP {resp.status_code}."}
 
 
-def _google_error_message(resp: Any) -> str:
-    """The `message` out of a Google-shaped `{"error": {...}}` body, else "" (non-JSON
-    bodies, test fakes without a .json)."""
+#: Google 401 reasons that mean "the key is an AI Studio auth key (`AQ.…`) whose API
+#: restriction hasn't been configured" — seen live 2026-08-27 with a fresh AI Studio key:
+#: `x-goog-api-key` earns ACCESS_TOKEN_TYPE_UNSUPPORTED, `Bearer` earns
+#: API_KEY_SERVICE_BLOCKED, and even the newest google-genai SDK gets the same until the
+#: key's restriction is set. The fix lives in the AI Studio console, so say that.
+_NEW_KEY_RESTRICTION_REASONS = frozenset(
+    {"ACCESS_TOKEN_TYPE_UNSUPPORTED", "API_KEY_SERVICE_BLOCKED"}
+)
+
+_NEW_KEY_RESTRICTION_HINT = (
+    "Google 拒绝了这把 key：它是 AI Studio 新版 auth key（AQ. 开头），"
+    "但还没设置 API 限制，Google 现在会拒收未限制的 key。"
+    "管理员在 https://aistudio.google.com/api-keys 打开这把 key 的设置，"
+    "把限制设为「Restrict to Gemini API only」，保存后再试。"
+)
+
+
+def _google_error_detail(resp: Any) -> tuple[str, str]:
+    """(`message`, first `details[].reason`) out of a Google-shaped `{"error": {...}}`
+    body, else ("", "") — non-JSON bodies, test fakes without a .json."""
     try:
         parsed = resp.json()
     except (ValueError, AttributeError):
-        return ""
+        return "", ""
     if not isinstance(parsed, dict):
-        return ""
+        return "", ""
     error = parsed.get("error")
-    return str(error.get("message") or "").strip() if isinstance(error, dict) else ""
+    if not isinstance(error, dict):
+        return "", ""
+    message = str(error.get("message") or "").strip()
+    reason = ""
+    details = error.get("details")
+    if isinstance(details, list):
+        for entry in details:
+            if isinstance(entry, dict) and entry.get("reason"):
+                reason = str(entry["reason"])
+                break
+    return message, reason
 
 
 def relay_headers_from(fields: dict[str, Any]) -> dict[str, str]:
@@ -1107,11 +1129,6 @@ def verify_provider_key(
             # own Google key (what Test is actually validating) and the relay login says who
             # is asking. Testing while signed out earns a 401 from the relay, which is the
             # honest answer — that call would fail for real too.
-            shape = wrong_key_error(key)
-            if shape:
-                # A different Google credential in the key slot (Vertex "AQ." console
-                # token, …): the relay would forward it and Google answers an OAuth riddle.
-                return {"ok": False, "error": shape}
             gemini_headers = {"x-goog-api-key": key}
             gemini_headers.update(relay_headers_from(fields or {}))
             resp = httpx.get(
@@ -1163,8 +1180,11 @@ def verify_provider_key(
     if name == "gemini":
         # The relay's refusals arrive as a Google-shaped JSON envelope whose `message` was
         # written for exactly this moment (not signed in / login revoked / over quota) —
-        # pass it through instead of flattening everything into "Invalid API key.".
-        detail = _google_error_message(resp)
+        # pass it through instead of flattening everything into "Invalid API key.". An
+        # unconfigured AI Studio auth key additionally gets the console-side fix spelled out.
+        detail, reason = _google_error_detail(resp)
+        if reason in _NEW_KEY_RESTRICTION_REASONS:
+            return {"ok": False, "error": _NEW_KEY_RESTRICTION_HINT}
         if detail:
             return {"ok": False, "error": detail}
     if resp.status_code in (401, 403):

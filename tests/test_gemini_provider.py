@@ -638,18 +638,17 @@ def test_ensure_client_keeps_the_login_token_off_non_relay_hosts(monkeypatch):
     assert captured["http_options"].headers is None
 
 
-def test_ensure_client_rejects_a_wrong_kind_of_key(monkeypatch):
-    """A Vertex express "AQ." console token in the key slot (owner-hit 2026-08-25):
-    present, but a different Google credential — name the mistake locally instead of
-    letting Google answer its English OAuth riddle."""
+def test_ensure_client_accepts_new_style_auth_keys(monkeypatch):
+    """AI Studio mints `AQ.…` auth keys now (every new key since 2026). A prefix gate here
+    once rejected a legitimate key (owner-hit 2026-08-27) — the key must go through; only
+    Google can judge it."""
     monkeypatch.delenv("GOOGLE_GEMINI_BASE_URL", raising=False)
-    monkeypatch.setenv("GEMINI_API_KEY", "AQ.Ab8-console-token")
+    monkeypatch.setenv("GEMINI_API_KEY", "AQ.Ab8-auth-key")
     monkeypatch.setenv("OPENWORKER_RELAY_TOKEN", "owr_login")
-    _capture_sdk_client(monkeypatch)
+    captured = _capture_sdk_client(monkeypatch)
 
-    with pytest.raises(RuntimeError) as excinfo:
-        GeminiProvider()._ensure_client()
-    assert "AIza" in str(excinfo.value) and "AQ.Ab8" in str(excinfo.value)
+    GeminiProvider()._ensure_client()
+    assert captured["api_key"] == "AQ.Ab8-auth-key"
 
 
 def test_build_gemini_forwards_hidden_base_url_override():

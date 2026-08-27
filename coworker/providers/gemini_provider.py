@@ -108,33 +108,13 @@ RELAY_TOKEN_PREFIX = "owr_"
 #: The relay login, for scripts and CI that have no SecretStore (scripts/test_relay.py).
 RELAY_TOKEN_ENV = "OPENWORKER_RELAY_TOKEN"
 
-#: Every Gemini Developer API key AI Studio mints starts with this (unchanged across Google
-#: API keys for years). The key slot attracts OTHER Google credentials — a Vertex express
-#: "AQ." console token is the live example (owner-hit 2026-08-25) — and generativelanguage
-#: answers those with an English ACCESS_TOKEN_TYPE_UNSUPPORTED 401 that reads as "login
-#: broken". Kept in sync with GOOGLE_KEY_PREFIX in gemini-relay/worker/src/index.ts.
-GOOGLE_KEY_PREFIX = "AIza"
-
-
-def wrong_key_error(key: str) -> Optional[str]:
-    """Why this string cannot be a Gemini Developer API key — None when it looks right.
-
-    Prefix-only: real validation stays with Google. The point is that someone who pasted a
-    Vertex console token gets one actionable sentence instead of Google's OAuth riddle.
-    """
-    if key.startswith(GOOGLE_KEY_PREFIX):
-        return None
-    kind = (
-        "这是 Google Cloud / Vertex 侧的令牌，不是同一种东西"
-        if key.startswith("AQ.")
-        else "不像 AI Studio 签发的 key"
-    )
-    return (
-        f"Gemini API key 不对：AI Studio 的 key 一定以「{GOOGLE_KEY_PREFIX}」开头，"
-        f"现在填的以「{key[:6]}…」开头（{kind}）。"
-        "请找管理员在 https://aistudio.google.com/apikey 重新签发，"
-        "填进「设置 ▸ 模型 ▸ Gemini」。"
-    )
+# NOTE on key formats (learned the hard way, 2026-08-27): AI Studio now mints two kinds of
+# key — legacy `AIza…` standard keys AND `AQ.…` auth keys (service-account-bound; every NEW
+# AI Studio key is one). Never gate on the prefix: an `AQ.` key is legitimate. When Google
+# answers 401 ACCESS_TOKEN_TYPE_UNSUPPORTED / API_KEY_SERVICE_BLOCKED for one, the key's
+# API restriction hasn't been configured in AI Studio ("Restrict to Gemini API only") —
+# a console-side fix, not a client-side one. verify_provider_key maps those reasons to a
+# hint; the chat path passes Google's own words through.
 
 
 def resolve_api_key(secrets: Any = None) -> Optional[str]:
@@ -560,11 +540,6 @@ class GeminiProvider(ProviderClient):
                 missing.append("还没有登录公司中转（「设置 ▸ 模型 ▸ Gemini」里用工作邮箱收验证码）")
             if missing:
                 raise RuntimeError("；".join(missing) + "。")
-            wrong = wrong_key_error(key)
-            if wrong:
-                # Present but a different Google credential — through the relay this would
-                # come back as Google's English 401, so refuse before it leaves the machine.
-                raise RuntimeError(wrong)
 
             self._client = genai.Client(
                 api_key=key,
