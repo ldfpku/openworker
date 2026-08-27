@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import { Markdown } from "./Markdown";
 import {
   libraryActivateExpert,
   libraryExperts,
@@ -834,9 +835,10 @@ function ExpertDetailModal({
         <div className="text-[12.5px] text-danger">{t("Could not load this prompt.")}</div>
       ) : (
         <>
-          <pre className="whitespace-pre-wrap break-words text-[12.5px] leading-relaxed font-mono bg-paper rounded-lg border border-line p-3.5">
-            {data.prompt}
-          </pre>
+          {/* Rendered markdown (the packs are authored in md); Copy still hands over the raw text. */}
+          <div className="text-[13px] bg-paper rounded-lg border border-line px-3.5 py-1" data-testid="expert-prompt-md">
+            <Markdown text={data.prompt} />
+          </div>
           <div className="flex items-center gap-2 mt-3">
             <button className={BTN_ACCENT} onClick={doCopy}>
               {copyState === "copied" ? t("Copied") : copyState === "error" ? t("Copy failed") : t("Copy")}
@@ -928,9 +930,9 @@ function SkillDetailModal({
       ) : (
         <>
           {data.description && <div className="text-[12.5px] text-muted mb-3">{data.description}</div>}
-          <pre className="whitespace-pre-wrap break-words text-[12.5px] leading-relaxed font-mono bg-paper rounded-lg border border-line p-3.5">
-            {data.skill_md}
-          </pre>
+          <div className="text-[13px] bg-paper rounded-lg border border-line px-3.5 py-1" data-testid="skill-md">
+            <Markdown text={data.skill_md} />
+          </div>
           <button className={BTN_ACCENT + " mt-3"} onClick={doCopy}>
             {copyState === "copied" ? t("Copied") : copyState === "error" ? t("Copy failed") : t("Copy")}
           </button>

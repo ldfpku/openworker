@@ -185,7 +185,7 @@ export function PersonaView({
               <h1 className="text-[20px] font-semibold tracking-tight">
                 {fullPersonaName(detail.name, personaId)}
               </h1>
-              <p className="text-[13px] text-muted mt-0.5">{detail.tagline}</p>
+              <p className="text-[13px] text-muted mt-0.5">{detail.tagline && t(detail.tagline)}</p>
             </div>
             <div className="ml-auto flex items-center gap-2">
               <span className="text-[12px] text-muted">
@@ -205,7 +205,7 @@ export function PersonaView({
               <div className={`${SEC_H} mb-1.5`}>{t("About")}</div>
               {detail.description && (
                 <div className="text-[14px] leading-relaxed text-ink/90">
-                  <Markdown text={detail.description} />
+                  <Markdown text={t(detail.description)} />
                 </div>
               )}
               {mediaUrls.length > 0 && (

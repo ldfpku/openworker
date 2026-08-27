@@ -186,8 +186,8 @@ export function GalleryModal({
               >
                 <PersonaHero slug={p.slug} height={88} />
                 <div className="p-3">
-                  <div className="text-[13px] font-semibold">{p.name}</div>
-                  <div className="text-[12px] text-muted leading-snug mt-0.5 mb-2">{p.tagline}</div>
+                  <div className="text-[13px] font-semibold">{t(p.name)}</div>
+                  <div className="text-[12px] text-muted leading-snug mt-0.5 mb-2">{t(p.tagline)}</div>
                   <div className="flex flex-wrap gap-1.5">
                     {p.recommended_connectors.slice(0, 3).map((c) => (
                       <ConnectorChip key={c} name={c} />
@@ -215,13 +215,13 @@ export function GalleryModal({
             >
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 mb-0.5">
-                  <span className="font-semibold text-[13.5px]">{p.name}</span>
+                  <span className="font-semibold text-[13.5px]">{t(p.name)}</span>
                   <span className={CHIP}>{p.family}</span>
                   <span className="text-[11px] text-faint">
                     v{p.version} · {p.publisher}
                   </span>
                 </div>
-                <div className="text-[12.5px] text-muted mb-1.5">{p.tagline}</div>
+                <div className="text-[12.5px] text-muted mb-1.5">{t(p.tagline)}</div>
                 {p.recommended_connectors.length > 0 && (
                   <div className="flex flex-wrap gap-1.5">
                     {p.recommended_connectors.map((c) => (
@@ -280,10 +280,10 @@ export function GalleryModal({
           <div className="flex items-start gap-4">
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 mb-1">
-                <span className="font-semibold text-[17px]">{card.name}</span>
+                <span className="font-semibold text-[17px]">{t(card.name)}</span>
                 <span className={CHIP}>{card.family}</span>
               </div>
-              <div className="text-[13px] text-muted">{card.tagline}</div>
+              <div className="text-[13px] text-muted">{t(card.tagline)}</div>
               <div className="text-[11.5px] text-faint mt-1">
                 v{card.version} · {card.publisher} · {card.risk_summary}
               </div>

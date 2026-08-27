@@ -163,8 +163,8 @@ export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) =>
             <div key={p.id} className="px-[18px] py-4">
               <div className="flex items-center gap-3">
                 <div className="min-w-0 flex-1">
-                  <div className="text-[14px] font-medium truncate">{p.name}</div>
-                  <div className="text-[12px] text-faint truncate mt-0.5">{p.tagline}</div>
+                  <div className="text-[14px] font-medium truncate">{t(p.name)}</div>
+                  <div className="text-[12px] text-faint truncate mt-0.5">{p.tagline && t(p.tagline)}</div>
                 </div>
                 {p.default ? (
                   /* The default coworker cannot be disabled or hidden — no toggle, no
@@ -189,8 +189,8 @@ export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) =>
                     {onOpenPersona && (
                       <button
                         className="text-faint hover:text-ink shrink-0 p-1"
-                        title={t("Configure {{name}}", { name: p.name })}
-                        aria-label={t("Configure {{name}}", { name: p.name })}
+                        title={t("Configure {{name}}", { name: t(p.name) })}
+                        aria-label={t("Configure {{name}}", { name: t(p.name) })}
                         data-testid={`persona-configure-${p.id}`}
                         onClick={() => onOpenPersona(p.id)}
                       >
