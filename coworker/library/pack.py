@@ -10,10 +10,12 @@ Location resolution order:
   2. PyInstaller bundle: ``sys._MEIPASS/library-pack``
   3. dev checkout: ``<coworker package dir>/../library-pack`` (repo root)
 
-index.json is loaded lazily, once per ``LibraryPack`` instance, and cached for its
-lifetime. The module-level singleton in ``api.py`` lives for the process — tests that
-need a different pack construct their own ``LibraryPack`` and swap it in via
-``set_pack_for_tests``/``register_library_routes(app, pack=...)``.
+index.json is loaded lazily and, once it parses, cached for the instance's lifetime.
+Only success is cached: a missing or unreadable index is re-tried on the next request,
+so a transient failure never poisons a long-lived process. The module-level singleton
+in ``api.py`` lives for the process — tests that need a different pack construct their
+own ``LibraryPack`` and swap it in via ``set_pack_for_tests``/
+``register_library_routes(app, pack=...)``.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -60,23 +63,29 @@ class LibraryPack:
         self.root: Optional[Path] = Path(root) if root is not None else _default_pack_dir()
         self._index: Optional[dict[str, Any]] = None
         self._loaded = False
+        self._lock = threading.Lock()
 
     # -- loading --------------------------------------------------------------------
     def _load(self) -> Optional[dict[str, Any]]:
-        if self._loaded:
+        # The /v1/library routes are sync defs, so FastAPI runs them in a threadpool and
+        # the GUI's first visit fires several of them into this lazy load concurrently.
+        # The lock makes late arrivals wait for the winner's parse instead of observing
+        # a half-initialized instance (the shipped desktop app's "pack missing" ghost);
+        # caching only success means a missing or unreadable index is re-tried on the
+        # next request rather than pinning the process to a one-off read failure.
+        with self._lock:
+            if self._loaded:
+                return self._index
+            if self.root is None:
+                return None
+            index_path = self.root / "index.json"
+            try:
+                self._index = json.loads(index_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                self._index = None
+                return None
+            self._loaded = True
             return self._index
-        self._loaded = True
-        self._index = None
-        if self.root is None:
-            return None
-        index_path = self.root / "index.json"
-        if not index_path.is_file():
-            return None
-        try:
-            self._index = json.loads(index_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            self._index = None
-        return self._index
 
     @staticmethod
     def _missing() -> dict[str, Any]:

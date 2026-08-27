@@ -294,6 +294,44 @@ describe("LibraryView — install a skill", () => {
   });
 });
 
+describe("LibraryView — load failure vs pack missing", () => {
+  it("offers a retry (not the dev pack-missing notice) when experts come back empty, and recovers", async () => {
+    const { libraryExperts } = await import("../api");
+    // One transient empty result — the race/fetch-failure shape the desktop app hit.
+    vi.mocked(libraryExperts).mockResolvedValueOnce([]);
+
+    render(<LibraryView onStartExpertSession={vi.fn()} onStartTeamSession={vi.fn()} />);
+
+    expect(await screen.findByText("Could not load the expert library.")).toBeTruthy();
+    expect(screen.queryByText(/gen_library/)).toBeNull();
+
+    fireEvent.click(screen.getByTestId("library-retry"));
+    expect(await screen.findByText("地理学家")).toBeTruthy();
+    expect(screen.queryByTestId("library-retry")).toBeNull();
+  });
+
+  it("shows the pack-missing notice on the backend's explicit verdict, still with a retry", async () => {
+    const { libraryOverview, libraryExperts, librarySkills } = await import("../api");
+    vi.mocked(libraryOverview).mockResolvedValueOnce({
+      ok: false,
+      version: 1,
+      experts: { zh: 0, en: 0 },
+      skills: 0,
+    });
+    vi.mocked(libraryExperts).mockResolvedValueOnce([]);
+    vi.mocked(librarySkills).mockResolvedValueOnce([]);
+
+    render(<LibraryView onStartExpertSession={vi.fn()} onStartTeamSession={vi.fn()} />);
+
+    // The dev-facing notice — and, since the backend re-checks the pack per request
+    // (a one-off read failure yields the same verdict), a way back out of it.
+    expect(await screen.findByText(/gen_library/)).toBeTruthy();
+    fireEvent.click(screen.getByTestId("library-retry"));
+    expect(await screen.findByText("地理学家")).toBeTruthy();
+    expect(screen.queryByText(/gen_library/)).toBeNull();
+  });
+});
+
 describe("LibraryView — build an expert team", () => {
   it("selects two experts, installs their teammate variants, and starts a team session", async () => {
     const onStartTeamSession = vi.fn();

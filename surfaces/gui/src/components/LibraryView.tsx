@@ -140,6 +140,8 @@ export function LibraryView({
   const [teamSelected, setTeamSelected] = useState<TeamMember[]>([]);
   const [teamLimitHit, setTeamLimitHit] = useState(false);
   const [teamModalOpen, setTeamModalOpen] = useState(false);
+  // Bumped by the retry button — re-runs both load effects below.
+  const [reloadTick, setReloadTick] = useState(0);
 
   const promptCache = useRef<Map<string, PromptResult>>(new Map());
   const skillCache = useRef<Map<string, SkillResult>>(new Map());
@@ -151,21 +153,35 @@ export function LibraryView({
   }, []);
 
   useEffect(() => {
+    // reloadTick makes these effects re-runnable, so guard against a stale in-flight
+    // response from before a retry landing after (and clobbering) the fresh one.
+    let live = true;
+    setOverview(null);
+    setSkills(null);
     libraryOverview()
-      .then((r) => setOverview({ ok: r.ok }))
-      .catch(() => setOverview({ ok: false }));
+      .then((r) => live && setOverview({ ok: r.ok }))
+      // A failed fetch is not the backend's "no pack on disk" verdict — leave the
+      // overview unknown so the retryable load-failed path handles it, not packMissing.
+      .catch(() => live && setOverview(null));
     librarySkills()
-      .then(setSkills)
-      .catch(() => setSkills([]));
+      .then((s) => live && setSkills(s))
+      .catch(() => live && setSkills([]));
     loadStatus();
-  }, [loadStatus]);
+    return () => {
+      live = false;
+    };
+  }, [loadStatus, reloadTick]);
 
   useEffect(() => {
+    let live = true;
     setExperts(null);
     libraryExperts(lib)
-      .then(setExperts)
-      .catch(() => setExperts([]));
-  }, [lib]);
+      .then((e) => live && setExperts(e))
+      .catch(() => live && setExperts([]));
+    return () => {
+      live = false;
+    };
+  }, [lib, reloadTick]);
 
   // Category chips are per-dataset — reset the filter whenever the dataset underneath
   // them changes so a stale selection never silently hides everything.
@@ -312,16 +328,22 @@ export function LibraryView({
 
   const categories = tab === "experts" ? expertCategories : skillCategories;
   const loading = tab === "experts" ? experts === null : skills === null;
-  const packMissing =
+  // Only the backend's explicit verdict means the pack is absent from disk. An empty
+  // list without that verdict is a load that fell over (fetch failed, sidecar still
+  // warming up) — recoverable, so it gets a retry button instead of a dev-facing
+  // "run gen_library.py" that an installed app's user can do nothing with.
+  const packMissing = !loading && overview?.ok === false;
+  const loadFailed =
     !loading &&
-    (overview?.ok === false || (tab === "experts" ? allExperts.length === 0 : allSkills.length === 0));
+    !packMissing &&
+    (tab === "experts" ? allExperts.length === 0 : allSkills.length === 0);
   const filteredCount = tab === "experts" ? filteredExperts.length : filteredSkills.length;
 
   return (
     <main className="flex-1 min-w-0 flex flex-col bg-paper">
       <div className="h-12 shrink-0 px-5 flex items-center gap-2 border-b border-line bg-paper">
         <span className="text-[13px] font-semibold">{t("Expert library")}</span>
-        {!loading && !packMissing && (
+        {!loading && !packMissing && !loadFailed && (
           <span className="text-[12px] text-faint">{t("{{count}} items", { count: filteredCount })}</span>
         )}
       </div>
@@ -392,8 +414,28 @@ export function LibraryView({
           {loading ? (
             <div className="text-[12.5px] text-muted py-10 text-center">{t("Loading…")}</div>
           ) : packMissing ? (
+            // The backend re-checks the pack on every request, so this verdict can also
+            // be a one-off read failure — offer the same retry rather than a dead end.
             <div className="text-[12.5px] text-muted py-10 text-center">
-              {t("Expert library pack missing — run packaging/gen_library.py to generate it first.")}
+              <div>{t("Expert library pack missing — run packaging/gen_library.py to generate it first.")}</div>
+              <button
+                className={BTN_ACCENT + " mt-3"}
+                onClick={() => setReloadTick((n) => n + 1)}
+                data-testid="library-retry"
+              >
+                {t("Retry")}
+              </button>
+            </div>
+          ) : loadFailed ? (
+            <div className="text-[12.5px] text-muted py-10 text-center">
+              <div>{t("Could not load the expert library.")}</div>
+              <button
+                className={BTN_ACCENT + " mt-3"}
+                onClick={() => setReloadTick((n) => n + 1)}
+                data-testid="library-retry"
+              >
+                {t("Retry")}
+              </button>
             </div>
           ) : tab === "experts" ? (
             filteredExperts.length === 0 ? (

@@ -323,6 +323,55 @@ def test_missing_pack_all_endpoints_report_not_found(tmp_path):
         assert res == {"ok": False, "error": "library pack not found"}, path
 
 
+# -- lazy-load robustness ----------------------------------------------------------------
+# The routes are sync defs (threadpool), so the GUI's first library visit fires several
+# requests into a cold LibraryPack concurrently. These pin the two properties that kept
+# the shipped desktop app honest: no request may observe a half-initialized load, and a
+# failed load must not be cached for the life of the process.
+
+
+def test_concurrent_first_load_returns_data_to_every_thread(pack_dir, monkeypatch):
+    import threading
+    import time
+
+    real_read_text = Path.read_text
+
+    def slow_read_text(self, *args, **kwargs):
+        text = real_read_text(self, *args, **kwargs)
+        if self.name == "index.json":
+            time.sleep(0.05)  # widen the parse window the way a cold first read does
+        return text
+
+    monkeypatch.setattr(Path, "read_text", slow_read_text)
+
+    pack = LibraryPack(root=pack_dir)
+    barrier = threading.Barrier(8)
+    results: list[bool] = []
+
+    def hit() -> None:
+        barrier.wait()
+        results.append(pack.experts("zh")["ok"])
+
+    threads = [threading.Thread(target=hit) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert results == [True] * 8
+
+
+def test_failed_load_is_retried_not_cached(pack_dir):
+    index = pack_dir / "index.json"
+    hidden = pack_dir / "index.json.hidden"
+    index.rename(hidden)
+
+    pack = LibraryPack(root=pack_dir)
+    assert pack.overview()["ok"] is False
+
+    hidden.rename(index)
+    assert pack.overview()["ok"] is True
+
+
 # -- real pack smoke test (only when the packer has already run) ------------------------
 
 

@@ -368,6 +368,7 @@
   "Could not enable this coworker.": "无法启用这个协作代理。",
   "Could not install this coworker.": "无法安装这个协作代理。",
   "Could not install this skill.": "无法安装这个技能。",
+  "Could not load the expert library.": "专家库加载失败。",
   "Could not load this coworker.": "无法加载这个协作代理。",
   "Could not load this persona.": "无法加载此角色。",
   "Could not load this prompt.": "无法加载该提示词。",

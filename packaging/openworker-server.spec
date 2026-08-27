@@ -54,10 +54,15 @@ datas += collect_data_files("coworker")
 
 # The prebuilt library pack (expert prompts + skills, coworker/library/pack.py) ships
 # as plain data — PyInstaller extracts it to sys._MEIPASS/library-pack at runtime, which
-# is exactly where LibraryPack's bundle-mode lookup expects it.
+# is exactly where LibraryPack's bundle-mode lookup expects it. The pack is tracked in
+# git, so its absence means a broken checkout — fail the build rather than silently
+# shipping an installer whose Expert library comes up empty.
 _LIBRARY_PACK = os.path.join(ROOT, "library-pack")
-if os.path.isdir(_LIBRARY_PACK):
-    datas += [(_LIBRARY_PACK, "library-pack")]
+if not os.path.isdir(_LIBRARY_PACK):
+    raise SystemExit(
+        "library-pack/ not found — the expert library data pack must ship with the app"
+    )
+datas += [(_LIBRARY_PACK, "library-pack")]
 
 if not INCLUDE_EXPERIMENTAL:
     hiddenimports = [
