@@ -7,7 +7,11 @@
 # Triggers:
 #   - tag push `v*`  → builds all targets and attaches them to a DRAFT GitHub Release
 #                      (review, then publish by hand).
-#   - manual run     → builds and uploads workflow artifacts only (no release).
+#   - manual run     → from a branch: builds and uploads workflow artifacts only (no
+#                      release). At a tag ref it behaves exactly like a tag push — the
+#                      release job keys off the ref, not the event. bump-and-tag.yml
+#                      relies on this: a GITHUB_TOKEN tag push cannot trigger workflows,
+#                      so it dispatches this one at the fresh tag instead.
 #
 # Each installer is uploaded twice: once with its versioned name (archive) and once with a
 # stable name (OpenWorker-macos-arm64.dmg, …) so the website can link to
