@@ -1,6 +1,7 @@
 // SKILLS-SPEC §4.6 GUI — the composer's "/" force-run popup: opens only for a leading
 // slash, lists only the session's effective (enabled) menu, filters while typing, and the
 // picked skill rides onSend as its own field — never as message text.
+import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Composer } from "./Composer";
@@ -140,6 +141,28 @@ describe("Composer — the doorway prefill (SKILLS-SPEC §5.2)", () => {
           prefill: { text: "Build a new skill for me: release procedure", nonce: 1 },
         })}
       />,
+    );
+    await waitFor(() => {
+      expect((box() as HTMLTextAreaElement).value).toBe(
+        "Build a new skill for me: release procedure",
+      );
+    });
+  });
+
+  it("a prefill on a fresh StrictMode mount survives the effect-list replay", async () => {
+    // StrictMode reruns the WHOLE effect list on mount (clear, prefill, clear, prefill).
+    // The prefill's nonce guard makes its second run a no-op, so an unguarded second
+    // clear would wipe the text with nothing left to restore it (dev-only regression).
+    stubFetch();
+    render(
+      <StrictMode>
+        <Composer
+          {...props({
+            resetKey: "s2",
+            prefill: { text: "Build a new skill for me: release procedure", nonce: 1 },
+          })}
+        />
+      </StrictMode>,
     );
     await waitFor(() => {
       expect((box() as HTMLTextAreaElement).value).toBe(

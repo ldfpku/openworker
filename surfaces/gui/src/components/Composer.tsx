@@ -178,9 +178,14 @@ export function Composer(props: Props) {
 
   // Clear the draft when the conversation changes, so a half-typed message / picked file doesn't
   // bleed from one session into another. Declared BEFORE the prefill effect: when both fire in
-  // the same render (the Skills doorway starts a new session AND prefills it), effects run in
-  // declaration order — clear first, then the prefill lands on the fresh session.
+  // the same render (a doorway starts a new session AND prefills it), effects run in declaration
+  // order — clear first, then the prefill lands on the fresh session. Cleared at most once per
+  // resetKey (same ref guard as the prefill's nonce): StrictMode replays the whole effect list,
+  // and an unguarded second clear would wipe the prefill, whose own guard stops it reapplying.
+  const clearedFor = useRef<string | undefined>(undefined);
   useEffect(() => {
+    if (clearedFor.current === props.resetKey) return;
+    clearedFor.current = props.resetKey;
     setText("");
     setAttachments([]);
     setPendingSkill(null);
