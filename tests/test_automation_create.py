@@ -28,7 +28,7 @@ def test_create_automation_success(tmp_path, monkeypatch):
     assert out["ok"] is True
     task = out["task"]
     assert task["title"] == "Morning news briefing"
-    assert task["schedule"] == "Every day at ~8:00 AM"
+    assert task["schedule"] == "每天 ~08:00"
     # it really landed in the store and is bound to a fresh scratch workspace
     saved = manager.task_store.get(task["id"])
     assert saved is not None

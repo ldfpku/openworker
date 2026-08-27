@@ -269,7 +269,7 @@ export function RightRail({
               Hidden entirely until the workspace has items (no chrome for plain sessions). */}
           {board?.space && (
             <RailSection
-              title="Board"
+              title={t("Board")}
               count={boardChip(board).text}
               countAttention={boardChip(board).attention}
               open={open.board}
@@ -301,7 +301,7 @@ export function RightRail({
               entry per team: the lead). */}
           {teamMembers.length > 0 && (
             <RailSection
-              title="Team"
+              title={t("Team")}
               open={open.team}
               onToggle={() => setOpen({ ...open, team: !open.team })}
               count={String(teamMembers.length)}
@@ -313,18 +313,18 @@ export function RightRail({
                     key={w.session_id}
                     data-testid={`team-row-${w.team?.actor || w.session_id}`}
                     onClick={() => onOpenWorker?.(w)}
-                    title={`Open ${w.team?.actor || "worker"}'s session`}
+                    title={t("Open {{actor}}'s session", { actor: w.team?.actor || t("worker") })}
                   >
                     <span className={"team-dot " + (w.team?.status || "idle")} />
                     <span className="rail-team-name">{w.team?.actor || w.agent}</span>
-                    <span className="rail-team-item">{w.team?.current_item || "sleeping"}</span>
-                    <span className="rail-team-open">open ↗</span>
+                    <span className="rail-team-item">{w.team?.current_item || t("sleeping")}</span>
+                    <span className="rail-team-open">{t("open ↗")}</span>
                   </button>
                 ))}
                 {teamChatEnabled && onOpenTeamChat && (
                   <button className="rail-team-row rail-chat-row" data-testid="team-chat-row" onClick={onOpenTeamChat}>
                     <span className="team-hash">#</span>
-                    <span className="rail-team-name">team chat</span>
+                    <span className="rail-team-name">{t("team chat")}</span>
                     {teamChatUnread > 0 && <span className="team-chat-badge">{teamChatUnread}</span>}
                   </button>
                 )}
@@ -379,7 +379,7 @@ export function RightRail({
               drawer for no gain. */}
           {board?.space && journal.length > 0 && (
             <RailSection
-              title="Journal"
+              title={t("Journal")}
               count={String(journal.length)}
               open={open.journal}
               onToggle={() => setOpen({ ...open, journal: !open.journal })}
@@ -389,7 +389,11 @@ export function RightRail({
                   <div className="journal-row" key={c.case}>
                     <Icon name="file" size={13} />
                     <span className="journal-case">{c.case}</span>
-                    <span className="journal-count">{c.entries} entr{c.entries === 1 ? "y" : "ies"}</span>
+                    <span className="journal-count">
+                      {c.entries === 1
+                        ? t("{{count}} entry", { count: c.entries })
+                        : t("{{count}} entries", { count: c.entries })}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -400,7 +404,7 @@ export function RightRail({
               Artifacts section stays the curated scratch-only surface. */}
           {rootDirs.length > 0 && (
             <RailSection
-              title="Files"
+              title={t("Files")}
               count={String(rootDirs.length)}
               open={open.files}
               onToggle={() => setOpen({ ...open, files: !open.files })}
@@ -430,11 +434,11 @@ export function RightRail({
                     <span className="artifact-name">
                       {r.label || r.path.split("/").pop() || r.path}
                       <span className="artifact-row-meta">
-                        {r.writable ? "read-write" : "read-only"}
-                        {!r.exists ? " · missing" : ""}
+                        {r.writable ? t("read-write") : t("read-only")}
+                        {!r.exists ? ` · ${t("missing")}` : ""}
                       </span>
                     </span>
-                    <span className="artifact-open">Browse</span>
+                    <span className="artifact-open">{t("Browse")}</span>
                   </button>
                 ))}
               </div>
@@ -608,7 +612,7 @@ function ArtifactViewer({
   const isApp = content?.kind === "sheet" || content?.kind === "pdf" || content?.kind === "office";
   // Text-bearing kinds can copy their contents; images/PDFs/sheets have nothing textual to copy.
   const copyableText = typeof content?.content === "string" && !content?.error;
-  const crumbRoot = artifact.origin === "files" ? "Files" : "Artifacts";
+  const crumbRoot = artifact.origin === "files" ? t("Files") : t("Artifacts");
   const item = (
     testid: string,
     icon: Parameters<typeof Icon>[0]["name"],
@@ -637,7 +641,7 @@ function ArtifactViewer({
               className="artifact-crumb-link"
               data-testid="artifact-crumb-back"
               onClick={onBack}
-              title={`Back to ${crumbRoot}`}
+              title={t("Back to {{root}}", { root: crumbRoot })}
             >
               {crumbRoot}
             </button>

@@ -95,10 +95,10 @@ export function ConnectorsSection() {
           data-testid="connectors-breadcrumb"
           onClick={() => setDetail(null)}
         >
-          ‹ Connectors
+          {t("‹ Connectors")}
         </button>
         {!s ? (
-          <div className="text-[13px] text-muted">Loading…</div>
+          <div className="text-[13px] text-muted">{t("Loading…")}</div>
         ) : (
           <McpServerDetail server={s} onChanged={refresh} onGone={() => setDetail(null)} />
         )}

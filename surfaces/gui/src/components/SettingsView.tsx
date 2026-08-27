@@ -137,8 +137,8 @@ export function SettingsView({
           ) : tab === "context" ? (
             <section>
               <PanelHead
-                title="Context optimization"
-                sub="How sessions spend tokens — attachment handling and long-history compaction."
+                title={t("Context optimization")}
+                sub={t("How sessions spend tokens — attachment handling and long-history compaction.")}
               />
               <TokenSavingsCard />
               <CompactionCard />

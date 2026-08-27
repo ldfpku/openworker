@@ -33,7 +33,7 @@ export function IntegrationsView() {
         </div>
         <button className="w-full text-left px-2.5 py-2 rounded-lg text-[13px] flex items-center justify-between bg-paper text-accent font-medium">
           <span className="flex items-center gap-2 min-w-0">
-            <Icon name="plug" size={15} /> Connectors
+            <Icon name="plug" size={15} /> {t("Connectors")}
           </span>
           {connCount != null && (
             <span className="text-[11px] shrink-0 text-accent">{connCount}</span>

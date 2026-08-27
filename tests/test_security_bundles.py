@@ -101,8 +101,8 @@ def test_scanner_skills_offer_a_fallback_instead_of_stopping(tmp_path):
     import coworker.personas as personas_pkg
 
     root = Path(personas_pkg.__file__).parent / "builtin" / "security" / "skills"
-    secret_scan = (root / "secret-scan" / "SKILL.md").read_text()
-    semgrep = (root / "semgrep-review" / "SKILL.md").read_text()
+    secret_scan = (root / "secret-scan" / "SKILL.md").read_text(encoding="utf-8")
+    semgrep = (root / "semgrep-review" / "SKILL.md").read_text(encoding="utf-8")
 
     for body in (secret_scan, semgrep):
         assert "request_tool" in body
@@ -121,9 +121,9 @@ def test_cloud_posture_drives_trivy_config_not_deprecated_tfsec(tmp_path):
     import coworker.personas as personas_pkg
 
     root = Path(personas_pkg.__file__).parent / "builtin" / "cloud-posture"
-    assert "tfsec" not in (root / "manifest.md").read_text()
+    assert "tfsec" not in (root / "manifest.md").read_text(encoding="utf-8")
 
-    skill = (root / "skills" / "iac-scan" / "SKILL.md").read_text()
+    skill = (root / "skills" / "iac-scan" / "SKILL.md").read_text(encoding="utf-8")
     assert "trivy config" in skill
     assert "request_tool" in skill  # missing scanner → ask, never a dropped scan
     for line in skill.splitlines():

@@ -1,3 +1,5 @@
+import i18n from "./i18n";
+
 // A persona is "project-scoped" when it declares requires_folder: an explicit directory the
 // user picks, sessions grouped by project in the sidebar. Everything else runs on a transparent
 // per-conversation scratch dir, with real folders added as roots when needed — no folder gate.
@@ -13,7 +15,7 @@ export function isProjectScoped(p?: { requires_folder?: boolean }): boolean {
 
 // Short label for the sidebar + top bar: "Coworker" / "Code" / "Ops" / "Chat".
 export function shortPersonaName(name?: string, id?: string): string {
-  if (id === "cowork") return "Coworker";
+  if (id === "cowork") return i18n.t("Coworker");
   const n = (name || id || "").trim();
   return n.replace(/\s*coworker$/i, "").trim() || n;
 }
@@ -21,7 +23,7 @@ export function shortPersonaName(name?: string, id?: string): string {
 // Full family name for the persona detail page: "Coworker" / "Code Coworker" / "Ops Coworker".
 // Chat isn't a coworker — left as-is.
 export function fullPersonaName(name?: string, id?: string): string {
-  if (id === "cowork") return "Coworker";
+  if (id === "cowork") return i18n.t("Coworker");
   const n = (name || id || "").trim();
   if (id === "chat" || !n) return n;
   return /coworker$/i.test(n) ? n : `${n} Coworker`;

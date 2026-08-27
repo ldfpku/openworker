@@ -390,7 +390,7 @@ export function AccessSection({
                       onClick={() => setAdding(true)}
                       data-testid="access-add-source"
                     >
-                      + Add a source
+                      {t("+ Add a source")}
                     </button>
                     <span className="text-faint">·</span>
                     <button
@@ -398,7 +398,7 @@ export function AccessSection({
                       data-testid="access-manage"
                       onClick={() => onOpenIntegrations?.()}
                     >
-                      Manage →
+                      {t("Manage →")}
                     </button>
                   </div>
                 )}

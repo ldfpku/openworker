@@ -551,12 +551,12 @@ export function AutomationQuickstart({
                     data-testid="ob-consent"
                   />
                   <span>
-                    Allow this automation to post its digest to{" "}
+                    {t("Allow this automation to post its digest to")}{" "}
                     <b className="text-ink" title={channel || undefined}>
-                      {channelLabel || "the channel"}
+                      {channelLabel || t("the channel")}
                       {channelWorkspace ? ` (${channelWorkspace})` : ""}
                     </b>{" "}
-                    without asking each time. Anything else still asks first.
+                    {t("without asking each time. Anything else still asks first.")}
                   </span>
                 </label>
               ) : picked.conns.length > 0 ? (

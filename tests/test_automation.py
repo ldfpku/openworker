@@ -33,16 +33,16 @@ def _task(**kw) -> ScheduledTask:
 
 # -- model / schedule ----------------------------------------------------------
 def test_schedule_human():
-    assert Schedule("cron", cron="10 19 * * *").human() == "Every day at ~7:10 PM"
-    assert "Monday" in Schedule("cron", cron="0 9 * * 0").human()
-    assert Schedule("cron", cron="0 9 5 * *").human() == "Monthly on day 5 at ~9:00 AM"
-    assert Schedule("once", fire_at="2026-07-01T09:00:00").human().startswith("Once at")
+    assert Schedule("cron", cron="10 19 * * *").human() == "每天 ~19:10"
+    assert "周一" in Schedule("cron", cron="0 9 * * 0").human()
+    assert Schedule("cron", cron="0 9 5 * *").human() == "每月 5 日 ~09:00"
+    assert Schedule("once", fire_at="2026-07-01T09:00:00").human().startswith("单次于")
 
 
 def test_task_gets_own_thread_id():
     t = _task()
     assert t.task_session_id == f"__task__{t.id}"
-    assert t.public()["schedule"] == "Every day at ~7:10 PM"
+    assert t.public()["schedule"] == "每天 ~19:10"
 
 
 def test_compute_next_run_cron_explicit_utc():
@@ -167,7 +167,7 @@ def test_create_and_list_tools(tmp_path):
     out = tools["create_scheduled_task"](
         title="Brief", instructions="brief me", cron="10 19 * * *"
     )
-    assert out["ok"] and out["schedule"] == "Every day at ~7:10 PM"
+    assert out["ok"] and out["schedule"] == "每天 ~19:10"
     # create surfaces a confirm card → gated
     assert (
         tools["create_scheduled_task"].__aisuite_tool_metadata__.requires_approval
@@ -352,7 +352,7 @@ def test_automations_rest(tmp_path, monkeypatch):
     tasks = client.get("/v1/automations").json()["tasks"]
     assert (
         tasks[0]["title"] == "Daily brief"
-        and tasks[0]["schedule"] == "Every day at ~7:10 PM"
+        and tasks[0]["schedule"] == "每天 ~19:10"
     )
     assert (
         client.patch(f"/v1/automations/{t.id}", json={"enabled": False}).json()["task"][

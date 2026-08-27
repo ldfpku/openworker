@@ -240,10 +240,12 @@ function Buttons({
         <button
           className="btn"
           data-testid="allow-readonly-session"
-          title="Auto-allow read-only commands (local reads and pipelines only — no network, writes, or interpreters) for the rest of this session"
+          title={t(
+            "Auto-allow read-only commands (local reads and pipelines only — no network, writes, or interpreters) for the rest of this session",
+          )}
           onClick={() => onApprove("readonly_session")}
         >
-          Allow read-only commands
+          {t("Allow read-only commands")}
         </button>
       )}
       <span className="spacer" />

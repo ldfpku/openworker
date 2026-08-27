@@ -10,7 +10,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-_DOW = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+_DOW = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
 
 def _now() -> float:
@@ -59,9 +59,8 @@ def grant_entries(permissions: Any) -> list[str]:
 
 
 def _human_time(hour: int, minute: int) -> str:
-    ampm = "AM" if hour < 12 else "PM"
-    h12 = hour % 12 or 12
-    return f"{h12}:{minute:02d} {ampm}"
+    # 24-hour clock, zero-padded (this fork's convention — no AM/PM ambiguity to localize).
+    return f"{hour:02d}:{minute:02d}"
 
 
 @dataclass
@@ -74,9 +73,9 @@ class Schedule:
     )
 
     def human(self) -> str:
-        """Best-effort human label ('Every day at ~7:10 PM'); falls back to the raw cron."""
+        """Best-effort human label ('每天 ~19:10'); falls back to the raw cron."""
         if self.kind == "once":
-            return f"Once at {self.fire_at}"
+            return f"单次于 {self.fire_at}"
         parts = (self.cron or "").split()
         if len(parts) != 5:
             return self.cron or "?"
@@ -86,11 +85,11 @@ class Schedule:
         except ValueError:
             return self.cron  # non-trivial cron (ranges/steps) — show as-is
         if dom == "*" and dow == "*":
-            return f"Every day at ~{t}"
+            return f"每天 ~{t}"
         if dom == "*" and dow.isdigit():
-            return f"Every {_DOW[int(dow) % 7]} at ~{t}"
+            return f"每{_DOW[int(dow) % 7]} ~{t}"
         if dom.isdigit() and dow == "*":
-            return f"Monthly on day {dom} at ~{t}"
+            return f"每月 {dom} 日 ~{t}"
         return self.cron
 
     def to_dict(self) -> dict:

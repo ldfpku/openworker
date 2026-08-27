@@ -33,6 +33,36 @@ function fromCron(cron?: string | null): { time: string; freq: string } {
 const fmt = (t: number | null) =>
   t ? new Date(t * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "—";
 
+// Backend enums (coworker/automation/models.py TaskRun.status / .trigger) come across the wire
+// as raw tokens — map each to a translated label rather than rendering it verbatim.
+function runStatusLabel(t: (key: string) => string, status?: string | null): string {
+  switch (status) {
+    case "ok":
+      return t("ok");
+    case "running":
+      return t("running");
+    case "error":
+      return t("error");
+    case "skipped":
+      return t("skipped");
+    default:
+      return status || "";
+  }
+}
+
+function runTriggerLabel(t: (key: string) => string, trigger?: string | null): string {
+  switch (trigger) {
+    case "schedule":
+      return t("schedule");
+    case "catchup":
+      return t("catchup");
+    case "manual":
+      return t("manual");
+    default:
+      return trigger || "";
+  }
+}
+
 // Map a simple time-of-day + frequency selection to a 5-field cron string.
 function toCron(time: string, freq: string): string {
   const [h, m] = (time || "09:00").split(":").map((x) => parseInt(x, 10) || 0);
@@ -190,7 +220,9 @@ export function ScheduledView({ onOpenRun, onRunNow, initialOpenId }: Props) {
                 <Icon name="clock" size={13} className="text-faint shrink-0" />
                 {task.enabled ? task.schedule : t("Paused")} · {t("next {{time}}", { time: fmt(task.next_run) })} ·{" "}
                 {task.run_count === 1 ? t("1 run") : t("{{count}} runs", { count: task.run_count })}
-                {task.last_status ? ` · ${t("last {{status}}", { status: task.last_status })}` : ""}
+                {task.last_status
+                  ? ` · ${t("last {{status}}", { status: runStatusLabel(t, task.last_status) })}`
+                  : ""}
               </div>
             </div>
           ))}
@@ -497,7 +529,9 @@ function TaskDetail({
                 {seenMark !== null && r.started_at > seenMark && (
                   <span className="run-new-pill" data-testid="run-new">{t("new")}</span>
                 )}
-                {fmt(r.started_at)} · <span className={"run-" + r.status}>{r.status}</span> · {r.trigger}
+                {fmt(r.started_at)} ·{" "}
+                <span className={"run-" + r.status}>{runStatusLabel(t, r.status)}</span> ·{" "}
+                {runTriggerLabel(t, r.trigger)}
                 {r.artifacts.length > 0 && (
                   <span className="dim"> · {t("{{count}} file(s)", { count: r.artifacts.length })}</span>
                 )}

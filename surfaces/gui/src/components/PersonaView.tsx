@@ -111,7 +111,7 @@ export function PersonaView({
     const dir = await chooseFolder();
     if (!dir) return;
     const r = await exportPersona(personaId, dir);
-    setMsg(r.ok ? `Exported to ${r.path}` : r.error || "export failed");
+    setMsg(r.ok ? t("Exported to {{path}}", { path: r.path }) : r.error || t("Export failed"));
   };
 
   const header = (
@@ -202,7 +202,7 @@ export function PersonaView({
           {/* about: bundle markdown + screenshot carousel */}
           {(detail.description || mediaUrls.length > 0) && (
             <section>
-              <div className={`${SEC_H} mb-1.5`}>About</div>
+              <div className={`${SEC_H} mb-1.5`}>{t("About")}</div>
               {detail.description && (
                 <div className="text-[14px] leading-relaxed text-ink/90">
                   <Markdown text={detail.description} />
@@ -222,7 +222,7 @@ export function PersonaView({
                     )}
                     <img
                       src={mediaUrls[shot]}
-                      alt={`${detail.name} screenshot ${shot + 1}`}
+                      alt={t("{{name}} screenshot {{n}}", { name: detail.name, n: shot + 1 })}
                       className="flex-1 min-w-0 rounded-xl border border-line bg-panel"
                       data-testid="persona-media"
                     />
@@ -241,7 +241,7 @@ export function PersonaView({
                       {mediaUrls.map((_, i) => (
                         <button
                           key={i}
-                          aria-label={`Screenshot ${i + 1}`}
+                          aria-label={t("Screenshot {{n}}", { n: i + 1 })}
                           className={
                             "w-1.5 h-1.5 rounded-full " + (i === shot ? "bg-accent" : "bg-lineStrong")
                           }
@@ -259,10 +259,10 @@ export function PersonaView({
           {rows.length > 0 && (
             <section>
               <div className={`${SEC_H} mb-1.5 flex items-baseline`}>
-                <span>Connectors</span>
+                <span>{t("Connectors")}</span>
                 <span className="ml-auto flex font-semibold text-[10.5px] text-faint normal-case tracking-normal">
-                  <span className={COL_STATUS}>Status</span>
-                  <span className={COL_ENABLE}>Enable</span>
+                  <span className={COL_STATUS}>{t("Status")}</span>
+                  <span className={COL_ENABLE}>{t("Enable")}</span>
                 </span>
               </div>
               <div className={GRP}>
@@ -275,7 +275,7 @@ export function PersonaView({
                         {r.kind === "mcp" ? (
                           <span className={TAG_MCP}>MCP</span>
                         ) : r.tier === "core" ? (
-                          <span className={TAG_CORE}>core</span>
+                          <span className={TAG_CORE}>{t("core")}</span>
                         ) : null}
                       </div>
                       {r.reason && <div className="text-[12px] text-muted">{r.reason}</div>}
@@ -283,7 +283,7 @@ export function PersonaView({
                     <span className={COL_STATUS}>
                       {r.connected ? (
                         <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-okSoft text-ok border border-okLine">
-                          ● Ready
+                          ● {t("Ready")}
                         </span>
                       ) : (
                         <button
@@ -324,7 +324,7 @@ export function PersonaView({
           {/* advanced: tool calls, collapsed by default (everyday users don't need these) */}
           {detail.tools.length > 0 && (
             <section>
-              <div className={`${SEC_H} mb-1.5`}>Advanced</div>
+              <div className={`${SEC_H} mb-1.5`}>{t("Advanced")}</div>
               <div className="rounded-xl2 border border-line bg-panel">
                 <button
                   className="w-full flex items-center gap-2 px-4 py-2.5 text-left"
@@ -367,8 +367,8 @@ export function PersonaView({
               </div>
             )}
             <div>
-              <span className="text-faint">Workspace</span> ·{" "}
-              {detail.requires_folder ? "picked folder" : "scratch"}
+              <span className="text-faint">{t("Workspace")}</span> ·{" "}
+              {detail.requires_folder ? t("picked folder") : t("scratch")}
             </div>
           </section>
 
@@ -394,7 +394,7 @@ export function PersonaView({
             </button>
             {!detail.builtin && (
               <button className={BTN_BORDERED} data-testid="persona-export" onClick={exportBundle}>
-                Export…
+                {t("Export…")}
               </button>
             )}
             {!detail.builtin &&
@@ -406,13 +406,13 @@ export function PersonaView({
                     onClick={async () => {
                       const r = await deletePersona(personaId);
                       if (r.ok) onBack?.();
-                      else setMsg(r.error || "delete failed");
+                      else setMsg(r.error || t("Delete failed"));
                     }}
                   >
-                    Delete
+                    {t("Delete")}
                   </button>
                   <button className={BTN_BORDERED} onClick={() => setConfirmDel(false)}>
-                    Keep
+                    {t("Keep")}
                   </button>
                 </span>
               ) : (
@@ -421,7 +421,7 @@ export function PersonaView({
                   data-testid="persona-delete"
                   onClick={() => setConfirmDel(true)}
                 >
-                  Delete…
+                  {t("Delete…")}
                 </button>
               ))}
             {msg && <span className="text-muted">{msg}</span>}

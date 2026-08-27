@@ -52,7 +52,7 @@ export function ConnectorsList({
           onClick={() => setAddingMcp(true)}
           data-testid="add-custom-server"
         >
-          + Add custom server
+          {t("+ Add custom server")}
         </button>
         <input
           placeholder={t("Search")}
