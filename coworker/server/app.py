@@ -203,6 +203,7 @@ from ..attachments import (
 )
 from ..engine import ApprovalOutcome
 from ..inbox import VIS_INBOX, VIS_INLINE, args_preview
+from ..library import register_library_routes
 from ..permissions import Mode
 from ..providers import AssistantTurn
 from .. import toolchain
@@ -721,6 +722,8 @@ def create_app(manager: SessionManager) -> FastAPI:
     @app.post("/v1/skills/upload/confirm")
     def confirm_skill_upload(body: dict) -> dict[str, Any]:
         return manager.confirm_skill_upload(body or {})
+
+    register_library_routes(app, manager)  # /v1/library* — pack browsing + install (P0+P2)
 
     @app.get("/v1/workspaces/recent")
     def recent_workspaces() -> dict[str, Any]:

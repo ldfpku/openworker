@@ -35,10 +35,12 @@ def test_release_lineup(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENWORKER_UNSHIPPED", raising=False)
     reg = _reg(tmp_path)
     assert [e["name"] for e in reg.sidebar()] == [
-        "cowork", "cloud-posture", "dep-audit", "security",
+        "cowork", "cloud-posture", "dep-audit", "expert-lead", "security",
     ]
     listed = {p["id"]: p for p in reg.list_all()}
-    assert set(listed) == {"cowork", "code", "cloud-posture", "dep-audit", "security"}
+    assert set(listed) == {
+        "cowork", "code", "cloud-posture", "dep-audit", "expert-lead", "security",
+    }
     assert listed["code"]["enabled"] is False and listed["code"]["surfaced"] is False
     assert listed["cloud-posture"]["group"] == "security"
     assert listed["cowork"]["group"] == "general"
@@ -69,7 +71,7 @@ def test_sidebar_defaults_to_surfaced_builtins(tmp_path, internal):
     # workers never do.
     assert set(ids) == {
         "cowork", "ops", "security", "cloud-posture", "dep-audit",
-        "swe-lead", "devsecops-lead", "devops-lead",
+        "expert-lead", "swe-lead", "devsecops-lead", "devops-lead",
     }
     assert not any(
         i in ids

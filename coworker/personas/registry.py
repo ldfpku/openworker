@@ -264,6 +264,14 @@ class PersonaRegistry:
         d = Path(entry.manifest.source).parent / "media"
         return d if d.is_dir() else None
 
+    def installed_meta(self, persona_id: str) -> dict:
+        """Install provenance for one installed persona (``{version, source,
+        installed_at}``), or ``{}`` if none was recorded (built-ins, or an id never
+        installed via install_from_dir/zip/git). Callers use ``source`` to tell where a
+        persona came from — e.g. gating an action to personas installed from a specific
+        trusted staging area."""
+        return dict(self._installed_meta.get(persona_id, {}))
+
     def is_enabled(self, persona_id: str) -> bool:
         # Explicit state (either way) always wins. Absent a user choice, the entry's
         # default applies: builtins ship enabled — the composer picker is their front door

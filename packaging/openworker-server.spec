@@ -52,6 +52,13 @@ for pkg in ("coworker", "aisuite", "mcp", "ddgs", "croniter", "docstring_parser"
 # collects whatever non-.py files the package carries.
 datas += collect_data_files("coworker")
 
+# The prebuilt library pack (expert prompts + skills, coworker/library/pack.py) ships
+# as plain data — PyInstaller extracts it to sys._MEIPASS/library-pack at runtime, which
+# is exactly where LibraryPack's bundle-mode lookup expects it.
+_LIBRARY_PACK = os.path.join(ROOT, "library-pack")
+if os.path.isdir(_LIBRARY_PACK):
+    datas += [(_LIBRARY_PACK, "library-pack")]
+
 if not INCLUDE_EXPERIMENTAL:
     hiddenimports = [
         m for m in hiddenimports if not m.startswith("coworker.connectors.experimental")
