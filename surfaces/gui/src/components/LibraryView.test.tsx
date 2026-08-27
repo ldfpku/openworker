@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { LibraryView } from "./LibraryView";
+import i18n from "../i18n";
 
 // UI chrome asserts on the English literal (the i18next key itself — see setupTests.ts: jsdom
 // defaults to en-US and the zh-CN catalog isn't loaded here), while names/descriptions/category
@@ -291,6 +292,55 @@ describe("LibraryView — install a skill", () => {
     fireEvent.click(screen.getByTestId("skill-install-confirm-btn"));
     await waitFor(() => expect(libraryInstallSkills).toHaveBeenCalledWith(["scanpy"]));
     expect(await screen.findByTestId("skill-installed-badge")).toBeTruthy();
+  });
+});
+
+describe("LibraryView — skills zh translation layer", () => {
+  // 中文界面优先展示译文层（description_zh / skill_md_zh），英文界面或缺译文时回退英文。
+  // 注意：切到 zh-CN 后 UI 文案本身也会走 zh 词表（"查看说明" 等），选择器按中文取。
+  afterEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  it("prefers the zh description and zh doc under a zh UI", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const { librarySkills, librarySkillDetail } = await import("../api");
+    vi.mocked(librarySkills).mockResolvedValueOnce([
+      { ...SKILLS[0], description_zh: "Python 单细胞分析工具包。" },
+    ]);
+    vi.mocked(librarySkillDetail).mockResolvedValueOnce({
+      name: "scanpy",
+      description: "Single-cell analysis toolkit for Python.",
+      description_zh: "Python 单细胞分析工具包。",
+      skill_md: "# scanpy\n\nfull instructions here",
+      skill_md_zh: "# scanpy\n\n中文全套说明在此",
+      files: [],
+    });
+
+    render(<LibraryView onStartExpertSession={vi.fn()} onStartTeamSession={vi.fn()} />);
+    await screen.findByText("地理学家");
+    fireEvent.click(screen.getByTestId("library-tab-skills"));
+    const card = await screen.findByTestId("skill-card-scanpy");
+    expect(within(card).getByText("Python 单细胞分析工具包。")).toBeTruthy();
+
+    fireEvent.click(within(card).getByText("查看说明"));
+    await screen.findByTestId("library-detail-modal");
+    expect(await screen.findByText(/中文全套说明在此/)).toBeTruthy();
+    expect(screen.queryByText(/full instructions here/)).toBeNull();
+  });
+
+  it("keeps the English original under an English UI even when zh data exists", async () => {
+    const { librarySkills } = await import("../api");
+    vi.mocked(librarySkills).mockResolvedValueOnce([
+      { ...SKILLS[0], description_zh: "Python 单细胞分析工具包。" },
+    ]);
+
+    render(<LibraryView onStartExpertSession={vi.fn()} onStartTeamSession={vi.fn()} />);
+    await screen.findByText("地理学家");
+    fireEvent.click(screen.getByTestId("library-tab-skills"));
+    const card = await screen.findByTestId("skill-card-scanpy");
+    expect(within(card).getByText("Single-cell analysis toolkit for Python.")).toBeTruthy();
+    expect(within(card).queryByText("Python 单细胞分析工具包。")).toBeNull();
   });
 });
 

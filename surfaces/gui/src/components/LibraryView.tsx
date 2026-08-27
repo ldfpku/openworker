@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import i18n from "../i18n";
 import { Markdown } from "./Markdown";
 import {
   libraryActivateExpert,
@@ -44,7 +45,20 @@ const MAX_TEAM_SIZE = 6;
 
 type Tab = "experts" | "skills";
 type PromptResult = { name: string; prompt: string };
-type SkillResult = { name: string; description: string; skill_md: string; files: string[] };
+type SkillResult = {
+  name: string;
+  description: string;
+  description_zh?: string;
+  skill_md: string;
+  skill_md_zh?: string;
+  files: string[];
+};
+
+// 技能库的中文层：数据里带 description_zh / skill_md_zh 时中文界面优先展示，
+// 缺译文或英文界面回退英文原文（译文中链接、代码本就保留原样）。
+const zhUI = () => (i18n.language || "").toLowerCase().startsWith("zh");
+const skillDesc = (s: { description: string; description_zh?: string }) =>
+  zhUI() && s.description_zh ? s.description_zh : s.description;
 
 type Detail =
   | { kind: "expert"; id: string; lib: "zh" | "en"; pair: boolean; categoryName: string }
@@ -323,7 +337,7 @@ export function LibraryView({
   const filteredSkills = allSkills.filter(
     (s) =>
       (category === "all" || s.categoryName === category) &&
-      (!q || `${s.name} ${s.description} ${s.categoryName}`.toLowerCase().includes(q)),
+      (!q || `${s.name} ${s.description} ${s.description_zh || ""} ${s.categoryName}`.toLowerCase().includes(q)),
   );
 
   const categories = tab === "experts" ? expertCategories : skillCategories;
@@ -732,7 +746,7 @@ function SkillCard({
         )}
       </div>
       <div className="text-[12px] text-muted leading-relaxed line-clamp-3 flex-1 mb-3">
-        {entry.description}
+        {skillDesc(entry)}
       </div>
       <div className="flex items-center justify-between gap-2">
         <button className={BTN_BORDERED} onClick={onView}>
@@ -942,9 +956,12 @@ function SkillDetailModal({
     };
   }, [name, fetchSkill]);
 
+  // 展示与复制同源：中文界面且有译文时用 SKILL.zh.md，否则英文原文。
+  const shownMd = data ? (zhUI() && data.skill_md_zh ? data.skill_md_zh : data.skill_md) : "";
+
   const doCopy = async () => {
     if (!data) return;
-    const ok = await copyText(data.skill_md);
+    const ok = await copyText(shownMd);
     setCopyState(ok ? "copied" : "error");
     window.setTimeout(() => setCopyState("idle"), 1500);
   };
@@ -971,9 +988,11 @@ function SkillDetailModal({
         <div className="text-[12.5px] text-danger">{t("Could not load this skill.")}</div>
       ) : (
         <>
-          {data.description && <div className="text-[12.5px] text-muted mb-3">{data.description}</div>}
+          {data.description && (
+            <div className="text-[12.5px] text-muted mb-3">{skillDesc(data)}</div>
+          )}
           <div className="text-[13px] bg-paper rounded-lg border border-line px-3.5 py-1" data-testid="skill-md">
-            <Markdown text={data.skill_md} />
+            <Markdown text={shownMd} />
           </div>
           <button className={BTN_ACCENT + " mt-3"} onClick={doCopy}>
             {copyState === "copied" ? t("Copied") : copyState === "error" ? t("Copy failed") : t("Copy")}

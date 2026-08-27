@@ -183,16 +183,26 @@ class LibraryPack:
             text = md_path.read_text(encoding="utf-8")
         except OSError:
             return {"ok": False, "error": f"Unknown skill: {name}"}
+        # 中文译文层（本 fork 生成，非上游内容）：有则一并返回，前端按界面语言取用。
+        skill_md_zh = ""
+        zh_path = skill_dir / "SKILL.zh.md"
+        if zh_path.is_file():
+            try:
+                skill_md_zh = _strip_frontmatter(zh_path.read_text(encoding="utf-8"))
+            except OSError:
+                skill_md_zh = ""
         files = sorted(
             str(p.relative_to(skill_dir)).replace("\\", "/")
             for p in skill_dir.rglob("*")
-            if p.is_file() and p.name != "SKILL.md"
+            if p.is_file() and p.name not in ("SKILL.md", "SKILL.zh.md")
         )
         return {
             "ok": True,
             "name": entry.get("name", name),
             "description": entry.get("description", ""),
+            "description_zh": entry.get("description_zh", ""),
             "skill_md": _strip_frontmatter(text),
+            "skill_md_zh": skill_md_zh,
             "files": files,
             "scripts": entry.get("scripts", 0),
             "compatibility": entry.get("compatibility", ""),

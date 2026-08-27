@@ -191,7 +191,11 @@ def register_library_routes(
                 results.append(row)
                 continue
             try:
-                shutil.copytree(src, dest, ignore=shutil.ignore_patterns("__pycache__"))
+                # SKILL.zh.md 是库内浏览用的译文层；安装进全局技能目录的保持英文原件，
+                # agent 消费面不变。
+                shutil.copytree(
+                    src, dest, ignore=shutil.ignore_patterns("__pycache__", "SKILL.zh.md")
+                )
                 row["ok"] = True
             except OSError as e:
                 row["ok"] = False

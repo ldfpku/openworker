@@ -30,7 +30,7 @@
 openworker 是 https://github.com/andrewyng/openworker 的一个公开 fork，本数据包随
 https://github.com/ldfpku/openworker 一同分发。以上三个上游仓库的内容——专家库按原始
 Markdown 文件（含 frontmatter）原样拷贝，技能库按目录整棵原样拷贝——未做任何实质性修改；
-本 fork 新增的只有生成/维护脚本（`packaging/gen_library.py`）与本说明文件。
+本 fork 新增的内容：生成/维护脚本（`packaging/gen_library.py`）、本说明文件，以及技能的中文译文层（各技能目录下的 `SKILL.zh.md` 与 index.json 中的 `description_zh` 字段，由本 fork 翻译生成，仅用于库内浏览展示；安装进全局技能目录的始终是上游英文原件）。
 
 ## 生成信息
 

@@ -16,6 +16,8 @@
                      若目录已存在：只清空 experts/ skills/ index.json ATTRIBUTION.md
                      这几项后重建（幂等）；若目录存在、非空、但没有 index.json（看起来
                      不像是本脚本之前的输出），则报错退出，不做任何删除，防止误删。
+                     技能的中文译文层（skills/<id>/SKILL.zh.md 与 index.json 里的
+                     description_zh）是本 fork 生成的内容，重建时自动快照并放回。
 
 纯标准库实现，不引入第三方依赖。
 """
@@ -324,6 +326,55 @@ def git_commit(repo_dir: Path) -> str:
 MANAGED_ENTRIES = ("experts", "skills", "index.json", "ATTRIBUTION.md")
 
 
+def snapshot_zh_layer(out_dir: Path) -> dict[str, dict]:
+    """技能的中文译文层（skills/<id>/SKILL.zh.md 与 index.json 里的 description_zh）
+    是本 fork 生成的内容、不来自上游——重建前先快照，重建后按技能 id 原样放回，
+    否则每次再生成都会抹掉全部译文。返回 {技能 id: {"skill_md": 译文, "description_zh": 描述}}。"""
+    saved: dict[str, dict] = {}
+    index_path = out_dir / "index.json"
+    if index_path.is_file():
+        try:
+            data = json.loads(index_path.read_text(encoding="utf-8"))
+            for row in data.get("skills", []) or []:
+                sid = row.get("id") or row.get("name")
+                if sid and row.get("description_zh"):
+                    saved.setdefault(sid, {})["description_zh"] = row["description_zh"]
+        except (OSError, ValueError):
+            pass
+    skills_dir = out_dir / "skills"
+    if skills_dir.is_dir():
+        for d in skills_dir.iterdir():
+            zh = d / "SKILL.zh.md"
+            if d.is_dir() and zh.is_file():
+                try:
+                    saved.setdefault(d.name, {})["skill_md"] = zh.read_text(encoding="utf-8")
+                except OSError:
+                    pass
+    return saved
+
+
+def restore_zh_layer(
+    out_dir: Path, skill_entries: list[dict], saved: dict[str, dict]
+) -> None:
+    """把快照的译文层放回重建后的技能目录与索引条目；新技能没有译文时点名提示。"""
+    untranslated = []
+    for entry in skill_entries:
+        zh = saved.get(entry["id"], {})
+        if zh.get("skill_md"):
+            (out_dir / "skills" / entry["id"] / "SKILL.zh.md").write_text(
+                zh["skill_md"], encoding="utf-8"
+            )
+        if zh.get("description_zh"):
+            entry["description_zh"] = zh["description_zh"]
+        if not zh.get("skill_md") or not zh.get("description_zh"):
+            untranslated.append(entry["id"])
+    if untranslated:
+        print(
+            f"注意：{len(untranslated)} 个技能缺中文层（SKILL.zh.md / description_zh），"
+            "界面将回退显示英文：" + "、".join(untranslated)
+        )
+
+
 def prepare_out_dir(out_dir: Path) -> None:
     if out_dir.exists():
         if not out_dir.is_dir():
@@ -385,7 +436,7 @@ ATTRIBUTION_TEMPLATE = """# 数据来源与许可声明
 openworker 是 https://github.com/andrewyng/openworker 的一个公开 fork，本数据包随
 https://github.com/ldfpku/openworker 一同分发。以上三个上游仓库的内容——专家库按原始
 Markdown 文件（含 frontmatter）原样拷贝，技能库按目录整棵原样拷贝——未做任何实质性修改；
-本 fork 新增的只有生成/维护脚本（`packaging/gen_library.py`）与本说明文件。
+本 fork 新增的内容：生成/维护脚本（`packaging/gen_library.py`）、本说明文件，以及技能的中文译文层（各技能目录下的 `SKILL.zh.md` 与 index.json 中的 `description_zh` 字段，由本 fork 翻译生成，仅用于库内浏览展示；安装进全局技能目录的始终是上游英文原件）。
 
 ## 生成信息
 
@@ -502,6 +553,7 @@ def main() -> None:
             print(f"ERROR: --sources 下缺少 {name}（期望路径：{p}）", file=sys.stderr)
             sys.exit(1)
 
+    zh_layer = snapshot_zh_layer(out_dir)
     prepare_out_dir(out_dir)
     (out_dir / "experts" / "en").mkdir(parents=True, exist_ok=True)
     (out_dir / "experts" / "zh").mkdir(parents=True, exist_ok=True)
@@ -536,6 +588,7 @@ def main() -> None:
     for d in skill_dirs:
         skill_entries.append(build_skill_entry(d, doc_map))
         copy_skill_dir(d, out_dir / "skills" / d.name)
+    restore_zh_layer(out_dir, skill_entries, zh_layer)
 
     # ---- commit ----
     generated = {

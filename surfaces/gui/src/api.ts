@@ -2529,6 +2529,8 @@ export interface LibraryExpert {
 export interface LibrarySkill {
   name: string;
   description: string;
+  /** 中文译文层（fork 生成，SKILL.zh.md / index.json description_zh）；缺省回退英文。 */
+  description_zh?: string;
   category: string;
   categoryName: string;
   scripts: number;
@@ -2577,11 +2579,25 @@ export async function librarySkills(): Promise<LibrarySkill[]> {
 
 export async function librarySkillDetail(
   name: string,
-): Promise<{ name: string; description: string; skill_md: string; files: string[] } | null> {
+): Promise<{
+  name: string;
+  description: string;
+  description_zh?: string;
+  skill_md: string;
+  skill_md_zh?: string;
+  files: string[];
+} | null> {
   const res = await fetch(libraryUrl(`/skill?name=${encodeURIComponent(name)}`));
   const data = await res.json();
   return data.ok
-    ? { name: data.name, description: data.description, skill_md: data.skill_md, files: data.files ?? [] }
+    ? {
+        name: data.name,
+        description: data.description,
+        description_zh: data.description_zh,
+        skill_md: data.skill_md,
+        skill_md_zh: data.skill_md_zh,
+        files: data.files ?? [],
+      }
     : null;
 }
 

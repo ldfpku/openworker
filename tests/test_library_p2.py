@@ -326,6 +326,20 @@ def test_install_skills_lands_skill_md_and_excludes_pycache(tmp_path, pack_dir):
     assert not (dest / "__pycache__").exists()
 
 
+def test_install_skills_keeps_zh_translation_out_of_global_dir(tmp_path, pack_dir):
+    # SKILL.zh.md 是库内浏览用的译文层——安装进全局技能目录的必须是英文原件，
+    # agent 消费面不因翻译而改变。
+    (pack_dir / "skills" / "scanpy" / "SKILL.zh.md").write_text(
+        "# scanpy\n\n中文说明。\n", encoding="utf-8"
+    )
+    client, manager = _client(tmp_path, pack_dir)
+    res = client.post("/v1/library/install-skills", json={"names": ["scanpy"]}).json()
+    assert res["ok"] is True
+    dest = manager.skill_store.global_dir / "scanpy"
+    assert (dest / "SKILL.md").is_file()
+    assert not (dest / "SKILL.zh.md").exists()
+
+
 def test_install_skills_duplicate_invalid_and_unknown(tmp_path, pack_dir):
     client, _manager = _client(tmp_path, pack_dir)
     client.post("/v1/library/install-skills", json={"names": ["scanpy"]})

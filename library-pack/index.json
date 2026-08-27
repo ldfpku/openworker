@@ -5515,7 +5515,8 @@
       "scripts": 0,
       "references": 1,
       "assets": 0,
-      "files": 2
+      "files": 2,
+      "description_zh": "介绍如何使用 Adaptyv Bio Foundry API 和 Python SDK 进行蛋白质实验设计、提交与结果获取;当用户提到 Adaptyv、Foundry API、蛋白质结合检测、蛋白质筛选实验、BLI/SPR 检测、热稳定性检测,或想要提交蛋白质序列进行实验表征时使用本 skill。当代码导入 `adaptyv`、`adaptyv_sdk` 或 `FoundryClient`,或引用了 `foundry-api-public.adaptyvbio.com` 时,同样应触发本 skill。"
     },
     {
       "id": "aeon",
@@ -5530,7 +5531,8 @@
       "scripts": 0,
       "references": 11,
       "assets": 0,
-      "files": 12
+      "files": 12,
+      "description_zh": "用于时间序列机器学习任务，包括分类、回归、聚类、预测、异常检测、分割和相似性搜索；适用于需要超越标准机器学习方法的专门算法来处理时间数据、序列模式或按时间索引的观测值的场景，尤其适合使用与 scikit-learn 兼容的 API 进行单变量和多变量时间序列分析。"
     },
     {
       "id": "analytical-method-validation",
@@ -5545,7 +5547,8 @@
       "scripts": 8,
       "references": 6,
       "assets": 2,
-      "files": 17
+      "files": 17,
+      "description_zh": "在适用框架(ICH Q2(R2)与Q14、USP <1220>/<1225>/<1226>、ICH M10生物分析、CLSI EP,或ISO/IEC 17025)下规划、执行并记录分析规程的验证、核查与转移;适用于HPLC、LC-MS/MS、GC、CE、ICP-MS、溶出度、qNMR、qPCR、NIR,以及配体结合或基于细胞的检测方法,只要问题是某个规程是否适合其预期用途。"
     },
     {
       "id": "anndata",
@@ -5560,7 +5563,8 @@
       "scripts": 0,
       "references": 5,
       "assets": 0,
-      "files": 6
+      "files": 6,
+      "description_zh": "单细胞分析中用于带注释矩阵的数据结构；适用于处理 .h5ad 文件或与 scverse 生态系统集成的场景——这是数据格式技能，分析工作流请用 scanpy，概率模型请用 scvi-tools，群体规模的查询请用 cellxgene-census。"
     },
     {
       "id": "arbor",
@@ -5575,7 +5579,8 @@
       "scripts": 1,
       "references": 4,
       "assets": 0,
-      "files": 6
+      "files": 6,
+      "description_zh": "针对一个目标和一个评估器，使用 Arbor 论文提出的假设树精化（Hypothesis Tree Refinement, HTR）方法自主改进某个真实产物（代码、训练方案、智能体工具箱、数据流水线、提示词），适用于任何希望在不产生过拟合的前提下、通过大量实验对某项工作进行迭代优化的场景（例如提升模型评测分数、改进智能体/工具箱、调优流水线、在基准上超越基线、跑一轮方案搜索并保留最优结果，或做 MLE-bench / Kaggle 风格的优化），即便用户没有明确提到 Arbor 或假设树、只是描述了反复的实验-评估循环、多分支的方案探索或对 dev/test 差距的担忧，也应触发本技能；本技能由 Claude 本身担任协调者，在隔离的 git worktree 中派发子代理执行者，独立的 arbor CLI 工具见 references/arbor-upstream.md。"
     },
     {
       "id": "arboreto",
@@ -5590,7 +5595,8 @@
       "scripts": 1,
       "references": 3,
       "assets": 0,
-      "files": 5
+      "files": 5,
+      "description_zh": "使用可扩展算法（GRNBoost2、GENIE3）从基因表达数据推断基因调控网络（GRN），适用于分析转录组学数据（bulk RNA-seq、单细胞 RNA-seq）以识别转录因子与靶基因之间的调控关系，支持针对大规模数据集的分布式计算。"
     },
     {
       "id": "astropy",
@@ -5605,7 +5611,8 @@
       "scripts": 0,
       "references": 7,
       "assets": 0,
-      "files": 8
+      "files": 8,
+      "description_zh": "面向天文学与天体物理学工作流的核心 Python 库，涵盖需要 Astropy API 的场景，包括单位/物理量、坐标系统、FITS 文件 I/O、表格、时间系统、WCS 以及宇宙学。适用于使用 Astropy 实现或调试天文数据分析代码的场景。"
     },
     {
       "id": "autoskill",
@@ -5620,7 +5627,8 @@
       "scripts": 10,
       "references": 2,
       "assets": 0,
-      "files": 14
+      "files": 14,
+      "description_zh": "通过 screenpipe 观察用户屏幕，检测重复出现的研究工作流，将其与现有的 scientific-agent-skills 进行匹配，并为尚未被覆盖的模式起草新技能（或是串联现有技能的组合方案）。适用于用户要求分析其近期工作、并根据实际操作提出技能建议的场景。需要 screenpipe 守护进程（https://github.com/screenpipe/screenpipe）在本地 3030 端口运行——本技能没有其他数据来源，若无法连接 screenpipe 将拒绝运行。全部检测均在本地进行；只有经过脱敏处理的聚类摘要会发送给 LLM。"
     },
     {
       "id": "benchling-integration",
@@ -5635,7 +5643,8 @@
       "scripts": 0,
       "references": 5,
       "assets": 0,
-      "files": 6
+      "files": 6,
+      "description_zh": "面向注册实体（registry entities）、库存（inventory）、电子实验记录本（ELN）条目、工作流、Benchling Apps 以及数据仓库查询的 Benchling Python SDK 与 REST API 集成。适用于使用 benchling-sdk 或 v2 API 自动化实验室数据的场景。"
     },
     {
       "id": "bgpt-paper-search",
@@ -5650,7 +5659,8 @@
       "scripts": 0,
       "references": 0,
       "assets": 0,
-      "files": 1
+      "files": 1,
+      "description_zh": "通过 BGPT MCP 服务器检索科学论文，并获取从全文研究中提取出的结构化实验数据，每篇论文可返回 25 个以上字段，包括方法、结果、样本量、质量评分及结论；适用于文献综述、证据综合，以及查找仅凭摘要无法获得的实验细节。"
     },
     {
       "id": "bids",
@@ -5665,7 +5675,8 @@
       "scripts": 1,
       "references": 6,
       "assets": 0,
-      "files": 8
+      "files": 8,
+      "description_zh": "用于处理脑成像数据结构(Brain Imaging Data Structure, BIDS)数据集:组织神经科学与生物医学数据(MRI、EEG、MEG、iEEG、PET、显微成像、NIRS、动作捕捉、EMG、MR波谱、行为数据)、查询BIDS目录布局、验证合规性、将DICOM转换为BIDS、编写元数据附属文件,或创建BIDS衍生数据。"
     },
     {
       "id": "biopython",
@@ -5680,7 +5691,8 @@
       "scripts": 0,
       "references": 7,
       "assets": 0,
-      "files": 8
+      "files": 8,
+      "description_zh": "一套全面的分子生物学工具包,用于序列操作、文件解析(FASTA/GenBank/PDB)、系统发育学分析以及以编程方式访问 NCBI/PubMed(Bio.Entrez);最适合批处理、自定义生物信息学流水线和 BLAST 自动化,快速查询请用 gget,多服务集成请用 bioservices。"
     },
     {
       "id": "bioservices",
@@ -5695,7 +5707,8 @@
       "scripts": 4,
       "references": 3,
       "assets": 0,
-      "files": 8
+      "files": 8,
+      "description_zh": "面向 40 多个生物信息学服务的统一 Python 接口。当需要在单一工作流中以一致的 API 查询多个数据库(UniProt、KEGG、ChEMBL、Reactome)时使用。最适合跨数据库分析和跨服务的标识符映射。快速的单数据库查询请使用 gget;序列/文件处理请使用 biopython。"
     },
     {
       "id": "bulk-rnaseq",
@@ -5710,7 +5723,8 @@
       "scripts": 2,
       "references": 4,
       "assets": 0,
-      "files": 7
+      "files": 7,
+      "description_zh": "端到端的批量 RNA-seq 编排器——将原始 FASTQ reads 依次经过 QC 与修剪(FastQC、fastp/Trim Galore)、比对与定量(STAR、Salmon、featureCounts),组装出基因级计数矩阵,再交接给差异表达(pydeseq2)、通路/GSEA 富集(pathway-enrichment)和出版级图表(scientific-visualization);适用于用户拥有批量 RNA-seq reads 或定量输出、需要完整可复现差异表达工作流程的场景,可在 nf-core/rnaseq(Nextflow)路径与独立 STAR/Salmon 路径之间路由,并涵盖实验设计、链特异性和 QC 关卡;单细胞 RNA-seq 请改用 scanpy 技能。"
     },
     {
       "id": "cellxgene-census",
@@ -5725,7 +5739,8 @@
       "scripts": 0,
       "references": 3,
       "assets": 0,
-      "files": 4
+      "files": 4,
+      "description_zh": "以编程方式查询 CZ CELLxGENE Census,获取带版本管理的公开单细胞与空间转录组学数据,适用于需要群体规模的细胞元数据、基因表达切片、Census 汇总计数、源 H5AD 的 URI/下载、嵌入(embeddings)、空间 Census 数据,或跨物种、组织、疾病、检测方式和细胞类型的参考图谱比较的场景;分析本地自有单细胞数据请用 scanpy、anndata 或 scvi-tools。"
     },
     {
       "id": "cirq",
@@ -5740,7 +5755,8 @@
       "scripts": 0,
       "references": 6,
       "assets": 0,
-      "files": 7
+      "files": 7,
+      "description_zh": "Google 的量子计算框架,适用于面向 Google Quantum AI 硬件、设计带噪声感知的电路,或运行量子表征实验的场景,最适合 Google 硬件、噪声建模和底层电路设计;IBM 硬件请用 qiskit,带自动微分的量子机器学习请用 pennylane,物理仿真请用 qutip。"
     },
     {
       "id": "citation-management",
@@ -5755,7 +5771,8 @@
       "scripts": 8,
       "references": 10,
       "assets": 2,
-      "files": 21
+      "files": 21,
+      "description_zh": "面向学术研究的全面引用管理,检索 OpenAlex、PubMed 和 Google Scholar 上的论文、提取准确的元数据、校验引用信息,并生成格式规范的 BibTeX 条目,适用于需要查找论文、核实引用信息、把 DOI 转换为 BibTeX,或确保科研写作中参考文献准确性的场景。"
     },
     {
       "id": "clinical-decision-support",
@@ -5770,7 +5787,8 @@
       "scripts": 8,
       "references": 12,
       "assets": 7,
-      "files": 28
+      "files": 28,
+      "description_zh": "准备并验证仅用于研究的临床决策支持评估、证据概况、队列、生存分析、生物标志物/模型、隐私及治理相关制品，用于聚合或合成研究文档记录及可追溯性，而非患者照护或实时临床运行。"
     },
     {
       "id": "clinical-reports",
@@ -5785,7 +5803,8 @@
       "scripts": 9,
       "references": 11,
       "assets": 15,
-      "files": 36
+      "files": 36,
+      "description_zh": "为临床病例、诊断、试验、安全性及汇总性研究报告创建有安全边界的草稿结构,并运行本地确定性检查;只能用于合成、去标识化或汇总性输入及经核实的源事实清单,所有产出物都需要合格评审。"
     },
     {
       "id": "cobrapy",
@@ -5800,7 +5819,8 @@
       "scripts": 0,
       "references": 2,
       "assets": 0,
-      "files": 3
+      "files": 3,
+      "description_zh": "基于约束的代谢建模（COBRA），涵盖 FBA、FVA、基因敲除、通量采样和 SBML 模型，用于系统生物学与代谢工程分析。"
     },
     {
       "id": "consciousness-council",
@@ -5815,7 +5835,8 @@
       "scripts": 0,
       "references": 1,
       "assets": 0,
-      "files": 2
+      "files": 2,
+      "description_zh": "针对任何问题、决策或创意挑战运行多视角的 Mind Council 审议,适用于用户想要多元观点、需要帮助做出艰难决策、要求委员会/专家组/董事会式讨论、想从多个角度探索问题、要求魔鬼代言人式分析,或说出类似“不同专家会怎么看这件事”“帮我从各个角度想清楚这件事”“council mode”“mind council”“对这件事进行审议”之类话语的场景;当用户面对没有明显答案的困境、权衡取舍或复杂选择时也应触发。"
     },
     {
       "id": "dask",
@@ -5830,7 +5851,8 @@
       "scripts": 0,
       "references": 6,
       "assets": 0,
-      "files": 7
+      "files": 7,
+      "description_zh": "面向超出内存容量的 pandas/NumPy 工作流的分布式计算。当需要把现有的 pandas/NumPy 代码扩展到超出内存或跨集群规模时使用。最适合并行文件处理、分布式机器学习、与现有 pandas 代码的集成。若需在单机上进行超出内存的分析，用 vaex；若需要内存内的高速处理，用 polars。"
     },
     {
       "id": "database-lookup",
@@ -5845,7 +5867,8 @@
       "scripts": 0,
       "references": 80,
       "assets": 0,
-      "files": 81
+      "files": 81,
+      "description_zh": "通过明确的端点、过滤条件、分页和溯源信息查询有文档记录的公共数据库 API,适用于需要从指定来源可复现地检索科学、监管、金融等数据库事实,而非仅凭通用知识推断的场景。"
     },
     {
       "id": "datamol",
@@ -5860,7 +5883,8 @@
       "scripts": 0,
       "references": 8,
       "assets": 0,
-      "files": 9
+      "files": 9,
+      "description_zh": "围绕 RDKit 的 Pythonic 封装，接口简化、默认值合理；适用于标准药物发现场景，包括 SMILES 解析、标准化、描述符、指纹、聚类、三维构象、并行处理；返回原生的 rdkit.Chem.Mol 对象；如需高级控制或自定义参数，请直接使用 rdkit。"
     },
     {
       "id": "deepchem",
@@ -5875,7 +5899,8 @@
       "scripts": 3,
       "references": 4,
       "assets": 0,
-      "files": 8
+      "files": 8,
+      "description_zh": "使用多样化特征化器和预置数据集进行分子机器学习,适用于用传统机器学习或图神经网络(GNN)做性质预测(ADMET、毒性),需要丰富特征化选项和 MoleculeNet 基准的场景;最适合用预训练模型和多样化分子表示做快速实验;以图为核心的 PyTorch 工作流程请用 torchdrug,基准数据集请用 pytdc。"
     },
     {
       "id": "deepspot-m",
@@ -5890,7 +5915,8 @@
       "scripts": 0,
       "references": 2,
       "assets": 0,
-      "files": 3
+      "files": 3,
+      "description_zh": "使用 DeepSpot-M 从 H&E 组织学图像生成全转录组的虚拟空间转录组学数据。当你需要针对约 20 倍放大下的 224x224 图块获取 log1p-CPM 形式的空间基因表达、希望按符号查询蛋白质编码基因而非局限于固定面板,或希望在用 histolab 切图后对整张切片运行预测时使用。"
     },
     {
       "id": "deeptools",
@@ -5905,7 +5931,8 @@
       "scripts": 2,
       "references": 5,
       "assets": 1,
-      "files": 9
+      "files": 9,
+      "description_zh": "NGS 分析工具包，用于 ChIP-seq、RNA-seq、ATAC-seq 可视化：BAM 转 bigWig、质控（相关性、PCA、fingerprint）、热图/轮廓图（TSS、峰）。"
     },
     {
       "id": "depmap",
@@ -5920,7 +5947,8 @@
       "scripts": 0,
       "references": 1,
       "assets": 0,
-      "files": 2
+      "files": 2,
+      "description_zh": "查询癌症依赖图谱（Cancer Dependency Map, DepMap），获取癌症细胞系的基因依赖性评分（CRISPR Chronos）、药物敏感性数据以及基因效应谱系。用于识别癌症特异性的脆弱点、合成致死相互作用，以及验证肿瘤学药物靶点。"
     },
     {
       "id": "dhdna-profiler",
@@ -5935,7 +5963,8 @@
       "scripts": 0,
       "references": 1,
       "assets": 0,
-      "files": 2
+      "files": 2,
+      "description_zh": "从任意文本中提取认知模式与思维指纹;当用户想要分析某人如何思考、理解认知风格、对写作或言语模式进行画像、比较不同人之间的思维风格,或询问“我的思维风格是什么”“分析这个人是如何推理的”“认知画像”“思维模式”“DHDNA”“数字 DNA”,又或者想理解某段文本背后的心智时使用本 skill。当用户提供文本并想要深入了解作者的推理模式、决策风格或认知签名时,同样应触发本 skill。"
     },
     {
       "id": "diffdock",
@@ -5950,7 +5979,8 @@
       "scripts": 3,
       "references": 3,
       "assets": 2,
-      "files": 9
+      "files": 9,
+      "description_zh": "DiffDock 与 DiffDock-L 分子对接工具，用于从 PDB 或序列结合 SMILES/SDF/MOL2 预测蛋白质-小分子结合姿态、批量对接、虚拟筛选及姿态置信度解读，不用于结合亲和力预测。"
     },
     {
       "id": "dnanexus-integration",
@@ -5965,7 +5995,8 @@
       "scripts": 2,
       "references": 9,
       "assets": 0,
-      "files": 12
+      "files": 12,
+      "description_zh": "使用 dx CLI、dxpy、app/applet、原生工作流、dxCompiler 和 Nextflow，在 DNAnexus 上构建并运行可复现的基因组学工作负载。适用于 DNAnexus 数据传输、dxapp.json 开发、执行监控、工作流导入以及项目自动化场景。"
     },
     {
       "id": "docx",
@@ -5980,7 +6011,8 @@
       "scripts": 15,
       "references": 0,
       "assets": 0,
-      "files": 61
+      "files": 61,
+      "description_zh": "在用户需要创建、读取、编辑或处理 Word 文档(.docx)或 Word 模板(.dotx)时使用,包括提及 'Word doc'、'.docx'、'.dotx',或要求生成带目录、标题、页码、信头等专业格式的文档;也适用于从 .docx/.dotx 中提取或重组内容、插入或替换图片、在 Word 文件中查找替换、处理修订痕迹或批注,以及将内容转换为排版精美的 Word 文档;当用户要求以 Word 或 .docx 文件形式交付「报告」「备忘录」「信函」「模板」等成果时使用本技能;不适用于 PDF、电子表格、Google Docs,或与文档生成无关的通用编程任务。"
     },
     {
       "id": "esm",
@@ -5995,7 +6027,8 @@
       "scripts": 0,
       "references": 5,
       "assets": 0,
-      "files": 6
+      "files": 6,
+      "description_zh": "在直接使用 `esm` Python SDK、ESM3 或 ESMC 模型 id、Forge/Biohub 推理客户端,或 ESMFold2 折叠工作流时使用。"
     },
     {
       "id": "etetoolkit",
@@ -6010,7 +6043,8 @@
       "scripts": 2,
       "references": 5,
       "assets": 0,
-      "files": 8
+      "files": 8,
+      "description_zh": "使用ETE 4分析、操作、比较、注释并可视化系统发育树或其他层级树。适用于Newick/Nexus树的输入输出、拓扑编辑与模式匹配、Robinson-Foulds比较、基因树进化事件与协调(reconciliation)、NCBI/GTDB分类学、SmartView探索,以及发表级渲染;不要用它从原始序列推断树——应先进行序列比对并推断出树。"
     },
     {
       "id": "exa-search",
@@ -6025,7 +6059,8 @@
       "scripts": 2,
       "references": 2,
       "assets": 0,
-      "files": 5
+      "files": 5,
+      "description_zh": "由 Exa 提供支持的网络工具包,针对科学与技术内容进行了调优;当用户需要搜索网页或获取/提取 URL 内容时使用本 skill。涵盖:网页搜索(语义查询、研究、当前信息——可选研究论文类别和学术域名过滤)以及 URL 提取(批量获取网页、文章、学术 PDF)。当用户想要通过 category=research paper 获得高质量搜索或学术过滤时,对网络相关任务使用本 skill。触发场景包括搜索、查找、获取页面或提取文章的请求。"
     },
     {
       "id": "experimental-design",
@@ -6040,7 +6075,8 @@
       "scripts": 2,
       "references": 4,
       "assets": 0,
-      "files": 7
+      "files": 7,
+      "description_zh": "在数据采集之前设计实验和研究方案——选择设计类型、进行随机化、分组,并安排处理组合的布局,以确保结果可解读;当有人在规划一项研究、询问如何把受试者/样本分配到各组、提到随机化、分组、分层、对照、因子或部分因子设计、实验设计(DOE)、多因子筛选、响应曲面优化、交叉或重复测量或裂区设计、整群/分组随机化、拉丁方、孔板布局、批次/运行顺序效应、重复与伪重复的区别,或序贯/适应性/组序贯设计时使用,即便是像“这个实验该怎么设置”“如何避免混杂”“测试这 6 个因子的最佳方式是什么”或“把这些小鼠分配到各个条件组”这样非正式的说法也应触发使用;一旦确定了设计方案,计算样本量或统计功效时使用 statistical-power;分析已采集数据时使用 statistical-analysis。"
     },
     {
       "id": "exploratory-data-analysis",
@@ -6055,7 +6091,8 @@
       "scripts": 13,
       "references": 6,
       "assets": 1,
-      "files": 21
+      "files": 21,
+      "description_zh": "对明确受支持的科学文件进行有边界的本地探索性分析。适用于经脱敏处理的 CSV/TSV/JSON 画像；可选的 NumPy、HDF5、FASTA/FASTQ 及基础图像元数据检查；缺失值/数据泄漏审计；离群值与变换敏感性分析；以及严谨的探索性数据分析报告脚手架。其他领域格式仅供参考，未知格式一律封闭失败（fail closed）。"
     },
     {
       "id": "flowio",
@@ -6070,7 +6107,8 @@
       "scripts": 1,
       "references": 5,
       "assets": 0,
-      "files": 7
+      "files": 7,
+      "description_zh": "使用 FlowIO 读取、检查和写入流式细胞术标准（FCS）2.0、3.0 和 3.1 文件。适用于底层 FCS 元数据与通道检查、NumPy 事件提取、多数据集文件、表格导出,以及 FCS 3.1 文件创建；如需补偿、细胞术变换、门控或 FlowJo 工作区,请使用 FlowKit。"
     },
     {
       "id": "fluidsim",
@@ -6085,7 +6123,8 @@
       "scripts": 9,
       "references": 6,
       "assets": 0,
-      "files": 16
+      "files": 16,
+      "description_zh": "以明确的数值有效性和HPC安全检查为前提,规划、配置、检查、重启并分析有边界限制的FluidSim计算流体力学(CFD)仿真;适用于FluidSim求解器选择、参数审查、FFT/MPI设置、输出诊断,或重启兼容性检查。"
     },
     {
       "id": "generate-image",
@@ -6100,7 +6139,8 @@
       "scripts": 1,
       "references": 1,
       "assets": 0,
-      "files": 3
+      "files": 3,
+      "description_zh": "通过 OpenRouter Image API（Gemini、Seedream、Recraft、GPT-Image、Riverflow）使用 AI 模型生成或编辑图像，用于照片、插画、艺术作品、概念图、视觉素材、徽标以及基于参考图像的图像编辑或合成；流程图、电路图、通路图等技术性示意图请改用 scientific-schematics 技能。"
     },
     {
       "id": "geniml",
@@ -6115,7 +6155,8 @@
       "scripts": 8,
       "references": 5,
       "assets": 0,
-      "files": 14
+      "files": 14,
+      "description_zh": "使用 Geniml 进行经审计的本地基因组区间（genomic-interval）工作流：校验 BED 和 universe 契约、规划 Region2Vec 或 scEmbed 运行、检查模型/分词器（tokenizer）兼容性，并评估共识 universe（consensus universe）。"
     },
     {
       "id": "genomic-coordinates",
@@ -6130,7 +6171,8 @@
       "scripts": 5,
       "references": 4,
       "assets": 0,
-      "files": 10
+      "files": 10,
+      "description_zh": "在不同坐标约定之间转换基因组区间,归一化并比较变异表示方式,并在基因组版本或contig命名不匹配污染分析结果之前将其检测出来;适用于坐标跨越文件格式、工具或基因组版本边界的任何场合——包括在BED、GFF/GTF、VCF、SAM/BAM、WIG、PSL、genePred、Picard interval_list或区域字符串之间转换、协调0-based半开区间与1-based含端点约定、左对齐或修剪插入缺失变异、检查两条变异记录是否描述同一变化、将基因组位置映射到转录本/CDS/蛋白质位置、审计BED/GTF/VCF是否违反约定,或诊断GRCh37与hg19与GRCh38与T2T、chr前缀及liftover相关问题。"
     },
     {
       "id": "genomic-intelligence",
@@ -6145,7 +6187,8 @@
       "scripts": 0,
       "references": 4,
       "assets": 0,
-      "files": 5
+      "files": 5,
+      "description_zh": "使用Genomic Intelligence托管的transformer DNA语言模型,直接从DNA序列预测调控特征、基因结构和表达量——无需本地GPU或模型权重。通过REST API和一个托管的MCP服务器(无需密钥的公开演示)提供六项任务:启动子区域、剪接供体/受体位点、增强子活性、染色质状态、序列到表达量(log TPM),以及从头基因注释,外加一个先查找基因、再预测表达量的组合工作流;适用于用户提供基因符号、基因组区域或DNA/FASTA序列并希望获得上述任一预测,或提及Genomic Intelligence、genomicintelligence.ai、api.genomicintelligence.ai或mcp.genomicintelligence.ai的场景。"
     },
     {
       "id": "geomaster",
@@ -6160,7 +6203,8 @@
       "scripts": 0,
       "references": 14,
       "assets": 0,
-      "files": 16
+      "files": 16,
+      "description_zh": "覆盖遥感、GIS、空间分析、面向地球观测的机器学习以及 30 多个科学领域的综合性地理空间科学技能。支持卫星影像处理（Sentinel、Landsat、MODIS、SAR、高光谱）、矢量与栅格数据操作、空间统计、点云处理、网络分析、云原生工作流（STAC、COG、Planetary Computer），以及 8 种编程语言（Python、R、Julia、JavaScript、C++、Java、Go、Rust）共 500 多个代码示例。适用于遥感工作流、GIS 分析、空间机器学习、地球观测数据处理、地形分析、水文建模、海洋空间分析、大气科学，以及任何地理空间计算任务。"
     },
     {
       "id": "geopandas",
@@ -6175,7 +6219,8 @@
       "scripts": 7,
       "references": 6,
       "assets": 0,
-      "files": 14
+      "files": 14,
+      "description_zh": "面向直接使用 GeoPandas GeoSeries、GeoDataFrame、空间运算或矢量数据 I/O 的 Python 工作流，提供指导与本地审计工具。"
     },
     {
       "id": "get-available-resources",
@@ -6190,7 +6235,8 @@
       "scripts": 5,
       "references": 3,
       "assets": 0,
-      "files": 9
+      "files": 9,
+      "description_zh": "在用户需要资源感知型规划、或在执行明显对资源敏感的本地工作负载之前,检测主机库存以及有效的 CPU、内存、磁盘、调度器、容器和加速器限制;生成经脱敏处理的 JSON 快照及保守的规划辅助工具,不进行压力测试,也不假定可见的主机硬件必然可用。"
     },
     {
       "id": "gget",
@@ -6205,7 +6251,8 @@
       "scripts": 3,
       "references": 5,
       "assets": 0,
-      "files": 9
+      "files": 9,
+      "description_zh": "对 20 多个生物信息学数据库进行快速的 CLI/Python 查询。适用于快速查询：基因信息、BLAST/BLAT、病毒序列下载、AlphaFold 结构、富集分析、OpenTargets、COSMIC、CELLxGENE,以及 8cube 小鼠特异性/表达数据。最适合交互式探索和简单查询。批处理或高级 BLAST 请使用 biopython；多数据库 Python 工作流请使用 bioservices。"
     },
     {
       "id": "ginkgo-cloud-lab",
@@ -6220,7 +6267,8 @@
       "scripts": 0,
       "references": 17,
       "assets": 0,
-      "files": 18
+      "files": 18,
+      "description_zh": "在 Ginkgo Bioworks Cloud Lab（cloud.ginkgo.bio）上提交并管理实验方案，这是一个基于网页的界面，用于在可重构自动化推车（RAC）上进行自主实验室执行。当用户想要运行蛋白质表达与纯化（无细胞、大肠杆菌或毕赤酵母）、HiBiT 或 A280 或 LabChip 定量、IVT mRNA/环状 RNA 合成、热迁移/可开发性检测、Echo-MS 酶或分析物方法、SPR 靶点接入、荧光像素画，或以其他方式与 Ginkgo Cloud Lab 服务交互时使用。涵盖实验方案选择、输入准备、定价以及下单流程。"
     },
     {
       "id": "glycoengineering",
@@ -6235,7 +6283,8 @@
       "scripts": 0,
       "references": 1,
       "assets": 0,
-      "files": 2
+      "files": 2,
+      "description_zh": "分析并改造蛋白质糖基化,扫描序列中的 N-糖基化 sequon(N-X-S/T)、预测 O-糖基化热点,并接入精选的糖工程工具(NetOGlyc、GlycoShield、GlycoWorkbench),适用于糖蛋白工程、治疗性抗体优化和疫苗设计。"
     },
     {
       "id": "gtars",
@@ -6250,7 +6299,8 @@
       "scripts": 8,
       "references": 6,
       "assets": 0,
-      "files": 15
+      "files": 15,
+      "description_zh": "在 Python、Rust 及 CLI 中使用 Gtars 进行本地基因组区间（genomic interval）模型与集合运算、重叠与计数、共识（consensus）与覆盖度（coverage）计算、分词（tokenization）、片段（fragment）处理，以及 refget/BEDbase 规划。"
     },
     {
       "id": "histolab",
@@ -6265,7 +6315,8 @@
       "scripts": 0,
       "references": 7,
       "assets": 0,
-      "files": 8
+      "files": 8,
+      "description_zh": "轻量级的全视野切片图像（WSI）图块提取与预处理。用于 H&E 图像的基础切片处理、组织检测、图块提取以及染色归一化。最适合简单的流水线、数据集准备以及快速的基于图块的分析。若需高级空间蛋白质组学、多重成像或深度学习流水线，用 pathml。"
     },
     {
       "id": "hugging-science",
@@ -6280,7 +6331,8 @@
       "scripts": 1,
       "references": 5,
       "assets": 0,
-      "files": 7
+      "files": 7,
+      "description_zh": "适用于用户在生物学、化学、物理学、天文学、气候、基因组学、材料学、医学、生态学、能源、工程学、数学、药物发现、蛋白质设计、天气建模、定理证明、单细胞分析或偏微分方程求解等科学领域从事 AI/ML 工作的场景;Hugging Science 是一个经过精心整理的科学数据集、模型、博客文章和交互式 Space 目录,此技能帮助通过 `datasets`、`transformers`、HF Inference API、`gradio_client` 以及方法论引用来发现和使用这些资源。"
     },
     {
       "id": "hypogenic",
@@ -6295,7 +6347,8 @@
       "scripts": 7,
       "references": 6,
       "assets": 4,
-      "files": 18
+      "files": 18,
+      "description_zh": "规划并审计 ChicagoHAI HypoGeniC/HypoRefine 在带标注文本数据集上做 LLM 辅助假设生成的用法。适用于 `hypogenic` 包、其任务配置、假设库（hypothesis banks）或 HypoBench 数据集——不用于人工提出假设或科学验证本身。"
     },
     {
       "id": "hypothesis-generation",
@@ -6310,7 +6363,8 @@
       "scripts": 8,
       "references": 10,
       "assets": 8,
-      "files": 27
+      "files": 27,
+      "description_zh": "构建有证据边界的科学问题、候选假设、竞争性解释、因果或关联性主张、判别性预测、测量方案，以及可用于预注册（preregistration）的分析计划。适用于将观察结果或初步发现转化为透明、可检验的研究计划，同时不把假设当作既定事实的场景。"
     },
     {
       "id": "imaging-data-commons",
@@ -6325,7 +6379,8 @@
       "scripts": 1,
       "references": 13,
       "assets": 0,
-      "files": 15
+      "files": 15,
+      "description_zh": "查询并下载来自 NCI Imaging Data Commons 的公开癌症影像数据。适用于任何关于 IDC collections、癌症影像数据集、DICOM 数据访问、放射学（CT、MR、PET）或病理学 AI 训练集、元数据查询、可视化或许可协议检查的问题——即便用户没有明确提到「IDC」。无需身份验证。"
     },
     {
       "id": "infographics",
@@ -6340,7 +6395,8 @@
       "scripts": 2,
       "references": 5,
       "assets": 0,
-      "files": 8
+      "files": 8,
+      "description_zh": "使用 Nano Banana Pro AI 并配合智能迭代优化来创建专业信息图，用 Gemini 3.6 Flash 进行质量审阅，并整合 research-lookup 与网页搜索以获取准确数据，支持 10 种信息图类型、8 种行业风格和色盲友好调色板。"
     },
     {
       "id": "iso-standards-readiness",
@@ -6355,7 +6411,8 @@
       "scripts": 10,
       "references": 9,
       "assets": 12,
-      "files": 32
+      "files": 32,
+      "description_zh": "为 ISO 13485 医疗器械 QMS、ISO 14971 器械风险管理、ISO/IEC 17025 检测和校准实验室、ISO 15189 医学实验室等 ISO 管理体系及实验室能力标准准备并结构性审查就绪度证据，用于组织声明范围、受控文件、风险管理档案、认可范围、可追溯性、CAPA、外部供应商控制及有边界的本地证据清单，并区分 ISO 认证与实验室认可、FDA QMSR 检查、CLIA 认证、MDSAP 及欧盟 MDR/IVDR 证据边界；不用于法律适用性、合规性、认证或认可方面的决策，也不包含条款正文。"
     },
     {
       "id": "lab-hardware-cad",
@@ -6370,7 +6427,8 @@
       "scripts": 4,
       "references": 7,
       "assets": 1,
-      "files": 13
+      "files": 13,
+      "description_zh": "将定制实验室硬件设计为参数化的 build123d 模型,并导出可直接用于加工的 STEP、STL 和 DXF 文件——微流控芯片与模具、光机安装座与面包板适配器、比色皿与孔板支架、试管架、动物行为实验装置,以及 3D 打印仪器夹具。当研究任务需要一个必须与标准化实验耗材、光学平台、笼式系统,或打印机、CNC、激光加工工艺相配合的物理零件时使用。"
     },
     {
       "id": "labarchive-integration",
@@ -6385,7 +6443,8 @@
       "scripts": 3,
       "references": 4,
       "assets": 0,
-      "files": 8
+      "files": 8,
+      "description_zh": "安全地对接官方的 LabArchives ELN 类 REST API 和 Inventory API v1。适用于区域端点选择、签名请求构造、用户授权及 UID 流程、本地 LA 容器校验,以及经过验证的 LabArchives 集成工作流。"
     },
     {
       "id": "lamindb",
@@ -6400,7 +6459,8 @@
       "scripts": 0,
       "references": 6,
       "assets": 0,
-      "files": 7
+      "files": 7,
+      "description_zh": "在使用 LaminDB(面向生物学数据集和模型的开源、以血缘为核心的湖仓系统)时使用。涵盖环境搭建、工件注册、查询/搜索、血缘追踪、验证、基于 Bionty 的本体标注、集合、分支、存储以及工作流集成。"
     },
     {
       "id": "latchbio-integration",
@@ -6415,7 +6475,8 @@
       "scripts": 1,
       "references": 9,
       "assets": 0,
-      "files": 11
+      "files": 11,
+      "description_zh": "使用 Python SDK、CLI、Latch Data 与 Registry、Nextflow、Snakemake、程序化执行以及 Latch MCP,在 Latch 上构建、注册、调试并运维生物信息学工作流,适用于编写或部署 Latch 工作流、配置资源或界面、迁移数据、集成 Registry,或启动并监控运行任务。"
     },
     {
       "id": "latex-posters",
@@ -6430,7 +6491,8 @@
       "scripts": 3,
       "references": 9,
       "assets": 4,
-      "files": 17
+      "files": 17,
+      "description_zh": "使用 beamerposter、tikzposter 或 baposter 在 LaTeX 中制作专业的学术研究海报。支持会议演示、学术海报及科学传播场景，涵盖布局设计、配色方案、多栏排版、图形整合，以及面向视觉传达的海报专属最佳实践。"
     },
     {
       "id": "liteparse",
@@ -6445,7 +6507,8 @@
       "scripts": 1,
       "references": 5,
       "assets": 0,
-      "files": 7
+      "files": 7,
+      "description_zh": "返回带边界框的空间化文本的本地文档与 PDF 解析工具。适用于从 PDF、DOCX、Office 文件及图像中提取文本、对扫描件运行 OCR、为 RAG 生成保留版面结构的 JSON、批量摄取文献文件夹，或将页面渲染为 PNG 供多模态 agent 使用。其特色能力在于逐 token 的边界框、页面栅格化输出，以及完全本地处理、无需调用云端 API。"
     },
     {
       "id": "literature-review",
@@ -6460,7 +6523,8 @@
       "scripts": 5,
       "references": 5,
       "assets": 1,
-      "files": 12
+      "files": 12,
+      "description_zh": "使用多个学术数据库（PubMed、arXiv、bioRxiv、Semantic Scholar 等）进行全面、系统的文献综述。当需要进行系统性文献综述、meta 分析、研究综合，或跨生物医学、科学和技术领域进行全面文献检索时应使用本技能。生成专业排版的 markdown 文档和 PDF，并附有多种引用格式（APA、Nature、Vancouver 等）下经过核实的引用。"
     },
     {
       "id": "markdown-mermaid-writing",
@@ -6475,7 +6539,8 @@
       "scripts": 0,
       "references": 26,
       "assets": 1,
-      "files": 37
+      "files": 37,
+      "description_zh": "一套全面的 markdown 与 Mermaid 图表写作技能,用于创建任何科学文档、报告、分析或可视化内容,并通过完整的风格指南(markdown + mermaid)、24 种图表类型参考文档和 9 种文档模板,将基于文本的图表确立为默认的文档规范。"
     },
     {
       "id": "market-research-reports",
@@ -6490,7 +6555,8 @@
       "scripts": 8,
       "references": 7,
       "assets": 10,
-      "files": 26
+      "files": 26,
+      "description_zh": "构建证据可追溯的市场研究报告,以及基于明确假设的市场规模测算或预测情景,适用于市场定义、行业与客户证据、竞争格局分析、TAM/SAM/SOM 调和、预测敏感性分析,以及可审计的报告框架搭建。"
     },
     {
       "id": "markitdown",
@@ -6505,7 +6571,8 @@
       "scripts": 3,
       "references": 7,
       "assets": 0,
-      "files": 11
+      "files": 11,
+      "description_zh": "使用微软的 MarkItDown 把各种异构文档以及特定 URI 转换为 Markdown,以用于文本分析、搜索和 LLM/RAG 摄取。涵盖安全的本地转换、流处理、Office/PDF/数据格式、批量工作流、插件、视觉 OCR、Azure 提取,以及官方 MCP 服务器。"
     },
     {
       "id": "matchms",
@@ -6520,7 +6587,8 @@
       "scripts": 1,
       "references": 6,
       "assets": 0,
-      "files": 8
+      "files": 8,
+      "description_zh": "使用 matchms 对串联质谱（tandem mass spectra）进行处理、清洗、比较和检索，适用于 MS/MS 文件 I/O、元数据统一化、峰过滤、谱图相似度、谱库匹配、打分矩阵及分子相似度网络；LC-MS 特征检测或蛋白质组学流水线请改用 pyopenms。"
     },
     {
       "id": "matlab",
@@ -6535,7 +6603,8 @@
       "scripts": 8,
       "references": 8,
       "assets": 3,
-      "files": 20
+      "files": 20,
+      "description_zh": "构建、审查、迁移并安全规划 MATLAB 或 GNU Octave 数值工作流，涵盖数组、表格/时间序列数据、测试、项目、图形、MAT 文件，以及明确的 Python 互操作性。"
     },
     {
       "id": "matplotlib",
@@ -6550,7 +6619,8 @@
       "scripts": 2,
       "references": 4,
       "assets": 0,
-      "files": 7
+      "files": 7,
+      "description_zh": "一个可完全自定义的底层绘图库,适用于需要对每个图表元素进行精细控制、创建新型图表类型,或与特定科学工作流集成的场景,可导出为 PNG/PDF/SVG 以供出版;快速统计图表请用 seaborn,交互式图表请用 plotly,符合期刊排版风格的出版级多面板图请用 scientific-visualization。"
     },
     {
       "id": "medchem",
@@ -6565,7 +6635,8 @@
       "scripts": 1,
       "references": 2,
       "assets": 0,
-      "files": 4
+      "files": 4,
+      "description_zh": "用于化合物分级筛选的药物化学过滤器;应用成药性规则(Lipinski、Veber、CNS)、结构警示目录(PAINS、NIBR、ChEMBL)、复杂度指标,以及用于化合物库过滤的 medchem 查询语言。"
     },
     {
       "id": "modal",
@@ -6580,7 +6651,8 @@
       "scripts": 0,
       "references": 12,
       "assets": 0,
-      "files": 13
+      "files": 13,
+      "description_zh": "Modal 是一个用于按需运行 Python（包括按需 GPU）的无服务器云平台。适用于部署或提供 AI/ML 模型服务、运行 GPU 加速的工作负载（训练、微调、推理）、提供 Web 端点服务、调度批处理任务，或用 Modal SDK 将 Python 代码扩展到云容器中。"
     },
     {
       "id": "molecular-dynamics",
@@ -6595,7 +6667,8 @@
       "scripts": 0,
       "references": 1,
       "assets": 0,
-      "files": 2
+      "files": 2,
+      "description_zh": "使用 OpenMM 和 MDAnalysis 运行并分析分子动力学模拟。搭建蛋白质/小分子体系、定义力场、运行能量最小化和生产阶段的 MD、分析轨迹(RMSD、RMSF、接触图、自由能曲面)。适用于结构生物学、药物结合和生物物理学。"
     },
     {
       "id": "molfeat",
@@ -6610,7 +6683,8 @@
       "scripts": 0,
       "references": 4,
       "assets": 0,
-      "files": 5
+      "files": 5,
+      "description_zh": "面向机器学习的分子特征化工具（100 多种特征化器）。涵盖 ECFP、MACCS、描述符、预训练模型（ChemBERTa），可将 SMILES 转换为特征，适用于 QSAR 及分子机器学习场景。"
     },
     {
       "id": "ncats-arax",
@@ -6625,7 +6699,8 @@
       "scripts": 1,
       "references": 2,
       "assets": 0,
-      "files": 4
+      "files": 4,
+      "description_zh": "查询 NCATS Translator ARAX 生产环境 API,获取有边界限定、带类型、来源信息丰富的单跳以及端点固定的两跳生物医学知识图谱关系,适用于受 Biolink 约束的 RTX-KG2 查询、显式指定提供方的 ARAX 联合查询、独立的实体归一化、支持限定符的图遍历,以及对 TRAPI 边绑定关系、出版物和知识来源信息的检查;不适用于推理、排名、开放式路径查找、临床指导或敏感查询。"
     },
     {
       "id": "networkx",
@@ -6640,7 +6715,8 @@
       "scripts": 0,
       "references": 5,
       "assets": 0,
-      "files": 6
+      "files": 6,
+      "description_zh": "使用 NetworkX 在 Python 中创建、分析和可视化复杂网络与图,适用于处理网络/图数据结构、计算图算法(最短路径、中心性、聚类)、检测社区、生成合成网络(随机网络、无标度网络、小世界网络)、读写图文件格式,或绘制网络拓扑结构,常见于社交网络、生物网络、交通网络和引文网络等应用场景。"
     },
     {
       "id": "neurokit2",
@@ -6655,7 +6731,8 @@
       "scripts": 7,
       "references": 12,
       "assets": 0,
-      "files": 20
+      "files": 20,
+      "description_zh": "使用 NeuroKit2 构建或审计可复现的研究工作流,涵盖生理时间序列预处理、事件/区间分析、多模态对齐、变异性与复杂度分析;当代码导入 neurokit2 或需要其当前 API、schema 及方法感知(method-aware)的验证时触发,不用于诊断或器械验证。"
     },
     {
       "id": "neuropixels-analysis",
@@ -6670,7 +6747,8 @@
       "scripts": 6,
       "references": 10,
       "assets": 1,
-      "files": 18
+      "files": 18,
+      "description_zh": "使用 SpikeInterface 对 Neuropixels 细胞外记录进行端到端分析,涵盖加载 SpikeGLX/Open Ephys/NWB 数据、预处理、漂移/运动校正、Kilosort4(及 CPU)spike sorting、质量指标计算,以及神经元单元整理(基于阈值、基于模型的 UnitRefine,以及 AI 辅助的可视化复核),适用于处理 Neuropixels 1.0/2.0 记录、spike sorting,或细胞外电生理分析的场景。"
     },
     {
       "id": "nextflow",
@@ -6685,7 +6763,8 @@
       "scripts": 0,
       "references": 7,
       "assets": 0,
-      "files": 8
+      "files": 8,
+      "description_zh": "端到端地构建、运行并调试 Nextflow 数据流水线及 nf-core 工作流，适用于用户提到 Nextflow、nf-core、.nf 文件、nextflow.config、DSL2、进程/通道/算子、samplesheet，或想要运行社区流水线（如 nf-core/rnaseq、nf-core/sarek）、用 nf-test 编写或测试模块/子工作流、配置执行器/容器（Docker、Singularity/Apptainer、Conda、Wave）、将工作流扩展到 HPC/SLURM 或云端（AWS Batch、Google Batch、Azure、Kubernetes），或调试失败/需要 -resume 的运行等场景；即便用户没有说出 Nextflow 这个词，也应将本技能用于任何可复现的科学/生物信息学工作流工作，以及编写符合 nf-core 规范的流水线、模块、配置和 lint 检查。"
     },
     {
       "id": "omero-integration",
@@ -6700,7 +6779,8 @@
       "scripts": 5,
       "references": 9,
       "assets": 0,
-      "files": 15
+      "files": 15,
+      "description_zh": "使用 omero-py、BlitzGateway、OMERO CLI、表格、注释、ROI、渲染,以及文档记载的 OMERO.web API，安全地检查并自动化针对 OMERO.server 的显微镜数据工作流。适用于有范围限定的 OMERO 清点、元数据导出、导入/导出规划，或经过审查的写入工作流。"
     },
     {
       "id": "onekgpd",
@@ -6715,7 +6795,8 @@
       "scripts": 2,
       "references": 2,
       "assets": 1,
-      "files": 6
+      "files": 6,
+      "description_zh": "查询 1000 Genomes Project 数据集（3,202 名全基因组测序个体，GRCh38）中个体层面的信息。当问题涉及 1000 Genomes Project 队列中的个体或变异时使用：某基因或区域内哪些个体携带符合特定条件的变异、哪些个体在某位点上为纯合参考基因型、数据集中存在哪些变异或指定个体在某基因或区域内携带哪些变异、两个指定个体之间的亲缘关系。返回的变异附带 1000 Genomes 等位基因频率（AF）、gnomAD v4.1 外显子组和基因组 AF、AlphaMissense 评分以及 HGVSp 注释。"
     },
     {
       "id": "ontology-term-resolution",
@@ -6730,7 +6811,8 @@
       "scripts": 3,
       "references": 3,
       "assets": 0,
-      "files": 7
+      "files": 7,
+      "description_zh": "把自由文本的科学标签解析为本体术语 ID,并对照 EBI Ontology Lookup Service(OLS4)校验既有的 CURIE,适用于任何需要生成或核查本体标识符的场景——标注组织、细胞类型、疾病、表型、检测方法、化学物质、物种、性别或发育阶段字段;为 GEO、ENA、BioSamples、CELLxGENE、HCA 或 ISA-Tab 提交准备元数据;审计一张术语 ID 元数据表;检查某个术语是否已废弃及其替代术语;或在不同本体之间做映射;触发词包括“ontology term”“ontology ID”“CURIE”“controlled vocabulary”“UBERON”“CL:”“MONDO”“HPO”“EFO”“ChEBI”“NCBITaxon”“GO term”“PATO”“标注这个组织/细胞类型/疾病”,以及任何生成或校验形如 PREFIX:0001234 标识符的请求。"
     },
     {
       "id": "open-notebook",
@@ -6745,7 +6827,8 @@
       "scripts": 3,
       "references": 4,
       "assets": 0,
-      "files": 8
+      "files": 8,
+      "description_zh": "自托管、开源的 Google NotebookLM 替代方案，用于 AI 驱动的研究与文档分析。适用于把研究资料组织到笔记本中、接收多种内容来源（PDF、视频、音频、网页、Office 文档）、生成 AI 驱动的笔记与摘要、根据研究内容制作多说话人播客、用具有上下文感知能力的 AI 与文档对话、跨资料进行全文与向量搜索，或运行自定义内容变换。支持 16 个以上的 AI 提供商，包括 OpenAI、Anthropic、Google、Ollama、Groq 和 Mistral，并通过自托管实现完整的数据隐私性。"
     },
     {
       "id": "openpiv",
@@ -6760,7 +6843,8 @@
       "scripts": 4,
       "references": 1,
       "assets": 0,
-      "files": 6
+      "files": 6,
+      "description_zh": "使用 OpenPIV 进行粒子图像测速（Particle Image Velocimetry, PIV）分析。用于从 PIV 图像对中提取速度场、分析流体动力学或流动可视化实验、对询问窗口（interrogation window）进行互相关计算、校验并替换虚假的 PIV 向量，或从测得的速度场中计算涡量、应变率和湍流统计量。"
     },
     {
       "id": "opentrons-integration",
@@ -6775,7 +6859,8 @@
       "scripts": 6,
       "references": 7,
       "assets": 0,
-      "files": 16
+      "files": 16,
+      "description_zh": "为 Flex 和 OT-2 机器人编写、审查、迁移、仿真并排查官方 Opentrons Python Protocol API v2 协议,适用于机器人专属的液体处理、甲板与耗材设置、移液器、模块、运行时参数、液体分类以及 Opentrons App 分析;若一个工作流必须支持多家机器人厂商,请改用 pylabrobot。"
     },
     {
       "id": "optimize-for-gpu",
@@ -6790,7 +6875,8 @@
       "scripts": 0,
       "references": 15,
       "assets": 0,
-      "files": 16
+      "files": 16,
+      "description_zh": "在 NVIDIA 硬件上对科学计算类 Python 代码做 GPU 加速,并验证结果的正确性与速度提升。适用于 CUDA/GPU 优化;受 CPU 限制的 NumPy、SciPy、pandas、scikit-learn、NetworkX、scikit-image、向量搜索、图像处理、图分析、仿真或文件 I/O 工作负载;CuPy、cuDF、cuML、cuGraph、cuVS、cuCIM、KvikIO、Warp、Newton、Numba-CUDA 或 RAFT 相关问题;以及性能分析、内存传输、内核或多 GPU 瓶颈。当大规模数据并行的 Python 代码运行缓慢、GPU 加速是一个可行选项时也应使用,即使用户没有明确提到 CUDA。"
     },
     {
       "id": "pacsomatic",
@@ -6805,7 +6891,8 @@
       "scripts": 1,
       "references": 3,
       "assets": 0,
-      "files": 7
+      "files": 7,
+      "description_zh": "面向 nf-core/pacsomatic 配对肿瘤-正常样本工作流（从 BAM 输入开始）的操作工具包。当用户需要验证运行输入、生成符合 pacsomatic 规范的样本表、准备可复现的 Nextflow 启动产物、在本地运行或提交到调度器（LSF/Slurm/PBS/SGE），以及排查执行失败问题时使用本技能。触发场景包括请求运行 pacsomatic、准备启动命令/脚本、执行 dry-run 检查，或排查流水线启动和调度器提交错误。"
     },
     {
       "id": "paper-lookup",
@@ -6820,7 +6907,8 @@
       "scripts": 5,
       "references": 11,
       "assets": 0,
-      "files": 17
+      "files": 17,
+      "description_zh": "检索 11 个学术文献 API 以查找论文、预印本、引用和开放获取全文,并返回带可复现溯源信息的结果,覆盖 PubMed、PMC(全文)、Europe PMC(全文与预印本检索)、bioRxiv、medRxiv、arXiv、OpenAlex、Crossref、Semantic Scholar、CORE、Unpaywall,适用于查找论文、引用、DOI/PMID/arXiv 查询、摘要、全文、开放获取 PDF、预印本、引用关系图、作者出版物等任何学术文献查询场景,当提及任一支持的数据库或出现类似“查找关于 X 的论文”“查这个 DOI”“谁引用了这篇论文”“帮我拿到 PDF”等请求时触发。"
     },
     {
       "id": "paperclip",
@@ -6835,7 +6923,8 @@
       "scripts": 0,
       "references": 6,
       "assets": 0,
-      "files": 7
+      "files": 7,
+      "description_zh": "使用来自 GXL 的 Paperclip CLI 搜索并阅读生物医学论文全文、FDA/PMDA/EMA 监管文件、临床试验注册库以及 UniProt/PDB/ChEMBL 条目;涵盖用 PAPERCLIP_API_KEY 安装并认证 `paperclip` 二进制文件、位于 /papers、/fda、/trials、/proteins 和 /clipboard 下的只读虚拟文件系统、按数据源限定的语义搜索、全语料库 grep、元数据查询与 SQL、跨多篇论文的 map/reduce 阅读、图表视觉分析、可选启用的带声明核验功能的论文仓库,以及带行号锚点的引用;适用于被要求安装 paperclip、运行 paperclip 的 search/grep/map/reduce/sql/repo、通过 paperclip 查找或阅读生物医学文献、监管备案或临床试验,或生成带行号引用的场景。"
     },
     {
       "id": "paperzilla",
@@ -6850,7 +6939,8 @@
       "scripts": 0,
       "references": 0,
       "assets": 0,
-      "files": 1
+      "files": 1,
+      "description_zh": "与你的代理讨论 Paperzilla 中的项目、推荐内容和规范论文(canonical paper),适用于用户请求获取最新的项目推荐、规范论文详情、基于 markdown 的摘要、推荐反馈、信息流导出,或 Atom 信息流 URL 的场景。"
     },
     {
       "id": "parallel-web",
@@ -6865,7 +6955,8 @@
       "scripts": 0,
       "references": 6,
       "assets": 0,
-      "files": 7
+      "files": 7,
+      "description_zh": "使用 Parallel CLI 进行网页搜索、URL 内容提取、深度研究（deep research）、结构化数据富化（data enrichment）、实体发现，以及周期性网页监控。最适合那些明确需要当前网络证据、学术来源发现、重复实体查询、详尽报告，或持续变化追踪的请求。"
     },
     {
       "id": "pathml",
@@ -6880,7 +6971,8 @@
       "scripts": 6,
       "references": 6,
       "assets": 0,
-      "files": 13
+      "files": 13,
+      "description_zh": "将 PathML 用于本地、仅限研究用途的计算病理学工作流：加载并分块切片、构建预处理与质控流水线、管理 h5path 数据、对多重染色影像进行定量分析、构建空间图结构，以及规划有边界限制的模型推理。"
     },
     {
       "id": "pathogen-variant-surveillance",
@@ -6895,7 +6987,8 @@
       "scripts": 5,
       "references": 3,
       "assets": 0,
-      "files": 9
+      "files": 9,
+      "description_zh": "通过 GenSpectrum LAPIS API 查询实时的病原体基因组监测数据,以确定当前正在流行的病毒谱系、其增长速度及所携带的突变,适用于任何依赖病原体种群当前状态而非记忆事实的问题——例如当前主导的 SARS-CoV-2 变异株、某个 Pango 谱系是否仍被指定或已被撤销、某宿主或地区的 H5N1 属于哪个分支(clade)或基因型、PCR 引物或检测靶点是否仍与流行序列匹配,以及某谱系流行率的周度变化情况。"
     },
     {
       "id": "pathway-enrichment",
@@ -6910,7 +7003,8 @@
       "scripts": 1,
       "references": 3,
       "assets": 0,
-      "files": 5
+      "files": 5,
+      "description_zh": "对基因列表或排序后的基因数据运行通路与基因集富集分析并解读结果——适用于用户手头有一组基因（来自 PyDESeq2/Scanpy 的差异表达基因、CRISPR 筛选命中、簇标记基因、蛋白质组学命中）、想知道哪些生物学通路、GO 词条或基因集被过度表征或富集的场景，涵盖过表征分析（ORA/Enrichr/Fisher/超几何检验）、排序基因集富集分析（GSEA/预排序）、单样本打分（ssGSEA/GSVA），以及通过 gseapy、g:Profiler、Enrichr 基因集库、MSigDB、GO、KEGG、Reactome 和 WikiPathways 进行的功能画像，还包括基因 ID 映射、选择合适的背景集合、多重检验校正、冗余度削减、点图/富集图，以及发表级表格。"
     },
     {
       "id": "pdf",
@@ -6925,7 +7019,8 @@
       "scripts": 8,
       "references": 0,
       "assets": 0,
-      "files": 12
+      "files": 12,
+      "description_zh": "只要用户想对 PDF 文件做任何操作，就使用本技能。这包括读取或提取 PDF 中的文本/表格、将多个 PDF 合并为一个、拆分 PDF、旋转页面、添加水印、创建新的 PDF、填写 PDF 表单、加密/解密 PDF、提取图片，以及对扫描版 PDF 进行 OCR 使其可搜索。如果用户提到某个 .pdf 文件，或要求生成一个 PDF，就使用本技能。"
     },
     {
       "id": "peer-review",
@@ -6940,7 +7035,8 @@
       "scripts": 8,
       "references": 6,
       "assets": 9,
-      "files": 24
+      "files": 24,
+      "description_zh": "准备有证据支撑、具建设性的同行评审草稿及结构化稿件评估，用于获得授权的科学稿件、方案、预印本或研究提案评审、报告指南选择、主张-证据核查，以及方法、统计、可复现性、伦理、图表和引文方面的评议，或修订回复规划。"
     },
     {
       "id": "pennylane",
@@ -6955,7 +7051,8 @@
       "scripts": 0,
       "references": 7,
       "assets": 0,
-      "files": 8
+      "files": 8,
+      "description_zh": "与硬件无关、支持自动微分的量子机器学习框架,适用于通过梯度训练量子电路、构建混合量子-经典模型,或需要在 IBM/Google/Rigetti/IonQ 等设备间保持可移植性的场景;最适合变分算法(VQE、QAOA)、量子神经网络,以及与 PyTorch 或 JAX 的集成;针对特定硬件的优化请用 qiskit(IBM)或 cirq(Google),开放量子系统请用 qutip。"
     },
     {
       "id": "phylogenetics",
@@ -6970,7 +7067,8 @@
       "scripts": 1,
       "references": 1,
       "assets": 0,
-      "files": 3
+      "files": 3,
+      "description_zh": "使用 MAFFT（多序列比对）、IQ-TREE 2（最大似然）和 FastTree（快速 NJ/ML）构建并分析系统发育树，用 ETE3 或 FigTree 可视化。适用于进化分析、微生物基因组学、病毒系统动力学、蛋白质家族分析和分子钟研究。"
     },
     {
       "id": "pi-agent",
@@ -6985,7 +7083,8 @@
       "scripts": 0,
       "references": 34,
       "assets": 0,
-      "files": 35
+      "files": 35,
+      "description_zh": "构建并使用 Pi 这个极简终端编码工具,适用于安装 Pi、配置提供商/模型/设置/环境变量、创建 Pi 技能/扩展/软件包/主题/提示词模板、通过 SDK 嵌入 Pi、通过 RPC 或 JSON 事件流做集成、解析会话、通过 llama.cpp 路由器运行本地模型、开发自定义 Pi 提供商和 TUI 组件,或使用 pi-subagents(委托/编排)、pi-mcp-adapter(MCP 服务器)、pi-interview(交互式表单)和 pi-web-access(网络搜索、抓取、视频理解)等生态软件包的场景。"
     },
     {
       "id": "pkpd-modeling",
@@ -7000,7 +7099,8 @@
       "scripts": 11,
       "references": 14,
       "assets": 2,
-      "files": 28
+      "files": 28,
+      "description_zh": "药代动力学与药效动力学建模与仿真——涵盖非房室分析、房室模型与群体PK、PK/PD与暴露量-效应关系、TMDD、PBPK方向指导、生物等效性、异速生长外推与首次人体试验剂量、药物相互作用预测,以及贝叶斯治疗药物监测;适用于分析浓度-时间数据、推导暴露量指标、拟合PK或PD模型,或评估给药方案。"
     },
     {
       "id": "polars",
@@ -7015,7 +7115,8 @@
       "scripts": 0,
       "references": 6,
       "assets": 0,
-      "files": 7
+      "files": 7,
+      "description_zh": "面向 Python ETL、数据分析和 pandas 迁移的高性能 DataFrame 库;用于基于表达式的数据操作,支持惰性查询优化、并行执行、流式核外(out-of-core)处理、Arrow 互操作性,以及可选的 GPU 执行。"
     },
     {
       "id": "polars-bio",
@@ -7030,7 +7131,8 @@
       "scripts": 0,
       "references": 6,
       "assets": 0,
-      "files": 7
+      "files": 7,
+      "description_zh": "在 Polars DataFrame 上执行高性能基因组区间操作及生物信息学文件 I/O，针对 BED/VCF/BAM/GFF 区间提供 overlap、nearest、merge、coverage、complement、subtract 等操作，支持流式处理与云原生能力，是比 bioframe 更快的替代方案。"
     },
     {
       "id": "pptx",
@@ -7045,7 +7147,8 @@
       "scripts": 15,
       "references": 0,
       "assets": 0,
-      "files": 56
+      "files": 56,
+      "description_zh": "只要涉及 .pptx 或 .potx 文件——无论是作为输入、输出还是两者兼有,包括创建幻灯片、推介文稿或演示文稿、读取/解析/提取任意 .pptx 或 .potx 文件中的文字、编辑或更新已有演示文稿、合并或拆分幻灯片文件,以及处理模板(.potx)、版式、演讲者备注或批注等场景——就应使用此技能。"
     },
     {
       "id": "pptx-posters",
@@ -7060,7 +7163,8 @@
       "scripts": 10,
       "references": 7,
       "assets": 3,
-      "files": 21
+      "files": 21,
+      "description_zh": "基于作者已批准的本地内容和素材，创建并审计无宏（macro-free）PowerPoint（.pptx）格式的可编辑科研海报。适用于交付物为 PowerPoint 研究/会议海报、且需要进行精确的物理尺寸、打印、无障碍访问（accessibility）、来源溯源以及包安全性检查的场景。"
     },
     {
       "id": "primekg",
@@ -7075,7 +7179,8 @@
       "scripts": 1,
       "references": 0,
       "assets": 0,
-      "files": 2
+      "files": 2,
+      "description_zh": "查询精准医学知识图谱（Precision Medicine Knowledge Graph，PrimeKG），获取涵盖基因、药物、疾病、表型等在内的多尺度生物学数据。"
     },
     {
       "id": "protocolsio-integration",
@@ -7090,7 +7195,8 @@
       "scripts": 7,
       "references": 6,
       "assets": 1,
-      "files": 15
+      "files": 15,
+      "description_zh": "使用当前官方 REST/MCP 契约读取、验证并安全导出 protocols.io 数据，或创建不执行的变更计划。内置客户端只在显式传入 --execute 时，向官方主机发起有界的 GET 请求。仅当任务明确针对 protocols.io 或某个确切的 protocols.io 协议版本时才使用本技能。"
     },
     {
       "id": "pufferlib",
@@ -7105,7 +7211,8 @@
       "scripts": 9,
       "references": 5,
       "assets": 0,
-      "files": 15
+      "files": 15,
+      "description_zh": "为 PufferLib 强化学习环境、向量化、策略、PuffeRL 训练、评估及安全的检查点审查提供版本感知的指导，适用于将 Gymnasium/PettingZoo 环境适配到已发布的 PufferLib 3.0.0，或处理经过重新设计的原生 4.0 源码分支。"
     },
     {
       "id": "pydeseq2",
@@ -7120,7 +7227,8 @@
       "scripts": 1,
       "references": 4,
       "assets": 0,
-      "files": 6
+      "files": 6,
+      "description_zh": "使用 PyDESeq2 对批量 RNA-seq 进行差异基因表达分析,涵盖公式化设计、Wald 检验、FDR 校正、LFC 收缩以及结果可视化。"
     },
     {
       "id": "pydicom",
@@ -7135,7 +7243,8 @@
       "scripts": 10,
       "references": 2,
       "assets": 0,
-      "files": 13
+      "files": 13,
+      "description_zh": "使用 pydicom 读取、检查、写入、转换本地 DICOM 数据集与像素数据,并进行安全预检;适用于 DICOM 元数据、传输语法(transfer syntaxes)、压缩插件、帧(frames)、私有元素、JSON,以及有边界限定的去标识化审查。"
     },
     {
       "id": "pyhealth",
@@ -7150,7 +7259,8 @@
       "scripts": 0,
       "references": 6,
       "assets": 1,
-      "files": 8
+      "files": 8,
+      "description_zh": "使用 PyHealth 构建临床/医疗健康深度学习流水线——加载 EHR/信号/影像数据集（MIMIC-III/IV、eICU、OMOP、SleepEDF、ChestXray14、EHRShot）、定义任务（死亡率、再入院、住院时长、药物推荐、睡眠分期、ICD 编码、EEG 事件）、实例化模型（Transformer、RETAIN、GAMENet、SafeDrug、MICRON、StageNet、AdaCare、CNN/RNN/MLP）、使用 PyHealth Trainer 训练、计算临床指标，以及使用医疗编码工具（ICD/ATC/NDC/RxNorm 查询与交叉映射）；只要用户提到 PyHealth、MIMIC、eICU、OMOP、EHR 建模、临床预测、药物推荐、睡眠分期、医疗编码映射、ICD/ATC 编码，或任何符合“数据集 → 任务 → 模型 → 训练器 → 指标”模式的医疗健康机器学习流水线，即使未明确提及“PyHealth”，也应使用此技能。"
     },
     {
       "id": "pylabrobot",
@@ -7165,7 +7275,8 @@
       "scripts": 7,
       "references": 6,
       "assets": 1,
-      "files": 15
+      "files": 15,
+      "description_zh": "开发并审查 PyLabRobot 实验室自动化资源、液体处理计划、离线模拟及受支持设备的集成，用于 PyLabRobot 方案或 API 相关问题；物理执行始终置于明确的操作人员安全关口之后。"
     },
     {
       "id": "pymatgen",
@@ -7180,7 +7291,8 @@
       "scripts": 9,
       "references": 5,
       "assets": 0,
-      "files": 15
+      "files": 15,
+      "description_zh": "用最新的 pymatgen API 分析、校验、转换和变换材料结构与计算材料数据，涵盖本地相图、对称性敏感性、电子结构 I/O，以及带明确边界的 Materials Project 查询。"
     },
     {
       "id": "pymc",
@@ -7195,7 +7307,8 @@
       "scripts": 2,
       "references": 5,
       "assets": 2,
-      "files": 10
+      "files": 10,
+      "description_zh": "使用 PyMC 进行贝叶斯建模,构建分层模型、MCMC(NUTS)、变分推断、LOO/WAIC 模型比较、后验检查,适用于概率编程与推断场景。"
     },
     {
       "id": "pymoo",
@@ -7210,7 +7323,8 @@
       "scripts": 5,
       "references": 7,
       "assets": 0,
-      "files": 13
+      "files": 13,
+      "description_zh": "多目标优化（multi-objective optimization）框架。支持 NSGA-II、NSGA-III、MOEA/D、帕累托前沿（Pareto front）、约束处理，以及基准测试问题（ZDT、DTLZ），适用于工程设计与优化问题。"
     },
     {
       "id": "pyopenms",
@@ -7225,7 +7339,8 @@
       "scripts": 16,
       "references": 6,
       "assets": 0,
-      "files": 23
+      "files": 23,
+      "description_zh": "完整的质谱分析平台。适用于蛋白质组学与代谢组学工作流——特征检测、肽段/蛋白质鉴定、无标记与同量异位标记定量、加合物/精确质量注释，以及复杂的 LC-MS/MS 流水线。支持多种文件格式与算法。若只需简单的谱图比对及小分子谱库匹配，请改用 matchms。"
     },
     {
       "id": "pysam",
@@ -7240,7 +7355,8 @@
       "scripts": 4,
       "references": 9,
       "assets": 0,
-      "files": 14
+      "files": 14,
+      "description_zh": "面向基因组文件的 Python/HTSlib 工作流程,适用于使用 pysam 读取、查询、过滤或写入 SAM/BAM/CRAM、VCF/BCF、FASTA/FASTQ 或 tabix 数据的场景,包括 pileup、覆盖度、索引,以及 CRAM 参考序列处理。"
     },
     {
       "id": "pytdc",
@@ -7255,7 +7371,8 @@
       "scripts": 6,
       "references": 4,
       "assets": 0,
-      "files": 11
+      "files": 11,
+      "description_zh": "通过 PyTDC 这个 Python 包使用 Therapeutics Data Commons，用于注册表发现、已获批准数据集的访问、任务感知的数据划分、评估器指标、基准测试组，以及有界的分子 oracle 工作流。"
     },
     {
       "id": "pytorch-lightning",
@@ -7270,7 +7387,8 @@
       "scripts": 3,
       "references": 7,
       "assets": 0,
-      "files": 11
+      "files": 11,
+      "description_zh": "深度学习框架(PyTorch Lightning / lightning包)。将PyTorch代码组织为LightningModule、为多GPU/TPU配置Trainer、实现数据管道、回调、日志记录(W&B、TensorBoard、MLflow)、分布式训练(DDP、FSDP、DeepSpeed),用于可扩展的神经网络训练。"
     },
     {
       "id": "pyzotero",
@@ -7285,7 +7403,8 @@
       "scripts": 0,
       "references": 14,
       "assets": 0,
-      "files": 15
+      "files": 15,
+      "description_zh": "使用 pyzotero 这个 Python 客户端与 Zotero 文献管理库交互。通过 Zotero Web API v3 检索、创建、更新和删除条目、文集、标签和附件。当需要以编程方式操作 Zotero 文献库、管理参考文献、导出引文、搜索库内容、上传 PDF 附件,或构建与 Zotero 集成的研究自动化工作流时使用本技能。"
     },
     {
       "id": "qiskit",
@@ -7300,7 +7419,8 @@
       "scripts": 3,
       "references": 11,
       "assets": 0,
-      "files": 15
+      "files": 15,
+      "description_zh": "使用 Qiskit 和 IBM Quantum Runtime 构建、仿真、转译并执行量子电路。适用于 Qiskit 2.x 电路与算符、V2 版 Sampler 或 Estimator 原语、感知目标（target-aware）的转译、本地或带噪声仿真、IBM 量子处理器（QPU）执行、Runtime 会话或批处理、误差缓解,以及 Qiskit 生态系统各类包。"
     },
     {
       "id": "qutip",
@@ -7315,7 +7435,8 @@
       "scripts": 7,
       "references": 5,
       "assets": 0,
-      "files": 13
+      "files": 13,
+      "description_zh": "使用 QuTiP 5 对封闭和开放量子系统模型进行仿真与审计,涵盖确定性、轨迹、稳态、谱和相空间等工作流程,适用于物理假设、维度和数值收敛性都必须明确的本地量子动力学工作。"
     },
     {
       "id": "rdkit",
@@ -7330,7 +7451,8 @@
       "scripts": 3,
       "references": 5,
       "assets": 0,
-      "files": 9
+      "files": 9,
+      "description_zh": "用于精细分子控制的化学信息学工具包：SMILES/SDF 解析、描述符（分子量、LogP、TPSA）、指纹、子结构搜索、二维/三维生成、相似性、反应；标准工作流且需要更简单接口时请使用 datamol（RDKit 的封装库），需要高级控制、自定义净化或专门算法时使用 rdkit。"
     },
     {
       "id": "relsa-severity-assessment",
@@ -7345,7 +7467,8 @@
       "scripts": 4,
       "references": 3,
       "assets": 1,
-      "files": 9
+      "files": 9,
+      "description_zh": "面向实验动物研究的多变量严重程度评估与人道终点预测，使用 RELSA（RELative Severity Assessment，相对严重程度评估）评分与基于 ARIMA 的 foRcast 预测。适用场景：将体重或体重减轻、体温、临床或筑巢评分、生物标志物、活动量、心率、掘穴、转轮运动等福利指标合并为每只动物每天的一个严重程度评分；判断哪些动物有达到人道终点的风险，或预测何时会达到；通过核密度估计（kernel density estimation）在严重程度量表上定义关注/危险区间或阈值；或需要撰写符合 3Rs、优化（refinement）、动物福利、或欧盟指令 2010/63/EU 严重程度评估要求的报告。涵盖方向性（\"翻转\"变量）、基线归一化、参考集、RELSA 权重、ARIMA 预测区间，以及 RMSE/PICP/MPIW 评估指标。"
     },
     {
       "id": "research-grants",
@@ -7360,7 +7483,8 @@
       "scripts": 0,
       "references": 12,
       "assets": 3,
-      "files": 16
+      "files": 16,
+      "description_zh": "为 NSF、NIH、DOE、DARPA 和台湾 NSTC 撰写具有竞争力的研究经费申请书，涵盖机构特定的格式要求、评审标准、预算编制、更广泛影响力、意义陈述、创新性叙述以及提交要求的合规性。"
     },
     {
       "id": "research-lookup",
@@ -7375,7 +7499,8 @@
       "scripts": 2,
       "references": 0,
       "assets": 0,
-      "files": 4
+      "files": 4,
+      "description_zh": "为科学论文手稿或研究简报汇集当前的学术证据。当用户明确要求收集文献、参考文献、背景证据、相互矛盾的研究发现,或一份手稿研究材料包时使用。默认使用 Parallel Search,用 Parallel Extract 做来源验证,在用户明确要求深度/穷尽式研究时使用 Parallel Research,可选地显式使用 Parallel Chat,并仅在用户要求或作为失败回退方案被允许时才可选地使用 Perplexity。"
     },
     {
       "id": "rowan",
@@ -7390,7 +7515,8 @@
       "scripts": 0,
       "references": 5,
       "assets": 0,
-      "files": 6
+      "files": 6,
+      "description_zh": "Rowan是一个带Python API的云原生分子建模与药物化学工作流平台。适用于pKa与macropKa预测、构象异构体与互变异构体集合、对接与类似物对接、蛋白质-配体共折叠、MSA生成、分子动力学、渗透性、描述符工作流,以及相关的小分子或蛋白质建模任务;非常适合程序化批量筛选、多步骤化学流水线,以及原本需要维护本地HPC/GPU基础设施的工作流。"
     },
     {
       "id": "scanpy",
@@ -7405,7 +7531,8 @@
       "scripts": 15,
       "references": 5,
       "assets": 4,
-      "files": 25
+      "files": 25,
+      "description_zh": "标准的单细胞 RNA-seq 分析流水线,用于质量控制、归一化、降维(PCA/UMAP/t-SNE)、聚类、差异表达、可视化,以及将 Seurat、SingleCellExperiment 等 R 友好型单细胞格式的 RDS 文件转换为供 Scanpy 使用的 h5ad;最适合采用成熟工作流程进行探索性 scRNA-seq 分析,深度学习模型请用 scvi-tools,数据格式问题请用 anndata。"
     },
     {
       "id": "scholar-evaluation",
@@ -7420,7 +7547,8 @@
       "scripts": 8,
       "references": 5,
       "assets": 5,
-      "files": 19
+      "files": 19,
+      "description_zh": "为学术成果提供以定性判断为先、证据可追溯的发展性评审，并对低风险研究评估评分标准进行审计，可选配本地质量控制；切勿用于对人员排名或做出重大决策。"
     },
     {
       "id": "scientific-brainstorming",
@@ -7435,7 +7563,8 @@
       "scripts": 4,
       "references": 5,
       "assets": 0,
-      "files": 10
+      "files": 10,
+      "description_zh": "通过独立构思、结构化讨论、明确的假设陈述、透明的评估、对抗性审查和决策记录,促进具备证据意识的科学构思;适用于早期研究头脑风暴或候选方向的优先级排定,而实证验证、研究设计、伦理或监管审查以及临床问题应转交给相应的专家或技能。"
     },
     {
       "id": "scientific-critical-thinking",
@@ -7450,7 +7579,8 @@
       "scripts": 0,
       "references": 7,
       "assets": 0,
-      "files": 8
+      "files": 8,
+      "description_zh": "评估科学论断和证据质量。适用于评估实验设计的有效性、识别偏倚和混杂因素、应用证据分级框架(GRADE、Cochrane 偏倚风险),或教授批判性分析方法。最适合用于理解证据质量、识别缺陷。撰写正式同行评审意见请使用 peer-review。"
     },
     {
       "id": "scientific-schematics",
@@ -7465,7 +7595,8 @@
       "scripts": 3,
       "references": 2,
       "assets": 0,
-      "files": 6
+      "files": 6,
+      "description_zh": "使用 Nano Banana 2 AI 配合智能迭代优化创建出版级科学示意图。用 Gemini 3.6 Flash 做质量审阅，仅当质量低于所在文档类型的阈值时才重新生成。专长于神经网络架构图、系统图、流程图、生物学通路图和复杂科学可视化。"
     },
     {
       "id": "scientific-slides",
@@ -7480,7 +7611,8 @@
       "scripts": 7,
       "references": 11,
       "assets": 5,
-      "files": 24
+      "files": 24,
+      "description_zh": "构建面向科研报告的幻灯片和演示文稿，适用于制作 PowerPoint 幻灯片、会议演讲、研讨会报告、科研展示及学位论文答辩幻灯片等任何科学演讲场景，提供幻灯片结构、设计模板、时间安排指导与视觉验证，支持 PowerPoint 和 LaTeX Beamer。"
     },
     {
       "id": "scientific-visualization",
@@ -7495,7 +7627,8 @@
       "scripts": 7,
       "references": 5,
       "assets": 5,
-      "files": 18
+      "files": 18,
+      "description_zh": "用 Matplotlib、Seaborn 或 Plotly 创建并审校真实、无障碍、可直接出版的科学图表。适用于图表设计、多面板布局、不确定性与缺失数据的呈现、颜色与对比度审查、图像元数据校验，以及期刊导出规划。"
     },
     {
       "id": "scientific-writing",
@@ -7510,7 +7643,8 @@
       "scripts": 9,
       "references": 12,
       "assets": 9,
-      "files": 31
+      "files": 31,
+      "description_zh": "以明确的证据溯源、报告规范覆盖、作者问责、保密控制及本地一致性检查为基础，起草、修订并审查科学手稿或报告，适用于在科学准确性与可追溯性至关重要时处理手稿章节、参考文献、声明、表格、图形或投稿准备工作。"
     },
     {
       "id": "scikit-bio",
@@ -7525,7 +7659,8 @@
       "scripts": 0,
       "references": 1,
       "assets": 0,
-      "files": 2
+      "files": 2,
+      "description_zh": "生物数据工具包，用于微生物组分析：序列分析、比对、系统发生树、多样性指标（alpha/beta、UniFrac）、排序分析（PCoA）、PERMANOVA、FASTA/Newick 读写。"
     },
     {
       "id": "scikit-learn",
@@ -7540,7 +7675,8 @@
       "scripts": 2,
       "references": 8,
       "assets": 0,
-      "files": 11
+      "files": 11,
+      "description_zh": "使用 scikit-learn 进行 Python 机器学习；适用于监督学习（分类、回归）、无监督学习（聚类、降维）、模型评估、超参数调优、预处理，或构建 ML 流水线的场景，并提供关于算法、预处理技术、流水线和最佳实践的全面参考文档。"
     },
     {
       "id": "scikit-survival",
@@ -7555,7 +7691,8 @@
       "scripts": 6,
       "references": 6,
       "assets": 0,
-      "files": 13
+      "files": 13,
+      "description_zh": "使用 scikit-survival 构建、评估并审查右删失（right-censored）或竞争风险（competing-risk）生存分析工作流，包括无数据泄漏的预处理、模型选择、概率预测，以及考虑删失情况的评估指标。"
     },
     {
       "id": "scvelo",
@@ -7570,7 +7707,8 @@
       "scripts": 1,
       "references": 1,
       "assets": 0,
-      "files": 3
+      "files": 3,
+      "description_zh": "使用 scVelo 进行 RNA 速率分析,通过未剪接/已剪接 mRNA 动力学估计细胞状态转变、推断轨迹方向、计算潜在时间,并在单细胞 RNA-seq 数据中识别驱动基因,可与 Scanpy/scVI-tools 配合用于轨迹推断。"
     },
     {
       "id": "scvi-tools",
@@ -7585,7 +7723,8 @@
       "scripts": 0,
       "references": 8,
       "assets": 0,
-      "files": 9
+      "files": 9,
+      "description_zh": "面向单细胞组学的深度生成模型；适用于需要概率化批次校正（scVI）、迁移学习、带不确定性的差异表达分析，或多模态整合（TOTALVI、MultiVI）的场景，最适合高级建模、批次效应和多模态数据——标准分析流水线请用 scanpy。"
     },
     {
       "id": "seaborn",
@@ -7600,7 +7739,8 @@
       "scripts": 0,
       "references": 7,
       "assets": 0,
-      "files": 8
+      "files": 8,
+      "description_zh": "与 pandas 集成的统计可视化；凭借美观的默认设置，适用于快速探索分布、关系和类别比较，最适合箱线图、小提琴图、pair plot 和热力图，构建于 matplotlib 之上——需要交互式图表请用 plotly，需要出版级样式请用 scientific-visualization。"
     },
     {
       "id": "shap",
@@ -7615,7 +7755,8 @@
       "scripts": 1,
       "references": 8,
       "assets": 0,
-      "files": 10
+      "files": 10,
+      "description_zh": "使用 SHAP 解释并审计机器学习预测;适用于选择 SHAP explainer 和 masker、计算并校验特征归因、处理多输出解释,以及生成局部或全局的 SHAP 可视化。"
     },
     {
       "id": "simpy",
@@ -7630,7 +7771,8 @@
       "scripts": 7,
       "references": 8,
       "assets": 0,
-      "files": 16
+      "files": 16,
+      "description_zh": "使用 SimPy 构建、检查、测试和分析有边界的、基于过程的离散事件仿真，涵盖事件、资源、中断、监测、重复实验、预热期,以及可复现的输出分析。"
     },
     {
       "id": "stable-baselines3",
@@ -7645,7 +7787,8 @@
       "scripts": 3,
       "references": 4,
       "assets": 0,
-      "files": 8
+      "files": 8,
+      "description_zh": "提供具备类 scikit-learn API 的生产级强化学习算法(PPO、SAC、DQN、TD3、DDPG、A2C),适用于标准强化学习实验、快速原型开发,以及有完善文档的算法实现,最适合搭配 Gymnasium 环境的单智能体强化学习;若需要高性能并行训练、多智能体系统或自定义向量化环境,请改用 pufferlib。"
     },
     {
       "id": "statistical-analysis",
@@ -7660,7 +7803,8 @@
       "scripts": 1,
       "references": 5,
       "assets": 0,
-      "files": 7
+      "files": 7,
+      "description_zh": "面向研究数据的引导式统计分析——检验方法选择、假设条件检查、效应量、功效分析、贝叶斯替代方案，以及 APA 格式的结果报告。凡是用户想比较组间差异、检验假设、分析实验或问卷数据、检查统计假设、计算所需样本量或撰写结果时都适用——即便对方从未点名某个具体检验。覆盖 t 检验、ANOVA、卡方、相关、回归、非参数与贝叶斯方法。底层模型 API 请见 statsmodels 与 pymc 技能。"
     },
     {
       "id": "statistical-power",
@@ -7675,7 +7819,8 @@
       "scripts": 2,
       "references": 3,
       "assets": 0,
-      "files": 6
+      "files": 6,
+      "description_zh": "用于研究规划的样本量与统计功效计算。当有人问“我需要多少受试者/样本/重复次数”、想要先验功效分析、最小可检测效应（MDE）、功效曲线，或需要为资助申请、IRB 方案或预注册论证样本量时使用。涵盖 t 检验、方差分析（ANOVA）、比例、相关性和卡方检验的闭式解功效计算，以及针对没有公式的设计（逻辑/泊松回归、混合模型、整群随机试验、生存分析和交互作用）的基于模拟（蒙特卡洛）的功效计算。即使请求中只提到效应量、alpha 或“80% 功效”而未明确说“功效分析”，也应使用本技能。若要规划研究设计本身（随机化、区组、析因/DOE、交叉、序贯设计），用 experimental-design；若要分析已收集的数据并报告结果，用 statistical-analysis。"
     },
     {
       "id": "statsmodels",
@@ -7690,7 +7835,8 @@
       "scripts": 0,
       "references": 8,
       "assets": 0,
-      "files": 9
+      "files": 9,
+      "description_zh": "面向 Python 的统计模型库；当你需要 OLS、GLM、混合模型、ARIMA 等具体模型类，并配合详细诊断、残差与推断时使用；最适合计量经济学、时间序列，以及需要系数表的严谨推断；如需带 APA 报告格式的引导式统计检验选择，请使用 statistical-analysis。"
     },
     {
       "id": "sympy",
@@ -7705,7 +7851,8 @@
       "scripts": 0,
       "references": 6,
       "assets": 0,
-      "files": 7
+      "files": 7,
+      "description_zh": "在需要 Python 中精确的符号数学计算时使用——代数、微积分、方程求解、符号线性代数，或通过 lambdify/LaTeX 进行代码生成；当浮点近似已经足够时，优先使用 NumPy 或 SciPy。"
     },
     {
       "id": "tamarind",
@@ -7720,7 +7867,8 @@
       "scripts": 0,
       "references": 4,
       "assets": 0,
-      "files": 5
+      "files": 5,
+      "description_zh": "通过 REST API 或 MCP 服务器访问 Tamarind Bio 平台上的一系列开源分子设计与结构生物学工具——无需本地 GPU。Tamarind 集成了用于结构预测（AlphaFold、Boltz、Chai、ESMFold）、蛋白质/结合体/从头设计（RFdiffusion、ProteinMPNN、BoltzGen）、抗体与纳米抗体设计及可开发性评估、蛋白质-配体对接（DiffDock、Autodock Vina）、结合亲和力预测、MSA 生成以及分子动力学的热门开源模型；当用户提到 Tamarind 或 tamarind.bio、想在云端运行这些开源工具、引用 app.tamarind.bio/api 或 x-api-key 请求头，或需要批量提交序列进行结构/生物物理表征时使用。"
     },
     {
       "id": "tiledbvcf",
@@ -7735,7 +7883,8 @@
       "scripts": 0,
       "references": 0,
       "assets": 0,
-      "files": 1
+      "files": 1,
+      "description_zh": "使用 TileDB 高效存储与检索基因组变异数据;支持可扩展的 VCF/BCF 摄入、增量样本添加、压缩存储、并行查询,以及面向群体基因组学的导出能力。"
     },
     {
       "id": "timesfm-forecasting",
@@ -7750,7 +7899,8 @@
       "scripts": 2,
       "references": 7,
       "assets": 0,
-      "files": 31
+      "files": 31,
+      "description_zh": "使用 Google 的 TimesFM 基础模型进行零样本时间序列预测；适用于任意单变量时间序列（销售、传感器、能源、生命体征、天气），无需训练自定义模型；支持 CSV/DataFrame/数组输入，输出点预测和预测区间；并包含一个预检系统检查脚本，在首次使用前核实 RAM/GPU。"
     },
     {
       "id": "torch-geometric",
@@ -7765,7 +7915,8 @@
       "scripts": 0,
       "references": 6,
       "assets": 0,
-      "files": 7
+      "files": 7,
+      "description_zh": "面向图神经网络（graph neural networks）的 PyTorch Geometric（PyG）——节点/链接/图分类、消息传递（message passing，含 GCN、GAT、GraphSAGE、GIN）、异构图、邻居采样，以及自定义数据集。适用于使用 torch_geometric 的场景，不适用于一般的 NetworkX 分析或非图结构的 PyTorch 模型。"
     },
     {
       "id": "torchdrug",
@@ -7780,7 +7931,8 @@
       "scripts": 0,
       "references": 8,
       "assets": 0,
-      "files": 9
+      "files": 9,
+      "description_zh": "构建并排查 TorchDrug 0.2.1 工作流，涵盖分子图、属性预测、自监督预训练、分子生成、逆合成分析、蛋白质表征学习及知识图谱推理，适用于代码导入 torchdrug 或需要使用其数据集、模型、任务或 Engine 的场景。"
     },
     {
       "id": "transformers",
@@ -7795,7 +7947,8 @@
       "scripts": 0,
       "references": 5,
       "assets": 0,
-      "files": 6
+      "files": 6,
+      "description_zh": "使用 Hugging Face Transformers 加载 Hub 模型、运行 pipeline 推理、进行文本生成，以及用 Trainer 在 NLP、视觉、音频和多模态任务上微调；适用于处理 AutoModel、pipelines、tokenizers 或 TrainingArguments 的场景——不适用于 Transformers 库以外的通用机器学习任务。"
     },
     {
       "id": "treatment-plans",
@@ -7810,7 +7963,8 @@
       "scripts": 8,
       "references": 8,
       "assets": 6,
-      "files": 23
+      "files": 23,
+      "description_zh": "在临床决策已由授权的执业专业人员提供并核实之后,对本地治疗方案文档进行格式化和结构校验;适用于来源可追溯性、临床医生撰写的干预措施记录、目标与检查点、共同决策记录、重整交接以及发布关卡——不用于临床决策。"
     },
     {
       "id": "umap-learn",
@@ -7825,7 +7979,8 @@
       "scripts": 0,
       "references": 1,
       "assets": 0,
-      "files": 2
+      "files": 2,
+      "description_zh": "使用 UMAP-learn 进行非线性降维、2D/3D 嵌入、聚类预处理、监督式或半监督式 UMAP、DensMAP、AlignedUMAP 以及 Parametric UMAP 工作流。"
     },
     {
       "id": "uncertainty-and-units",
@@ -7840,7 +7995,8 @@
       "scripts": 7,
       "references": 6,
       "assets": 0,
-      "files": 14
+      "files": 14,
+      "description_zh": "使用 pint 和 uncertainties 在科学计算中跟踪物理单位并传播测量不确定度。适用于单位换算与量纲检查、GUM 不确定度预算、A 类和 B 类评估、包含因子与扩展不确定度、蒙特卡洛传播、有效数字与 plus-minus 报告、通过曲线拟合的误差传播、CODATA 常量、审查 Python 代码中丢失单位或不确定度传播中断的问题，以及使用无量纲群（雷诺数、佩克莱数、达姆科勒数、克努森数、毕渥数、沃默斯利数）、特征尺度（如扩散时间或德拜长度）和观测量级范围进行数量级合理性检查。当出现「这个数字物理上合理吗」「检查一下这些单位」「这处于什么流动状态」或结果看起来相差好几个数量级时触发。"
     },
     {
       "id": "usfiscaldata",
@@ -7855,7 +8011,8 @@
       "scripts": 0,
       "references": 8,
       "assets": 0,
-      "files": 9
+      "files": 9,
+      "description_zh": "查询美国财政部 Fiscal Data REST API 以获取联邦财政数据。无需 API 密钥。适用于国债余额（Debt to the Penny）、每日财政报表、月度财政部报表、国债拍卖、利率、外汇汇率、储蓄债券，或美国政府收支统计等场景。"
     },
     {
       "id": "vaex",
@@ -7870,7 +8027,8 @@
       "scripts": 0,
       "references": 6,
       "assets": 0,
-      "files": 7
+      "files": 7,
+      "description_zh": "用于处理和分析超出可用内存的大型表格数据集（数十亿行级别），Vaex 擅长核外（out-of-core）DataFrame 操作、惰性求值、快速聚合、大数据的高效可视化，以及在大型数据集上进行机器学习；适用于需要处理大型 CSV/HDF5/Arrow/Parquet 文件、对海量数据集进行快速统计、创建大数据可视化，或构建内存装不下的机器学习流水线的场景。"
     },
     {
       "id": "venue-templates",
@@ -7885,7 +8043,8 @@
       "scripts": 3,
       "references": 11,
       "assets": 16,
-      "files": 31
+      "files": 31,
+      "description_zh": "使用特定期刊/会议的格式指导及随附的 LaTeX 骨架来准备期刊稿件、会议论文、研究海报及资助文档，用于选择官方模板、核查当前页数或匿名规则、使学术写作适配特定期刊/会议，或检查投稿 PDF。"
     },
     {
       "id": "waypoint-bio",
@@ -7900,7 +8059,8 @@
       "scripts": 2,
       "references": 4,
       "assets": 0,
-      "files": 7
+      "files": 7,
+      "description_zh": "适用于使用 Outpost Bio 开放式微生物组基础模型的场景——Waypoint 系列检查点（Waypoint-6m、Waypoint-45m、Waypoint-170m）、Atlas 预训练语料库、Compass 八任务基准测试，或 `waypoint-bio` 包中的 `waypoint` 命令行工具。涵盖微生物组样本嵌入、基于分类学丰度数据的微调、在 Compass 上对检查点进行基准测试、在分类学丰度谱上预训练 GPT-2 模型，以及将 MetaPhlAn、Kraken2、QIIME 2 或 MGnify 丰度表转换为 waypoint 格式。"
     },
     {
       "id": "what-if-oracle",
@@ -7915,7 +8075,8 @@
       "scripts": 0,
       "references": 1,
       "assets": 0,
-      "files": 2
+      "files": 2,
+      "description_zh": "运行结构化的“假设情景”（What-If）分析，探索 4-6 条分支的可能性（最好情况、可能情况、最坏情况、黑天鹅、逆向思维、二阶效应）。当用户就不确定的未来提出推测性的“假设”问题、面临战略性的岔路口决策、需要制定应急预案，或需要在做出承诺前对某个决策进行压力测试时使用。"
     },
     {
       "id": "xlsx",
@@ -7930,7 +8091,8 @@
       "scripts": 12,
       "references": 0,
       "assets": 0,
-      "files": 53
+      "files": 53,
+      "description_zh": "创建、编辑、分析或转换以工作簿文件本身为主要交付物的 Excel 电子表格（.xlsx、.xlsm、.xltx）；适用于公式、格式设置、财务模型、多工作表工作簿，以及导出为 Excel 的表格清理；当用户希望得到电子表格输出时，也适用于 .csv/.tsv；不适用于 Word 文档、HTML 报告、独立 Python 脚本、数据库流水线，或 Google Sheets API 相关工作。"
     },
     {
       "id": "zarr-python",
@@ -7945,7 +8107,8 @@
       "scripts": 0,
       "references": 6,
       "assets": 0,
-      "files": 7
+      "files": 7,
+      "description_zh": "面向云存储的分块 N 维数组库(Zarr-Python 3);支持压缩数组、并行 I/O、通过 fsspec 访问 S3/GCS,兼容 NumPy/Dask/Xarray,适用于大规模科学计算流水线。"
     }
   ]
 }

@@ -323,6 +323,43 @@ def test_missing_pack_all_endpoints_report_not_found(tmp_path):
         assert res == {"ok": False, "error": "library pack not found"}, path
 
 
+# -- zh translation layer ----------------------------------------------------------------
+# SKILL.zh.md 与 index.json 的 description_zh 是本 fork 生成的译文层：接口原样带出，
+# 供前端按界面语言取用；文件清单里不出现（它不是技能资源）。
+
+
+def test_skill_zh_layer_flows_through_and_stays_out_of_files(tmp_path, pack_dir):
+    (pack_dir / "skills" / "scanpy" / "SKILL.zh.md").write_text(
+        "# scanpy\n\n单细胞 RNA-seq 分析全流程说明。\n", encoding="utf-8"
+    )
+    index = json.loads((pack_dir / "index.json").read_text(encoding="utf-8"))
+    index["skills"][0]["description_zh"] = "单细胞分析工具包"
+    (pack_dir / "index.json").write_text(
+        json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    set_pack_for_tests(LibraryPack(root=pack_dir))
+    client = _client(tmp_path)
+
+    rows = client.get("/v1/library/skills").json()["skills"]
+    assert rows[0]["description_zh"] == "单细胞分析工具包"
+
+    detail = client.get("/v1/library/skill", params={"name": "scanpy"}).json()
+    assert detail["ok"] is True
+    assert "单细胞 RNA-seq" in detail["skill_md_zh"]
+    assert detail["description_zh"] == "单细胞分析工具包"
+    assert "SKILL.zh.md" not in detail["files"]
+
+
+def test_skill_without_zh_layer_returns_empty_zh_fields(tmp_path, pack_dir):
+    set_pack_for_tests(LibraryPack(root=pack_dir))
+    client = _client(tmp_path)
+    detail = client.get("/v1/library/skill", params={"name": "scanpy"}).json()
+    assert detail["ok"] is True
+    assert detail["skill_md_zh"] == ""
+    assert detail["description_zh"] == ""
+
+
 # -- lazy-load robustness ----------------------------------------------------------------
 # The routes are sync defs (threadpool), so the GUI's first library visit fires several
 # requests into a cold LibraryPack concurrently. These pin the two properties that kept
