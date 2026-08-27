@@ -460,7 +460,7 @@ export function Composer(props: Props) {
   const hasContent = text.trim().length > 0 || attachments.length > 0 || !!pendingSkill;
 
   return (
-    <div className="composer-wrap px-6 pb-5 pt-4">
+    <div className="composer-wrap px-6 pb-5 pt-4" data-tour="composer">
       {props.approvalSlot}
 
       {dictationError && (
@@ -637,28 +637,33 @@ export function Composer(props: Props) {
           {/* model — a quiet chip, now for the session's whole life (§17 rev 2026-07-22:
               mid-session switching shipped, so the picker stays actionable; the topbar
               subtitle still states the current model). */}
-          {!dictation?.recording && (needsModel ? (
-            <button
-              className="pill model-warn chip"
-              onClick={() => props.onConnectModel?.()}
-              title={t("Connect a model")}
-              aria-label={t("No model connected — connect a model")}
-            >
-              <span className="pill-label">{t("No model")}</span>
-              <span className="model-warn-ico" aria-hidden>⚠</span>
-            </button>
-          ) : modelsLoaded ? (
-            <Dropdown value={props.model} options={modelOptions} onChange={props.onModelChange} align="right" />
-          ) : (
-            <button
-              className="pill chip text-faint cursor-default"
-              disabled
-              data-testid="models-loading"
-              title={t("Fetching the model list from the server")}
-            >
-              <span className="pill-label">{t("Loading models…")}</span>
-            </button>
-          ))}
+          {/* data-tour wrapper: the guided tour spotlights whichever model control is live */}
+          {!dictation?.recording && (
+            <span className="inline-flex" data-tour="model">
+              {needsModel ? (
+                <button
+                  className="pill model-warn chip"
+                  onClick={() => props.onConnectModel?.()}
+                  title={t("Connect a model")}
+                  aria-label={t("No model connected — connect a model")}
+                >
+                  <span className="pill-label">{t("No model")}</span>
+                  <span className="model-warn-ico" aria-hidden>⚠</span>
+                </button>
+              ) : modelsLoaded ? (
+                <Dropdown value={props.model} options={modelOptions} onChange={props.onModelChange} align="right" />
+              ) : (
+                <button
+                  className="pill chip text-faint cursor-default"
+                  disabled
+                  data-testid="models-loading"
+                  title={t("Fetching the model list from the server")}
+                >
+                  <span className="pill-label">{t("Loading models…")}</span>
+                </button>
+              )}
+            </span>
+          )}
 
           {/* mic — immediately before send (owner call, DMG #28 walkthrough) */}
           {isTauri() && (

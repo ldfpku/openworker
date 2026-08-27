@@ -59,6 +59,7 @@ const baseProps = {
   onOpenAudit: vi.fn(),
   onOpenInbox: vi.fn(),
   onOpenLibrary: vi.fn(),
+  onStartTour: vi.fn(),
   scheduledActive: false,
   integrationsActive: false,
   auditActive: false,

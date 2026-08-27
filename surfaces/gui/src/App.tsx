@@ -58,6 +58,7 @@ import { InboxItemCard } from "./components/InboxItemCard";
 import { chooseFolder, isTauri, platformOS, startWindowDrag } from "./tauri";
 import { Icon } from "./components/Icon";
 import { Sidebar } from "./components/Sidebar";
+import { GuidedTour, TOUR_DONE_KEY } from "./components/GuidedTour";
 import { ThinkingBlock, Transcript } from "./components/Transcript";
 import { Composer } from "./components/Composer";
 import { Markdown } from "./components/Markdown";
@@ -268,6 +269,26 @@ export function App() {
   useEffect(() => {
     if (surface !== "scheduled") setScheduledOpenId(null);
   }, [surface]);
+  // First-run guided tour: auto-opens once per device after the UI settles; replayable from
+  // the account menu, which re-enters the session surface first so every anchor exists.
+  const [tourOpen, setTourOpen] = useState(false);
+  useEffect(() => {
+    try {
+      if (localStorage.getItem(TOUR_DONE_KEY)) return;
+    } catch {
+      return; // storage unavailable — never loop the tour
+    }
+    const id = window.setTimeout(() => setTourOpen(true), 800);
+    return () => window.clearTimeout(id);
+  }, []);
+  const startTour = () => {
+    setSurface("session");
+    setTourOpen(true);
+  };
+  const endTour = () => {
+    try { localStorage.setItem(TOUR_DONE_KEY, "1"); } catch { /* best effort */ }
+    setTourOpen(false);
+  };
   // The persona whose detail page is showing (surface === "persona"); empty falls back to the
   // active session's persona. Phase 5 wires the grouped-nav gear + "Manage personas…" entry points.
   const [personaViewId, setPersonaViewId] = useState<string>("");
@@ -1684,6 +1705,7 @@ export function App() {
         onOpenAudit={() => setSurface("audit")}
         onOpenInbox={() => setSurface("inbox")}
         onOpenLibrary={() => setSurface("library")}
+        onStartTour={startTour}
         scheduledActive={surface === "scheduled"}
         integrationsActive={surface === "integrations"}
         auditActive={surface === "audit"}
@@ -2226,6 +2248,7 @@ export function App() {
           onClose={() => setWorkspaceTrustRequest(null)}
         />
       )}
+      {tourOpen && <GuidedTour onDone={endTour} />}
     </div>
   );
 }

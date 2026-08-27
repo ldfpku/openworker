@@ -362,6 +362,9 @@ export async function mockApi(page: import("@playwright/test").Page) {
       if (!localStorage.getItem("ocw-e2e-rail-default")) {
         localStorage.setItem("coworker:rail-hidden:v1", "0");
       }
+      // The first-run guided tour would overlay every spec's first click — run as a
+      // device that has already seen it (the tour has its own spec).
+      localStorage.setItem("coworker:tour-done:v1", "1");
     } catch { /* ignore */ }
   });
   const subscriptions: any[] = [

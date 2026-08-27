@@ -152,6 +152,8 @@ interface Props {
   onOpenAudit: () => void;
   onOpenInbox: () => void;
   onOpenLibrary: () => void;
+  // Replay the first-run guided tour (account menu entry).
+  onStartTour: () => void;
   scheduledActive: boolean;
   integrationsActive: boolean;
   auditActive: boolean;
@@ -1042,6 +1044,7 @@ export function Sidebar(props: Props) {
       <div className="px-3 pt-2">
         <button
           className="w-full text-left px-3 py-2 rounded-lg bg-accent text-white text-[13px] font-medium hover:opacity-95 flex items-center gap-2"
+          data-tour="new-session"
           onClick={() => props.onNewSession(props.agent)}
         >
           <Icon name="plus" size={15} className="shrink-0" /> {t("New session")}
@@ -1223,6 +1226,7 @@ export function Sidebar(props: Props) {
                 )}
                 {/* No Automations here — the sidebar's top nav already carries it. */}
                 {appMenuItem("audit", t("Activity"), props.onOpenAudit, props.auditActive)}
+                {appMenuItem("sparkle", t("Guided tour"), props.onStartTour)}
                 {cloud?.signed_in && (
                   <>
                     <div className="h-px bg-line my-1 mx-2" />

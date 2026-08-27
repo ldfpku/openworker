@@ -1950,3 +1950,42 @@ html[data-platform="linux"] ::-webkit-scrollbar-thumb:hover { background-color: 
 .artifact-menu-item:hover { background: var(--paper); }
 .artifact-menu-item svg { color: var(--muted); flex: none; }
 .artifact-menu-div { height: 1px; margin: 5px 4px; background: var(--line); }
+
+/* ---- Guided tour (first-run step cards) ------------------------------------------------
+   Spotlight = one fixed div over the anchor whose giant box-shadow dims everything else;
+   the blocker underneath swallows clicks so the tour is modal. The card floats beside it. */
+.tour-blocker { position: fixed; inset: 0; z-index: 80; }
+.tour-spot {
+  position: fixed; z-index: 81; pointer-events: none; border-radius: 10px;
+  box-shadow: 0 0 0 2px var(--accent), 0 0 0 9999px color-mix(in srgb, #000 45%, transparent);
+  transition: top 0.2s ease, left 0.2s ease, width 0.2s ease, height 0.2s ease;
+}
+.tour-card {
+  position: fixed; z-index: 82; width: 340px; max-width: calc(100vw - 24px);
+  background: var(--panel); border: 1px solid var(--line-strong); border-radius: 14px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.28); padding: 14px 16px 13px;
+}
+.tour-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.tour-badge {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.02em; color: var(--accent);
+  background: var(--accent-soft); border-radius: 999px; padding: 2px 9px; white-space: nowrap;
+}
+.tour-dots { display: flex; align-items: center; gap: 5px; }
+.tour-dots i { width: 5px; height: 5px; border-radius: 999px; background: var(--line-strong); transition: width 0.2s ease; }
+.tour-dots i.on { width: 16px; background: var(--accent); }
+.tour-title { margin-top: 10px; font-size: 14.5px; font-weight: 650; color: var(--ink); }
+.tour-body { margin-top: 4px; font-size: 13px; line-height: 1.6; color: var(--muted); }
+.tour-foot { margin-top: 13px; display: flex; align-items: center; justify-content: space-between; }
+.tour-skip {
+  border: 1px solid var(--line-strong); background: none; border-radius: 9px;
+  padding: 5px 11px; font-size: 12.5px; color: var(--muted); cursor: pointer;
+}
+.tour-skip:hover { color: var(--ink); background: var(--paper); }
+.tour-next {
+  border: 0; background: var(--accent); color: #fff; border-radius: 9px;
+  padding: 5px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer;
+}
+.tour-next:hover { filter: brightness(1.05); }
+@media (prefers-reduced-motion: reduce) {
+  .tour-spot, .tour-dots i { transition: none; }
+}
