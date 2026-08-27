@@ -45,7 +45,7 @@ jobs:
           echo "::error::发版只能在 main 上运行（当前是 ${GITHUB_REF}）——Run workflow 时分支选 main"
           exit 1
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 计算并写入新版本号
         id: ver
