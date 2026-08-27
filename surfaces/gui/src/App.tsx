@@ -75,6 +75,7 @@ import { SettingsView } from "./components/SettingsView";
 import { PersonaView } from "./components/PersonaView";
 import { AuditView } from "./components/AuditView";
 import { InboxView } from "./components/InboxView";
+import { LibraryView } from "./components/LibraryView";
 import { ApprovalCard } from "./components/ApprovalCard";
 import { ToolRequestCard } from "./components/ToolRequestCard";
 import { DirectoryRequestCard } from "./components/DirectoryRequestCard";
@@ -259,7 +260,7 @@ export function App() {
   // load; corrected by loadSettings.
   const [modelReady, setModelReady] = useState(true);
   const [surface, setSurface] = useState<
-    "session" | "scheduled" | "integrations" | "audit" | "inbox" | "persona" | "settings"
+    "session" | "scheduled" | "integrations" | "audit" | "inbox" | "persona" | "settings" | "library"
   >("session");
   // A remembered Scheduled-detail target must not outlive the surface (see the
   // scheduledOpenId comment above): nav re-entry lands on the list, never a
@@ -1222,7 +1223,7 @@ export function App() {
       setSendGate(null);
       setItems((p) => [
         ...p,
-        { kind: "notice", tone: "warn", text: res.error || "Could not create a temporary folder." },
+        { kind: "notice", tone: "warn", text: res.error || t("Could not create a temporary folder.") },
       ]);
       prefillComposer(gate.skill ? `/${gate.skill} ${gate.text}` : gate.text, gate.attachments);
       return;
@@ -1256,7 +1257,7 @@ export function App() {
     if (!res.ok || !res.path) {
       setItems((p) => [
         ...p,
-        { kind: "notice", tone: "warn", text: res.error || "Could not save as a project." },
+        { kind: "notice", tone: "warn", text: res.error || t("Could not save as a project.") },
       ]);
       return;
     }
@@ -1266,7 +1267,11 @@ export function App() {
     setTempWorkspace(false);
     setItems((p) => [
       ...p,
-      { kind: "notice", tone: "info", text: `Saved as a project — now working in ${baseName(newPath)}.` },
+      {
+        kind: "notice",
+        tone: "info",
+        text: t("Saved as a project — now working in {{name}}.", { name: baseName(newPath) }),
+      },
     ]);
     setConnectNonce((n) => n + 1);
     refreshSessions();
@@ -1678,10 +1683,12 @@ export function App() {
         onOpenIntegrations={() => setSurface("integrations")}
         onOpenAudit={() => setSurface("audit")}
         onOpenInbox={() => setSurface("inbox")}
+        onOpenLibrary={() => setSurface("library")}
         scheduledActive={surface === "scheduled"}
         integrationsActive={surface === "integrations"}
         auditActive={surface === "audit"}
         inboxActive={surface === "inbox"}
+        libraryActive={surface === "library"}
         collapsed={navCollapsed}
         onCollapse={toggleNav}
         onPeekLeave={() => setNavPeek(false)}
@@ -1715,6 +1722,23 @@ export function App() {
         <AuditView />
       ) : surface === "inbox" ? (
         <InboxView onOpenSession={openSessionFromInbox} />
+      ) : surface === "library" ? (
+        <LibraryView
+          onStartExpertSession={startNewSession}
+          onStartTeamSession={(goal, names) => {
+            // Same doorway as onCreateSkill above: switch to the Expert Team Lead,
+            // start a fresh session, and hand it the goal + who's already on the roster
+            // via the composer — the folder gate (expert-lead requires_folder) still
+            // shows its own setup-row chip; the user picks a folder and sends.
+            startNewSession("expert-lead");
+            prefillComposer(
+              t(
+                "Goal: {{goal}}\n\nI have installed these expert teammates for this task: {{names}}. Prefer staffing the team from them.",
+                { goal, names },
+              ),
+            );
+          }}
+        />
       ) : surface === "persona" ? (
         <PersonaView
           personaId={personaViewId || agent}
@@ -1790,7 +1814,7 @@ export function App() {
                       onMouseDown={(e) => e.stopPropagation()}
                       onClick={() => void saveAsProject()}
                     >
-                      Save as project…
+                      {t("Save as project…")}
                     </button>
                   </>
                 )}
@@ -1998,7 +2022,9 @@ export function App() {
                   data-testid="sleep-status-btn"
                   onClick={() =>
                     send(
-                      "Quick status check, please — what's moving, what's blocked, and does anything need me?",
+                      t(
+                        "Quick status check, please — what's moving, what's blocked, and does anything need me?",
+                      ),
                     )
                   }
                 >

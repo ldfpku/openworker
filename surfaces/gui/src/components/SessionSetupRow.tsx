@@ -32,8 +32,11 @@ export function SessionSetupRow(props: Props) {
   const [openMenu, setOpenMenu] = useState<"coworker" | "folder" | null>(null);
   const [recents, setRecents] = useState<RecentWorkspace[] | null>(null);
   const [error, setError] = useState("");
-  const personas = (props.personas || []).filter((p) => p.enabled);
-  const current = personas.find((p) => p.id === props.agent);
+  // Enabled-but-unsurfaced personas (library experts) stay out of the picker; the one
+  // bound to THIS draft still renders so the chip never lies about the session.
+  const enabled = (props.personas || []).filter((p) => p.enabled);
+  const personas = enabled.filter((p) => p.surfaced || p.id === props.agent);
+  const current = enabled.find((p) => p.id === props.agent);
 
   const toggle = (menu: "coworker" | "folder") => {
     setError("");

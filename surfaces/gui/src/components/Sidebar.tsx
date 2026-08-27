@@ -151,10 +151,12 @@ interface Props {
   onOpenIntegrations: () => void;
   onOpenAudit: () => void;
   onOpenInbox: () => void;
+  onOpenLibrary: () => void;
   scheduledActive: boolean;
   integrationsActive: boolean;
   auditActive: boolean;
   inboxActive: boolean;
+  libraryActive: boolean;
   // Collapse controls (⌘B / hover-peek). `onCollapse` docks/undocks; `onPeekLeave` hides the
   // floating peek when the pointer leaves the panel.
   collapsed?: boolean;
@@ -1042,7 +1044,7 @@ export function Sidebar(props: Props) {
           className="w-full text-left px-3 py-2 rounded-lg bg-accent text-white text-[13px] font-medium hover:opacity-95 flex items-center gap-2"
           onClick={() => props.onNewSession(props.agent)}
         >
-          <Icon name="plus" size={15} className="shrink-0" /> New session
+          <Icon name="plus" size={15} className="shrink-0" /> {t("New session")}
         </button>
       </div>
 
@@ -1209,6 +1211,7 @@ export function Sidebar(props: Props) {
                   props.inboxActive,
                   <AttnBadge n={totalAttention} />,
                 )}
+                {appMenuItem("book", t("Expert library"), props.onOpenLibrary, props.libraryActive)}
                 {appMenuItem("plug", t("Connectors"), props.onOpenIntegrations, props.integrationsActive)}
                 <div className="h-px bg-line my-1 mx-2" />
                 {appMenuItem(

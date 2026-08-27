@@ -2509,3 +2509,135 @@ export class Session {
     this.ws.close();
   }
 }
+
+// -- Library (LIBRARY-SPEC P1) ---------------------------------------------------
+// A read-only browse/search surface over the bundled expert-prompt + Skills pack.
+// Every endpoint returns {ok:false, error} — never a thrown status — when the data
+// pack isn't present on disk, matching /v1/skills's contract.
+
+export interface LibraryExpert {
+  id: string; // relative path within the library root, no extension, forward slashes
+  category: string;
+  categoryName: string;
+  name: string;
+  description: string;
+  emoji: string;
+  color: string; // CSS color keyword or hex — pass straight to a style prop
+  pair: boolean; // same id also exists in the other-language library
+}
+
+export interface LibrarySkill {
+  name: string;
+  description: string;
+  category: string;
+  categoryName: string;
+  scripts: number;
+  references: number;
+  assets: number;
+  files: number;
+  compatibility?: string;
+  license?: string;
+}
+
+const libraryUrl = (path = "") => `${httpBase()}/v1/library${path}`;
+
+export async function libraryOverview(): Promise<{
+  ok: boolean;
+  version?: number;
+  experts?: { zh: number; en: number };
+  skills?: number;
+  error?: string;
+}> {
+  const res = await fetch(libraryUrl());
+  return res.json();
+}
+
+export async function libraryExperts(lib: "zh" | "en"): Promise<LibraryExpert[]> {
+  const res = await fetch(libraryUrl(`/experts?lib=${encodeURIComponent(lib)}`));
+  const data = await res.json();
+  return data.ok ? data.experts ?? [] : [];
+}
+
+export async function libraryExpertPrompt(
+  lib: "zh" | "en",
+  id: string,
+): Promise<{ name: string; prompt: string } | null> {
+  const res = await fetch(
+    libraryUrl(`/expert-prompt?lib=${encodeURIComponent(lib)}&id=${encodeURIComponent(id)}`),
+  );
+  const data = await res.json();
+  return data.ok ? { name: data.name, prompt: data.prompt } : null;
+}
+
+export async function librarySkills(): Promise<LibrarySkill[]> {
+  const res = await fetch(libraryUrl("/skills"));
+  const data = await res.json();
+  return data.ok ? data.skills ?? [] : [];
+}
+
+export async function librarySkillDetail(
+  name: string,
+): Promise<{ name: string; description: string; skill_md: string; files: string[] } | null> {
+  const res = await fetch(libraryUrl(`/skill?name=${encodeURIComponent(name)}`));
+  const data = await res.json();
+  return data.ok
+    ? { name: data.name, description: data.description, skill_md: data.skill_md, files: data.files ?? [] }
+    : null;
+}
+
+// -- Library install (LIBRARY-SPEC P2) -----------------------------------------
+// Turning a browsed library item into something the app actually runs: an expert
+// becomes an installed+enabled persona (via PersonaRegistry, same consent shape as
+// /v1/personas/install); a skill is copied verbatim into the global skills dir.
+
+export interface LibraryExpertVariant {
+  persona_id: string;
+  enabled: boolean;
+}
+
+export async function libraryStatus(): Promise<{
+  experts: Record<string, { solo?: LibraryExpertVariant; worker?: LibraryExpertVariant }>;
+  skills: string[];
+} | null> {
+  const res = await fetch(libraryUrl("/status"));
+  const data = await res.json();
+  return data.ok ? { experts: data.experts ?? {}, skills: data.skills ?? [] } : null;
+}
+
+export async function libraryInstallExpert(
+  lib: "zh" | "en",
+  id: string,
+  worker = false,
+): Promise<{ ok: boolean; persona_id?: string; consent?: PersonaConsent[]; error?: string }> {
+  const res = await fetch(libraryUrl("/install-expert"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ lib, id, worker }),
+  });
+  return res.json();
+}
+
+/** Enables the just-installed persona (surfaced:false — expert roles skip the picker). */
+export async function libraryActivateExpert(
+  personaId: string,
+): Promise<{ ok: boolean; enabled?: boolean; error?: string }> {
+  const res = await fetch(libraryUrl("/activate-expert"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ persona_id: personaId }),
+  });
+  const out = await res.json();
+  if (out.ok) announcePersonasChanged();
+  return out;
+}
+
+export async function libraryInstallSkills(
+  names: string[],
+): Promise<{ ok: boolean; results?: { name: string; ok: boolean; error?: string }[]; error?: string }> {
+  const res = await fetch(libraryUrl("/install-skills"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ names }),
+  });
+  return res.json();
+}

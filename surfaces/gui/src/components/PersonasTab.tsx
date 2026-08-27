@@ -136,7 +136,7 @@ export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) =>
     const r = await installPersona({ git_url: src.trim() });
     setBusy(false);
     if (!r.ok) {
-      setMsg(r.error || "install failed");
+      setMsg(r.error || t("install failed"));
       return;
     }
     setConsent(r.consent || []);
@@ -175,7 +175,7 @@ export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) =>
                     title={t("Default for new sessions")}
                     data-testid="persona-default-tag"
                   >
-                    Default
+                    {t("Default")}
                   </span>
                 ) : (
                   <>
@@ -184,13 +184,13 @@ export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) =>
                       onChange={(next) =>
                         next ? toggle(p.id, { enabled: true }) : requestDisable(p)
                       }
-                      title={p.enabled ? "Disable this coworker" : "Enable this coworker"}
+                      title={p.enabled ? t("Disable this coworker") : t("Enable this coworker")}
                     />
                     {onOpenPersona && (
                       <button
                         className="text-faint hover:text-ink shrink-0 p-1"
-                        title={`Configure ${p.name}`}
-                        aria-label={`Configure ${p.name}`}
+                        title={t("Configure {{name}}", { name: p.name })}
+                        aria-label={t("Configure {{name}}", { name: p.name })}
                         data-testid={`persona-configure-${p.id}`}
                         onClick={() => onOpenPersona(p.id)}
                       >
@@ -206,9 +206,14 @@ export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) =>
                   data-testid={`persona-disable-warning-${p.id}`}
                 >
                   <span className="min-w-0">
-                    Disabling archives its {liveCount(p.id)} conversation
-                    {liveCount(p.id) === 1 ? "" : "s"} — they stay available under “Show
-                    archived”.
+                    {liveCount(p.id) === 1
+                      ? t(
+                          "Disabling archives its 1 conversation — they stay available under “Show archived”.",
+                        )
+                      : t(
+                          "Disabling archives its {{count}} conversations — they stay available under “Show archived”.",
+                          { count: liveCount(p.id) },
+                        )}
                   </span>
                   <button
                     className="text-[12px] px-2.5 py-1.5 rounded-lg bg-accent text-white shrink-0"
@@ -218,10 +223,10 @@ export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) =>
                       toggle(p.id, { enabled: false });
                     }}
                   >
-                    Disable
+                    {t("Disable")}
                   </button>
                   <button className={BTN_BORDERED} onClick={() => setConfirmOff(null)}>
-                    Keep enabled
+                    {t("Keep enabled")}
                   </button>
                 </div>
               )}
@@ -236,8 +241,8 @@ export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) =>
     <div>
       {/* One toggle per row (enable implies picker); ★ marks the default. Everything
           else — in-picker nuance, default, export, delete — lives on the detail page. */}
-      {group("General", personas.filter((p) => p.ships !== false && p.group !== "security"))}
-      {group("Security", personas.filter((p) => p.ships !== false && p.group === "security"))}
+      {group(t("General"), personas.filter((p) => p.ships !== false && p.group !== "security"))}
+      {group(t("Security"), personas.filter((p) => p.ships !== false && p.group === "security"))}
 
       {unshipped.length > 0 && (
         <>
@@ -251,9 +256,11 @@ export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) =>
               size={12}
               className={"transition-transform" + (showUnshipped ? " rotate-90" : "")}
             />
-            <span>Not in this release · {unshipped.length} coworkers</span>
+            <span>
+              {t("Not in this release · {{count}} coworkers", { count: unshipped.length })}
+            </span>
             <span className="ml-auto text-faint text-[12px]">
-              {internal ? "internal build" : "not in this release"}
+              {internal ? t("internal build") : t("not in this release")}
             </span>
           </button>
           {showUnshipped && group(null, unshipped)}
@@ -271,8 +278,8 @@ export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) =>
           size={12}
           className={"transition-transform" + (showInstall ? " rotate-90" : "")}
         />
-        <span>Install a coworker</span>
-        <span className="ml-auto text-faint text-[12px]">GitHub · folder · .zip</span>
+        <span>{t("Install a coworker")}</span>
+        <span className="ml-auto text-faint text-[12px]">{t("GitHub · folder · .zip")}</span>
       </button>
       {showInstall && (
         <div className={CARD + " mt-1.5 p-4"}>
@@ -282,9 +289,9 @@ export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) =>
               value={mode}
               onChange={(e) => setMode(e.target.value as "git" | "dir" | "zip")}
             >
-              <option value="git">GitHub URL</option>
-              <option value="dir">Local folder</option>
-              <option value="zip">Bundle zip</option>
+              <option value="git">{t("GitHub URL")}</option>
+              <option value="dir">{t("Local folder")}</option>
+              <option value="zip">{t("Bundle zip")}</option>
             </select>
             {mode === "git" ? (
               <>
@@ -296,7 +303,7 @@ export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) =>
                   onKeyDown={(e) => e.key === "Enter" && !isComposing(e) && install()}
                 />
                 <button className={BTN_ACCENT} disabled={busy || !src.trim()} onClick={install}>
-                  {busy ? "Installing…" : "Install"}
+                  {busy ? t("Installing…") : t("Install")}
                 </button>
               </>
             ) : mode === "dir" ? (
@@ -374,8 +381,9 @@ export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) =>
 }
 
 // One phrase per risk class — the plain-language capability summary the consent card leads
-// with; unknown classes fall back to their raw id so nothing is silently omitted.
-const RISK_PHRASE: Record<string, string> = {
+// with; unknown classes fall back to their raw id so nothing is silently omitted. Exported
+// for LibraryView's compact expert-install consent modal, which mirrors this same wording.
+export const RISK_PHRASE: Record<string, string> = {
   read: "read files",
   write_local: "create & edit files",
   exec: "run shell commands",
@@ -395,8 +403,8 @@ function ConsentCard({
   const { t } = useTranslation();
   const [showTools, setShowTools] = useState(false);
   const [busy, setBusy] = useState(false);
-  const phrases = (c.risk.length ? c.risk : ["read"]).map((r) => RISK_PHRASE[r] || r);
-  const summary = phrases.join(", ").replace(/, ([^,]*)$/, " and $1");
+  const phrases = (c.risk.length ? c.risk : ["read"]).map((r) => t(RISK_PHRASE[r] || r));
+  const summary = phrases.join(", ").replace(/, ([^,]*)$/, `${t(" and ")}$1`);
   const recommends = c.recommends || [];
   return (
     <div className={CARD + " p-3.5"} data-testid={`consent-${c.id}`}>
@@ -407,23 +415,28 @@ function ConsentCard({
       {c.description && <div className="text-[12px] text-muted mt-0.5">{c.description}</div>}
       {c.replaces && (
         <div className="text-[12px] text-muted mt-1.5" data-testid="replaces-note">
-          Replaces {c.name}
+          {t("Replaces {{name}}", { name: c.name })}
           {c.replaces.version ? ` v${c.replaces.version}` : ""}
-          {c.replaces.installed_at ? ` (installed ${c.replaces.installed_at})` : ""}.
+          {c.replaces.installed_at
+            ? ` (${t("installed {{date}}", { date: c.replaces.installed_at })})`
+            : ""}
+          {"."}{" "}
           {c.replaces.capabilities_grew
-            ? " This update asks for MORE capabilities than the copy it replaces — review below before re-enabling."
-            : " Same capabilities as before — it stays enabled."}
+            ? t(
+                "This update asks for MORE capabilities than the copy it replaces — review below before re-enabling.",
+              )
+            : t("Same capabilities as before — it stays enabled.")}
         </div>
       )}
       <div className="text-[12.5px] text-ink mt-2">
-        Can {summary}
+        {t("Can {{summary}}", { summary })}
         {c.connectors === "all"
-          ? " · use ALL your connected services"
+          ? t(" · use ALL your connected services")
           : c.connectors.length
-            ? ` · use connectors: ${c.connectors.join(", ")}`
+            ? t(" · use connectors: {{list}}", { list: c.connectors.join(", ") })
             : ""}
-        {c.messaging ? " · send messages" : ""}
-        {c.mcp.length ? ` · use MCP: ${c.mcp.join(", ")}` : ""}
+        {c.messaging ? t(" · send messages") : ""}
+        {c.mcp.length ? t(" · use MCP: {{list}}", { list: c.mcp.join(", ") }) : ""}
         <button
           className="ml-2 text-accent text-[12px] hover:underline"
           data-testid="consent-tools-toggle"
@@ -439,8 +452,8 @@ function ConsentCard({
         <div className="mt-2 space-y-0.5">
           {recommends.map((r) => (
             <div key={r.kind + r.ref} className="text-[12px] text-muted">
-              <span className="text-ink">{r.ref}</span>
-              {r.tier === "core" ? " (recommended)" : " (optional)"} — {r.reason}
+              <span className="text-ink">{r.ref}</span>{" "}
+              {r.tier === "core" ? t("(recommended)") : t("(optional)")} — {r.reason}
             </div>
           ))}
         </div>
@@ -450,7 +463,7 @@ function ConsentCard({
             sent the user hunting back up the list. */}
         {enabled ? (
           <span className="text-[12.5px] text-muted" data-testid="consent-enabled">
-            ✓ Enabled — it's in your coworker picker.
+            ✓ {t("Enabled — it's in your coworker picker.")}
           </span>
         ) : (
           <button
