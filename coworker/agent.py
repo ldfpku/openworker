@@ -16,6 +16,7 @@ from .selfwake import selfwake_tools
 from .subscriptions import subscription_tools
 from .config import load_config
 from .connectors import (
+    connector_for_tool,
     connector_list,
     load_settings,
     make_integration_tools,
@@ -40,6 +41,7 @@ from .secrets import SecretStore, state_dir
 from .skills import SkillLoader, save_skill_tool, skill_catalog_text, skill_tools
 from .tools import ToolRegistry
 from .tools.ask import ask_user_tool
+from .tools.deferred import make_deferred_toolset_loader
 from .tools.directories import request_directory_tool
 from .tools.plan import propose_plan_tool
 from .tools.toolreq import request_tool_tool
@@ -136,6 +138,20 @@ def _enabled_connector_tools(secrets: SecretStore) -> tuple[set[str], set[str]]:
         if tool.get("enabled")
     }
     return enabled_connectors, enabled_tools
+
+
+def _split_off_connector(
+    tools: list[Callable[..., Any]], connector: str
+) -> tuple[list[Callable[..., Any]], list[Callable[..., Any]]]:
+    """Partition an already-filtered connector tool list: tools belonging to `connector`
+    (held back for on-demand loading, e.g. browser) vs everything else (registered as
+    usual). Runs AFTER `make_integration_tools`' own filtering, so this never re-decides
+    what's connected/enabled — it only decides WHEN an already-approved tool registers."""
+    kept: list[Callable[..., Any]] = []
+    held: list[Callable[..., Any]] = []
+    for t in tools:
+        (held if connector_for_tool(t.__name__) == connector else kept).append(t)
+    return kept, held
 
 
 def _loaded_skill_names(messages: list[dict[str, Any]]) -> set[str]:
@@ -296,14 +312,34 @@ def build_engine(
         # Default None preserves CLI / direct callers (no per-session restriction).
         if connector_filter is not None:
             enabled_connectors = enabled_connectors & connector_filter
-        registry.register_all(
-            make_integration_tools(
-                secrets,
-                enabled_connectors=enabled_connectors,
-                enabled_tools=enabled_tools,
-                roots=root_list or None,
-            )
+        connector_tools = make_integration_tools(
+            secrets,
+            enabled_connectors=enabled_connectors,
+            enabled_tools=enabled_tools,
+            roots=root_list or None,
         )
+        # Browser is 9 of a fresh roster's ~39 schemas and rarely touched turn one — hold
+        # those back behind a `load_browser_tools` meta-tool instead of registering them
+        # eagerly (the "browser" connector has auth="none", so it's always in
+        # enabled_connectors and its tools would otherwise always be present). This split
+        # happens AFTER every filter above, so per-tool toggles, the persona allowlist,
+        # and session mutes all still gate it exactly as before; only WHEN the tools
+        # register changes. If those filters already dropped every browser tool (muted,
+        # disabled, or undeclared for this persona), deferred is empty and no loader is
+        # registered either — nothing to load on demand.
+        connector_tools, deferred_browser_tools = _split_off_connector(
+            connector_tools, "browser"
+        )
+        registry.register_all(connector_tools)
+        if deferred_browser_tools:
+            registry.register(
+                make_deferred_toolset_loader(
+                    registry,
+                    label="browser",
+                    tool_name="load_browser_tools",
+                    deferred_tools=deferred_browser_tools,
+                )
+            )
     # Web search + fetch: research tools for every agent (keyless DuckDuckGo default).
     registry.register(make_web_search_tool(secrets))
     registry.register(make_web_fetch_tool())

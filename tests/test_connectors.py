@@ -220,6 +220,7 @@ def test_engine_connector_tools_are_cowork_scoped(tmp_path):
     eng = build_engine(agent=chat_agent(), provider=_StubProvider(), secrets=secrets)
     assert "send_message" not in eng.registry.names()  # no connector yet
     assert "browser_read_page" not in eng.registry.names()
+    assert "load_browser_tools" not in eng.registry.names()  # chat declares no connectors
 
     secrets.put("telegram:default", {"bot_token": "T"})
     chat = build_engine(agent=chat_agent(), provider=_StubProvider(), secrets=secrets)
@@ -246,18 +247,38 @@ def test_engine_connector_tools_are_cowork_scoped(tmp_path):
     assert "send_message" not in code.registry.names()
     assert "browser_read_page" not in chat.registry.names()
     assert "browser_read_page" not in code.registry.names()
+    assert "load_browser_tools" not in chat.registry.names()
+    assert "load_browser_tools" not in code.registry.names()
 
     assert "send_message" in cowork.registry.names()
-    assert "browser_read_page" in cowork.registry.names()
-    assert "browser_open_url" in cowork.registry.names()
-    assert "browser_click" in cowork.registry.names()
-    assert "browser_type" in cowork.registry.names()
+    # Browser tools are on-demand now: the loader is present, the 9 real tools aren't
+    # until it's called (OPE-XXX — always-connected "browser" was bloating every fresh
+    # Cowork roster).
+    assert "load_browser_tools" in cowork.registry.names()
+    assert "browser_read_page" not in cowork.registry.names()
+    assert "browser_open_url" not in cowork.registry.names()
+    assert "browser_click" not in cowork.registry.names()
+    assert "browser_type" not in cowork.registry.names()
     assert "github_search" not in cowork.registry.names()
     assert "send_message" in helper.registry.names()
     assert "browser_read_page" not in helper.registry.names()
     assert "browser_open_url" not in helper.registry.names()
+    assert "load_browser_tools" not in helper.registry.names()  # helper declares no connectors
 
-    # §36: browser READS (registry kind) are free; interactions still gate.
+    loaded = cowork.registry.execute("load_browser_tools")
+    assert loaded == (
+        "Browser tools loaded: browser_open_url, browser_read_page, browser_click, "
+        "browser_type, browser_select, browser_upload_file, browser_wait, "
+        "browser_screenshot, browser_close"
+    )
+    assert cowork.registry.execute("load_browser_tools") == "Browser tools already loaded."
+    assert "browser_read_page" in cowork.registry.names()
+    assert "browser_open_url" in cowork.registry.names()
+    assert "browser_click" in cowork.registry.names()
+    assert "browser_type" in cowork.registry.names()
+
+    # §36: browser READS (registry kind) are free; interactions still gate — unchanged
+    # by having been registered on demand instead of up front.
     assert cowork.registry.get("browser_open_url").metadata.requires_approval is False
     assert cowork.registry.get("browser_read_page").metadata.requires_approval is False
     assert cowork.registry.get("browser_click").metadata.requires_approval is True
@@ -289,6 +310,97 @@ def test_engine_connector_tools_are_cowork_scoped(tmp_path):
         ).metadata.requires_approval
         is True
     )
+
+
+# -- browser tools on demand (OPE-XXX: auth="none" made browser always-connected, so its
+# 9 tools were always in a fresh roster; load_browser_tools defers them instead) --------
+_BROWSER_TOOL_NAMES = (
+    "browser_open_url",
+    "browser_read_page",
+    "browser_click",
+    "browser_type",
+    "browser_select",
+    "browser_upload_file",
+    "browser_wait",
+    "browser_screenshot",
+    "browser_close",
+)
+
+
+def test_load_browser_tools_registers_deferred_set(tmp_path):
+    """A fresh Cowork-style engine's schemas carry load_browser_tools and none of the 9
+    browser_* tools; calling it registers all of them (schemas() then contains them too,
+    immediately — no rebuild, since engine.py re-reads registry.schemas() every
+    round-trip); calling it again is the idempotent no-op message."""
+    from coworker.agent import build_engine
+    from coworker.agents import cowork_agent
+
+    secrets = SecretStore(tmp_path / "secrets.json")
+    eng = build_engine(
+        agent=cowork_agent(),
+        workspace=tmp_path,
+        provider=_StubProvider(),
+        secrets=secrets,
+    )
+
+    schema_names = {s["function"]["name"] for s in eng.registry.schemas()}
+    assert "load_browser_tools" in schema_names
+    assert not any(n in schema_names for n in _BROWSER_TOOL_NAMES)
+    loader_schema = next(
+        s
+        for s in eng.registry.schemas()
+        if s["function"]["name"] == "load_browser_tools"
+    )
+    assert loader_schema["function"]["parameters"]["properties"] == {}
+    # The description names the ACTUAL held-back tools (constraint: derived, not
+    # hand-typed) — every one of the 9 shows up in it.
+    for name in _BROWSER_TOOL_NAMES:
+        assert name in loader_schema["function"]["description"]
+
+    result = eng.registry.execute("load_browser_tools")
+    assert result == "Browser tools loaded: " + ", ".join(_BROWSER_TOOL_NAMES)
+    schema_names = {s["function"]["name"] for s in eng.registry.schemas()}
+    assert all(n in schema_names for n in _BROWSER_TOOL_NAMES)
+    # The loaded tools keep their own approval metadata, unaffected by arriving late.
+    assert eng.registry.get("browser_close").metadata.requires_approval is True
+    assert eng.registry.get("browser_read_page").metadata.requires_approval is False
+
+    assert eng.registry.execute("load_browser_tools") == "Browser tools already loaded."
+    # Idempotent: no duplicate registration, still exactly the 9 + the loader itself.
+    schema_names = {s["function"]["name"] for s in eng.registry.schemas()}
+    assert sum(1 for n in schema_names if n in _BROWSER_TOOL_NAMES) == 9
+
+
+def test_load_browser_tools_absent_when_browser_muted_or_disabled(tmp_path):
+    """With the browser connector muted for the session (or disabled outright), neither
+    the 9 browser_* tools nor the load_browser_tools loader is registered — a loader for
+    an empty deferred set would just be a confusing dead end."""
+    from coworker.agent import build_engine
+    from coworker.agents import cowork_agent
+
+    secrets = SecretStore(tmp_path / "secrets.json")
+    muted = build_engine(
+        agent=cowork_agent(),
+        workspace=tmp_path,
+        provider=_StubProvider(),
+        secrets=secrets,
+        connector_filter=set(),  # session-level mute: nothing effective-enabled
+    )
+    muted_names = set(muted.registry.names())
+    assert "load_browser_tools" not in muted_names
+    assert not any(n.startswith("browser_") for n in muted_names)
+
+    disabled_secrets = SecretStore(tmp_path / "secrets-disabled.json")
+    disabled_secrets.put("browser:default", {"enabled": False})
+    disabled = build_engine(
+        agent=cowork_agent(),
+        workspace=tmp_path,
+        provider=_StubProvider(),
+        secrets=disabled_secrets,
+    )
+    disabled_names = set(disabled.registry.names())
+    assert "load_browser_tools" not in disabled_names
+    assert not any(n.startswith("browser_") for n in disabled_names)
 
 
 # -- connector setup (descriptors / connect / disconnect / list) ---------------

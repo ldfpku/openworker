@@ -676,7 +676,17 @@ def test_ws_session_persisted_while_parked_on_approval(tmp_path):
 
 
 def test_ws_browser_tool_audit_round_trip(tmp_path):
-    client = _client(tmp_path, [_tool("browser_close", {}), _text("closed")])
+    # Browser tools are on-demand (OPE-XXX): the model loads them via load_browser_tools
+    # before it can call browser_close — the engine re-reads registry.schemas() every
+    # round-trip, so the tool is callable on the very next one.
+    client = _client(
+        tmp_path,
+        [
+            _tool("load_browser_tools", {}, call_id="call_0"),
+            _tool("browser_close", {}),
+            _text("closed"),
+        ],
+    )
     with client.websocket_connect("/ws/session/browser-audit?agent=cowork") as ws:
         assert ws.receive_json()["type"] == "ready"
         ws.send_json({"type": "user_message", "text": "close browser"})
