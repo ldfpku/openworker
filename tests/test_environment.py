@@ -25,7 +25,11 @@ def _git_repo(tmp_path):
 
 def test_context_includes_workspace_platform_and_date(tmp_path):
     block = environment_context(tmp_path)
-    assert str(tmp_path.resolve()) in block
+    # The workspace path itself is NOT interpolated (kept out so the system prompt stays
+    # byte-stable across sessions for provider prompt caching) — it points at the per-turn
+    # <system-context> block instead, where the live roots list renders the actual path.
+    assert str(tmp_path.resolve()) not in block
+    assert "<system-context>" in block
     assert sys.platform in block
     assert "Today's date:" in block
     assert "<environment>" in block and "</environment>" in block
@@ -71,6 +75,8 @@ def test_build_engine_injects_environment(tmp_path):
         system = engine.messages[0]
         assert system["role"] == "system"
         assert "<environment>" in system["content"]
-        assert str(tmp_path.resolve()) in system["content"]
+        # Workspace path lives in the per-turn <system-context> block (roots list), not here —
+        # keeps the system prompt byte-stable across sessions for provider prompt caching.
+        assert str(tmp_path.resolve()) not in system["content"]
     finally:
         engine.executor.close()

@@ -1,8 +1,15 @@
 """Session environment context — injected into the system prompt at engine build.
 
-Saves the agent 3-4 discovery tool calls every session (pwd, uname, git status, git log)
-by telling it up front where it is and what state the workspace is in. The git snapshot is
-point-in-time; the prompt labels it as such so the agent re-checks before relying on it.
+Saves the agent a few discovery tool calls every session (uname, git status, git log) by
+telling it up front what state the workspace is in. The git snapshot is point-in-time; the
+prompt labels it as such so the agent re-checks before relying on it.
+
+The workspace path is deliberately NOT interpolated here — it already lives in the per-turn
+<system-context> block ("Available directories"). Cowork sessions embed a per-session id in
+that path, so putting it in the system prompt would make the system prompt differ byte-for-byte
+on every new session, defeating the provider prompt cache (tools+system prefix) that's meant to
+be shared across sessions: per-session bytes in the system prompt get priced at full cache-write
+rates on every new session instead of hitting a shared cache.
 """
 
 from __future__ import annotations
@@ -60,7 +67,8 @@ def environment_context(workspace: str | Path) -> str:
     mac = _platform.mac_ver()[0]
     os_name = f"macOS {mac}" if mac else f"{_platform.system()} {_platform.release()}"
     lines = [
-        f"Workspace: {ws}",
+        "Workspace: see 'Available directories' in <system-context> (the primary entry is "
+        "the workspace)",
         f"Platform: {sys.platform} ({os_name})",
         f"Today's date: {date.today().isoformat()}",
         *_git_snapshot(ws),
