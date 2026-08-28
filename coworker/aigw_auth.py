@@ -556,8 +556,17 @@ def logout(secrets: SecretStore) -> dict[str, Any]:
     The DCR registration is deliberately kept: it is not a credential, it cannot be
     deleted server-side, and reusing it is what stops repeated sign-ins from littering the
     Access app with dead clients.
+
+    Local first, network second: forgetting the tokens IS the sign-out; revocation is a
+    courtesy that must never be able to block it. Measured 2026-08-28: with
+    `ALL_PROXY=socks5h://…` in the user's environment and no socksio in the bundle,
+    `httpx.post` raises ImportError before any connection exists — not an `HTTPError` —
+    and with the old order (revoke, then clear) that 500'd the endpoint and left the pane
+    saying "signed in" no matter how many times the person clicked sign-out.
     """
     state = _state(secrets)
+    _save_state(secrets, {"access_token": "", "refresh_token": "", "expires_at": 0})
+
     revocation = str(state.get("revocation_endpoint") or "")
     token = str(state.get("refresh_token") or state.get("access_token") or "")
     if revocation and token:
@@ -568,10 +577,7 @@ def logout(secrets: SecretStore) -> dict[str, Any]:
                 timeout=_HTTP_TIMEOUT,
                 headers={"User-Agent": _user_agent()},
             )
-        except httpx.HTTPError:
-            # Best effort: the local tokens go either way, and a token we cannot revoke
-            # still expires on its own.
+        except Exception:  # noqa: BLE001 - best effort; an unrevoked token expires on its own
             logger.debug("aigw oauth: revocation call failed", exc_info=True)
 
-    _save_state(secrets, {"access_token": "", "refresh_token": "", "expires_at": 0})
     return {"ok": True}

@@ -216,7 +216,9 @@ def status(secrets: SecretStore, verify: bool = False) -> dict[str, Any]:
             headers={"authorization": "Bearer " + token},
             timeout=_HTTP_TIMEOUT,
         )
-    except httpx.HTTPError as exc:
+    except Exception as exc:  # noqa: BLE001 - a status endpoint must degrade, never 500.
+        # Not just httpx.HTTPError: a SOCKS proxy env without socksio raises ImportError
+        # from inside httpx (2026-08-28), and that used to take the whole pane down.
         out["verify_error"] = f"连不上中转 {relay}：{exc}"
         return out
 

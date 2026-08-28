@@ -297,6 +297,27 @@ def test_signing_out_still_clears_locally_when_revocation_is_unreachable(monkeyp
     assert aigw_auth.status(s)["signed_in"] is False
 
 
+def test_signing_out_clears_locally_even_when_httpx_dies_before_connecting(monkeypatch):
+    # The 2026-08-28 field failure: ALL_PROXY=socks5h://… in the user's env plus a bundle
+    # without socksio makes `httpx.post` raise ImportError — NOT an HTTPError — before any
+    # connection exists. Sign-out must be local-first, so the tokens go regardless.
+    def boom(*a, **k):
+        raise ImportError(
+            "Using SOCKS proxy, but the 'socksio' package is not installed."
+        )
+
+    monkeypatch.setattr("httpx.post", boom)
+    s = _store(
+        {
+            "access_token": "a",
+            "refresh_token": "r",
+            "revocation_endpoint": META["revocation_endpoint"],
+        }
+    )
+    assert aigw_auth.logout(s)["ok"] is True
+    assert aigw_auth.status(s)["signed_in"] is False
+
+
 def test_the_oauth_state_never_clobbers_the_rest_of_the_profile():
     # `put` replaces the whole profile, so a careless write here would wipe the gateway
     # address (and the pasted session) the first time anyone signed in.

@@ -74,7 +74,11 @@ if not INCLUDE_EXPERIMENTAL:
 # collect it explicitly or the packaged relay adapter fails to open its socket.
 # `pypdf`/`pypdfium2` are lazy-imported the same way (pdf_support.py) — and pypdfium2
 # carries the libpdfium binary, which collect_all is what actually stages.
-for pkg in ("uvicorn", "certifi", "anyio", "websockets", "pypdf", "pypdfium2"):
+# `socksio` is httpx's SOCKS transport, imported dynamically only when the user's env
+# carries ALL_PROXY=socks5h://… (v2rayN/Clash). Static analysis never sees it, and
+# without it EVERY outbound httpx call on such a machine dies with ImportError
+# (measured 2026-08-28: sign-out, relay status, model calls — all 500).
+for pkg in ("uvicorn", "certifi", "anyio", "websockets", "pypdf", "pypdfium2", "socksio"):
     d, b, h = collect_all(pkg)
     datas += d
     binaries += b
