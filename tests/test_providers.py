@@ -544,6 +544,43 @@ def test_reseller_descriptors_and_matrix_stay_in_lockstep():
         assert base.default.startswith("https://")
 
 
+def test_utility_model_for_every_table_row_and_fallback():
+    """Cheap same-provider sibling for auxiliary calls (auto-titles) — every prefix in
+    the table routes to its target, and every target must be a live matrix row (a
+    dangling sibling id would 404 through the ProviderRouter). Anything unmapped —
+    custom endpoints, resellers — passes through unchanged, since there's no safe
+    sibling to assume on an endpoint whose catalog we don't control."""
+    from coworker.providers.matrix import MATRIX, utility_model_for
+
+    cases = {
+        "aigw:anthropic/claude-fable-5": "aigw:anthropic/claude-haiku-4-5",
+        "aigw:openai/gpt-5.6-sol": "aigw:openai/gpt-5.6-luna",
+        "aigw:google-ai-studio/gemini-3.6-flash": (
+            "aigw:google-ai-studio/gemini-3.1-flash-lite"
+        ),
+        "anthropic:claude-opus-4-8": "anthropic:claude-haiku-4-5",
+        "gemini:gemini-3.7-flash": "gemini:gemini-3.5-flash-lite",
+        "bedrock:claude/anthropic.claude-sonnet-4-6-v1:0": (
+            "bedrock:claude/anthropic.claude-haiku-4-5-v1:0"
+        ),
+        "vertex:claude/claude-sonnet-4-6": "vertex:claude/claude-haiku-4-5",
+        "vertex:gemini/gemini-3.1-pro-preview": "vertex:gemini/gemini-3.6-flash",
+        # bare id starting "gpt-": no provider prefix, routes to the OpenAI default's
+        # cheap tier.
+        "gpt-5.6-sol": "gpt-5.6-luna",
+    }
+    for model, expected in cases.items():
+        assert utility_model_for(model) == expected, model
+        assert expected in MATRIX, expected
+
+    for unmapped in (
+        "together:zai-org/GLM-5.2",
+        "ollama:llama3.3",
+        "custom:my-self-hosted-model",
+    ):
+        assert utility_model_for(unmapped) == unmapped
+
+
 def test_foreign_sidecars_stripped_from_outbound_messages():
     """Provider-private sidecars (`_gemini` thought signatures et al) must never reach the
     OpenAI wire — it and its compat servers reject unknown message fields."""

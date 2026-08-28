@@ -24,6 +24,7 @@ from . import toolchain as _toolchain
 from .events import Event, EventType
 from .permissions import Mode, PermissionEngine
 from .providers import AssistantTurn, ProviderClient, ToolCall
+from .providers.base import SYSTEM_CONTEXT_OPEN
 from .providers.errors import friendly_model_error
 from .tools import ToolRegistry
 
@@ -108,10 +109,13 @@ class TurnEngine:
         self.model_settings = dict(model_settings or {})
         self.messages: list[dict[str, Any]] = list(messages or [])
         self.audit_sink = audit_sink
-        # Returns an ephemeral `<system-context>` block appended to the LAST user message at
-        # send-time only (never persisted). We can't reliably inject system messages mid-thread
-        # across providers, so dynamic per-turn context (e.g. the live directory list) rides on
-        # the latest user turn. Returns "" when there's nothing to add.
+        # Returns an ephemeral `<system-context>` block appended as an INDEPENDENT trailing
+        # user message at send-time only (never persisted). We can't reliably inject system
+        # messages mid-thread across providers, so dynamic per-turn context (e.g. the live
+        # directory list) rides as its own tail message rather than being glued onto the
+        # latest user turn — gluing it on would change that message's bytes every turn and
+        # invalidate provider-side prompt caching of the conversation prefix. Returns "" when
+        # there's nothing to add.
         self.context_provider = context_provider
         # Handles the `request_directory` tool: emits a DIRECTORY_REQUESTED prompt, waits for the
         # user to grant/decline a folder out-of-band, applies the grant to this live session, and
@@ -1332,10 +1336,16 @@ class TurnEngine:
 
         Every message is stripped of the display-only sidecars — `source`, `_display`, and
         `ts` — (providers reject unknown keys), unconditionally — whether or not a
-        `<system-context>` block is added. When a context
-        provider yields a non-empty string, an ephemeral `<system-context>` block is appended to the
-        last user message. Never mutates `self.messages`, so neither the strip nor the block is
-        persisted/replayed.
+        `<system-context>` block is added. When a context provider yields a non-empty
+        string, an ephemeral `<system-context>` block is appended as its own trailing
+        `{"role": "user"}` message — an INDEPENDENT message, not glued onto the last real
+        user message. Gluing it on used to change that message's bytes every turn (the
+        block rides only the newest user message), which invalidated every provider-side
+        prompt cache of the conversation prefix on every single turn; as a separate tail
+        message, the persisted history stays byte-stable turn over turn and providers can
+        place their cache breakpoint before the tail (anthropic keys off
+        `SYSTEM_CONTEXT_OPEN` to find it). Never mutates `self.messages`, so neither the
+        strip nor the tail message is persisted/replayed.
         """
         # Strip the display-only sidecars — `source` (connector cards), `_display`
         # (e.g. filter-hidden counts), `ts` (append-time timestamps), `reasoning`
@@ -1424,20 +1434,8 @@ class TurnEngine:
         ) or ""
         if not context:
             return out
-        block = f"\n\n<system-context>\n{context}\n</system-context>"
-        for i in range(len(out) - 1, -1, -1):
-            if out[i].get("role") != "user":
-                continue
-            msg = dict(out[i])
-            content = msg.get("content")
-            if isinstance(content, str):
-                msg["content"] = content + block
-            elif isinstance(content, list):  # content-parts (text + images)
-                msg["content"] = [*content, {"type": "text", "text": block}]
-            else:
-                msg["content"] = block
-            out[i] = msg
-            break
+        block = f"{SYSTEM_CONTEXT_OPEN}\n{context}\n</system-context>"
+        out.append({"role": "user", "content": block})
         return out
 
 

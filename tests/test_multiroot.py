@@ -136,7 +136,7 @@ def test_render_context_marks_primary_and_access(tmp_path):
     assert str(scratch.resolve()) in text
 
 
-def test_outbound_messages_appends_context_to_last_user_message():
+def test_outbound_messages_appends_context_as_trailing_message():
     eng = TurnEngine(
         provider=object(),
         registry=ToolRegistry(),
@@ -153,8 +153,10 @@ def test_outbound_messages_appends_context_to_last_user_message():
     out = eng._outbound_messages()
     # ephemeral: the persisted history is untouched
     assert eng.messages[-1]["content"] == "do it"
-    # only the LAST user message carries the block
-    assert out[-1]["content"] == "do it\n\n<system-context>\nDIRS\n</system-context>"
+    # the block arrives as its own INDEPENDENT trailing user message, not glued onto
+    # the last real user message (which stays byte-identical to what was persisted)
+    assert out[-2]["content"] == "do it"
+    assert out[-1] == {"role": "user", "content": "<system-context>\nDIRS\n</system-context>"}
     assert out[1]["content"] == "hello"
 
 

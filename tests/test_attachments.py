@@ -123,7 +123,11 @@ async def test_image_reaches_provider_unmodified():
 
     user_msgs = [m for m in (spy.captured or []) if m.get("role") == "user"]
     assert user_msgs, "no user message reached the provider"
-    parts = user_msgs[-1]["content"]
+    # the trailing user message is the ephemeral <system-context> tail (build_engine wires
+    # a context_provider that always yields at least the live clock line) — the REAL user
+    # message carrying the image is the one just before it
+    assert "<system-context>" in user_msgs[-1]["content"]
+    parts = user_msgs[-2]["content"]
     assert isinstance(parts, list)
     images = [p for p in parts if p.get("type") == "image_url"]
     assert images and images[0]["image_url"]["url"] == url  # byte-for-byte intact

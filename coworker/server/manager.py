@@ -4913,24 +4913,33 @@ class SessionManager:
     async def _generate_autotitle(
         self, session_id: str, engine: TurnEngine, openers: list[str]
     ) -> None:
-        """One cheap non-streaming completion on the session's own provider/model. Every
-        failure (provider error, empty, absurdly long) is swallowed — the title_from
-        fallback stays; the small-talk sentinel leaves auto_title unset so the turn-2
-        retry can run."""
+        """One cheap non-streaming completion, routed off the session's own model to a
+        cheap same-provider sibling (utility_model_for) so an expensive pinned model never
+        eats auto-title cost — pin "autotitle_model" (mirrors the "compaction_model" pref;
+        '' = auto-pick) overrides when set. Every failure (provider error, empty, absurdly
+        long) is swallowed — the title_from fallback stays; the small-talk sentinel leaves
+        auto_title unset so the turn-2 retry can run."""
+        from ..providers.matrix import utility_model_for
+
+        title_model = str(self._prefs.get("autotitle_model") or "") or utility_model_for(
+            engine.model
+        )
         try:
             turn = await asyncio.to_thread(
                 engine.provider.complete,
-                model=engine.model,
+                model=title_model,
                 messages=[
                     {"role": "system", "content": self._AUTOTITLE_PROMPT},
                     {"role": "user", "content": "\n\n".join(openers)},
                 ],
                 temperature=0.2,
-                # Reasoning-routed models spend hidden tokens BEFORE emitting text; a
-                # tight cap plus default effort yields an empty completion and a silent
-                # no-op. Effort "none" reaches only the OpenAI-compat path (the native
-                # providers whitelist their settings), and 64 leaves headroom either way.
-                max_tokens=64,
+                # Native-thinking models spend hidden tokens BEFORE emitting text — 64 was
+                # observed eaten entirely by thinking, yielding an empty completion and a
+                # silent no-op. 800 leaves room even when a pinned model thinks; the cheap
+                # sibling keeps the ceiling's worst case at a fraction of a cent. The
+                # anthropic provider now honors effort "none" too, not just the
+                # OpenAI-compat path.
+                max_tokens=800,
                 reasoning_effort="none",
             )
             raw = (getattr(turn, "text", None) or "").strip()

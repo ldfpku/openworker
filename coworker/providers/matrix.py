@@ -379,3 +379,37 @@ def models_for_provider(provider: str) -> list[str]:
         return [mid for mid in MATRIX if ":" not in mid]
     prefix = provider + ":"
     return [mid[len(prefix) :] for mid in MATRIX if mid.startswith(prefix)]
+
+
+# Targets are all existing MATRIX rows (verified above) — keep this table in sync with the
+# matrix: if a target id's row is ever renamed or dropped, update the row here to match.
+_UTILITY_MODELS: tuple[tuple[str, str], ...] = (
+    ("aigw:anthropic/", "aigw:anthropic/claude-haiku-4-5"),
+    ("aigw:openai/", "aigw:openai/gpt-5.6-luna"),
+    ("aigw:google-ai-studio/", "aigw:google-ai-studio/gemini-3.1-flash-lite"),
+    ("anthropic:", "anthropic:claude-haiku-4-5"),
+    ("gemini:gemini-", "gemini:gemini-3.5-flash-lite"),
+    ("bedrock:claude/", "bedrock:claude/anthropic.claude-haiku-4-5-v1:0"),
+    ("vertex:claude/", "vertex:claude/claude-haiku-4-5"),
+    ("vertex:gemini/", "vertex:gemini/gemini-3.6-flash"),
+)
+
+
+def utility_model_for(model: str) -> str:
+    """Cheap same-provider sibling for auxiliary calls (auto-titles): the ProviderRouter
+    routes per call by the model string's prefix (router.py's `_provider_name`/`_client_for`),
+    so handing it the sibling id serves the sibling through the session's own provider
+    instance directly — no separate client or credentials needed. Longest-matching-prefix
+    over `_UTILITY_MODELS`; a bare id starting `gpt-` (no provider prefix) routes to the
+    OpenAI default's cheap tier. Unknown namespaces — custom endpoints, resellers, anything
+    not in the table — fall back to the session's own model rather than guessing a sibling
+    id that may not exist on that endpoint."""
+    best_prefix, best_target = "", ""
+    for prefix, target in _UTILITY_MODELS:
+        if len(prefix) > len(best_prefix) and model.startswith(prefix):
+            best_prefix, best_target = prefix, target
+    if best_target:
+        return best_target
+    if model.startswith("gpt-"):
+        return "gpt-5.6-luna"
+    return model

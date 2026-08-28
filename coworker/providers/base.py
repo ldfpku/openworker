@@ -12,6 +12,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+# Opening tag of the ephemeral per-turn context block the engine appends as its own
+# trailing user message (engine._outbound_messages). Shared here so providers can
+# recognize the block — it changes every turn (live clock, skills rescan), so cache
+# breakpoints must land on the last message BEFORE it, never on it.
+SYSTEM_CONTEXT_OPEN = "<system-context>"
+
 
 @dataclass
 class ToolCall:

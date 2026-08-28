@@ -268,7 +268,7 @@ def test_complete_text_turn_with_defaults():
     # System rides as a block list so the last block can carry the prompt-cache
     # breakpoint (see _add_cache_breakpoints).
     assert fake.kwargs["system"] == [
-        {"type": "text", "text": "sys", "cache_control": {"type": "ephemeral"}}
+        {"type": "text", "text": "sys", "cache_control": {"type": "ephemeral", "ttl": "1h"}}
     ]
     assert fake.kwargs["max_tokens"] == DEFAULT_MAX_TOKENS  # required param, injected
     assert "tools" not in fake.kwargs
@@ -346,8 +346,14 @@ def test_complete_converts_tools():
             }
         ],
     )
+    # The sole (= last) tool also carries the cache breakpoint (see _add_cache_breakpoints).
     assert fake.kwargs["tools"] == [
-        {"name": "f", "description": "d", "input_schema": {"type": "object"}}
+        {
+            "name": "f",
+            "description": "d",
+            "input_schema": {"type": "object"},
+            "cache_control": {"type": "ephemeral", "ttl": "1h"},
+        }
     ]
 
 
@@ -571,6 +577,38 @@ def test_thinking_config_is_model_family_aware():
         model="claude-fable-5", messages=[{"role": "user", "content": "x"}]
     )
     assert "thinking" not in client2.kwargs
+
+
+def test_reasoning_effort_none_suppresses_thinking_injection():
+    """Utility calls (auto-title) pass reasoning_effort="none" to opt out of thinking
+    entirely. It must never reach the wire (not in _SETTINGS_WHITELIST) but must still
+    gate the injection — previously the whitelist silently dropped it and thinking got
+    injected anyway, eating the whole (small) max_tokens as pure thinking."""
+    client = _FakeClient(response=_text_response())
+    AnthropicProvider(client=client, thinking_budget=8192).complete(
+        model="claude-fable-5",
+        messages=[{"role": "user", "content": "give this a short title"}],
+        reasoning_effort="none",
+    )
+    assert "thinking" not in client.kwargs
+    assert "reasoning_effort" not in client.kwargs
+
+    # A normal call (no reasoning_effort) on the same provider still gets thinking.
+    client2 = _FakeClient(response=_text_response())
+    AnthropicProvider(client=client2, thinking_budget=8192).complete(
+        model="claude-fable-5", messages=[{"role": "user", "content": "x"}]
+    )
+    assert "thinking" in client2.kwargs
+
+    # Any other value (including "high") is not the opt-out and doesn't suppress it.
+    client3 = _FakeClient(response=_text_response())
+    AnthropicProvider(client=client3, thinking_budget=8192).complete(
+        model="claude-fable-5",
+        messages=[{"role": "user", "content": "x"}],
+        reasoning_effort="high",
+    )
+    assert "thinking" in client3.kwargs
+    assert "reasoning_effort" not in client3.kwargs
 
 
 def test_complete_parses_thinking_blocks_into_reasoning_and_sidecar():

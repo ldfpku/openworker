@@ -24,6 +24,7 @@ import re
 from typing import Any, Optional
 
 from .base import (
+    SYSTEM_CONTEXT_OPEN,
     AssistantTurn,
     ModelCapabilities,
     ProviderClient,
@@ -51,6 +52,12 @@ def _usage_from(usage: Any) -> Optional[TokenUsage]:
 # (the call truncates mid-arguments and the write fails). Current Claude models all
 # accept ≥32k output.
 DEFAULT_MAX_TOKENS = 32000
+
+# The API offers exactly two ephemeral-cache tiers, 5m and 1h. 1h was chosen 2026-08-29
+# as the baseline (owner call — the user wanted ~30min; 1h is the nearest tier) so the
+# cached prefix survives cross-session reuse and mid-session idle, not just back-to-back
+# turns. Tradeoff: a 2x write premium versus 1.25x at 5m, repaid by a single reuse.
+_CACHE_TTL = "1h"
 
 
 def _nonstreaming_timeout(max_tokens: int) -> Any:
@@ -357,7 +364,16 @@ def convert_messages(
 
     folded: list[dict[str, Any]] = []
     for message in converted:
-        if folded and folded[-1]["role"] == message["role"]:
+        if (
+            folded
+            and folded[-1]["role"] == message["role"]
+            # The per-turn <system-context> tail must stay its OWN entry (the API accepts
+            # consecutive user messages): folded into the last real user message it would
+            # change that message's bytes every turn, and _add_cache_breakpoints could no
+            # longer skip it — the conversation breakpoint would cache a prefix that never
+            # recurs.
+            and not _is_system_context_tail(message)
+        ):
             folded[-1]["content"].extend(message["content"])
         else:
             folded.append(message)
@@ -390,30 +406,74 @@ def convert_tools(tools: Optional[list[dict[str, Any]]]) -> list[dict[str, Any]]
     return converted
 
 
+def _marker() -> dict[str, Any]:
+    """A fresh ephemeral-cache marker. Never share one dict object across breakpoints —
+    each is a distinct request field even though the value is identical."""
+    return {"type": "ephemeral", "ttl": _CACHE_TTL}
+
+
+def _is_system_context_tail(message: dict[str, Any]) -> bool:
+    """True for the engine's per-turn `<system-context>` block, appended as its own
+    trailing user message and rebuilt every turn (it carries a live clock) — never a
+    cache breakpoint candidate, since marking it would just churn the cache."""
+    if message.get("role") != "user":
+        return False
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.startswith(SYSTEM_CONTEXT_OPEN)
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                return (block.get("text") or "").startswith(SYSTEM_CONTEXT_OPEN)
+    return False
+
+
 def _add_cache_breakpoints(kwargs: dict[str, Any]) -> None:
-    """Opt the request into prompt caching (5-minute ephemeral, prefix-matched).
+    """Opt the request into prompt caching (1h ephemeral, prefix-matched).
 
-    Two breakpoints, the standard agent-loop shape:
-    - last system block — caches tools + system together (tools render first);
-    - last content block of the final message — caches the whole conversation
-      prefix, so each request re-reads the previous turns' cache and writes only
-      the new tail (append-only history keeps the prefix byte-identical).
+    Three breakpoints, the standard agent-loop shape:
+    - last tool definition — tools render first in the prefix and are byte-stable
+      across sessions even when the system prompt varies per session, so they earn
+      their own breakpoint independent of system;
+    - last system block — caches tools + system together;
+    - last content block of the final message that ISN'T the per-turn
+      `<system-context>` tail — caches the whole conversation prefix, so each
+      request re-reads the previous turns' cache and writes only the new tail
+      (append-only history keeps the prefix byte-identical). The system-context
+      tail changes every turn (live clock), so caching it would be pure waste —
+      walk backward from the end past it to the message underneath.
 
-    Outbound-only: the canonical history never carries `cache_control` (the final
+    Outbound-only: the canonical history never carries `cache_control` (the marked
     message's blocks are freshly built by convert_messages — thinking replays sit
     in earlier assistant turns — and the marked block is copied, not mutated).
     Prefixes under the model's cacheable minimum silently don't cache; reads bill
     ~0.1x and show up as `cache_read_input_tokens` (the metering's cache_read).
     """
-    marker = {"type": "ephemeral"}
     system = kwargs.get("system")
     if isinstance(system, str) and system:
-        kwargs["system"] = [{"type": "text", "text": system, "cache_control": marker}]
+        kwargs["system"] = [
+            {"type": "text", "text": system, "cache_control": _marker()}
+        ]
+
+    tools = kwargs.get("tools")
+    if isinstance(tools, list) and tools:
+        tools[-1] = {**tools[-1], "cache_control": _marker()}
+
     messages = kwargs.get("messages") or []
-    if messages:
-        content = messages[-1].get("content")
-        if isinstance(content, list) and content:
-            content[-1] = {**content[-1], "cache_control": marker}
+    target: Optional[dict[str, Any]] = None
+    for message in reversed(messages):
+        if _is_system_context_tail(message):
+            continue
+        target = message
+        break
+    if target is not None:
+        content = target.get("content")
+        if isinstance(content, str) and content:
+            target["content"] = [
+                {"type": "text", "text": content, "cache_control": _marker()}
+            ]
+        elif isinstance(content, list) and content:
+            content[-1] = {**content[-1], "cache_control": _marker()}
 
 
 def _reasoning_text(thinking_blocks: list[dict[str, Any]]) -> Optional[str]:
@@ -502,8 +562,16 @@ class AnthropicProvider(ProviderClient):
         if "stop" in settings and "stop_sequences" not in settings:
             stop = settings["stop"]
             settings["stop_sequences"] = [stop] if isinstance(stop, str) else list(stop)
+        # Read before whitelist filtering — `reasoning_effort` is never whitelisted (it
+        # must never reach the wire as a Messages API param), so this is the only chance
+        # to see it. Utility calls (auto-title) pass "none" to mean "don't think at all";
+        # previously the whitelist silently dropped the setting and the thinking-injection
+        # gate below fired anyway, which ate the entire small max_tokens as thinking
+        # (observed live: title calls returning exactly 64 output tokens of pure thinking
+        # and an empty title).
+        effort = str(settings.get("reasoning_effort") or "").strip().lower()
         filtered = {k: v for k, v in settings.items() if k in _SETTINGS_WHITELIST}
-        if self.thinking_budget > 0 and "thinking" not in filtered:
+        if self.thinking_budget > 0 and "thinking" not in filtered and effort != "none":
             if _uses_budget_thinking(model):
                 filtered["thinking"] = {
                     "type": "enabled",

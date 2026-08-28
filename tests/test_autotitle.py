@@ -23,10 +23,14 @@ class TitleAwareProvider(ProviderClient):
         self._chat = list(chat_turns)
         self._titles = list(titles)
         self.title_calls: list[list[dict]] = []
+        # Full kwargs (model, max_tokens, ...) per title call, for routing/settings
+        # assertions — title_calls above stays messages-only for the existing tests.
+        self.title_requests: list[dict] = []
 
     def complete(self, *, model, messages, tools=None, **settings):
         if messages and "title chat sessions" in str(messages[0].get("content", "")):
             self.title_calls.append([dict(m) for m in messages])
+            self.title_requests.append({"model": model, **settings})
             item = self._titles.pop(0)
             if isinstance(item, Exception):
                 raise item
@@ -55,9 +59,9 @@ async def _turn(mgr: SessionManager, sid: str, text: str) -> None:
         await asyncio.sleep(0.005)
 
 
-def _mgr(tmp_path, chat_turns, titles):
+def _mgr(tmp_path, chat_turns, titles, model="gpt-5.6-sol"):
     provider = TitleAwareProvider(chat_turns, titles)
-    return SessionManager(workspace=tmp_path, provider=provider), provider
+    return SessionManager(workspace=tmp_path, provider=provider, model=model), provider
 
 
 async def test_title_set_after_first_turn(tmp_path):
@@ -146,3 +150,51 @@ async def test_sanitizes_and_rejects_absurd_output(tmp_path):
     mgr2, _ = _mgr(tmp_path / "b", [_text("ok")], ["x" * 90])
     await _turn(mgr2, "s8", "the login page 500s")
     assert mgr2.session_store.title_state("s8")["auto_title"] is None
+
+
+async def test_routes_to_cheap_sibling_not_the_session_model(tmp_path):
+    """The title call must never ride an expensive pinned model (observed live:
+    claude-fable-5 burning its whole max_tokens as thinking) — it goes to
+    utility_model_for(engine.model) instead."""
+    mgr, provider = _mgr(
+        tmp_path,
+        [_text("sure")],
+        ["Japan Trip Planning Help"],
+        model="aigw:anthropic/claude-fable-5",
+    )
+    await _turn(mgr, "s9", "help me plan a trip to japan")
+    assert provider.title_requests[0]["model"] == "aigw:anthropic/claude-haiku-4-5"
+
+
+async def test_autotitle_model_pref_overrides_the_sibling(tmp_path):
+    mgr, provider = _mgr(
+        tmp_path,
+        [_text("sure")],
+        ["Japan Trip Planning Help"],
+        model="aigw:anthropic/claude-fable-5",
+    )
+    mgr._prefs["autotitle_model"] = "anthropic:claude-opus-4-8"
+    await _turn(mgr, "s10", "help me plan a trip to japan")
+    assert provider.title_requests[0]["model"] == "anthropic:claude-opus-4-8"
+
+
+async def test_unmapped_model_passes_through_unchanged(tmp_path):
+    """No safe sibling to assume for a custom endpoint/reseller not in the table —
+    the title call rides the session's own model rather than guessing an id."""
+    mgr, provider = _mgr(
+        tmp_path,
+        [_text("sure")],
+        ["Japan Trip Planning Help"],
+        model="together:zai-org/GLM-5.2",
+    )
+    await _turn(mgr, "s11", "help me plan a trip to japan")
+    assert provider.title_requests[0]["model"] == "together:zai-org/GLM-5.2"
+
+
+async def test_max_tokens_is_800(tmp_path):
+    """64 was observed eaten entirely by a native-thinking model's hidden thinking,
+    yielding an empty completion and a silent retry; 800 leaves room."""
+    mgr, provider = _mgr(tmp_path, [_text("ok")], ["Japan Trip Planning Help"])
+    await _turn(mgr, "s12", "help me plan a trip to japan")
+    assert provider.title_requests[0]["max_tokens"] == 800
+    assert provider.title_requests[0]["reasoning_effort"] == "none"

@@ -134,7 +134,12 @@ def test_message_source_persisted_and_stripped(tmp_path):
 
     # the provider was called and saw the framed text with NO source / unknown keys
     assert provider.calls, "provider should have been invoked"
-    sent_user = [m for m in provider.calls[0] if m.get("role") == "user"][-1]
+    sent_users = [m for m in provider.calls[0] if m.get("role") == "user"]
+    # the trailing user message is the ephemeral <system-context> tail (the real
+    # session's context_provider always yields at least the live clock line); the
+    # REAL user message is the one just before it
+    assert "<system-context>" in sent_users[-1]["content"]
+    sent_user = sent_users[-2]
     assert "source" not in sent_user
     assert "subscribed" in sent_user["content"]  # framed, not raw
     # NO message handed to ANY provider call carries a source key
@@ -175,6 +180,41 @@ def test_outbound_strips_source_with_and_without_context(tmp_path):
     assert all("source" not in m for m in out2)
     assert "<system-context>" in out2[-1]["content"]
     assert engine2.messages[-1]["source"] == src  # original untouched
+
+
+def test_outbound_messages_real_users_byte_stable_across_calls(tmp_path):
+    """Two consecutive `_outbound_messages()` calls must leave every REAL (persisted)
+    message byte-identical — only the ephemeral `<system-context>` tail may differ. This
+    is the prompt-caching contract the independent trailing message exists for: gluing
+    the block onto the last user message used to mutate that message's bytes turn over
+    turn, invalidating the provider's cache of the conversation prefix every time.
+    """
+    registry = ToolRegistry()
+    permissions = PermissionEngine(workspace_root=tmp_path)
+    calls = {"n": 0}
+
+    def changing_context():
+        calls["n"] += 1
+        return f"call #{calls['n']}"
+
+    engine = TurnEngine(
+        provider=CapturingProvider([]),
+        registry=registry,
+        permissions=permissions,
+        model="gpt-5.5",
+        context_provider=changing_context,
+    )
+    engine.messages.append({"role": "user", "content": "hello"})
+
+    out1 = engine._outbound_messages()
+    out2 = engine._outbound_messages()
+
+    # the context value actually changed between calls (otherwise this proves nothing)
+    assert out1[-1]["content"] != out2[-1]["content"]
+    # every message OTHER than the tail is byte-identical across the two calls
+    assert out1[:-1] == out2[:-1]
+    # the real user message itself never changed
+    assert out1[-2] == out2[-2] == {"role": "user", "content": "hello"}
 
 
 def test_tool_display_sidecar_is_agent_invisible(tmp_path):
