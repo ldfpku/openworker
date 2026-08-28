@@ -2856,11 +2856,17 @@ class SessionManager:
             return [m.split(":", 1)[-1] for m in self._ollama_models()]
         from ..providers.matrix import models_for_provider
 
-        return list(
+        out = list(
             dict.fromkeys(
                 [*models_for_provider(name), *self.COMPAT_MODELS.get(name, [])]
             )
         )
+        if name == "aigw":
+            # Mirror the picker filter (`_curated_models`): a gate-blocked model must
+            # not resurface as an "add model" suggestion either.
+            blocked = self._aigw_blocked()
+            out = [m for m in out if m.strip().lower() not in blocked]
+        return out
 
     def set_provider(
         self, name: str, fields: Optional[dict[str, Any]]
@@ -3014,6 +3020,59 @@ class SessionManager:
         self._save_prefs()
         return {"ok": True, "dm_session": self.dm_session()}
 
+    # -- aigw per-user model gate (gateway-guard's /gate/policy) -----------------
+    # The company gateway's guard Worker restricts some models (e.g. the priciest
+    # flagships) to certain roles and enforces that server-side with a 403. This pair
+    # keeps those models out of the pickers up front. Purely cosmetic: an empty set
+    # (guard not deployed / signed out / fetch failed) just means no filtering.
+    _AIGW_GATE_TTL = 300.0  # seconds between background refreshes
+
+    def _aigw_blocked(self) -> frozenset[str]:
+        """Bare "author/model" ids the gateway refuses for this user (lowercase).
+        Serves the cached value and kicks a background refresh when stale — never
+        blocks get_settings (same reasoning as `_ollama_alive`'s cache)."""
+        cached = getattr(self, "_aigw_gate_cache", None)
+        if cached is None or time.monotonic() - cached[0] >= self._AIGW_GATE_TTL:
+            self._refresh_aigw_gate()
+        return cached[1] if cached else frozenset()
+
+    def _refresh_aigw_gate(self) -> None:
+        """Start one daemon-thread fetch of /gate/policy; concurrent calls no-op."""
+        import threading
+
+        if getattr(self, "_aigw_gate_refreshing", False):
+            return
+        if not self._provider_configured("aigw"):
+            # Signed out: aigw models are culled by `_selectable` anyway; cache the
+            # empty set so we don't re-check the profile on every settings fetch.
+            self._aigw_gate_cache = (time.monotonic(), frozenset())
+            return
+        self._aigw_gate_refreshing = True
+
+        def work() -> None:
+            try:
+                from .. import aigw_auth
+                from ..providers.aigateway_provider import (
+                    blocked_model_ids,
+                    fetch_gate_policy,
+                )
+
+                fields = dict(self.secrets.get("provider:aigw") or {})
+                # Same injection as verify_provider: real calls use the OAuth session
+                # when one exists, so the gate lookup must too.
+                fields["oauth_token"] = aigw_auth.access_token(self.secrets) or ""
+                blocked = blocked_model_ids(fetch_gate_policy(fields))
+                self._aigw_gate_cache = (time.monotonic(), blocked)
+                if blocked:
+                    logger.debug("aigw gate: %d model(s) blocked for this user", len(blocked))
+            except Exception:  # noqa: BLE001 - cosmetic feature, never surface
+                logger.debug("aigw gate refresh failed", exc_info=True)
+                self._aigw_gate_cache = (time.monotonic(), frozenset())
+            finally:
+                self._aigw_gate_refreshing = False
+
+        threading.Thread(target=work, name="aigw-gate-refresh", daemon=True).start()
+
     def _ollama_alive(self) -> bool:
         """Best-effort local-Ollama liveness, cached 30s (get_settings runs on every GUI
         fetch — no 2s probe inline). Keyless is not the same as PRESENT: `ollama:*` picker
@@ -3071,7 +3130,11 @@ class SessionManager:
         user = self._prefs.get("models")
         user = user if isinstance(user, list) else []
         hidden = set(self._prefs.get("hidden_models") or [])
-        models = [m for m in [*MATRIX, *user] if m not in hidden]
+        # Gateway-guard's per-user gate: blocked aigw models disappear from the picker
+        # (server-side 403 backs this up; hiding just spares the failed attempt). The
+        # active default stays selectable below, matching the hidden_models behaviour.
+        blocked = {f"aigw:{m}" for m in self._aigw_blocked()}
+        models = [m for m in [*MATRIX, *user] if m not in hidden and m not in blocked]
         return list(dict.fromkeys([self.model, *models]))
 
     def add_model(self, model: str) -> dict[str, Any]:

@@ -64,6 +64,33 @@ def test_quota_errors_are_translated():
     assert msg and "out of quota" in msg
 
 
+def test_gateway_guard_restriction_surfaces_its_own_message():
+    # gateway-guard (the company gateway's model gate) answers 403 with code
+    # model_restricted and a Chinese message that is already the right thing to show —
+    # extract it verbatim instead of wrapping it in the "Error code: 403 - {...}" shell.
+    exc = RuntimeError(
+        "Error code: 403 - {'error': {'code': 'model_restricted', 'type': "
+        "'model_restricted', 'status': 403, 'message': '模型 anthropic/claude-fable-5 "
+        "暂未对你的账号开放（现仅管理员、总经理可用）。请改用其他模型，或联系管理员开通。"
+        "[gateway-guard]'}}"
+    )
+    msg = friendly_model_error("aigw:anthropic/claude-fable-5", exc)
+    assert msg and msg.endswith("[gateway-guard]")
+    assert "暂未对你的账号开放" in msg
+    assert "Error code" not in msg
+
+    # The JSON double-quote shape (a raw body, not the SDKs' dict repr) extracts too
+    exc = RuntimeError('403 {"error": {"code": "model_restricted", "message": "模型受限。[gateway-guard]"}}')
+    assert friendly_model_error("m", exc) == "模型受限。[gateway-guard]"
+
+
+def test_model_restricted_without_extractable_message_gets_a_fallback():
+    msg = friendly_model_error(
+        "aigw:openai/gpt-5.6-sol", RuntimeError("403 model_restricted")
+    )
+    assert msg and "restricted by your administrator" in msg
+
+
 def test_unrelated_errors_pass_through_raw():
     # a plain rate-limit (429 without a quota code) must NOT be dressed up
     assert (

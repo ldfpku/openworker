@@ -206,6 +206,63 @@ def upstream_model(model: str, wire: str) -> str:
     return bare or model
 
 
+def fetch_gate_policy(
+    fields: dict[str, Any], timeout: float = 5.0
+) -> Optional[dict[str, Any]]:
+    """Best-effort read of the guard Worker's per-user gate: `GET {base}/gate/policy`.
+
+    The company gateway's guard (gateway-guard, smj-help-website repo) restricts some
+    models to certain roles and answers this endpoint with
+    `{"email", "role", "active", "blocked": ["author/model", ...], "enforce"}` for the
+    signed-in caller. The picker uses `blocked` to hide those models up front instead of
+    letting people select one and hit the guard's 403.
+
+    Returns the parsed dict on a well-shaped 200, else None — the guard may not be
+    deployed yet (this endpoint 404s on the bare AI Gateway custom domain), the user may
+    be signed out, or the network may be down. None means "don't filter"; enforcement is
+    server-side either way, so this can never be a security hole, only a cosmetic miss.
+
+    `fields` is the stored provider profile plus an optional `oauth_token` the caller
+    injects — the same contract as the Test probe (`registry._verify_aigw`).
+    """
+    import httpx
+
+    base_url, access_token = resolve_settings(fields or {})
+    oauth_token = str((fields or {}).get("oauth_token") or "").strip()
+    if not oauth_token and not access_token:
+        return None
+    headers = bearer_headers(oauth_token) if oauth_token else access_headers(access_token)
+    try:
+        resp = httpx.get(
+            normalise_base(base_url) + "/gate/policy", headers=headers, timeout=timeout
+        )
+    except Exception:  # noqa: BLE001 - cosmetic feature, never let it surface
+        logger.debug("aigw: gate policy fetch failed", exc_info=True)
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        data = resp.json()
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("blocked"), list):
+        return None
+    return data
+
+
+def blocked_model_ids(policy: Optional[dict[str, Any]]) -> frozenset[str]:
+    """`fetch_gate_policy` result → normalized bare ids ("author/model", lowercase).
+    None / malformed → empty set (no filtering)."""
+    if not policy:
+        return frozenset()
+    blocked = policy.get("blocked")
+    if not isinstance(blocked, list):
+        return frozenset()
+    return frozenset(
+        str(m).strip().lower() for m in blocked if isinstance(m, str) and str(m).strip()
+    )
+
+
 class AIGatewayProvider(ProviderClient):
     """Routes each model to the sub-client whose wire the gateway expects for it."""
 

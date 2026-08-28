@@ -13,6 +13,7 @@ dressed up as an access problem.
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 # Error-body markers, verbatim from the vendors' error codes/messages:
@@ -49,10 +50,32 @@ _NO_QUOTA = (
 _GATEWAY_BUSY = ("wholesale rate limit exceeded",)
 _NEEDS_BYOK = ("not available via unified billing",)
 
+# The company gateway's guard Worker (gateway-guard) refuses restricted models with
+# {"error": {"code": "model_restricted", "message": "<Chinese sentence ending in
+# [gateway-guard]>"}}. That message is already the right thing to show verbatim — it names
+# the model, the roles that may use it, and who to ask — so extract it instead of wrapping
+# it in the "Error code: 403 - {...}" shell. The code was chosen on the guard side to miss
+# every marker above (a message matching `permission_error` etc. would get swallowed here).
+_RESTRICTED = "model_restricted"
+
+# The message value in either JSON (`"message": "..."`) or the SDKs' dict-repr
+# (`'message': '...'`) shape. The guard's text contains no quotes, so the character
+# class is safe.
+_MESSAGE_RE = re.compile(r"[\"']message[\"']\s*:\s*[\"']([^\"']+)[\"']")
+
 
 def friendly_model_error(model: str, exc: Exception) -> Optional[str]:
     """One actionable sentence for "your account can't use this model" failures, or None."""
-    text = str(exc).lower()
+    raw = str(exc)
+    text = raw.lower()
+    if _RESTRICTED in text:
+        m = _MESSAGE_RE.search(raw)
+        if m:
+            return m.group(1)
+        return (
+            f"{model} is restricted by your administrator — pick a different model, "
+            "or ask the administrator to open it up."
+        )
     no_access = (
         f"Your account doesn't have access to {model} — new models can roll out "
         "gradually or require a plan upgrade. Pick a different model, or check "
