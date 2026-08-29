@@ -165,6 +165,12 @@ MATRIX: dict[str, ModelEntry] = {
     "mistral:mistral-large-latest": ModelEntry(
         "Mistral Large · Mistral", _AGENTIC, 128_000
     ),
+    # Kimi K3 through the company's NVIDIA NIM relay (nvidia.smjtools.com, per-person
+    # `nvapi-` keys from the administrator). Image input works through the relay (its
+    # README demonstrates a chat/completions image_url round trip); the context window
+    # NIM serves was not verified, so the meter hides rather than borrowing Together's
+    # 1M figure for the same model.
+    "nvidia:moonshotai/kimi-k3": ModelEntry("Kimi K3 · via NVIDIA", _AGENTIC_IMAGE),
     # -- resellers (their model namespaces, verbatim) -----------------------------
     "together:thinkingmachines/Inkling": ModelEntry("Inkling · via Together"),
     "together:zai-org/GLM-5.2": ModelEntry("GLM-5.2 · via Together", _AGENTIC, 128_000),

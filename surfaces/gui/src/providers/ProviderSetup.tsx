@@ -36,6 +36,8 @@ export const KEY_HELP: Record<string, { url: string; label: string }> = {
   // No entry for `aigw` on purpose: there is no key to fetch. It authenticates with the
   // user's own Access login against a gateway address their administrator gives them, so
   // a "get your API key here" link would send them somewhere with nothing to collect.
+  // No entry for `nvidia` either: its `nvapi-` keys are issued by the administrator —
+  // there is no self-serve key page to link to (the card's blurb says who to ask).
   ark: { url: "https://console.byteplus.com/ark/region:ark+ap-southeast-1/apiKey", label: "console.byteplus.com" },
   "ark-agent-plan-cn": { url: "https://console.volcengine.com/ark/region:cn-beijing/openManagement?LLM=%7B%7D&advancedActiveKey=agentPlan", label: "console.volcengine.com" },
   openrouter: { url: "https://openrouter.ai/keys", label: "openrouter.ai" },

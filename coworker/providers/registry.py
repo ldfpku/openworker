@@ -43,6 +43,11 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 
+# The company's NVIDIA NIM relay (a Cloudflare Worker in front of build.nvidia.com,
+# sibling of the Gemini relay). Colleagues never sign up anywhere — the administrator
+# issues each person an `nvapi-` key, and this address is where every one of them works.
+NVIDIA_RELAY_URL = "https://nvidia.smjtools.com/v1"
+
 
 @dataclass(frozen=True)
 class ProviderField:
@@ -685,6 +690,36 @@ DESCRIPTORS: list[ProviderDescriptor] = [
         env_key="META_API_KEY",
         endpoint_help="Prefilled with the Meta Model API endpoint (public preview, US-only as of 2026-07).",
     ),
+    # The company NVIDIA NIM relay — a normal key-provider card, deliberately NOT another
+    # sign-in flow like aigw/gemini: the `nvapi-` key the administrator hands out is the
+    # whole credential, validated by NVIDIA itself. Hand-written instead of `_compat` so
+    # the blurb/help can say "ask your administrator" rather than point at a vendor
+    # console (there is no self-serve key page; ProviderSetup's KEY_HELP skips it too).
+    ProviderDescriptor(
+        name="nvidia",
+        title="NVIDIA (NIM)",
+        needs_key=True,
+        fields=[
+            ProviderField(
+                "api_key",
+                "NVIDIA API key",
+                secret=True,
+                placeholder="nvapi-…",
+            ),
+            ProviderField(
+                "base_url",
+                "Endpoint",
+                required=False,
+                default=NVIDIA_RELAY_URL,
+                placeholder=NVIDIA_RELAY_URL,
+                help="Prefilled with the company relay to NVIDIA NIM; normally leave it as is.",
+            ),
+        ],
+        build=_openai_compat("NVIDIA", NVIDIA_RELAY_URL, "NVIDIA_API_KEY"),
+        recommended_model="moonshotai/kimi-k3",
+        env_key="NVIDIA_API_KEY",
+        blurb="Uses the company's OpenAI-compatible NVIDIA NIM relay — the endpoint is prefilled, ask your administrator for an nvapi- key.",
+    ),
     # Resellers: many labs' models behind one key, using THEIR model namespaces (the curated
     # ids + display labels live in providers/matrix.py). TODO: add Groq here (+ its matrix
     # rows) once the current provider surface is tested — deliberately deferred to bound
@@ -794,6 +829,8 @@ def detect_provider(api_key: str) -> Optional[str]:
         return "openrouter"
     if key.startswith("AIza"):
         return "gemini"
+    if key.startswith("nvapi-"):
+        return "nvidia"
     if key.startswith(("sk-", "sk_")):
         return "openai"
     return None

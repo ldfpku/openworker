@@ -288,6 +288,9 @@ COMPAT_VENDORS = {
     "qwen": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
     "xai": "https://api.x.ai/v1",
     "mistral": "https://api.mistral.ai/v1",
+    # The company NVIDIA NIM relay — same descriptor shape as the vendors above (key +
+    # prefilled editable endpoint), the endpoint just points at the relay.
+    "nvidia": "https://nvidia.smjtools.com/v1",
 }
 
 
@@ -529,12 +532,12 @@ def test_matrix_labels_and_custom_model_fallback():
 
 
 def test_reseller_descriptors_and_matrix_stay_in_lockstep():
-    """Reseller suggested models derive from the matrix, and each descriptor's
+    """Reseller/relay suggested models derive from the matrix, and each descriptor's
     recommended model must be one of them (set_provider's auto-add depends on it)."""
     from coworker.providers.matrix import models_for_provider
     from coworker.providers.registry import get_descriptor
 
-    for name in ("together", "fireworks", "openrouter"):
+    for name in ("together", "fireworks", "openrouter", "nvidia"):
         d = get_descriptor(name)
         assert d is not None and d.needs_key
         curated = models_for_provider(name)

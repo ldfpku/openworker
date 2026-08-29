@@ -26,12 +26,14 @@ import minimax from "./logos/minimax.svg";
 import xai from "./logos/xai.svg";
 import meta from "./logos/meta.svg";
 import cloudflare from "./logos/cloudflare.svg";
+import nvidia from "./logos/nvidia.svg";
 
 export const PROVIDER_LOGOS: Record<string, string> = {
   anthropic,
   openai,
   gemini,
   aigw: cloudflare,
+  nvidia,
   ark: byteplus,
   "ark-agent-plan-cn": volcengine,
   meta,
@@ -57,6 +59,9 @@ export const PROVIDER_ORDER = [
   // Ahead of the direct vendors it fronts: for users behind the Great Firewall this is
   // the route that actually reaches OpenAI/Claude/Grok, and it needs one token, not six.
   "aigw",
+  // Also a company route (the NVIDIA NIM relay, admin-issued keys), so it sits with
+  // aigw ahead of the self-serve vendors.
+  "nvidia",
   "ark",
   "ark-agent-plan-cn",
   "meta",

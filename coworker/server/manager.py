@@ -2846,6 +2846,10 @@ class SessionManager:
         "qwen": ["qwen3-max", "qwen3-coder-plus", "qwen-plus"],
         "xai": ["grok-4.3", "grok-4"],
         "mistral": ["mistral-large-latest", "mistral-small-latest"],
+        # The company NVIDIA NIM relay serves the whole NIM catalog, but Kimi K3 is the
+        # one it defaults to and the only one anyone here asked for — keep the datalist
+        # to what the relay's README vouches for.
+        "nvidia": ["moonshotai/kimi-k3"],
     }
 
     def _suggested_models(self, name: str) -> list[str]:
