@@ -13,6 +13,7 @@ working. Disable/surface only affect what the *new-session* picker offers.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 from dataclasses import dataclass, field
@@ -25,6 +26,8 @@ from ..agents.cowork import COWORK_CAPABILITIES, cowork_agent
 from .manifest import PersonaManifest, load_manifest_file
 
 DEFAULT_PERSONA_ID = "cowork"
+
+logger = logging.getLogger(__name__)
 
 
 def include_unshipped() -> bool:
@@ -178,18 +181,28 @@ class PersonaRegistry:
         if not d.is_dir():
             return
         for md in sorted(d.glob("*.md")):
-            self._register_manifest(
-                load_manifest_file(md, builtin=builtin), builtin=builtin
-            )
+            self._load_one(md, builtin=builtin)
         # Bundle subdirs (OPE-58): <dir>/<id>/manifest.md with an optional sibling
         # skills/ folder — the same self-contained shape an install snapshot uses, so a
         # persona's skills live with it instead of leaking into a shared flat dir.
         for sub in sorted(p for p in d.iterdir() if p.is_dir()):
             md = sub / "manifest.md"
             if md.is_file():
-                self._register_manifest(
-                    load_manifest_file(md, builtin=builtin), builtin=builtin
-                )
+                self._load_one(md, builtin=builtin)
+
+    def _load_one(self, md: Path, *, builtin: bool) -> None:
+        """Load one manifest. A built-in that fails is a packaging bug and stays
+        loud; a user-supplied one is skipped with a warning — these dirs are walked
+        while the registry is being constructed at server startup, and one bad file
+        (hand-dropped, wrong encoding, half-written) must not take the server down."""
+        try:
+            m = load_manifest_file(md, builtin=builtin)
+        except Exception as error:  # noqa: BLE001 - startup must survive any bad file
+            if builtin:
+                raise
+            logger.warning("skipping unreadable persona manifest %s: %s", md, error)
+            return
+        self._register_manifest(m, builtin=builtin)
 
     def _register_manifest(self, m, *, builtin: bool) -> None:
         self._entries[m.id] = PersonaEntry(

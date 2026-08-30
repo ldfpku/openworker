@@ -33,6 +33,16 @@ _STATES = ("open", "in_progress", "blocked", "review", "done", "canceled")
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    # On zh-CN Windows stdout is cp936 — a console, or (what an agent's shell tool
+    # actually gets) a cp936-encoded pipe. Board titles, descriptions and journal
+    # bodies routinely carry emoji and other non-GBK characters, and printing one
+    # would raise UnicodeEncodeError mid-listing and kill the command. Force UTF-8
+    # with a replacement fallback, the same way packaging/gen_library.py does.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
     parser = _parser()
     args = parser.parse_args(argv)
     if not getattr(args, "cmd", None):

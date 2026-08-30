@@ -159,3 +159,60 @@ def test_set_unknown_persona_raises(tmp_path):
     reg = _reg(tmp_path)
     with pytest.raises(KeyError):
         reg.set_enabled("ghost", False)
+
+
+def _mini_manifest(pid: str, name: str) -> str:
+    return "\n".join(
+        ["---", f"id: {pid}", f"name: {name}", "tools: [files]", "---", "", "Prompt.", ""]
+    )
+
+
+def test_a_bad_installed_manifest_is_skipped_not_fatal(tmp_path, caplog):
+    """The managed personas-installed dir is walked while the registry is being
+    CONSTRUCTED — i.e. during server startup (server/manager.py builds one). The dir
+    is app-written and therefore always UTF-8, but nothing stops a user hand-dropping
+    a file into it: a manifest saved in a legacy codepage (GBK on zh-CN Windows) used
+    to raise UnicodeDecodeError straight out of __init__ and take the whole server
+    down with it. One bad file must cost exactly one persona.
+    """
+    installed = tmp_path / "personas-installed"
+    # (a) legacy codepage — the bytes are not valid UTF-8, so a strict decode raised.
+    gbk = installed / "gbk-drop"
+    gbk.mkdir(parents=True)
+    (gbk / "manifest.md").write_bytes(_mini_manifest("gbkdrop", "坏了").encode("gbk"))
+    # (b) not a manifest at all — the same walk, a different way to fail.
+    junk = installed / "junk"
+    junk.mkdir()
+    (junk / "manifest.md").write_text("no frontmatter here", encoding="utf-8")
+    # (c) the healthy neighbour that must survive both.
+    good = installed / "fine"
+    good.mkdir()
+    (good / "manifest.md").write_text(_mini_manifest("fine", "Fine"), encoding="utf-8")
+
+    with caplog.at_level("WARNING", logger="coworker.personas.registry"):
+        reg = PersonaRegistry(state_path=tmp_path / "personas.json")
+
+    assert "fine" in reg.ids()  # the healthy sibling installed
+    assert DEFAULT_PERSONA_ID in reg.ids()  # and the built-ins are all there
+    assert "junk" not in reg.ids() and "no frontmatter" not in str(reg.ids())
+    # Skips are logged, never swallowed.
+    assert any("manifest" in r.getMessage() for r in caplog.records)
+    # The GBK drop is decoded with errors="replace", so it lands as mojibake rather
+    # than exploding — either outcome is fine, a raised UnicodeDecodeError is not.
+    assert "gbkdrop" in reg.ids() or any(
+        "gbk-drop" in r.getMessage() for r in caplog.records
+    )
+
+
+def test_a_broken_builtin_manifest_still_raises(tmp_path):
+    """The skip is for user-supplied dirs only. A built-in that will not parse is a
+    packaging bug, and shipping with that persona silently missing is worse than
+    failing the build — so built-ins stay loud.
+    """
+    from coworker.personas.manifest import ManifestError
+
+    builtin = tmp_path / "builtin"
+    builtin.mkdir()
+    (builtin / "nope.md").write_text("no frontmatter here", encoding="utf-8")
+    with pytest.raises(ManifestError):
+        PersonaRegistry(builtin_dir=builtin, state_path=tmp_path / "personas.json")

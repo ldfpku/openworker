@@ -355,7 +355,10 @@ def _validate_tools(persona_id: str, tools: list[str]) -> None:
 def load_manifest_file(path: str | Path, *, builtin: bool = False) -> PersonaManifest:
     p = Path(path)
     return parse_manifest(
-        p.read_text(encoding="utf-8"),
+        # errors="replace": a hand-dropped non-UTF-8 manifest becomes mojibake the
+        # parser can reject with a ManifestError, not a UnicodeDecodeError raised
+        # from under whoever is enumerating a directory.
+        p.read_text(encoding="utf-8", errors="replace"),
         fallback_id=p.stem,
         builtin=builtin,
         source=str(p),

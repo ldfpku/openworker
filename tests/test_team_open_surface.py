@@ -530,3 +530,30 @@ def test_cli_token_mint_and_list(tmp_path, capsys):
     assert main(["board", "token", "list", "--db", str(tmp_path)]) == 0
     out = capsys.readouterr().out
     assert "nia" in out and "laptop" in out and token not in out
+
+
+def test_cli_prints_over_a_legacy_codepage_stdout(tmp_path, monkeypatch):
+    """zh-CN Windows regression: an agent that runs `ocw` from a shell tool gets a
+    cp936-encoded stdout *pipe*, and board titles routinely carry emoji. Printing one
+    raised UnicodeEncodeError and killed the listing mid-stream (the --json paths
+    escaped it only because json.dumps defaults to ensure_ascii). main() must force
+    stdout to UTF-8 before it prints anything.
+    """
+    import io
+    import sys
+
+    from coworker.teams.cli import main
+
+    space_args = ["--db", str(tmp_path), "--space", "proj"]
+    assert main(
+        ["board", "create", "上线 🚀 done", "--criteria", "prints",
+         *space_args, "--actor", "lead-1", "--role", "lead"]
+    ) == 0
+
+    # Exactly what CPython hands the process when stdout is a cp936 pipe.
+    buf = io.BytesIO()
+    monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(buf, encoding="gbk"))
+    monkeypatch.setattr(sys, "stderr", io.TextIOWrapper(io.BytesIO(), encoding="gbk"))
+    assert main(["board", "list", *space_args]) == 0
+    sys.stdout.flush()
+    assert "上线 🚀 done" in buf.getvalue().decode("utf-8")

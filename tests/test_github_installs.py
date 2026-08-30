@@ -614,3 +614,40 @@ def test_clone_refuses_non_empty_target(tmp_path, monkeypatch, _origin):
     out = tools["github_clone"]("acme", "site")
     assert "not empty" in out["error"]
     assert (granted / "site" / "keep.txt").read_text() == "existing work"
+
+
+def test_clone_reads_git_config_as_utf8_not_locale(tmp_path, monkeypatch):
+    """zh-CN Windows regression: the post-clone no-token-at-rest audit read
+    .git/config with no encoding=, so it decoded with the locale codepage. git writes
+    that file as UTF-8, so a non-ASCII branch name (which clone records under
+    [branch "..."]) raised UnicodeDecodeError on cp936 — a successful clone reported
+    back to the agent as a confusing codec error.
+    """
+    import locale
+
+    # A 'GitHub' whose default branch is non-ASCII. "一)" is the trap: UTF-8
+    # E4 B8 80 29 — after the valid GBK pair E4 B8, 0x80 is below GBK's lead range,
+    # so a locale decode raises mid-stream.
+    branch = "发布/第一)轮"
+    base = tmp_path / "githost"
+    bare = base / "acme" / "site.git"
+    bare.mkdir(parents=True)
+    _git(["init", "--bare", f"--initial-branch={branch}", str(bare)], cwd=tmp_path)
+    work = tmp_path / "work"
+    work.mkdir()
+    _git(["init", f"--initial-branch={branch}"], cwd=work)
+    (work / "README.md").write_text("hello")
+    _git(["add", "."], cwd=work)
+    _git(["commit", "-m", "first"], cwd=work)
+    _git(["remote", "add", "origin", str(bare)], cwd=work)
+    _git(["push", "origin", branch], cwd=work)
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("GITHUB_GIT_URL", f"file://{base}")
+    secrets = SecretStore()
+    granted, tools = _clone_tools(secrets, tmp_path)
+
+    monkeypatch.setattr(locale, "getpreferredencoding", lambda do_setlocale=True: "gbk")
+    out = tools["github_clone"]("acme", "site")
+    assert out.get("ok") is True, out
+    assert branch in (granted / "site" / ".git" / "config").read_text(encoding="utf-8")

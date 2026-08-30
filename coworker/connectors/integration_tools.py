@@ -822,7 +822,11 @@ def make_integration_tools(
             return {"error": f"clone failed: {git_err}"}
         # Belt and braces for the no-token-at-rest rule: header auth is
         # process-only, so nothing secret can be in the clone's config — verify.
-        config = (target / ".git" / "config").read_text()
+        # git writes .git/config as UTF-8; read it as such rather than the
+        # locale codepage, or a non-ASCII branch name blows up on cp936.
+        config = (target / ".git" / "config").read_text(
+            encoding="utf-8", errors="replace"
+        )
         if "AUTHORIZATION" in config or "x-access-token" in config:
             import shutil
 
