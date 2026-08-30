@@ -182,6 +182,59 @@ def test_outbound_strips_source_with_and_without_context(tmp_path):
     assert engine2.messages[-1]["source"] == src  # original untouched
 
 
+def test_outbound_repairs_dangling_tool_call(tmp_path):
+    """A tool_call whose result never landed (process death / interruption mid-round)
+    must be answered with a synthesized stub on replay — strict providers 400 on the
+    whole conversation otherwise ('No tool output found for function call …'),
+    bricking the durable session. The canonical history stays untouched, and
+    answered calls are never double-answered."""
+    registry = ToolRegistry()
+    permissions = PermissionEngine(workspace_root=tmp_path)
+    engine = TurnEngine(
+        provider=CapturingProvider([]),
+        registry=registry,
+        permissions=permissions,
+        model="gpt-5.5",
+    )
+    engine.messages.extend(
+        [
+            {"role": "user", "content": "check the repo"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_ok",
+                        "type": "function",
+                        "function": {"name": "run_shell", "arguments": "{}"},
+                    },
+                    {
+                        "id": "call_lost",
+                        "type": "function",
+                        "function": {"name": "run_shell", "arguments": "{}"},
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_ok", "content": "done"},
+            {"role": "user", "content": "next message arrived after the crash"},
+        ]
+    )
+    before = len(engine.messages)
+    out = engine._outbound_messages()
+    tools = [m for m in out if m.get("role") == "tool"]
+    assert [t["tool_call_id"] for t in tools] == ["call_ok", "call_lost"]
+    assert "interrupted" in tools[1]["content"]
+    # the stub sits inside the tool block, before the next real user message
+    assert out[out.index(tools[1]) + 1]["content"].startswith("next message")
+    # canonical history untouched — no stub persisted
+    assert len(engine.messages) == before
+    assert all(
+        m.get("tool_call_id") != "call_lost"
+        for m in engine.messages
+        if m.get("role") == "tool"
+    )
+
+
 def test_outbound_messages_real_users_byte_stable_across_calls(tmp_path):
     """Two consecutive `_outbound_messages()` calls must leave every REAL (persisted)
     message byte-identical — only the ephemeral `<system-context>` tail may differ. This

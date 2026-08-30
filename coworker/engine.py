@@ -1368,6 +1368,38 @@ class TurnEngine:
             for msg in source_messages
             if msg.get("role") != "notice"
         ]
+        # Crash/interrupt repair (replay-side only): an assistant tool_call whose
+        # result never landed — the process died or the turn was interrupted between
+        # persisting the assistant message and its tool outputs — makes strict
+        # providers reject the whole conversation ("No tool output found for function
+        # call …"), bricking the durable session. Synthesize a stub result for each
+        # dangling id, appended after the round's real tool replies; the canonical
+        # history stays untouched, and when nothing dangles the list is identical.
+        repaired: list[dict[str, Any]] = []
+        i = 0
+        while i < len(out):
+            msg = out[i]
+            repaired.append(msg)
+            i += 1
+            calls = msg.get("tool_calls") if msg.get("role") == "assistant" else None
+            if not calls:
+                continue
+            answered: set[str] = set()
+            while i < len(out) and out[i].get("role") == "tool":
+                answered.add(str(out[i].get("tool_call_id") or ""))
+                repaired.append(out[i])
+                i += 1
+            for call in calls:
+                call_id = str((call or {}).get("id") or "")
+                if call_id and call_id not in answered:
+                    repaired.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call_id,
+                            "content": "[tool execution was interrupted before returning a result]",
+                        }
+                    )
+        out = repaired
         # PDF attachments (stored as `file` parts) are adapted to the ACTIVE model right
         # here — never in the persisted history — so a mid-session model switch always
         # re-decides: native PDF models get the real document, the rest get the local
