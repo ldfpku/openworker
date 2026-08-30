@@ -34,6 +34,7 @@ from coworker.providers import (
     ProviderClient,
     ToolCall,
 )
+from coworker.providers.base import SYSTEM_CONTEXT_OPEN
 from coworker.server import create_app
 from coworker.server.manager import SessionManager
 from coworker.sessions import SessionRecord
@@ -220,7 +221,11 @@ async def test_ui_refresh_cross_cutting_e2e(fake_slack, tmp_path, monkeypatch):
         assert provider.calls, "provider was never invoked"
         first_users = [m for m in provider.calls[0] if m.get("role") == "user"]
         assert first_users
-        sent = first_users[-1]
+        # the trailing user message is the ephemeral <system-context> tail (the real
+        # session's context_provider always yields at least the live clock line); the
+        # REAL user message is the one just before it
+        assert SYSTEM_CONTEXT_OPEN in first_users[-1]["content"]
+        sent = first_users[-2]
         assert "source" not in sent
         assert "subscribed" in sent["content"]
         assert all("source" not in m for call in provider.calls for m in call)
