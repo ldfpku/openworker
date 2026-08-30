@@ -890,6 +890,29 @@ export async function connectMcpBacked(name: string): Promise<{ ok: boolean; err
   return res.json();
 }
 
+export interface WeixinQrStatus {
+  state: string;
+  qr?: string | null;
+  error?: string | null;
+  account?: string | null;
+  refreshes?: number;
+}
+
+/** Start (or restart) the personal-WeChat QR login session. Fully local: the
+ * sidecar drives Tencent's iLink QR flow in a background task and renders the
+ * QR server-side; poll getWeixinQrStatus for the image and progress. */
+export async function weixinQrLogin(): Promise<{ ok: boolean; started?: boolean; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/connectors/weixin/qr-login`, {
+    method: "POST",
+  });
+  return res.json();
+}
+
+export async function getWeixinQrStatus(): Promise<WeixinQrStatus> {
+  const res = await fetch(`${httpBase()}/v1/connectors/weixin/qr-status`);
+  return res.json();
+}
+
 export interface ConnectorTool {
   name: string;
   label: string;

@@ -22,11 +22,12 @@ _SCHEMA = {
     "function": {
         "name": "send_message",
         "description": (
-            "Send a message to a connected chat (Slack or Telegram). `target` is the "
-            "reply handle from an inbound message (e.g. 'telegram:12345' or 'slack:C0123', "
-            "optionally with a ':<thread>' suffix) — or, for Slack, just the channel NAME "
-            "('#general' or 'general'; resolved against the connected workspaces). Use this to "
-            "actually reach a person — plain assistant text is not delivered anywhere."
+            "Send a message to a connected chat (Slack, Telegram, or personal WeChat). "
+            "`target` is the reply handle from an inbound message (e.g. 'telegram:12345', "
+            "'slack:C0123', or 'weixin:wxid_abc', optionally with a ':<thread>' suffix) — "
+            "or, for Slack, just the channel NAME ('#general' or 'general'; resolved "
+            "against the connected workspaces). Use this to actually reach a person — "
+            "plain assistant text is not delivered anywhere."
         ),
         "parameters": {
             "type": "object",

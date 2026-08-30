@@ -41,7 +41,8 @@ hiddenimports = []
 datas = []
 binaries = []
 
-for pkg in ("coworker", "aisuite", "mcp", "ddgs", "croniter", "docstring_parser"):
+# segno renders the Weixin QR-login PNG; core dep, pure python — always bundled.
+for pkg in ("coworker", "aisuite", "mcp", "ddgs", "croniter", "docstring_parser", "segno"):
     hiddenimports += collect_submodules(pkg)
 
 # Builtin personas ship as DATA, not code: personas/builtin/<id>/manifest.md plus their
@@ -105,7 +106,8 @@ for pkg in ("boto3", "botocore"):
     except Exception:
         pass
 
-for pkg in ("slack_bolt", "telegram"):  # [messaging] extra — optional
+# [messaging] extra — optional (cryptography decrypts inbound Weixin media)
+for pkg in ("slack_bolt", "telegram", "cryptography"):
     try:
         hiddenimports += collect_submodules(pkg)
     except Exception:

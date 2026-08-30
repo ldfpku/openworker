@@ -48,7 +48,7 @@ class ConnectorDescriptor:
     title: str
     icon: str
     blurb: str
-    auth: str  # "bot_token" | "socket_app" | "oauth" | "token" | "api_token" | "none"
+    auth: str  # "bot_token" | "socket_app" | "oauth" | "token" | "api_token" | "none" | "qr"
     two_way: bool
     fields: list[Field]
     instructions: list[str]
@@ -445,6 +445,50 @@ DESCRIPTORS: list[ConnectorDescriptor] = [
             "After connecting, DM your new bot once, then use Capture to grab your user ID.",
         ],
         validate=_validate_telegram,
+    ),
+    ConnectorDescriptor(
+        name="weixin",
+        # Titles render untranslated (proper nouns) — use the product's actual
+        # name; "WeChat (Personal)" stays in aliases via name/aliases matching.
+        title="微信",
+        icon="微",
+        blurb="Two-way DM messaging with your personal WeChat via Tencent's iLink Bot API.",
+        # "qr": the GUI's primary pane is the local QR login (server-rendered PNG,
+        # polled via /v1/connectors/weixin/qr-status); the manual paste fields below
+        # remain for credentials from an existing iLink login. The backend maps
+        # unknown auth values to a plain token profile, so this needs no setup.py
+        # changes.
+        auth="qr",
+        two_way=True,
+        channels=False,  # @im.bot identities don't receive ordinary group events
+        brand_color="#07C160",
+        logo="weixin",
+        aliases=("wechat", "微信"),
+        fields=[
+            Field(
+                "account_id",
+                "Account ID",
+                help="iLink bot id from QR login (e.g. xxxx@im.bot)",
+            ),
+            Field(
+                "bot_token",
+                "Bot token",
+                secret=True,
+                help="iLink bot token from QR login",
+            ),
+            Field(
+                "base_url",
+                "API base URL",
+                required=False,
+                placeholder="https://ilinkai.weixin.qq.com",
+            ),
+            _ALLOWED_FIELD,
+        ],
+        instructions=[
+            "Click Scan QR and scan with WeChat on your phone (recommended)",
+            "Or paste credentials from an existing iLink bot login below",
+            "The QR login creates a separate bot identity — group chats generally can't reach it, DMs work",
+        ],
     ),
     ConnectorDescriptor(
         name="slack",

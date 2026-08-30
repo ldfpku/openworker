@@ -58,6 +58,36 @@ def test_dm_with_designated_session_delivers(tmp_path, monkeypatch):
     assert mgr.unrouted.list() == []
 
 
+def test_weixin_dm_arms_standing_reply_grant(tmp_path, monkeypatch):
+    """A weixin DM delivered to the designated session pre-approves send_message back
+    to that peer (durably, via the mention-thread map get_engine re-seeds from).
+    Slack DMs keep the normal approval flow — the grant is weixin-scoped."""
+    mgr = SessionManager(workspace=tmp_path, provider=ScriptedProvider())
+    _connect_slack(mgr)
+    mgr.secrets.put(
+        "weixin:default",
+        {"bot_token": "tok", "account_id": "bot@im.bot", "enabled": True},
+    )
+
+    async def fake_deliver(session_id, message, *, source=None):
+        pass
+
+    monkeypatch.setattr(mgr, "deliver_to_session", fake_deliver)
+    mgr.set_dm_session("sDM")
+
+    wx = MessageEvent(
+        text="hi",
+        source=SessionSource(
+            platform="weixin", chat_id="wxid_peer", user_id="wxid_peer", chat_type="dm"
+        ),
+    )
+    asyncio.run(mgr._dispatch_inbound(wx))
+    assert mgr.mention_sessions.get("weixin:wxid_peer") == "sDM"
+
+    asyncio.run(mgr._dispatch_inbound(_dm("ping")))
+    assert mgr.mention_sessions.get("slack:D1") is None
+
+
 def test_dm_without_designation_is_parked(tmp_path):
     mgr = SessionManager(workspace=tmp_path, provider=ScriptedProvider())
     assert mgr.dm_session() is None

@@ -459,6 +459,10 @@ def make_adapter(
             )
         if profile.get("bot_token") and profile.get("app_token"):
             return SlackAdapter(profile["bot_token"], profile["app_token"])
+    if platform == "weixin" and profile.get("bot_token") and profile.get("account_id"):
+        from .weixin_adapter import WeixinAdapter
+
+        return WeixinAdapter(profile)
     if platform == "github" and profile.get("mode") == "relay":
         if not (relay_url and token_provider):
             logger.warning(

@@ -12,6 +12,7 @@ import {
 import { ConnectorBadge } from "../../connectors/ConnectorIcon";
 import { ConnectSetup } from "../ManageTabs";
 import { CloudSignInInline, CloudStatusPending } from "./CloudSignIn";
+import { WeixinQrPane } from "./WeixinQrPane";
 import { PILL_ACCENT, PILL_LINE, TAG_ACCENT } from "./ui";
 
 // The ONE place a connection gets added (UX-DECISIONS §21): the detail page's header
@@ -46,6 +47,7 @@ export function AddConnectionModal({
     c.name === "github" ||
     c.name === "notion" ||
     c.name === "attio" ||
+    c.name === "weixin" ||
     (mcpBacked && c.fields.length > 0);
   const [pane, setPane] = useState<"one" | "manual">("one");
 
@@ -87,7 +89,7 @@ export function AddConnectionModal({
                     }
                     onClick={() => setPane(p)}
                   >
-                    {p === "one" ? t("One click") : t("Manual")}
+                    {p === "one" ? (c.name === "weixin" ? t("Scan QR") : t("One click")) : t("Manual")}
                   </button>
                 ))}
               </div>
@@ -101,6 +103,9 @@ export function AddConnectionModal({
                 <GithubOneClick c={c} cloud={cloud} />
               ) : c.name === "slack" ? (
                 <SlackOneClick c={c} cloud={cloud} />
+              ) : c.name === "weixin" ? (
+                /* Local QR sign-in — must not hit the cloud sign-in gate. */
+                <WeixinQrPane c={c} onConnected={() => { onChanged(); onClose(); }} />
               ) : (
                 <GenericOneClick c={c} cloud={cloud} />
               )

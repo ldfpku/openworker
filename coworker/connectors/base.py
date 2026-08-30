@@ -147,12 +147,20 @@ class BasePlatformAdapter(ABC):
     def __init__(self) -> None:
         self._handler: Optional[MessageHandler] = None
         self._interaction_handler: Optional[InteractionHandler] = None
+        # Optional pre-dispatch authorization probe (installed by the Gateway).
+        # Delivery authorization stays in the Gateway; this only lets an adapter
+        # skip expensive side effects (media downloads, token persistence) for
+        # senders the allowlist is going to park anyway.
+        self._auth_check: Optional[Callable[[SessionSource], bool]] = None
 
     def set_message_handler(self, handler: MessageHandler) -> None:
         self._handler = handler
 
     def set_interaction_handler(self, handler: InteractionHandler) -> None:
         self._interaction_handler = handler
+
+    def set_auth_check(self, check: Callable[[SessionSource], bool]) -> None:
+        self._auth_check = check
 
     async def send_interactive(
         self, chat_id: str, text: str, buttons, *, thread_id: Optional[str] = None

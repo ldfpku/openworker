@@ -1329,6 +1329,17 @@ def create_app(manager: SessionManager) -> FastAPI:
         asyncio.create_task(manager.mcp_connect_connector(name))
         return {"ok": True, "started": True}
 
+    @app.post("/v1/connectors/weixin/qr-login")
+    async def weixin_qr_login() -> dict[str, Any]:
+        # QR login for personal WeChat: scanning + phone confirm can take minutes,
+        # so the flow runs as a background task; the GUI polls qr-status until the
+        # state flips to "confirmed" (profile written, gateway reloaded) or "failed".
+        return await manager.weixin_qr_start()
+
+    @app.get("/v1/connectors/weixin/qr-status")
+    async def weixin_qr_status() -> dict[str, Any]:
+        return manager.weixin_qr_status()
+
     @app.post("/v1/connectors/{name}/disconnect")
     async def connector_disconnect(name: str) -> dict[str, Any]:
         # Managed profiles: best-effort flip of the cloud metadata record first

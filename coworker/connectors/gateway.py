@@ -71,7 +71,17 @@ class Gateway:
         adapter.set_message_handler(self._on_inbound)
         if self._interaction_handler is not None:
             adapter.set_interaction_handler(self._on_interaction)
+        # getattr: test doubles that don't subclass BasePlatformAdapter still register.
+        set_check = getattr(adapter, "set_auth_check", None)
+        if set_check is not None:
+            set_check(self._is_source_authorized)
         self._adapters[adapter.platform] = adapter
+
+    def _is_source_authorized(self, source: SessionSource) -> bool:
+        """Pre-dispatch probe for adapters that gate side effects (media download,
+        token persistence) on authorization. Delivery auth stays in _on_inbound."""
+        settings = self.settings.get(source.platform)
+        return settings is not None and is_authorized(settings, source)
 
     async def _on_interaction(self, event: InteractionEvent) -> None:
         source = SessionSource(

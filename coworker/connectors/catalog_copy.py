@@ -54,6 +54,11 @@ ABOUT: dict[str, str] = {
     "asana": "Keep up with your Asana work — search and read tasks and "
     "projects, create tasks, and comment. Connects with a personal access "
     "token from the Asana developer console.",
+    "weixin": "Chat with your coworker from personal WeChat over Tencent's "
+    "official iLink Bot API. Scanning the QR creates a bot identity separate "
+    "from your own account — DMs to it reach the agent and replies come back "
+    "to the same chat. Ordinary group chats generally don't reach bot "
+    "identities, so this is a DM channel.",
 }
 
 # What connecting actually grants, as short honest bullets. Write powers always
@@ -201,6 +206,13 @@ ACCESS: dict[str, list[str]] = {
     ],
     "hunter": [
         "Finds and verifies email addresses, using your Hunter quota.",
+    ],
+    "weixin": [
+        "Reads messages sent to the bot identity — never your own chats.",
+        "Sends messages as the bot, and saves received attachments locally.",
+        "DMs work; ordinary group chats generally aren't delivered to bots.",
+        "Messages are consumed only while OpenWorker is running.",
+        "Only senders on your allow-list are answered.",
     ],
 }
 

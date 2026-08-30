@@ -193,6 +193,13 @@ class SessionManager:
         # drained once by the WS handler to append a transcript notice.
         self._mcp_session_failures: dict[str, list[str]] = {}
         self.gateway: Optional[Gateway] = None
+        # Weixin QR login session (one at a time): the background flow task mutates
+        # a QrLoginState; /v1/connectors/weixin/qr-status serves snapshots of it.
+        self._weixin_qr: Optional[Any] = None  # connectors.weixin_login.QrLoginState
+        self._weixin_qr_task: Optional[asyncio.Task] = None
+        # True while a confirmed QR login is committing (profile write + gateway
+        # reload) — weixin_qr_start must not cancel the task in that window.
+        self._weixin_qr_committing = False
         self._data_base = base
         # Desktop/UI prefs (default model, onboarding state) — not secrets; a plain JSON file.
         self._prefs = self._load_prefs()
@@ -1564,6 +1571,101 @@ class SessionManager:
         self, name: str, enabled: dict[str, Any]
     ) -> dict[str, Any]:
         return update_connector_tools(self.secrets, name, enabled)
+
+    async def weixin_qr_start(self) -> dict[str, Any]:
+        """Begin (or restart) the Weixin QR login flow as a background task —
+        scanning + phone confirm can take minutes, so the GUI polls
+        `weixin_qr_status` until "confirmed" or "failed". On success the fresh
+        credentials land in the `weixin:default` profile (allow-list preserved,
+        `bot_token` key deliberate: load_settings/_resolve_token read it as-is),
+        the runtime state file is written for the stateless sender, and the
+        gateway hot-reloads — exactly like a manual connect."""
+        from ..connectors.weixin_login import QrLoginState, qr_login_flow
+
+        if self._weixin_qr_task is not None and not self._weixin_qr_task.done():
+            if self._weixin_qr_committing:
+                # The phone already confirmed and the commit (profile write +
+                # gateway reload) is in flight. Cancelling it mid-refresh_gateway
+                # would tear down every adapter and never rebuild — let it finish;
+                # the GUI poll sees "confirmed" momentarily. (Trigger is ordinary:
+                # the QR pane re-fires on every modal mount.)
+                return {"ok": True, "started": True}
+            self._weixin_qr_task.cancel()
+        self._weixin_qr = QrLoginState()
+
+        def _on_state(st: QrLoginState) -> None:
+            self._weixin_qr = st
+
+        async def _commit(creds: dict[str, Any]) -> None:
+            existing = self.secrets.get("weixin:default") or {}
+            self.secrets.put(
+                "weixin:default",
+                {
+                    "type": "token",
+                    "enabled": True,
+                    "bot_token": creds["token"],
+                    "account_id": creds["account_id"],
+                    "base_url": creds["base_url"],
+                    "user_id": creds.get("user_id", ""),
+                    "account": creds["account_id"],
+                    "allowed_users": existing.get("allowed_users") or [],
+                },
+            )
+            from ..connectors.weixin_state import WeixinState
+
+            WeixinState().save_runtime(creds["account_id"], creds["base_url"])
+            await self.refresh_gateway()
+            # Only now flip to confirmed — the GUI's onConnected re-reads the
+            # connector list, which must already show the card as connected.
+            cur = self._weixin_qr
+            if cur is not None:
+                cur.state = "confirmed"
+                cur.account = creds["account_id"]
+
+        async def _run() -> None:
+            try:
+                creds = await qr_login_flow(on_state=_on_state)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                cur = self._weixin_qr
+                if cur is not None:
+                    cur.state = "failed"
+                    cur.error = str(exc)
+                return
+            if not creds:
+                return  # the flow flagged failed/timeout on the state already
+            # Shielded: a stray cancellation must not abort refresh_gateway
+            # halfway (stop_gateway done, rebuild never runs → every messaging
+            # listener silently offline until restart).
+            self._weixin_qr_committing = True
+            try:
+                await asyncio.shield(_commit(creds))
+            finally:
+                self._weixin_qr_committing = False
+
+        self._weixin_qr_task = asyncio.create_task(_run())
+        return {"ok": True, "started": True}
+
+    def weixin_qr_status(self) -> dict[str, Any]:
+        """Snapshot of the QR login session for the GUI's 1 s poll ("idle" before
+        any login was started this run)."""
+        st = self._weixin_qr
+        if st is None:
+            return {
+                "state": "idle",
+                "qr": None,
+                "error": None,
+                "account": None,
+                "refreshes": 0,
+            }
+        return {
+            "state": st.state,
+            "qr": st.qr_data_uri,
+            "error": st.error,
+            "account": st.account,
+            "refreshes": st.refreshes,
+        }
 
     def list_audit(
         self,
@@ -4424,6 +4526,20 @@ class SessionManager:
         # DM (or any non-channel): route to the designated session, else park it for visibility.
         dm = self.dm_session()
         if dm and self._inbound_connector_allowed(dm, src.platform):
+            if src.platform == "weixin":
+                # Weixin DMs are pure reply handles (no threads, no mention router):
+                # replying to the person who just messaged you is the whole point, so
+                # the DM session holds a standing send_message grant for this peer.
+                # Durable via the mention-thread map (the §31 store already means
+                # "this session owns replies to this target" and is re-seeded onto
+                # the engine on every rebuild); armed on the live engine here. A
+                # DM-route change self-heals: the next inbound re-points the entry.
+                self.mention_sessions.set(src.target, dm, channel=channel)
+                engine = self._engines.get(dm)
+                if engine is not None:
+                    engine.permissions.task_rules.setdefault(
+                        "send_message", set()
+                    ).add(src.target)
             await self.deliver_to_session(dm, event.tagged_text(), source=ms.to_dict())
         elif dm:
             # Designated, but this session has muted the connector → park rather than deliver.

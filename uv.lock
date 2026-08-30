@@ -198,21 +198,20 @@ wheels = [
 
 [[package]]
 name = "anthropic"
-version = "0.125.0"
+version = "1.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
-    { name = "distro" },
     { name = "docstring-parser" },
-    { name = "httpx" },
+    { name = "httpx2" },
     { name = "jiter" },
     { name = "pydantic" },
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/62/f8/6f0560884b5363848347bd640b6c1d04abc25e7aa61787a232f790c6b60a/anthropic-0.125.0.tar.gz", hash = "sha256:e0cdd336580cb7411c1cdab69f80973e9bf4bff7f8e08141811d46307d45c682", size = 1112593, upload-time = "2026-08-19T22:00:42.837Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/95/1a/b5af41cc1fa14da277ec20ca5554dd2fcbc09b8523ac59b7a97fbb88e452/anthropic-1.2.0.tar.gz", hash = "sha256:12f8eedee7b7fb5685837b1371b7bfae1b281703f62355f4632598ec2fc53b34", size = 1137443, upload-time = "2026-08-27T20:29:12.68Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2f/1a/b1bd30cda3790557e8791bec5922a6ec8fabb6fa8b008c76a39cf7be6152/anthropic-0.125.0-py3-none-any.whl", hash = "sha256:3486013602eca76d8b12540764e53654f02cf4951110bca86cf06e67428a9f21", size = 1184067, upload-time = "2026-08-19T22:00:44.596Z" },
+    { url = "https://files.pythonhosted.org/packages/ed/78/3f8b52708b03309e511990700bb8d0ec7a0c9db3d2a1e0d1c3ca417a4604/anthropic-1.2.0-py3-none-any.whl", hash = "sha256:b60642b3e3cd6b8e3e328a2d3f2863ad2b6e743f1037e42cc0143f7df99f63c6", size = 1289535, upload-time = "2026-08-27T20:29:11.01Z" },
 ]
 
 [[package]]
@@ -683,13 +682,14 @@ dependencies = [
     { name = "fastapi" },
     { name = "google-auth" },
     { name = "google-genai" },
-    { name = "httpx" },
+    { name = "httpx", extra = ["socks"] },
     { name = "mcp" },
     { name = "openai" },
     { name = "pydantic" },
     { name = "pypdf" },
     { name = "pypdfium2" },
     { name = "pyyaml" },
+    { name = "segno" },
     { name = "textual" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "tzdata", marker = "sys_platform == 'win32'" },
@@ -706,11 +706,13 @@ browser = [
 ]
 dev = [
     { name = "httpx" },
+    { name = "httpx2" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
 ]
 messaging = [
     { name = "aiohttp" },
+    { name = "cryptography" },
     { name = "python-telegram-bot" },
     { name = "slack-bolt" },
 ]
@@ -719,18 +721,20 @@ messaging = [
 requires-dist = [
     { name = "aiohttp", marker = "extra == 'messaging'", specifier = ">=3.9" },
     { name = "aisuite", git = "https://github.com/andrewyng/aisuite.git?rev=1b4bbf303ec21968230b1ec869a144d054e9b3c4" },
-    { name = "anthropic", specifier = ">=0.40" },
+    { name = "anthropic", specifier = ">=1.0" },
     { name = "boto3", marker = "extra == 'bedrock'", specifier = ">=1.34" },
     { name = "croniter", specifier = ">=2" },
+    { name = "cryptography", marker = "extra == 'messaging'", specifier = ">=42" },
     { name = "ddgs", specifier = ">=9" },
     { name = "docstring-parser" },
     { name = "fastapi", specifier = ">=0.110" },
     { name = "google-auth", specifier = ">=2.23" },
-    { name = "google-genai", specifier = ">=1.0" },
-    { name = "httpx", specifier = ">=0.27" },
+    { name = "google-genai", specifier = ">=2" },
     { name = "httpx", marker = "extra == 'dev'" },
+    { name = "httpx", extras = ["socks"], specifier = ">=0.27" },
+    { name = "httpx2", marker = "extra == 'dev'" },
     { name = "mcp", specifier = ">=1.1,<2" },
-    { name = "openai", specifier = ">=1.0" },
+    { name = "openai", specifier = ">=3" },
     { name = "playwright", marker = "extra == 'browser'", specifier = ">=1.44" },
     { name = "pydantic", specifier = ">=2" },
     { name = "pypdf", specifier = ">=5" },
@@ -739,6 +743,7 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'" },
     { name = "python-telegram-bot", marker = "extra == 'messaging'", specifier = ">=21" },
     { name = "pyyaml", specifier = ">=6" },
+    { name = "segno", specifier = ">=1.6" },
     { name = "slack-bolt", marker = "extra == 'messaging'", specifier = ">=1.18" },
     { name = "textual", specifier = ">=1.0" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2" },
@@ -2787,6 +2792,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/76/43/35e4d8aa320bffe8287fe8f65f578fa2d2db0a64212f0e710dce58267854/s3transfer-0.19.2.tar.gz", hash = "sha256:ba0309fd86be3c27dbf78cdd813c13c5e1df16e5874b99d2535ebbdfb9892993", size = 165592, upload-time = "2026-07-22T19:30:44.432Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/bc/e7/5c595c75e9f41a44f30e526eda465ea0b4eec93470e074e4a111b253f13a/s3transfer-0.19.2-py3-none-any.whl", hash = "sha256:d8168eccca828cbb2cd573675333f3bddd254313a9c42494b84c76b539e8ba25", size = 90216, upload-time = "2026-07-22T19:30:43.251Z" },
+]
+
+[[package]]
+name = "segno"
+version = "1.6.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/1c/2e/b396f750c53f570055bf5a9fc1ace09bed2dff013c73b7afec5702a581ba/segno-1.6.6.tar.gz", hash = "sha256:e60933afc4b52137d323a4434c8340e0ce1e58cec71439e46680d4db188f11b3", size = 1628586, upload-time = "2025-03-12T22:12:53.324Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d6/02/12c73fd423eb9577b97fc1924966b929eff7074ae6b2e15dd3d30cb9e4ae/segno-1.6.6-py3-none-any.whl", hash = "sha256:28c7d081ed0cf935e0411293a465efd4d500704072cdb039778a2ab8736190c7", size = 76503, upload-time = "2025-03-12T22:12:48.106Z" },
 ]
 
 [[package]]

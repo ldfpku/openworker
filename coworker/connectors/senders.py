@@ -138,9 +138,122 @@ def _send_slack_interactive(
     return SendResult(False, error=data.get("error") or "slack send failed")
 
 
+def _send_weixin(
+    token: str, chat_id: str, text: str, thread_id: Optional[str] = None
+) -> SendResult:
+    """Personal WeChat via the iLink Bot API (no threads — `thread_id` ignored).
+
+    Stateless like the other senders, but iLink needs two bits of local runtime
+    state (written by the adapter/QR login, NOT the SecretStore): the per-account
+    base URL + account id from `runtime.json`, and the peer's cached
+    `context_token`, which outbound sends echo. Text is markdown-normalized and
+    split into <=2000-char chunks; each chunk retries on rate limit (-2), and a
+    session-expired response (-14, or -2 disguised as "unknown error") drops the
+    cached token and retries once tokenless — iLink accepts degraded tokenless
+    sends, which keeps unattended pushes alive.
+    """
+    import time
+    import uuid
+
+    import httpx
+
+    from .weixin_protocol import (
+        API_TIMEOUT_S,
+        EP_SEND_MESSAGE,
+        RATE_LIMIT_ERRCODE,
+        SESSION_EXPIRED_ERRCODE,
+        api_post_sync,
+        build_send_payload,
+        format_outbound,
+        is_stale_session,
+        split_for_delivery,
+    )
+    from .weixin_state import WeixinState
+
+    state = WeixinState()
+    runtime = state.load_runtime()
+    account_id = str(runtime.get("account_id") or "")
+    base_url = str(runtime.get("base_url") or "")
+    if not account_id or not base_url:
+        return SendResult(False, error="weixin not connected")
+    chunks = [c for c in split_for_delivery(format_outbound(text)) if c.strip()]
+    if not chunks:
+        return SendResult(False, error="empty message")
+    context_token = state.context_token(account_id, chat_id)
+    last_message_id: Optional[str] = None
+    _MAX_ATTEMPTS = 4  # per chunk, across transport + rate-limit retries
+    _CHUNK_DELAY = 1.5  # between chunks, not after the last
+    with httpx.Client() as client:
+        for index, chunk in enumerate(chunks):
+            # client_id doubles as the server-side dedup key: a retried chunk MUST
+            # reuse it so a send that actually landed isn't duplicated.
+            client_id = f"ow-weixin-{uuid.uuid4().hex}"
+            retried_without_token = False
+            attempt = 0
+            while True:
+                try:
+                    resp = api_post_sync(
+                        client,
+                        base_url=base_url,
+                        endpoint=EP_SEND_MESSAGE,
+                        payload=build_send_payload(
+                            chat_id, chunk, context_token, client_id
+                        ),
+                        token=token,
+                        timeout_s=API_TIMEOUT_S,
+                    )
+                except Exception as exc:  # network / decode
+                    attempt += 1
+                    if attempt >= _MAX_ATTEMPTS:
+                        return SendResult(False, error=str(exc))
+                    time.sleep(1.0 * attempt)  # linear backoff
+                    continue
+                ret = resp.get("ret")
+                errcode = resp.get("errcode")
+                if ret in (0, None) and errcode in (0, None):
+                    last_message_id = str(resp.get("message_id") or "") or client_id
+                    break
+                stale = (
+                    ret == SESSION_EXPIRED_ERRCODE
+                    or errcode == SESSION_EXPIRED_ERRCODE
+                    or is_stale_session(ret, errcode, resp.get("errmsg"))
+                )
+                if stale and context_token and not retried_without_token:
+                    # Session expired: drop the cached token, retry once tokenless.
+                    retried_without_token = True
+                    state.drop_context_token(account_id, chat_id)
+                    context_token = None
+                    continue
+                if ret == RATE_LIMIT_ERRCODE or errcode == RATE_LIMIT_ERRCODE:
+                    attempt += 1
+                    if attempt >= _MAX_ATTEMPTS:
+                        errmsg = resp.get("errmsg") or resp.get("msg") or "rate limited"
+                        return SendResult(
+                            False,
+                            error=(
+                                "iLink sendmessage rate limited: "
+                                f"ret={ret} errcode={errcode} errmsg={errmsg}"
+                            ),
+                        )
+                    time.sleep(3.0)  # 3x backoff for genuine rate limits
+                    continue
+                errmsg = resp.get("errmsg") or resp.get("msg") or "unknown error"
+                return SendResult(
+                    False,
+                    error=(
+                        "iLink sendmessage error: "
+                        f"ret={ret} errcode={errcode} errmsg={errmsg}"
+                    ),
+                )
+            if index < len(chunks) - 1:
+                time.sleep(_CHUNK_DELAY)
+    return SendResult(True, message_id=last_message_id)
+
+
 DEFAULT_SENDERS: dict[str, Sender] = {
     "telegram": _send_telegram,
     "slack": _send_slack,
+    "weixin": _send_weixin,
 }
 
 

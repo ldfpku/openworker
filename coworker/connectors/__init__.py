@@ -37,6 +37,7 @@ from .setup import (
 from .integration_tools import make_integration_tools
 from .tools import make_send_file_tool, make_send_message_tool
 from .tool_defs import connector_for_tool
+from .weixin_adapter import WeixinAdapter
 
 __all__ = [
     "BasePlatformAdapter",
@@ -70,6 +71,7 @@ __all__ = [
     "SlackAdapter",
     "SlackRelayAdapter",
     "TelegramAdapter",
+    "WeixinAdapter",
     "make_adapter",
     "slack_event_to_event",
     "telegram_message_to_event",
