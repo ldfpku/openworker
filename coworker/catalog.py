@@ -96,7 +96,9 @@ def _git(context: AgentContext) -> list:
 
 
 def _search(context: AgentContext) -> list:
-    return search_tools(str(context.workspace))  # grep (ripgrep, .gitignore-aware)
+    # grep (ripgrep, .gitignore-aware). Multi-root aware like the file tools: it reaches
+    # the scratch dir and any folder granted mid-session, not just the primary workspace.
+    return search_tools(str(context.workspace), roots=context.roots)
 
 
 def _shell(context: AgentContext) -> list:

@@ -17,6 +17,7 @@ import json
 import time
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 from . import compaction as _compaction
@@ -1213,14 +1214,72 @@ class TurnEngine:
             },
         )
 
+    def _already_granted(self, args: dict[str, Any]) -> Optional[dict[str, Any]]:
+        """The request restated as a grant when the session ALREADY holds the folder — the
+        named path is a directory inside one of `roots`, with at least the access asked for.
+
+        The loop this closes (owner-hit 2026-08-31): a consumer that had gone stale on the
+        roots list kept refusing a folder the user HAD granted; the model reads a refusal as
+        "not granted" and calls request_directory again — same path, same round — parking an
+        endless run of consent cards. Answering from the roots list is free when the grant is
+        real and breaks the loop when some other consumer is wrong. Returns None whenever a
+        real prompt is still owed: no path named, unknown folder, write asked on a read-only
+        root, or a primary-promotion request (a different grant, always the user's call).
+        """
+        if bool(args.get("primary", False)):
+            return None
+        raw = str(args.get("path", "") or "").strip()
+        if not raw:
+            return None
+        try:
+            target = Path(raw).expanduser().resolve()
+            if not target.is_dir():
+                return None
+        except (OSError, ValueError):
+            return None
+        want_write = bool(args.get("writable", False))
+        # `self.roots` only — the session's shared list, attached by build_engine. NOT
+        # permissions.roots, which synthesizes a single writable root from workspace_root
+        # when it was given none; answering from that would speak for a session whose
+        # roots were never wired.
+        for r in getattr(self, "roots", None) or []:
+            if isinstance(r, dict):
+                rp, writable = r.get("path", ""), bool(r.get("writable", False))
+            elif isinstance(r, (str, Path)):
+                rp, writable = r, False
+            else:  # duck-typed RootDir-like
+                rp, writable = getattr(r, "path", ""), bool(getattr(r, "writable", False))
+            if not rp or (want_write and not writable):
+                continue
+            try:
+                target.relative_to(Path(str(rp)).expanduser().resolve())
+            except (ValueError, OSError):
+                continue
+            return {
+                "granted": True,
+                "path": str(target),
+                "writable": writable,
+                "note": (
+                    "You already have this folder — it is in the directories listed in "
+                    "<system-context>. Nothing was asked of the user. Use it directly by "
+                    "absolute path; if a tool still refuses, that is the tool's problem, "
+                    "not a missing grant, so report it instead of asking again."
+                ),
+            }
+        return None
+
     async def _handle_directory_request(
         self, tool_call: ToolCall
     ) -> AsyncIterator[Event]:
         """Emit the grant prompt, await the user's out-of-band decision (which the requester also
         applies to this session's roots), and return the outcome as the tool result."""
         args = tool_call.arguments or {}
-        if self.directory_requester is None:
-            result: dict[str, Any] = {
+        already = self._already_granted(args)
+        if already is not None:
+            # Never park a consent card for a folder the session already has.
+            result: dict[str, Any] = already
+        elif self.directory_requester is None:
+            result = {
                 "granted": False,
                 "error": "directory requests aren't available here",
             }

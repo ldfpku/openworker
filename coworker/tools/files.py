@@ -13,6 +13,8 @@ from typing import Any, Optional
 
 import aisuite as ai
 
+from ..roots import resolved_paths
+
 _DEFAULT_MAX_LINES = 2000
 _MAX_LINE_CHARS = 500
 
@@ -52,7 +54,13 @@ def file_tools(workspace: str, roots: Optional[list] = None) -> list:
     paths inside ANY root also resolve — multi-root sessions (universal scratch) address
     their scratch/extra dirs by the absolute paths the roots context advertises."""
     root = Path(workspace).resolve()
-    extra_roots = [Path(str(r.path)).resolve() for r in (roots or [])]
+    # `roots` is kept BY REFERENCE and resolved on every call (see resolved_paths) — never
+    # snapshotted here. Materialising the paths at build time made read_file the one
+    # consumer blind to a runtime grant, because the engine holding this closure is built
+    # once per session and cached: it kept answering "path escapes the session's
+    # directories" for a folder the user had just approved, which the model reads as a
+    # denial and answers with another request_directory — an endless grant loop
+    # (owner-hit 2026-08-31).
 
     def read_file(
         path: str,
@@ -71,7 +79,7 @@ def file_tools(workspace: str, roots: Optional[list] = None) -> list:
         try:
             target.relative_to(root)  # keep reads inside the workspace
         except ValueError:
-            for r in extra_roots:
+            for r in resolved_paths(roots):
                 try:
                     target.relative_to(r)
                     home = r

@@ -479,3 +479,107 @@ def test_promote_workspace_is_one_way_once(tmp_path):
     assert mgr.promote_workspace(sid, str(a))["ok"]
     res = mgr.promote_workspace(sid, str(b))
     assert not res["ok"] and "already has a workspace" in res["error"]
+
+
+# -- The grant loop (owner-hit 2026-08-31) --------------------------------------
+# A folder the user grants mid-session must be usable by EVERY roots consumer on the
+# same turn. read_file used to materialise the roots into a private list when the tools
+# were built — and the engine (with its tool closures) is built once per session and
+# cached — so a granted folder stayed unreadable for the rest of the session. The model
+# read that refusal as "not granted" and called request_directory again, on a loop.
+
+
+def test_read_file_and_grep_see_a_runtime_added_root(tmp_path):
+    from coworker.tools.files import file_tools
+    from coworker.tools.search import search_tools
+
+    scratch, ro, _rw = _roots(tmp_path)
+    shared = normalize_roots([RootDir(path=scratch, writable=True)])
+    read = file_tools(str(scratch), roots=shared)[0]
+    grep = search_tools(str(scratch), roots=shared)[0]
+    doc = ro / "data.txt"
+
+    assert "escapes" in read(str(doc))["error"]
+    assert "escapes" in grep("secret", path=str(ro))["error"]
+
+    shared.append(RootDir(path=ro, writable=False))  # what add_root does, in place
+
+    assert read(str(doc))["content"].endswith("secret")
+    assert grep("secret", path=str(ro))["count"] == 1
+
+
+def test_granted_folder_is_readable_on_the_same_turn(tmp_path):
+    """End to end: the engine is cached across turns, so add_root must reach the tools
+    the model actually calls — no app restart, no engine rebuild."""
+    mgr = _cowork_manager(tmp_path)
+    shared = tmp_path / "skill"
+    shared.mkdir()
+    (shared / "SKILL.md").write_text("translate rules\n", encoding="utf-8")
+    sid = "sessGrantLoop"
+    engine = mgr.get_engine(sid, agent="cowork")
+    assert engine is not None
+
+    target = str(shared / "SKILL.md")
+    assert "escapes" in engine.registry.execute("read_file", {"path": target})["error"]
+
+    assert mgr.add_root(sid, str(shared), writable=False)["ok"]
+
+    assert mgr.get_engine(sid) is engine  # same cached engine, same tool closures
+    out = engine.registry.execute("read_file", {"path": target})
+    assert "error" not in out and "translate rules" in out["content"]
+    assert engine.registry.execute("grep", {"pattern": "translate", "path": str(shared)})["count"] == 1
+
+
+def test_request_directory_short_circuits_when_already_granted(tmp_path):
+    """No consent card for a folder the session already holds — the loop's last stop."""
+    granted = tmp_path / "already"
+    granted.mkdir()
+
+    async def requester(_args, tool_call_id=None):  # pragma: no cover - must not run
+        raise AssertionError("the user was asked for a folder the session already has")
+
+    eng = _bare_engine(directory_requester=requester)
+    eng.roots = normalize_roots([RootDir(path=granted, writable=False)])
+    tc = ToolCall(
+        id="c1",
+        name="request_directory",
+        arguments={"reason": "read the skill", "path": str(granted / "sub" / "..")},
+    )
+    events = asyncio.run(_collect(eng._handle_directory_request(tc)))
+
+    assert EventType.DIRECTORY_REQUESTED not in [e.type for e in events]
+    assert (
+        next(e for e in events if e.type == EventType.TOOL_FINISHED).data["status"]
+        == "ok"
+    )
+    assert '"granted": true' in eng.messages[-1]["content"]
+
+
+def test_request_directory_still_prompts_when_the_grant_is_short(tmp_path):
+    """The guard answers only what the roots already cover: a write on a read-only root,
+    a folder outside every root, and a primary promotion all still reach the user."""
+    ro = tmp_path / "ro"
+    outside = tmp_path / "outside"
+    for d in (ro, outside):
+        d.mkdir()
+    asked: list[dict] = []
+
+    async def requester(args, tool_call_id=None):
+        asked.append(args)
+        return {"granted": False, "reason": "user declined"}
+
+    def run(**arguments):
+        eng = _bare_engine(directory_requester=requester)
+        eng.roots = normalize_roots([RootDir(path=ro, writable=False)])
+        tc = ToolCall(id="c1", name="request_directory", arguments=arguments)
+        return asyncio.run(_collect(eng._handle_directory_request(tc)))
+
+    for arguments in (
+        {"reason": "write there", "path": str(ro), "writable": True},
+        {"reason": "elsewhere", "path": str(outside)},
+        {"reason": "make it the workspace", "path": str(ro), "primary": True},
+        {"reason": "no path named"},
+    ):
+        events = run(**arguments)
+        assert EventType.DIRECTORY_REQUESTED in [e.type for e in events], arguments
+    assert len(asked) == 4

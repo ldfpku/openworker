@@ -30,6 +30,28 @@ class RootDir:
         return {"path": str(self.path), "writable": self.writable, "label": self.label}
 
 
+def resolved_paths(roots: Iterable[Any] | None) -> list[Path]:
+    """Just the resolved directories of a mixed roots list — for the read-side tools, which
+    care where they may look, not who may write.
+
+    Call this on EVERY resolution, never once at build time: the roots list is shared and
+    mutated in place when the user grants a folder mid-session, while a tool closure lives
+    as long as its (cached, per-session) engine. A snapshot goes stale the moment a grant
+    lands, and the tool then refuses a folder the user just approved.
+    """
+    out: list[Path] = []
+    for r in roots or []:
+        if isinstance(r, dict):
+            p = r.get("path", "")
+        elif isinstance(r, (str, Path)):
+            p = r
+        else:  # duck-typed RootDir-like
+            p = getattr(r, "path", "")
+        if p:
+            out.append(Path(str(p)).expanduser().resolve())
+    return out
+
+
 def normalize_roots(roots: Iterable[Any] | None) -> list[RootDir]:
     """Coerce a mixed list (RootDir | dict{path,writable,label} | str/Path) into RootDirs.
     Bare str/Path entries are treated as read-only; pass dicts/RootDirs to grant write.

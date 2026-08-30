@@ -1,7 +1,8 @@
 """Fast code search (`grep`) — ripgrep when available, a Python walk otherwise.
 
 ripgrep respects `.gitignore`, so it skips `node_modules`/`target`/`dist` automatically; the
-fallback skips a hardcoded set of heavy dirs. Read-only, workspace-scoped. Returns file:line:text.
+fallback skips a hardcoded set of heavy dirs. Read-only. Anchored at the workspace and scoped
+to the session's roots, like `read_file`. Returns file:line:text.
 """
 
 from __future__ import annotations
@@ -17,6 +18,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 import aisuite as ai
+
+from ..roots import resolved_paths
 
 # Per-OS application data directories. These are not build noise: on macOS 14+ merely
 # *descending* into ~/Library/Application Support (other apps' containers) trips the App
@@ -64,7 +67,10 @@ _SCHEMA = {
                 },
                 "path": {
                     "type": "string",
-                    "description": "Subdirectory to search (default: whole workspace).",
+                    "description": (
+                        "Subdirectory to search (default: whole workspace). An absolute "
+                        "path works too, for any of the session's other directories."
+                    ),
                 },
                 "glob": {
                     "type": "string",
@@ -81,7 +87,16 @@ _SCHEMA = {
 }
 
 
-def search_tools(workspace: str) -> list:
+def search_tools(workspace: str, roots: Optional[list] = None) -> list:
+    """`grep` anchored at `workspace`. With `roots` (the session's shared RootDir list),
+    absolute paths inside ANY root are searchable too — the same rule `read_file` follows,
+    so the agent can search every directory the roots context advertises (its scratch and
+    any folder the user granted) instead of only the primary one.
+
+    `roots` is kept BY REFERENCE and resolved on every call (see resolved_paths): the list
+    is mutated in place when a grant lands mid-session and this closure outlives that, so a
+    snapshot would go stale for the rest of the session.
+    """
     root = Path(workspace).resolve()
 
     def grep(
@@ -96,7 +111,9 @@ def search_tools(workspace: str) -> list:
         try:
             base.relative_to(root)  # keep searches inside the workspace
         except ValueError:
-            return {"error": "path escapes the workspace"}
+            if not any(_within(base, r) for r in resolved_paths(roots)):
+                # Same wording as read_file's refusal — one vocabulary for one rule.
+                return {"error": "path escapes the session's directories"}
         # ripgrep is run from inside the directory it searches (see below), so settle the
         # target here: `cwd` must be a real directory, and a missing path should read as
         # such rather than as a raw, localised spawn failure.
@@ -168,6 +185,14 @@ def search_tools(workspace: str) -> list:
     )
     grep.__coworker_schema__ = _SCHEMA
     return [grep]
+
+
+def _within(candidate: Path, root: Path) -> bool:
+    try:
+        candidate.relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 def _rel(path: str, root: Path, base: Optional[Path] = None) -> str:
