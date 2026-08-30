@@ -227,6 +227,63 @@ async def test_adapter_connect_requires_credentials(tmp_path):
     await adapter.disconnect()  # idempotent even when never connected
 
 
+# -- manager QR session --------------------------------------------------------
+async def test_manager_qr_start_commits_and_greets(tmp_path, monkeypatch):
+    """A confirmed QR login writes the profile, flips status, and greets the scanner
+    so the new bot chat is labeled OpenWorker in WeChat from its first message
+    (distinguishes it from look-alike bot chats minted by other agent stacks)."""
+    import threading
+
+    from coworker.connectors.base import SendResult
+    from coworker.providers import ModelCapabilities, ProviderClient
+    from coworker.server.manager import SessionManager
+
+    class NoTurns(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            raise AssertionError("no turns expected")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    mgr = SessionManager(workspace=tmp_path, provider=NoTurns())
+    creds = {
+        "account_id": "newbot@im.bot",
+        "token": "tok-x",
+        "base_url": "https://api.example",
+        "user_id": "wxid_scanner",
+    }
+
+    async def fake_flow(*, on_state, **kw):
+        return creds
+
+    monkeypatch.setattr("coworker.connectors.weixin_login.qr_login_flow", fake_flow)
+
+    async def fake_refresh():
+        pass
+
+    monkeypatch.setattr(mgr, "refresh_gateway", fake_refresh)
+    greeted: dict = {}
+    done = threading.Event()
+
+    def fake_send(token, chat_id, text, thread_id=None):
+        greeted.update(token=token, chat_id=chat_id, text=text)
+        done.set()
+        return SendResult(True, message_id="m1")
+
+    monkeypatch.setattr("coworker.connectors.senders._send_weixin", fake_send)
+
+    out = await mgr.weixin_qr_start()
+    assert out["ok"]
+    await mgr._weixin_qr_task
+    st = mgr.weixin_qr_status()
+    assert st["state"] == "confirmed" and st["account"] == "newbot@im.bot"
+    prof = mgr.secrets.get("weixin:default")
+    assert prof["bot_token"] == "tok-x" and prof["account_id"] == "newbot@im.bot"
+    assert done.wait(timeout=2), "connect greeting was never attempted"
+    assert greeted["chat_id"] == "wxid_scanner"
+    assert "OpenWorker" in greeted["text"] and "newbot@im.bot" in greeted["text"]
+
+
 # -- stateless sender ----------------------------------------------------------
 def _seed_runtime() -> WeixinState:
     # The sender reads the DEFAULT state root — isolated per test by the

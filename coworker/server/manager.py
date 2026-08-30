@@ -1621,6 +1621,35 @@ class SessionManager:
             if cur is not None:
                 cur.state = "confirmed"
                 cur.account = creds["account_id"]
+            # Self-identification: every QR login mints a look-alike bot chat in
+            # the scanner's WeChat (other agent stacks — e.g. a hermes install —
+            # create identical-looking ones), so greet the scanner immediately:
+            # the conversation is labeled OpenWorker from its first message.
+            # Best-effort — a tokenless send to a fresh peer may be refused.
+            scanner = str(creds.get("user_id") or "")
+            if scanner:
+                from ..connectors.senders import _send_weixin
+
+                def _greet() -> None:
+                    try:
+                        result = _send_weixin(
+                            creds["token"],
+                            scanner,
+                            "OpenWorker 已连接这个微信通道（bot："
+                            + creds["account_id"]
+                            + "）。在这个会话里发消息，就是发给 OpenWorker。",
+                        )
+                        if not result.ok:
+                            logger.info(
+                                "weixin connect greeting not delivered: %s",
+                                result.error,
+                            )
+                    except Exception:
+                        logger.debug(
+                            "weixin connect greeting failed", exc_info=True
+                        )
+
+                asyncio.get_running_loop().run_in_executor(None, _greet)
 
         async def _run() -> None:
             try:
