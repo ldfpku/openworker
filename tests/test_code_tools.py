@@ -6,6 +6,8 @@ against temp dirs (git_log needs a real `git`, which the dev box has).
 
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 from types import SimpleNamespace
 
@@ -13,7 +15,7 @@ import pytest
 
 from coworker.tools.files import file_tools
 from coworker.tools.git import git_tools
-from coworker.tools.search import _py_grep, search_tools
+from coworker.tools.search import _parse_rg, _py_grep, search_tools
 from coworker.web.fetch import _html_to_text, make_web_fetch_tool
 
 
@@ -66,11 +68,96 @@ def test_grep_rejects_path_escape(tmp_path):
     assert "escapes" in grep(pattern="x", path="../..")["error"]
 
 
+def test_grep_accepts_a_single_file_as_the_path(tmp_path):
+    """`path` may name one file, not only a directory — and both engines agree on it."""
+    _seed(tmp_path)
+
+    out = search_tools(str(tmp_path))[0](pattern="hello", path="a.py")
+    assert [(m["file"], m["line"]) for m in out["matches"]] == [("a.py", 1)]
+
+    fallback = _py_grep(tmp_path.resolve(), (tmp_path / "a.py").resolve(), "hello", None, 100)
+    assert [(m["file"], m["line"]) for m in fallback["matches"]] == [("a.py", 1)]
+
+
+def test_grep_reports_a_path_that_does_not_exist(tmp_path):
+    out = search_tools(str(tmp_path))[0](pattern="hello", path="nope")
+    assert "no such file or directory" in out["error"]
+
+
 def test_py_grep_fallback_skips_ignored_dirs(tmp_path):
     _seed(tmp_path)
     res = _py_grep(tmp_path.resolve(), tmp_path.resolve(), "hello", None, 100)
     assert res["count"] == 2  # a.py + b.txt, NOT node_modules
     assert all("node_modules" not in m["file"] for m in res["matches"])
+
+
+def _rg_match(path, line_number=1, text="hello world\n"):
+    """One `rg --json` match event, as ripgrep writes it (one JSON object per line)."""
+    return json.dumps(
+        {
+            "type": "match",
+            "data": {
+                "path": {"text": path},
+                "lines": {"text": text},
+                "line_number": line_number,
+            },
+        }
+    )
+
+
+def test_parse_rg_keeps_a_windows_drive_letter_out_of_the_filename(tmp_path):
+    """A `C:` prefix must not be mistaken for the `file:line:text` separator.
+
+    ripgrep's text output was split on ":", so on Windows every single match of
+    `C:\\ws\\a.py:12:hello world` came back as file "C", line 0, text "12:hello world".
+    """
+    stdout = _rg_match(r"C:\ws\a.py", line_number=12) + "\n"
+
+    res = _parse_rg(stdout, tmp_path, tmp_path, 100)
+
+    assert res["count"] == 1
+    # Not a path inside the workspace, so it is reported back unchanged.
+    assert res["matches"] == [{"file": r"C:\ws\a.py", "line": 12, "text": "hello world"}]
+
+
+def test_parse_rg_relativizes_both_absolute_and_base_relative_paths(tmp_path):
+    """ripgrep runs with cwd=base and reports base-relative paths; absolute still works.
+
+    On Windows `tmp_path` is itself drive-prefixed, so this covers `C:\\...` end to end.
+    """
+    (tmp_path / "pkg").mkdir()
+    stdout = (
+        _rg_match(str(tmp_path / "pkg" / "a.py"), line_number=3)
+        + "\n"
+        + _rg_match(os.path.join("pkg", "b.py"), line_number=3)
+        + "\n"
+    )
+
+    res = _parse_rg(stdout, tmp_path, tmp_path, 100)
+
+    assert [m["file"] for m in res["matches"]] == [
+        os.path.join("pkg", "a.py"),
+        os.path.join("pkg", "b.py"),
+    ]
+    assert all(m["line"] == 3 and m["text"] == "hello world" for m in res["matches"])
+
+
+def test_grep_searches_a_workspace_living_under_an_os_data_dir(tmp_path):
+    """`!**/AppData/**` must skip an AppData dir *below* the workspace, not the path to it.
+
+    ripgrep used to be handed an absolute path, so the exclusions were matched against the
+    whole prefix and any workspace under AppData/Library excluded itself — on Windows that
+    is everything below %APPDATA%, this app's own data dir and pytest's tmp_path included.
+    """
+    ws = tmp_path / "AppData" / "Local" / "ws"
+    ws.mkdir(parents=True)
+    _seed(ws)
+
+    out = search_tools(str(ws))[0](pattern="hello")
+
+    files = {m["file"] for m in out["matches"]}
+    assert "a.py" in files and "b.txt" in files
+    assert not any("node_modules" in f for f in files)  # still skipped below the base
 
 
 # -- git_log -------------------------------------------------------------------

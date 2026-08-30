@@ -6,7 +6,9 @@ fallback skips a hardcoded set of heavy dirs. Read-only, workspace-scoped. Retur
 
 from __future__ import annotations
 
+import base64
 import fnmatch
+import json
 import os
 import re
 import shutil
@@ -95,14 +97,25 @@ def search_tools(workspace: str) -> list:
             base.relative_to(root)  # keep searches inside the workspace
         except ValueError:
             return {"error": "path escapes the workspace"}
+        # ripgrep is run from inside the directory it searches (see below), so settle the
+        # target here: `cwd` must be a real directory, and a missing path should read as
+        # such rather than as a raw, localised spawn failure.
+        if base.is_dir():
+            cwd, target = base, "."
+        elif base.is_file():
+            cwd, target = base.parent, base.name  # `path` may still name a single file
+        else:
+            return {"error": f"no such file or directory: {path}"}
 
         rg = shutil.which("rg")
         if rg:
+            # `--json`, not the default text output: a `path:line:text` line cannot be
+            # taken apart reliably on Windows, where an absolute path opens with a drive
+            # prefix (`C:`) that the first split on ":" swallows.
             cmd = [
                 rg,
+                "--json",
                 "--line-number",
-                "--no-heading",
-                "--color=never",
                 "--max-count",
                 str(n),
                 "-e",
@@ -115,23 +128,32 @@ def search_tools(workspace: str) -> list:
             # last because ripgrep resolves conflicting globs with the later one winning.
             for ignored in sorted(_IGNORE_DIRS):
                 cmd += ["--glob", f"!**/{ignored}/**"]
-            cmd.append(str(base))
+            # Search a relative target from inside `cwd` so those exclusions are matched
+            # against base-relative paths, the way the fallback's os.walk only ever sees
+            # directory names below `base`. Handing rg an absolute path instead would test
+            # them against the whole prefix too, so a workspace living *under* one of the
+            # ignored names would exclude itself: on Windows nothing below
+            # %APPDATA%/%LOCALAPPDATA% — this app's own data dir included — could be
+            # searched at all.
+            cmd.append(target)
             try:
-                # Matched lines are file bytes, near-always UTF-8; the locale default
-                # (GBK on zh-CN Windows) dies on them and nulls stdout entirely.
                 out = subprocess.run(
                     cmd,
                     capture_output=True,
                     text=True,
+                    # ripgrep emits UTF-8 whatever the console codepage is; letting Python
+                    # decode with the locale's (cp936 on zh-CN Windows) would mangle the
+                    # JSON and silently drop every match.
                     encoding="utf-8",
                     errors="replace",
                     timeout=30,
+                    cwd=str(cwd),
                 )
             except Exception as exc:
                 return {"error": f"grep failed: {exc}"}
             if out.returncode not in (0, 1):  # 1 = no matches
                 return {"error": (out.stderr or "ripgrep error").strip()[:300]}
-            return {"engine": "ripgrep", **_parse_rg(out.stdout, root, n)}
+            return {"engine": "ripgrep", **_parse_rg(out.stdout, root, cwd, n)}
 
         return {"engine": "python", **_py_grep(root, base, pattern, glob, n)}
 
@@ -148,26 +170,62 @@ def search_tools(workspace: str) -> list:
     return [grep]
 
 
-def _rel(path: str, root: Path) -> str:
+def _rel(path: str, root: Path, base: Optional[Path] = None) -> str:
     try:
-        return str(Path(path).resolve().relative_to(root))
+        p = Path(path)
+        if base is not None and not p.is_absolute():
+            p = base / p  # ripgrep runs with cwd=base, so it reports paths relative to it
+        return str(p.resolve().relative_to(root))
     except (ValueError, OSError):
         return path
 
 
-def _parse_rg(stdout: str, root: Path, n: int) -> dict[str, Any]:
+def _rg_str(field: Any) -> Optional[str]:
+    """Read one ripgrep JSON string: `{"text": ...}`, or `{"bytes": <base64>}` when the
+    original bytes were not valid UTF-8 (a path or line in some other encoding)."""
+    if not isinstance(field, dict):
+        return None
+    if isinstance(field.get("text"), str):
+        return field["text"]
+    raw = field.get("bytes")
+    if isinstance(raw, str):
+        try:
+            return base64.b64decode(raw).decode("utf-8", "replace")
+        except ValueError:
+            return None
+    return None
+
+
+def _parse_rg(stdout: str, root: Path, base: Optional[Path], n: int) -> dict[str, Any]:
+    """Parse ripgrep's `--json` event stream — one JSON object per line.
+
+    Not the text output: splitting `path:line:text` on ":" mangles every Windows absolute
+    path, whose `C:` drive prefix is taken for the filename (the line then parses as file
+    "C", line 0, and a text field still carrying the real line number). The JSON events
+    keep path, line number and text apart whatever any of them contains.
+    """
     matches: list[dict[str, Any]] = []
     for line in stdout.splitlines():
-        parts = line.split(":", 2)
-        if len(parts) == 3:
-            f, ln, txt = parts
-            matches.append(
-                {
-                    "file": _rel(f, root),
-                    "line": int(ln) if ln.isdigit() else 0,
-                    "text": txt[:300],
-                }
-            )
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue  # one unreadable line must not throw away the whole result
+        if not isinstance(event, dict) or event.get("type") != "match":
+            continue  # begin/end/context/summary events carry no match
+        data = event.get("data") or {}
+        f = _rg_str(data.get("path"))
+        if f is None:
+            continue
+        ln = data.get("line_number")
+        matches.append(
+            {
+                "file": _rel(f, root, base),
+                "line": ln if isinstance(ln, int) else 0,
+                "text": (_rg_str(data.get("lines")) or "").rstrip("\r\n")[:300],
+            }
+        )
         if len(matches) >= n:
             break
     return {"count": len(matches), "matches": matches}
@@ -181,7 +239,8 @@ def _py_grep(
     except re.error as exc:
         return {"error": f"invalid regex: {exc}", "count": 0, "matches": []}
     matches: list[dict[str, Any]] = []
-    for dirpath, dirs, files in os.walk(base):
+    walk = os.walk(base) if base.is_dir() else [(str(base.parent), [], [base.name])]
+    for dirpath, dirs, files in walk:
         dirs[:] = [d for d in dirs if d not in _IGNORE_DIRS]
         for fn in files:
             if glob and not fnmatch.fnmatch(fn, glob):
