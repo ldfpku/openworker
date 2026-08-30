@@ -7,11 +7,13 @@ import {
   listSkills,
   revealSkill,
   stageSkillUpload,
+  importSkillFolder,
   confirmSkillUpload,
   updateSkill,
   type SkillRow,
   type SkillUploadPreview,
 } from "../api";
+import { chooseFolder, isTauri } from "../tauri";
 import { Icon } from "./Icon";
 import { Trans, useTranslation } from "react-i18next";
 
@@ -144,6 +146,17 @@ export function SkillsTab({
     setUpload(res);
   };
 
+  // Desktop only (it needs a native folder picker). Importing the folder itself removes
+  // the packaging step, and with it the usual way junk gets in: nobody prunes
+  // __pycache__ before zipping. Same staging → preview → confirm as an upload.
+  const onPickFolder = async () => {
+    const path = await chooseFolder();
+    if (!path) return;
+    const res = await importSkillFolder(path);
+    if (fail(res)) return;
+    setUpload(res);
+  };
+
   const confirmUpload = async () => {
     if (!upload?.token) return;
     const res = await confirmSkillUpload(upload.token);
@@ -220,6 +233,22 @@ export function SkillsTab({
                     {t("A .zip or SKILL.md someone shared — you review before it installs")}
                   </div>
                 </button>
+                {isTauri() && (
+                  <button
+                    role="menuitem"
+                    className="w-full text-left px-3 py-2 rounded-lg hover:bg-paper"
+                    data-testid="import-folder"
+                    onClick={() => {
+                      setAddOpen(false);
+                      void onPickFolder();
+                    }}
+                  >
+                    <div className="text-[13px] font-medium">{t("Import a folder")}</div>
+                    <div className="text-[11.5px] text-muted">
+                      {t("A skill folder on this computer — no zipping, build files are left out")}
+                    </div>
+                  </button>
+                )}
                 <button
                   role="menuitem"
                   className="w-full text-left px-3 py-2 rounded-lg hover:bg-paper disabled:opacity-40"
@@ -295,6 +324,13 @@ export function SkillsTab({
           {upload.files?.length ? (
             <div className="text-[12px] text-muted mb-2">
               {t("Bundled files: {{files}}", { files: upload.files.join(", ") })}
+            </div>
+          ) : null}
+          {/* The filter is automatic but never silent: a user who is told nothing was
+              dropped can end up sure they installed something they did not. */}
+          {upload.skipped?.length ? (
+            <div className="text-[12px] text-muted mb-2" data-testid="upload-skipped">
+              {t("Excluded automatically: {{items}}", { items: upload.skipped.join(", ") })}
             </div>
           ) : null}
           <div className="flex gap-2 mt-3">

@@ -28,6 +28,7 @@ from typing import Any, Callable, Optional
 import aisuite as ai
 
 from ..secrets import state_dir
+from . import hygiene
 from .base import Skill, _parse_skill
 
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -67,6 +68,31 @@ def _frontmatter_source(md: Path) -> str:
             if key.strip().lower() == "source":
                 return value.strip()
     return ""
+
+
+def _stamp_source(md: Path, source: str) -> bool:
+    """Add a ``source:`` line to the file's EXISTING frontmatter, leaving every other key
+    and the file's own line endings exactly as the author wrote them. False when there is
+    no frontmatter block to stamp — the caller then writes a fresh file instead."""
+    try:
+        text = md.read_text(encoding="utf-8", newline="")  # untranslated line endings
+    except OSError:
+        return False
+    if not text.startswith("---"):
+        return False
+    end = text.find("\n---", 3)  # the newline that closes the block
+    if end == -1:
+        return False
+    crlf = end > 0 and text[end - 1] == "\r"
+    sep = "\r\n" if crlf else "\n"
+    at = end - 1 if crlf else end
+    try:
+        md.write_text(
+            f"{text[:at]}{sep}source: {source}{text[at:]}", encoding="utf-8", newline=""
+        )
+    except OSError:
+        return False
+    return True
 
 
 def _write_skill_md(
@@ -281,51 +307,89 @@ class SkillStore:
         """Stage an upload and return the parsed preview. Accepts a ``.zip`` (folder skill)
         or a bare ``SKILL.md`` with YAML frontmatter. Nothing is installed until
         :meth:`confirm_upload`. (A ``.skill`` file is a renamed zip and still unpacks —
-        just not advertised.)"""
+        just not advertised.)
+
+        Everything the archive carries goes through :mod:`.hygiene`: build junk is dropped
+        and listed back in ``skipped`` (never silently), credential files abort the whole
+        import, and the size/count/ratio ceilings apply before anything is written to disk.
+        """
+        hygiene.check_archive_size(len(data))
         try:
             archive = zipfile.ZipFile(io.BytesIO(data))
         except zipfile.BadZipFile:
             return self._stage_single_md(data, filename)
-        # macOS Finder's "Compress" injects __MACOSX/ shadow entries (._*) and .DS_Store —
-        # metadata, not skill content. Strip them so a Mac-made zip installs clean.
-        names = [
-            n
-            for n in archive.namelist()
-            if not n.endswith("/")
-            and "__MACOSX" not in Path(n).parts
-            and Path(n).name != ".DS_Store"
-            and not Path(n).name.startswith("._")
-        ]
-        for entry in names:
-            p = Path(entry)
+        entries = [e for e in archive.infolist() if not e.filename.endswith("/")]
+        for e in entries:
+            p = Path(e.filename)
             if p.is_absolute() or ".." in p.parts or (p.parts and ":" in p.parts[0]):
                 raise ValueError("Archive contains unsafe paths.")
+        # Sort content from noise BEFORE unpacking: the ceilings must be checked against
+        # what would actually be installed, and nothing hostile should reach the disk.
+        keep: list[zipfile.ZipInfo] = []
+        skipped_raw: list[str] = []
+        secrets: list[str] = []
+        for e in entries:
+            verdict, _reason = hygiene.classify(e.filename)
+            if verdict == hygiene.SECRET:
+                secrets.append(Path(e.filename).name)
+            elif verdict == hygiene.EXCLUDE:
+                skipped_raw.append(e.filename)
+            else:
+                keep.append(e)
+        hygiene.refuse_secrets(secrets)
         # SKILL.md at the root, or inside exactly one top-level folder.
-        md_entries = [n for n in names if Path(n).name == "SKILL.md"]
-        roots = {Path(n).parts[0] if len(Path(n).parts) > 1 else "" for n in md_entries}
+        md_entries = [n.filename for n in keep if Path(n.filename).name == "SKILL.md"]
+        roots = {
+            Path(n).parts[0] if len(Path(n).parts) > 1 else "" for n in md_entries
+        }
         if not md_entries or len(roots) != 1:
             raise ValueError("Archive must contain exactly one skill (one SKILL.md).")
         root = roots.pop()
+        uncompressed = sum(e.file_size for e in keep)
+        hygiene.check_ratio(len(data), uncompressed)
+        hygiene.check_totals(len(keep), uncompressed)
+        for e in keep:
+            rel = self._strip_root(e.filename, root)
+            hygiene.check_depth(rel)
+            hygiene.check_file(rel, e.file_size)
         token = uuid.uuid4().hex
         staged = self._staging_dir / token
         staged.mkdir(parents=True, exist_ok=True)
-        for entry in names:
-            parts = Path(entry).parts
-            rel = Path(*parts[1:]) if root and parts[0] == root else Path(entry)
-            if not str(rel):
-                continue
-            target = staged / rel
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(archive.read(entry))
-        skill = _parse_skill(staged / "SKILL.md")
-        name = skill.name if skill.name else staged.name
         try:
-            validate_name(name)
-        except ValueError:
+            for e in keep:
+                rel = self._strip_root(e.filename, root)
+                if not rel:
+                    continue
+                target = staged / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(archive.read(e))
+            return self._preview(
+                token,
+                staged,
+                skipped=hygiene.summarize_excluded(
+                    [self._strip_root(n, root) for n in skipped_raw]
+                ),
+            )
+        except Exception:
             shutil.rmtree(staged, ignore_errors=True)
             raise
+
+    @staticmethod
+    def _strip_root(entry: str, root: str) -> str:
+        """Drop the archive's single wrapping folder, yielding the skill-relative path."""
+        parts = Path(entry).parts
+        rel = Path(*parts[1:]) if root and parts and parts[0] == root else Path(entry)
+        return "" if str(rel) == "." else str(rel)
+
+    def _preview(
+        self, token: str, staged: Path, skipped: Optional[list[str]] = None
+    ) -> dict[str, Any]:
+        """The shared preview payload for every staged import (zip, folder, bare .md)."""
+        skill = _parse_skill(staged / "SKILL.md")
+        name = skill.name if skill.name else staged.name
+        validate_name(name)  # caller cleans up the staging dir on failure
         extras = sorted(
-            str(p.relative_to(staged))
+            p.relative_to(staged).as_posix()
             for p in staged.rglob("*")
             if p.is_file() and p.name != "SKILL.md"
         )
@@ -335,7 +399,57 @@ class SkillStore:
             "description": skill.description,
             "instructions": skill.instructions,
             "files": extras,
+            "skipped": skipped or [],
         }
+
+    def stage_folder(self, path: str | Path) -> dict[str, Any]:
+        """Stage a skill straight from a local folder — the desktop's "import a folder"
+        entry. Same gate, same preview, same confirm step as an archive; it simply removes
+        the packaging round-trip, and with it the chance for a user to zip up a
+        ``__pycache__`` or a ``.env`` without noticing.
+        """
+        src = Path(str(path)).expanduser()
+        if not src.is_dir():
+            raise ValueError(f"Not a folder: {path}")
+        src = src.resolve()
+        if not (src / "SKILL.md").is_file():
+            raise ValueError("That folder has no SKILL.md — it isn't a skill.")
+        keep: list[tuple[Path, str]] = []
+        skipped_raw: list[str] = []
+        secrets: list[str] = []
+        for p in sorted(src.rglob("*")):
+            if not p.is_file():
+                continue
+            rel = p.relative_to(src).as_posix()
+            verdict, _reason = hygiene.classify(rel)
+            if verdict == hygiene.SECRET:
+                secrets.append(p.name)
+            elif verdict == hygiene.EXCLUDE:
+                skipped_raw.append(rel)
+            else:
+                keep.append((p, rel))
+        hygiene.refuse_secrets(secrets)
+        total = 0
+        for p, rel in keep:
+            hygiene.check_depth(rel)
+            size = p.stat().st_size
+            hygiene.check_file(rel, size)
+            total += size
+        hygiene.check_totals(len(keep), total)
+        token = uuid.uuid4().hex
+        staged = self._staging_dir / token
+        staged.mkdir(parents=True, exist_ok=True)
+        try:
+            for p, rel in keep:
+                target = staged / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(p, target)
+            return self._preview(
+                token, staged, skipped=hygiene.summarize_excluded(skipped_raw)
+            )
+        except Exception:
+            shutil.rmtree(staged, ignore_errors=True)
+            raise
 
     def _stage_single_md(self, data: bytes, filename: str) -> dict[str, Any]:
         """The bare-.md path: one SKILL.md, no resources. Frontmatter must carry the name
@@ -349,7 +463,12 @@ class SkillStore:
         token = uuid.uuid4().hex
         staged = self._staging_dir / token
         staged.mkdir(parents=True, exist_ok=True)
-        (staged / "SKILL.md").write_text(text, encoding="utf-8")
+        # newline="": write what was uploaded, byte for byte. Without it, Windows
+        # translates every "\n" — including the one inside an uploaded file's CRLF — so a
+        # CRLF SKILL.md landed as CRCRLF, and the universal-newline read on the next line
+        # then split each CRCRLF into two line breaks. Every .md uploaded from Windows
+        # installed double-spaced, doubling its line count (owner-hit 2026-08-31).
+        (staged / "SKILL.md").write_text(text, encoding="utf-8", newline="")
         skill = _parse_skill(staged / "SKILL.md")
         if skill.name == token:  # no frontmatter name → parser fell back to the folder
             shutil.rmtree(staged, ignore_errors=True)
@@ -388,14 +507,18 @@ class SkillStore:
         base.mkdir(parents=True, exist_ok=True)
         shutil.move(str(staged), str(folder))
         # Stamp provenance so the Settings screen can distinguish uploaded from local.
+        # In place, into the frontmatter that is already there: regenerating the file
+        # from the three fields we happen to know would drop every other key the author
+        # wrote — `allowed-tools` among them, which actually gates the skill's tools.
         if not _frontmatter_source(folder / "SKILL.md"):
-            _write_skill_md(
-                folder,
-                name=name,
-                description=skill.description,
-                instructions=skill.instructions,
-                source="uploaded",
-            )
+            if not _stamp_source(folder / "SKILL.md", "uploaded"):
+                _write_skill_md(  # no frontmatter at all — nothing to preserve
+                    folder,
+                    name=name,
+                    description=skill.description,
+                    instructions=skill.instructions,
+                    source="uploaded",
+                )
         return {"name": name, "scope": scope, "path": str(folder)}
 
     def discard_upload(self, token: str) -> None:

@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ..secrets import state_dir
+from ..skills import hygiene
 from ..skills.store import validate_name
 from .convert import build_expert_bundle, expert_persona_id, load_index
 from .pack import LibraryPack
@@ -191,11 +192,15 @@ def register_library_routes(
                 results.append(row)
                 continue
             try:
-                # SKILL.zh.md 是库内浏览用的译文层；安装进全局技能目录的保持英文原件，
-                # agent 消费面不变。
-                shutil.copytree(
-                    src, dest, ignore=shutil.ignore_patterns("__pycache__", "SKILL.zh.md")
-                )
+                # 排除表来自 skills/hygiene.py，与用户上传 zip / 导入文件夹共用同一张表，
+                # 两条路不会再各自维护一份而飘移。SKILL.zh.md 是库内浏览用的译文层：
+                # 安装进全局技能目录的保持英文原件，agent 消费面不变。
+                def _ignore(directory: str, names: list[str]) -> set[str]:
+                    return hygiene.copytree_ignore()(directory, names) | {
+                        n for n in names if n == "SKILL.zh.md"
+                    }
+
+                shutil.copytree(src, dest, ignore=_ignore)
                 row["ok"] = True
             except OSError as e:
                 row["ok"] = False

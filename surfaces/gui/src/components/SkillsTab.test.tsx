@@ -284,3 +284,61 @@ describe("SkillsTab — rich-skill disclosure (§6)", () => {
     expect(screen.getAllByTitle("Show folder")).toHaveLength(1);
   });
 });
+
+// The import gate (owner ask 2026-08-31): build junk is filtered automatically, but the
+// user is told exactly what was dropped BEFORE they confirm — a silent filter is how
+// someone ends up sure they installed something they did not.
+describe("SkillsTab — import preview", () => {
+  const PREVIEW = {
+    ok: true,
+    token: "t1",
+    name: "pdf-translate-zh",
+    description: "translates PDFs",
+    instructions: "do the thing",
+    files: ["references/pipeline.md", "scripts/extract.py"],
+    skipped: ["scripts/__pycache__/ (39 files)", ".DS_Store"],
+  };
+
+  it("lists what was excluded alongside what will install", async () => {
+    stubFetch([
+      { match: "/v1/skills", method: "GET", json: { skills: [] } },
+      { match: "/v1/skills/upload", method: "POST", json: PREVIEW },
+    ]);
+    render(<SkillsTab />);
+    fireEvent.click(await screen.findByRole("button", { name: /Add skill/ }));
+    fireEvent.click(screen.getByText("Import a file"));
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [new File(["x"], "s.zip")] } });
+
+    const skipped = await screen.findByTestId("upload-skipped");
+    expect(skipped.textContent).toContain("scripts/__pycache__/ (39 files)");
+    expect(skipped.textContent).toContain(".DS_Store");
+    // and the kept files are still shown, so the two lists read against each other
+    expect(screen.getByText(/references\/pipeline\.md/)).toBeTruthy();
+  });
+
+  it("says nothing when nothing was excluded", async () => {
+    stubFetch([
+      { match: "/v1/skills", method: "GET", json: { skills: [] } },
+      { match: "/v1/skills/upload", method: "POST", json: { ...PREVIEW, skipped: [] } },
+    ]);
+    render(<SkillsTab />);
+    fireEvent.click(await screen.findByRole("button", { name: /Add skill/ }));
+    fireEvent.click(screen.getByText("Import a file"));
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [new File(["x"], "s.zip")] } });
+
+    await screen.findByText("Install skill");
+    expect(screen.queryByTestId("upload-skipped")).toBeNull();
+  });
+
+  it("offers the folder door only on the desktop build", async () => {
+    stubFetch([{ match: "/v1/skills", method: "GET", json: { skills: [] } }]);
+    render(<SkillsTab />);
+    fireEvent.click(await screen.findByRole("button", { name: /Add skill/ }));
+    // isTauri() is false under jsdom — the browser build has no native folder picker,
+    // so the zip door stays the only import path there.
+    expect(screen.queryByTestId("import-folder")).toBeNull();
+    expect(screen.getByText("Import a file")).toBeTruthy();
+  });
+});

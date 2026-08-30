@@ -1510,6 +1510,10 @@ export interface SkillUploadPreview {
   description?: string;
   instructions?: string;
   files?: string[];
+  /** Build junk the import dropped (`__pycache__/ (39 files)`, `.DS_Store`, …). Shown in
+   *  the preview so the filter is never a silent one. Credential files don't appear here —
+   *  those refuse the whole import and come back as `error`. */
+  skipped?: string[];
 }
 
 const skillUrl = (path = "") => `${httpBase()}/v1/skills${path}`;
@@ -1573,6 +1577,12 @@ export async function stageSkillUpload(
   filename = "",
 ): Promise<SkillUploadPreview> {
   const res = await fetch(skillUrl("/upload"), jsonPost({ data_b64: dataB64, filename }));
+  return res.json();
+}
+
+/** Desktop-only: import a skill folder in place — no zip, so no chance to package junk. */
+export async function importSkillFolder(path: string): Promise<SkillUploadPreview> {
+  const res = await fetch(skillUrl("/import-folder"), jsonPost({ path }));
   return res.json();
 }
 

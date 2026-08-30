@@ -722,6 +722,16 @@ def create_app(manager: SessionManager) -> FastAPI:
             return {"ok": False, "error": "Invalid archive encoding."}
         return manager.stage_skill_upload(data, str((body or {}).get("filename", "")))
 
+    @app.post("/v1/skills/import-folder")
+    def import_skill_folder(body: dict) -> dict[str, Any]:
+        # Desktop path: the GUI picks a folder and passes its local path. Same staging →
+        # preview → confirm as an upload; only the source differs. Local server, same
+        # trust level as the folder-grant routes.
+        path = str((body or {}).get("path", "")).strip()
+        if not path:
+            return {"ok": False, "error": "No folder supplied."}
+        return manager.stage_skill_folder(path)
+
     @app.post("/v1/skills/upload/confirm")
     def confirm_skill_upload(body: dict) -> dict[str, Any]:
         return manager.confirm_skill_upload(body or {})
