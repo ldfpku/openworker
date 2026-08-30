@@ -75,7 +75,11 @@ def _stamp_source(md: Path, source: str) -> bool:
     and the file's own line endings exactly as the author wrote them. False when there is
     no frontmatter block to stamp — the caller then writes a fresh file instead."""
     try:
-        text = md.read_text(encoding="utf-8", newline="")  # untranslated line endings
+        # open(), not Path.read_text(newline=...): that keyword only exists on Python
+        # 3.13+, and this project supports 3.10+ (CI runs 3.12). Path.write_text's
+        # `newline` is fine — it has been there since 3.10.
+        with open(md, "r", encoding="utf-8", newline="") as fh:
+            text = fh.read()  # line endings untranslated
     except OSError:
         return False
     if not text.startswith("---"):
