@@ -199,3 +199,31 @@ def test_background_unknown_task_errors(executor):
     assert (
         "unknown task" in reg.execute("shell_task_kill", {"task_id": "bg-99"})["error"]
     )
+
+
+def test_unencodable_command_fails_loudly_instead_of_running_corrupted(tmp_path):
+    """The pipe carries errors="replace" so a stray OUTPUT byte can't kill the reader
+    thread — but that setting also governs the stdin ENCODER, which would silently
+    rewrite characters the shell's codepage lacks as "?" and RUN the corrupted command
+    (on zh-CN cp936, `git commit -m "done <emoji>"` becomes `"done ?"`). The executor
+    must refuse up front with an error the agent can act on.
+    """
+
+    class _FakeStdin:
+        encoding = "gbk"  # emulate a zh-CN Windows console pipe
+
+        def write(self, _text):  # pragma: no cover - must never be reached
+            raise AssertionError("unencodable command was written to the shell")
+
+        def flush(self):  # pragma: no cover
+            raise AssertionError("unencodable command was flushed to the shell")
+
+    ex = LocalExecutor(cwd=tmp_path)
+    try:
+        ex._proc.stdin = _FakeStdin()
+        out = ex.run('echo "done ✅"')
+        assert "gbk" in out["error"]
+        assert out["exit_code"] is None
+        assert out["output"] == ""
+    finally:
+        ex.close()

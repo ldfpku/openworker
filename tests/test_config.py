@@ -143,3 +143,22 @@ def test_cloud_relay_defaults_off_in_fork():
     cfg = Config()
     assert cfg.cloud_base_url == "https://api.openworker.com"
     assert cfg.cloud_relay_ws_url == ""
+
+
+def test_legacy_codepage_config_is_ignored_not_raised(tmp_path):
+    """zh-CN Windows regression (2026-08-30): tomllib decodes as strict UTF-8 before
+    parsing, so a config.toml saved in a legacy codepage raises UnicodeDecodeError —
+    NOT TOMLDecodeError. That escaped _read into workspace_command_trust, which runs
+    while building the `ready` payload on every session connect, killing the socket
+    and leaving the GUI with a permanently disabled Send button. Unreadable config
+    must degrade to "no config", exactly like malformed TOML.
+    """
+    from coworker.config import workspace_allowed_commands
+
+    ws = tmp_path / "ws"
+    (ws / ".coworker").mkdir(parents=True)
+    # "允许" encoded GBK — invalid UTF-8, so a strict decode raises.
+    (ws / ".coworker" / "config.toml").write_bytes(
+        '# 允许\nallowed_commands = ["git"]\n'.encode("gbk")
+    )
+    assert workspace_allowed_commands(ws) == []

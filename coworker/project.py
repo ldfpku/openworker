@@ -22,13 +22,16 @@ def load_agents_md(
     """
     parts: list[tuple[str, str]] = []
 
+    # errors="replace" on both reads: these are hand-written files, and one saved in a
+    # legacy codepage (ANSI/GBK on a Chinese Windows) would otherwise raise mid-build
+    # and fail every session connect to that workspace.
     g = Path(global_path) if global_path is not None else default_global_agents_path()
     if g.is_file():
-        parts.append(("global", g.read_text(encoding="utf-8")))
+        parts.append(("global", g.read_text(encoding="utf-8", errors="replace")))
 
     root = Path(workspace).expanduser().resolve() / "AGENTS.md"
     if root.is_file():
-        parts.append(("project", root.read_text(encoding="utf-8")))
+        parts.append(("project", root.read_text(encoding="utf-8", errors="replace")))
 
     if not parts:
         return ""

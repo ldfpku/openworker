@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import locale
 import subprocess
 import sys
+
+import pytest
 
 from coworker.environment import environment_context
 
@@ -54,6 +57,30 @@ def test_context_shows_dirty_status(tmp_path):
     block = environment_context(ws)
     assert "Git status (2 changed):" in block
     assert "f.txt" in block and "new.txt" in block
+
+
+def test_git_snapshot_ignores_locale_encoding(tmp_path, monkeypatch):
+    """zh-CN Windows regression (owner-hit 2026-08-30): git emits UTF-8, but text=True
+    without an explicit encoding decodes with the locale codepage (GBK). One invalid
+    byte killed subprocess's reader thread, stdout came back None, and the resulting
+    AttributeError took down every WebSocket connect to that workspace — a permanently
+    dead Send button. The snapshot must decode git output as UTF-8 regardless of locale.
+    """
+    if sys.flags.utf8_mode:
+        pytest.skip("UTF-8 mode bypasses locale decoding, so the old bug can't show")
+    ws = _git_repo(tmp_path)
+    (ws / "更新.txt").write_text("内容", encoding="utf-8")
+    subprocess.run(["git", "-C", str(ws), "add", "-A"], capture_output=True, check=True)
+    # "一)" is the trap: UTF-8 E4 B8 80 29 — after the valid GBK pair E4 B8, the 0x80
+    # byte is below GBK's lead range, so a locale decode raises mid-stream.
+    subprocess.run(
+        ["git", "-C", str(ws), "commit", "-qm", "中文提交一)含 GBK 解不了的字节"],
+        capture_output=True,
+        check=True,
+    )
+    monkeypatch.setattr(locale, "getpreferredencoding", lambda do_setlocale=True: "gbk")
+    block = environment_context(ws)
+    assert "中文提交一)含 GBK 解不了的字节" in block
 
 
 class _Stub:

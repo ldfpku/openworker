@@ -28,13 +28,19 @@ def _git(workspace: Path, *args: str) -> Optional[str]:
             ["git", "-C", str(workspace), *args],
             capture_output=True,
             text=True,
+            # Git emits UTF-8; without an explicit encoding, Windows decodes with the
+            # locale codepage (GBK on zh-CN), and one invalid byte kills subprocess's
+            # reader thread — stdout comes back None and the whole engine build (and
+            # its WebSocket) dies with it. errors="replace" keeps a stray byte cosmetic.
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
         )
     except (OSError, subprocess.SubprocessError):
         return None
     if out.returncode != 0:
         return None
-    return out.stdout.strip()
+    return (out.stdout or "").strip()
 
 
 def _git_snapshot(workspace: Path) -> list[str]:

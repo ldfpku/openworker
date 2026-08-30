@@ -58,7 +58,16 @@ def git_tools(workspace: str) -> list:
         if path:
             cmd += ["--", path]
         try:
-            out = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            # Git emits UTF-8 (authors/subjects); never trust the locale codepage —
+            # a strict GBK decode on zh-CN Windows nulls stdout and crashes the tool.
+            out = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+            )
         except Exception as exc:
             return {"error": f"git log failed: {exc}"}
         if out.returncode != 0:

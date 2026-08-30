@@ -90,7 +90,11 @@ def _read(path: Path) -> dict[str, Any]:
     try:
         with open(path, "rb") as f:
             return tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError):
+    # tomllib decodes the file as strict UTF-8 before parsing, so a config saved in a
+    # legacy codepage (GBK from a Chinese editor) raises UnicodeDecodeError, not a TOML
+    # error. Unreadable is unreadable: ignore it like malformed TOML rather than letting
+    # it escape into callers — workspace_command_trust runs on every session connect.
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         return {}
 
 

@@ -915,7 +915,10 @@ export function App() {
           flushPartialStream();
           setItems((p) => [
             ...p,
-            { kind: "notice", tone: "warn", text: t("Error: {{error}}", { error: d.error || t("unknown") }), retriable: true },
+            // `fatal` = the connect itself failed and the socket is already closed.
+            // Retry sends on a dead socket (silently dropped) and leaves `running`
+            // stuck true forever, so a fatal error gets no Retry button.
+            { kind: "notice", tone: "warn", text: t("Error: {{error}}", { error: d.error || t("unknown") }), retriable: !d.fatal },
           ]);
           break;
         case "input_rejected":

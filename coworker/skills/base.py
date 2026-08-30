@@ -62,7 +62,10 @@ class SkillLoader:
 
 
 def _parse_skill(md: Path) -> Skill:
-    text = md.read_text(encoding="utf-8")
+    # Author-written file: one saved in a legacy codepage (ANSI/GBK on a Chinese
+    # Windows) must degrade to mojibake, never raise — _discover runs during engine
+    # build, so a strict decode here fails every connect to that workspace.
+    text = md.read_text(encoding="utf-8", errors="replace")
     name, description, allowed, body = md.parent.name, "", [], text
     if text.startswith("---"):
         end = text.find("\n---", 3)

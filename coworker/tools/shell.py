@@ -94,6 +94,10 @@ class _BackgroundTask:
             stderr=subprocess.STDOUT,
             cwd=cwd,
             text=True,
+            # The pipe carries whatever bytes child tools emit (git/node write UTF-8
+            # even on zh-CN Windows, whose locale decode is GBK). Strict decoding lets
+            # one bad byte kill the reader thread and silence the task forever.
+            errors="replace",
             bufsize=1,
             env=env,
             **spawn_kwargs,
@@ -205,6 +209,9 @@ class LocalExecutor(Executor):
             stderr=subprocess.STDOUT,
             cwd=self.cwd,
             text=True,
+            # Same mixed-encoding pipe as _BackgroundTask: a strict decode failure
+            # kills the reader thread and wedges the whole persistent shell.
+            errors="replace",
             bufsize=1,
             env=self._env,
             **spawn_kwargs,
@@ -235,6 +242,30 @@ class LocalExecutor(Executor):
             return self._result(
                 command, None, "", timed_out=False, error="shell not running"
             )
+
+        # The pipe's errors="replace" (there so a stray output byte can't kill the reader
+        # thread) applies to the stdin ENCODER too, which would quietly rewrite characters
+        # the shell's codepage lacks as "?" — a corrupted command that still RUNS. On
+        # zh-CN Windows (cp936) that turns `git commit -m "done ✅"` into `"done ?"`.
+        # Refuse up front instead: a loud tool error the agent can act on.
+        stdin_encoding = getattr(self._proc.stdin, "encoding", None)
+        if stdin_encoding:
+            try:
+                command.encode(stdin_encoding)
+            except UnicodeEncodeError as exc:
+                bad = exc.object[exc.start : exc.end]
+                return self._result(
+                    command,
+                    None,
+                    "",
+                    timed_out=False,
+                    error=(
+                        f"command contains {bad!r}, which this shell's {stdin_encoding} "
+                        "encoding cannot represent — rewrite the command without it "
+                        "(e.g. write non-ASCII text to a UTF-8 file instead of passing "
+                        "it as a shell argument)"
+                    ),
+                )
 
         timeout = timeout or self.default_timeout
         self._abort.clear()

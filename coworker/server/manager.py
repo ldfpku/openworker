@@ -2943,7 +2943,9 @@ class SessionManager:
             # Linux: zenity when present; otherwise the GUI's paste-a-path input remains.
             cmd = ["zenity", "--file-selection", "--directory"]
         try:
-            out = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            out = subprocess.run(
+                cmd, capture_output=True, text=True, errors="replace", timeout=300
+            )
         except (OSError, subprocess.TimeoutExpired):
             return {"ok": False, "error": "no native folder picker available"}
         path = (out.stdout or "").strip()
@@ -5918,9 +5920,13 @@ def _git_branch(path: Path) -> Optional[str]:
             cwd=path,
             capture_output=True,
             text=True,
+            # Git emits UTF-8; the locale default (GBK on zh-CN Windows) can't decode
+            # every UTF-8 branch name and a strict failure nulls stdout entirely.
+            encoding="utf-8",
+            errors="replace",
             timeout=3,
         )
-        branch = result.stdout.strip()
+        branch = (result.stdout or "").strip()
         return branch or None
     except (OSError, subprocess.SubprocessError):
         return None

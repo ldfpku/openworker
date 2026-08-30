@@ -554,7 +554,10 @@ def create_app(manager: SessionManager) -> FastAPI:
                 ):
                     return {"ok": False, "error": "manifest hash mismatch"}
                 with tempfile.TemporaryDirectory() as td:
-                    (Path(td) / f"{slug}.md").write_text(markdown)
+                    # Explicit UTF-8: install_from_dir reads this back as UTF-8, so a
+                    # locale-codepage write (GBK on zh-CN Windows) would fail every
+                    # gallery install whose manifest has non-ASCII content.
+                    (Path(td) / f"{slug}.md").write_text(markdown, encoding="utf-8")
                     summaries = reg.install_from_dir(td)
                 cloud.gallery_install_event(manager.secrets, load_config(), slug)
             else:
@@ -2502,72 +2505,83 @@ def create_app(manager: SessionManager) -> FastAPI:
                 manager.inbox.resolve(pend[0].id, resolution)
 
         workspace = ws.query_params.get("workspace")
-        mcp_tools = await manager.prepare_mcp_tools(
-            session_id, workspace=workspace, agent=agent
-        )
-        engine = manager.get_engine(
-            session_id,
-            workspace=workspace,
-            agent=agent,
-            approver=approver,
-            extra_tools=mcp_tools,
-            directory_requester=directory_requester,
-            plan_approver=plan_approver,
-            question_asker=question_asker,
-            tool_requester=tool_requester,
-            team_approver=team_approver,
-            items_approver=items_approver,
-        )
-        if engine is None:
-            await ws.send_json(
-                {
-                    "type": "error",
-                    "data": {
-                        "error": "no valid workspace — choose a project folder first"
-                    },
-                }
+        # An engine-build crash must never take the raw ASGI exit: the socket would just
+        # drop and the GUI sit disconnected with a dead Send button and no hint why
+        # (owner-hit 2026-08-30 — a GBK decode error in the git snapshot killed every
+        # connect to one workspace). Tell the client, then close.
+        async def fail_connect(message: str) -> None:
+            # `fatal` tells the GUI this died BEFORE the session was live, so the notice
+            # renders without a Retry button: the socket is already closed, and a retry
+            # frame on a closed socket is silently dropped, leaving the view spinning.
+            try:
+                await ws.send_json(
+                    {"type": "error", "data": {"error": message[:300], "fatal": True}}
+                )
+                await ws.close()
+            except Exception:
+                pass  # client already gone — nothing left to tell
+
+        try:
+            mcp_tools = await manager.prepare_mcp_tools(
+                session_id, workspace=workspace, agent=agent
             )
-            await ws.close()
-            return
-        # MCP servers that failed to start while preparing this session's tools:
-        # leave a quiet, persistent notice instead of the session silently lacking
-        # them (drill 2026-08-20: three silent startup failures in a row).
-        for name, err in manager.pop_mcp_failures(session_id):
-            detail = f": {err}" if err else ""
-            engine._append_notice(
-                "mcp_error",
-                f"MCP server “{name}” failed to start{detail}"[:300]
-                + " — see Settings ▸ Connectors",
+            engine = manager.get_engine(
+                session_id,
+                workspace=workspace,
+                agent=agent,
+                approver=approver,
+                extra_tools=mcp_tools,
+                directory_requester=directory_requester,
+                plan_approver=plan_approver,
+                question_asker=question_asker,
+                tool_requester=tool_requester,
+                team_approver=team_approver,
+                items_approver=items_approver,
             )
-        # Auto-compaction failure prompt (OPE-27): only an ATTENDED session may be asked
-        # Retry/Trim — unattended runs auto-trim (the policy in engine._compact_now).
-        engine.is_attended = lambda: _visibility() == VIS_INLINE
-        await ws.send_json(
-            {
-                "type": "ready",
-                "data": {
-                    "session_id": session_id,
-                    "agent": getattr(engine, "agent_name", "code"),
-                    "model": engine.model,
-                    "mode": engine.permissions.mode.value,
-                    "workspace": (
-                        str(getattr(engine, "executor").cwd)
-                        if getattr(engine, "executor", None)
-                        else None
-                    ),
-                    # UX-029: the GUI never shows a temporary folder's raw path — this flag
-                    # is how it knows to say "Temporary folder" (and offer Save as project).
-                    "temp_workspace": manager.is_temp_workspace(
-                        str(getattr(engine, "executor").cwd)
-                        if getattr(engine, "executor", None)
-                        else None
-                    ),
-                    "command_trust": manager.workspace_command_trust(
-                        str(getattr(engine, "audit_context", {}).get("workspace", ""))
-                    ),
-                },
+            if engine is None:
+                await fail_connect("no valid workspace — choose a project folder first")
+                return
+            # MCP servers that failed to start while preparing this session's tools:
+            # leave a quiet, persistent notice instead of the session silently lacking
+            # them (drill 2026-08-20: three silent startup failures in a row).
+            for name, err in manager.pop_mcp_failures(session_id):
+                detail = f": {err}" if err else ""
+                engine._append_notice(
+                    "mcp_error",
+                    f"MCP server “{name}” failed to start{detail}"[:300]
+                    + " — see Settings ▸ Connectors",
+                )
+            # Auto-compaction failure prompt (OPE-27): only an ATTENDED session may be asked
+            # Retry/Trim — unattended runs auto-trim (the policy in engine._compact_now).
+            engine.is_attended = lambda: _visibility() == VIS_INLINE
+            # Built inside the guard: workspace_command_trust reads the workspace's
+            # .coworker/config.toml, so a malformed one must not escape either.
+            ready_data = {
+                "session_id": session_id,
+                "agent": getattr(engine, "agent_name", "code"),
+                "model": engine.model,
+                "mode": engine.permissions.mode.value,
+                "workspace": (
+                    str(getattr(engine, "executor").cwd)
+                    if getattr(engine, "executor", None)
+                    else None
+                ),
+                # UX-029: the GUI never shows a temporary folder's raw path — this flag
+                # is how it knows to say "Temporary folder" (and offer Save as project).
+                "temp_workspace": manager.is_temp_workspace(
+                    str(getattr(engine, "executor").cwd)
+                    if getattr(engine, "executor", None)
+                    else None
+                ),
+                "command_trust": manager.workspace_command_trust(
+                    str(getattr(engine, "audit_context", {}).get("workspace", ""))
+                ),
             }
-        )
+        except Exception as exc:
+            logger.exception("session connect failed for session %s", session_id)
+            await fail_connect(f"could not start this session: {exc}")
+            return
+        await ws.send_json({"type": "ready", "data": ready_data})
 
         # Checkpoint events: persist mid-turn so a crash/quit can't eat the conversation.
         # turn_start = the user message just landed (a brand-new session gets its row here,

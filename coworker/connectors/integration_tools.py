@@ -456,7 +456,15 @@ def _run_git(
 
     try:
         proc = subprocess.run(
-            ["git", *args], cwd=cwd, capture_output=True, text=True, timeout=timeout
+            ["git", *args],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            # Git emits UTF-8; a strict locale decode (GBK on zh-CN Windows) would
+            # null stdout and break the "never raises" contract via AttributeError.
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
         )
     except FileNotFoundError:
         return "", "git is not installed"
