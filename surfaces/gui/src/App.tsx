@@ -1836,7 +1836,7 @@ export function App() {
                     <button
                       className="text-accent hover:underline"
                       data-testid="save-as-project"
-                      onMouseDown={(e) => e.stopPropagation()}
+                      onPointerDown={(e) => e.stopPropagation()}
                       onClick={() => void saveAsProject()}
                     >
                       {t("Save as project…")}
@@ -1848,11 +1848,17 @@ export function App() {
           </div>
           {/* Right: session-settings icon (§23) + panel toggle. Model/mode/persona chrome is
               gone — the facts live in the subtitle, the controls in the composer (§22). */}
+          {/* Every button in here must stop `pointerdown`, NOT `mousedown`: the two are
+              separate events, pointerdown fires first, and the parent's beginWindowDrag
+              runs off pointerdown. Guarding only mousedown let the drag start anyway —
+              startDragging() hands the mouse to the OS move loop, which swallows the
+              mouseup, so `click` never fired and these buttons were dead on the desktop
+              build (owner-hit 2026-08-31: the side-panel toggle did nothing). */}
           <div className="main-topbar-side main-topbar-actions" onPointerDown={beginWindowDrag}>
             {railHidden && artifactCount > 0 && (
               <button
                 className="topbar-artifacts-btn"
-                onMouseDown={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
                 onClick={() => setRailHidden(false)}
                 title={t("Show files this conversation produced")}
               >
@@ -1866,7 +1872,8 @@ export function App() {
             {agent !== "chat" && (
               <button
                 className="topbar-icon-btn"
-                onMouseDown={(e) => e.stopPropagation()}
+                data-testid="rail-toggle"
+                onPointerDown={(e) => e.stopPropagation()}
                 onClick={() => setRailHiddenPersist(!railHidden)}
                 aria-label={railHidden ? t("Show side panel") : t("Hide side panel")}
                 title={railHidden ? t("Show side panel") : t("Hide side panel")}
