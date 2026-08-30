@@ -16,7 +16,7 @@ from coworker.engine import TurnEngine
 from coworker.events import EventType
 from coworker.permissions import Decision, Mode, PermissionEngine
 from coworker.providers import AssistantTurn, ToolCall
-from coworker.roots import RootDir, normalize_roots, render_context
+from coworker.roots import RootDir, normalize_roots, render_context, user_roots
 from coworker.tools import ToolRegistry
 
 
@@ -583,3 +583,92 @@ def test_request_directory_still_prompts_when_the_grant_is_short(tmp_path):
         events = run(**arguments)
         assert EventType.DIRECTORY_REQUESTED in [e.type for e in events], arguments
     assert len(asked) == 4
+
+
+# -- Skill resources (owner ask 2026-08-31) -------------------------------------
+# load_skill used to hand the agent a `resources_path` that sat outside every root, so
+# the very next read_file on a bundled reference answered "path escapes the session's
+# directories" — a skill's own instructions were unfollowable. Loading a skill now mounts
+# that ONE skill's folder as a read-only RESOURCE root: readable, but never shown or
+# saved as a folder the user granted.
+
+
+def _skill_dir(tmp_path, name="demo"):
+    folder = tmp_path / "skills" / name
+    (folder / "references").mkdir(parents=True)
+    (folder / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: d\n---\n\nbody\n", encoding="utf-8"
+    )
+    (folder / "references" / "pipeline.md").write_text("the pipeline", encoding="utf-8")
+    return folder
+
+
+def test_load_skill_makes_its_bundled_files_readable(tmp_path):
+    from coworker.skills.base import SkillLoader, skill_tools
+    from coworker.tools.files import file_tools
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    folder = _skill_dir(tmp_path)
+    roots = normalize_roots([RootDir(path=ws, writable=True, label="workspace")])
+    read = file_tools(str(ws), roots=roots)[0]
+    load = skill_tools(SkillLoader([tmp_path / "skills"]), roots=roots)[0]
+    doc = str(folder / "references" / "pipeline.md")
+
+    assert "escapes" in read(doc)["error"]
+    out = load(name="demo")
+    assert out["files"] == ["references/pipeline.md"]  # told what it may read
+    assert "the pipeline" in read(doc)["content"]
+
+
+def test_skill_root_is_read_only_and_mounted_once(tmp_path):
+    from coworker.skills.base import SkillLoader, skill_tools
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    folder = _skill_dir(tmp_path)
+    roots = normalize_roots([RootDir(path=ws, writable=True, label="workspace")])
+    load = skill_tools(SkillLoader([tmp_path / "skills"]), roots=roots)[0]
+    load(name="demo")
+    load(name="demo")  # loading twice must not stack duplicate roots
+
+    mounted = [r for r in roots if r.is_resource]
+    assert [r.path for r in mounted] == [folder.resolve()]
+    assert mounted[0].writable is False
+    assert not PermissionEngine(
+        workspace_root=ws, roots=roots
+    )._under_writable_root(str(folder / "x.md"))
+
+
+def test_skill_root_is_hidden_from_the_context_and_from_the_user(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    folder = _skill_dir(tmp_path)
+    roots = normalize_roots(
+        [
+            RootDir(path=ws, writable=True, label="workspace"),
+            RootDir(path=folder, writable=False, label="skill:demo", kind="resource"),
+        ]
+    )
+    # Not in the per-turn block: load_skill already named the path, and repeating every
+    # loaded skill's folder would grow a section that rides on every single turn.
+    assert "skill:demo" not in render_context(roots)
+    assert str(folder) not in render_context(roots)
+    assert [r.label for r in user_roots(roots)] == ["workspace"]
+
+
+def test_skill_root_never_reaches_the_access_panel_or_persistence(tmp_path):
+    mgr = _cowork_manager(tmp_path)
+    folder = _skill_dir(tmp_path)
+    sid = "sessSkillRoot"
+    engine = mgr.get_engine(sid, agent="cowork")
+    engine.roots.append(
+        RootDir(path=folder, writable=False, label="skill:demo", kind="resource")
+    )
+
+    assert str(folder.resolve()) not in {r["path"] for r in mgr.get_roots(sid)}
+    mgr.save(sid, engine)
+    record = mgr.session_store.load(sid)
+    assert str(folder.resolve()) not in {
+        str(r.get("path")) for r in (record.extra_roots or [])
+    }

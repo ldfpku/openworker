@@ -437,7 +437,11 @@ def build_engine(
     # is injected per turn via context_provider (below), NOT here — so the menu the model
     # sees is also live: skill changes apply from the next message, no new session needed.
     # Default None preserves CLI / direct callers.
-    registry.register_all(skill_tools(skill_loader, allowed=skill_filter))
+    # `roots=root_list`: loading a skill mounts that skill's folder as a read-only
+    # resource root, so its bundled references/scripts are readable by the file tools.
+    registry.register_all(
+        skill_tools(skill_loader, allowed=skill_filter, roots=root_list or None)
+    )
     # The worker-authors door (SKILLS-SPEC §5.2): save_skill proposes installing a finished
     # skill; requires_approval routes it through the standard approval card, so the review-
     # before-save rule holds without any bespoke plumbing. Bundled files may only come from

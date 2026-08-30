@@ -6,6 +6,15 @@ read-only or read-write. The same `list[RootDir]` object is shared by reference 
 PermissionEngine (scoping), the file toolkit (resolution), and the context injector (so the
 agent is told which dirs it has), so Slice C can mutate it in place at runtime and all three
 see the change. Index 0 is always the primary.
+
+Two KINDS of root share the list. A ``folder`` root is a directory the USER chose — it is
+listed in the roots context, shown in the GUI's Access panel, and persisted with the
+session. A ``resource`` root is one a loaded skill brought with it (its bundled
+references/scripts): read-only, added by ``load_skill``, and deliberately invisible
+everywhere a *user's* folders are shown — it is not something the user granted, it should
+not survive the session, and it should not pad the context. Both kinds are equally
+readable, which is the whole point: before this, ``load_skill`` handed the agent a
+``resources_path`` that ``read_file`` then refused.
 """
 
 from __future__ import annotations
@@ -14,20 +23,39 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+FOLDER_KIND = "folder"  # a directory the user granted
+RESOURCE_KIND = "resource"  # a loaded skill's bundled files (read-only, session-local)
+
 
 @dataclass
 class RootDir:
     path: Path
     writable: bool = False
     label: str = ""  # display name; defaults to the dir's basename
+    kind: str = FOLDER_KIND
 
     def __post_init__(self) -> None:
         self.path = Path(self.path).expanduser().resolve()
         if not self.label:
             self.label = self.path.name or str(self.path)
 
+    @property
+    def is_resource(self) -> bool:
+        return self.kind == RESOURCE_KIND
+
     def to_dict(self) -> dict[str, Any]:
-        return {"path": str(self.path), "writable": self.writable, "label": self.label}
+        return {
+            "path": str(self.path),
+            "writable": self.writable,
+            "label": self.label,
+            "kind": self.kind,
+        }
+
+
+def user_roots(roots: Iterable[Any] | None) -> list[Any]:
+    """The user's own folders — everything except skill-resource roots. Use this wherever
+    roots are shown to or saved for the user (Access panel, persistence, roots context)."""
+    return [r for r in roots or [] if getattr(r, "kind", FOLDER_KIND) != RESOURCE_KIND]
 
 
 def resolved_paths(roots: Iterable[Any] | None) -> list[Path]:
@@ -66,6 +94,7 @@ def normalize_roots(roots: Iterable[Any] | None) -> list[RootDir]:
                     path=r["path"],
                     writable=bool(r.get("writable", False)),
                     label=r.get("label", ""),
+                    kind=str(r.get("kind") or FOLDER_KIND),
                 )
             )
         elif isinstance(r, (str, Path)):
@@ -75,13 +104,20 @@ def normalize_roots(roots: Iterable[Any] | None) -> list[RootDir]:
                 RootDir(
                     path=getattr(r, "path"),
                     writable=bool(getattr(r, "writable", False)),
+                    kind=str(getattr(r, "kind", FOLDER_KIND) or FOLDER_KIND),
                 )
             )
     return out
 
 
 def render_context(roots: list[RootDir]) -> str:
-    """The `<system-context>` body listing the dirs available this turn. Empty when no roots."""
+    """The `<system-context>` body listing the dirs available this turn. Empty when no roots.
+
+    Skill-resource roots are left out on purpose: `load_skill` already told the agent that
+    skill's path and what it bundles, and repeating every loaded skill's folder here would
+    grow a block that rides on EVERY turn.
+    """
+    roots = user_roots(roots)
     if not roots:
         return ""
     lines = ["Available directories (you may use file/shell tools within these):"]

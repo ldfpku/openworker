@@ -15,6 +15,8 @@ from typing import Callable, Optional, Union
 
 import aisuite as ai
 
+from ..roots import RESOURCE_KIND, RootDir
+
 
 @dataclass
 class Skill:
@@ -110,14 +112,62 @@ def skill_catalog_text(
 AllowedSkills = Union[set, Callable[[], set], None]
 
 
-def skill_tools(loader: SkillLoader, allowed: AllowedSkills = None) -> list:
+_MAX_LISTED_FILES = 200
+
+
+def _bundled_files(folder: Path) -> list[str]:
+    """The skill's bundled resources, relative and forward-slashed. SKILL.md itself is
+    excluded (its body is already in the result) and the list is capped — a skill with
+    hundreds of assets must not turn one tool result into a wall of filenames."""
+    try:
+        found = sorted(
+            p.relative_to(folder).as_posix()
+            for p in folder.rglob("*")
+            if p.is_file() and p.name not in ("SKILL.md", "SKILL.zh.md")
+        )
+    except OSError:
+        return []
+    return found[:_MAX_LISTED_FILES]
+
+
+def skill_tools(
+    loader: SkillLoader, allowed: AllowedSkills = None, roots: Optional[list] = None
+) -> list:
     """`allowed` gates load_skill: a set is a build-time snapshot; a CALLABLE is consulted
     on every call — the manager passes one so Settings disables apply to live sessions
     immediately, and skills created after the engine was built are still loadable
-    (loader rescans on a miss)."""
+    (loader rescans on a miss).
+
+    `roots` is the session's shared roots list. Loading a skill appends that skill's
+    folder to it as a read-only RESOURCE root, which is what makes the bundled
+    references/scripts actually readable: before this, load_skill returned a
+    `resources_path` outside every root, so the very next `read_file` on it answered
+    "path escapes the session's directories" and the skill's own instructions were
+    unfollowable. Only the skill the agent actually loaded is mounted — not the skills
+    directory — and resource roots are never persisted or shown as user folders.
+    """
 
     def _allowed_now() -> Optional[set]:
         return allowed() if callable(allowed) else allowed
+
+    def _mount(folder: Path) -> bool:
+        """Add the skill's folder as a read-only resource root. False when there is no
+        roots list to mount into (a surface without one) — the caller then says so."""
+        if roots is None:
+            return False
+        resolved = folder.expanduser().resolve()
+        for r in roots:
+            if Path(str(getattr(r, "path", r))).expanduser().resolve() == resolved:
+                return True  # already mounted (this skill was loaded before)
+        roots.append(
+            RootDir(
+                path=resolved,
+                writable=False,
+                label=f"skill:{resolved.name}",
+                kind=RESOURCE_KIND,
+            )
+        )
+        return True
 
     def load_skill(name: str) -> dict:
         """Load a skill's full instructions + resources path by name. Call this when a
@@ -132,11 +182,26 @@ def skill_tools(loader: SkillLoader, allowed: AllowedSkills = None) -> list:
                 n for n in loader.names() if gate is None or n in gate
             )
             return {"error": f"unknown skill: {name}", "available": available}
-        return {
+        out: dict = {
             "name": skill.name,
             "instructions": skill.instructions,
             "resources_path": skill.path,
         }
+        if skill.path:
+            folder = Path(skill.path)
+            files = _bundled_files(folder)
+            if files:
+                out["files"] = files
+                out["note"] = (
+                    "The paths in `files` are relative to `resources_path`; join them "
+                    "onto it and read them like any other file."
+                )
+            if not _mount(folder):
+                out["note"] = (
+                    "This surface has no directory list, so the bundled files under "
+                    "`resources_path` may not be readable with the file tools."
+                )
+        return out
 
     return [
         ai.tool(

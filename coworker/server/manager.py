@@ -40,7 +40,7 @@ from ..audit import AuditStore
 from ..config import load_config, workspace_allowed_commands
 from ..conversations import ConversationStore, title_from
 from ..engine import ApprovalOutcome, Approver, TurnEngine
-from ..roots import RootDir
+from ..roots import RootDir, user_roots
 from ..workspace_trust import WorkspaceTrustStore
 from ..automation import Schedule, ScheduledTask, Scheduler, TaskRun, TaskStore
 from ..connectors import (
@@ -4994,8 +4994,12 @@ class SessionManager:
         """User/agent-added folders = the engine's roots minus the primary (index 0) AND
         the session's provisioned scratch root. Persisting the scratch as an "extra"
         would re-add it as a plain folder on every rebuild (universal scratch made
-        index-0-only slicing wrong for dual-root sessions)."""
-        roots = getattr(engine, "roots", None) or []
+        index-0-only slicing wrong for dual-root sessions).
+
+        Skill-resource roots are excluded too: they are not folders the user granted, and
+        persisting one would resurrect it on every rebuild as a plain extra folder that
+        outlives the skill that brought it."""
+        roots = user_roots(getattr(engine, "roots", None) or [])
         scratch = (self.scratch_base() / session_id).expanduser()
         try:
             scratch = scratch.resolve()
@@ -5130,6 +5134,8 @@ class SessionManager:
         """
         engine = self._engines.get(session_id)
         if engine is not None and getattr(engine, "roots", None):
+            # user_roots: a loaded skill's bundled-files root is readable but is not a
+            # folder the user granted, so it never appears in the Access panel.
             return [
                 {
                     "path": str(r.path),
@@ -5138,7 +5144,7 @@ class SessionManager:
                     "primary": i == 0,
                     "exists": r.path.is_dir(),
                 }
-                for i, r in enumerate(engine.roots)
+                for i, r in enumerate(user_roots(engine.roots))
             ]
         record = self.session_store.load(session_id)
         primary = (
@@ -5721,6 +5727,18 @@ class SessionManager:
     def stage_skill_upload(self, data: bytes, filename: str = "") -> dict[str, Any]:
         try:
             preview = self.skill_store.stage_upload(data, filename)
+        except ValueError as exc:
+            # hygiene.ImportRefused subclasses ValueError; its message is written to be
+            # shown verbatim (which limit, what the actual number was).
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, **preview}
+
+    def stage_skill_folder(self, path: str) -> dict[str, Any]:
+        """Import a skill straight from a local folder (desktop "import a folder"). Same
+        staging → preview → confirm as an archive; the user never packages anything, so
+        they cannot accidentally ship a __pycache__ or a .env."""
+        try:
+            preview = self.skill_store.stage_folder(path)
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
         return {"ok": True, **preview}
