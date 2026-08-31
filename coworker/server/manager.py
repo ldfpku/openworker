@@ -5017,7 +5017,7 @@ class SessionManager:
         # is never coming. Observed 2026-08-31: a WeChat request to write code stalled
         # on a shell prompt nobody could see. Owner's call (2026-08-31); the allow-list
         # is what gates who can reach this session at all.
-        engine.permissions.mode = Mode.AUTO
+        engine.permissions.mode = Mode.BYPASS_APPROVALS
         self.save(sid, engine)  # the sessions row must exist before rename/set_origin
         descriptor = connector_descriptor(src.platform)
         title = (descriptor.title if descriptor else "") or src.platform

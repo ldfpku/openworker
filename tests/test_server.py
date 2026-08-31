@@ -22,6 +22,17 @@ class ScriptedProvider(ProviderClient):
         self._turns = list(turns)
 
     def complete(self, *, model, messages, tools=None, **settings):
+        # Auto-titling fires a fire-and-forget completion of its own, and since
+        # 2026-08-24 one of its three windows opens at turn START — concurrently with
+        # the chat turn. It reaches this same provider, so without this guard it POPS a
+        # scripted turn and every later turn shifts up by one. That is invisible in a
+        # two-turn script (the title eats the trailing turn, after the assertions) and
+        # fatal in a three-turn one: test_ws_browser_tool_audit_round_trip scripts
+        # load_browser_tools first, which puts browser_close in exactly the slot the
+        # title eats. The small-talk sentinel also keeps titling inert — the manager
+        # drops that title instead of writing or broadcasting it.
+        if messages and "title chat sessions" in str(messages[0].get("content", "")):
+            return _text("small-talk")
         return self._turns.pop(0)
 
     def capabilities(self, model):
