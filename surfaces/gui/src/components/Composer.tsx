@@ -721,28 +721,35 @@ export function Composer(props: Props) {
           {/* model — a quiet chip, now for the session's whole life (§17 rev 2026-07-22:
               mid-session switching shipped, so the picker stays actionable; the topbar
               subtitle still states the current model). */}
-          {!dictation?.recording && (needsModel ? (
-            <button
-              className="pill model-warn chip"
-              onClick={() => props.onConnectModel?.()}
-              title={t("composer.model.connect")}
-              aria-label={t("composer.model.none_aria")}
-            >
-              <span className="pill-label">{t("composer.model.none")}</span>
-              <span className="model-warn-ico" aria-hidden>⚠</span>
-            </button>
-          ) : modelsLoaded ? (
-            <Dropdown value={props.model} options={modelOptions} onChange={props.onModelChange} align="right" />
-          ) : (
-            <button
-              className="pill chip text-faint cursor-default"
-              disabled
-              data-testid="models-loading"
-              title={t("composer.model.loading_title")}
-            >
-              <span className="pill-label">{t("composer.model.loading")}</span>
-            </button>
-          ))}
+          {/* data-tour wrapper: the guided tour spotlights whichever model control is live.
+              Fork-only — upstream has no tour, so a merge that rewrites this block drops the
+              wrapper silently and the tour skips its "Pick a model" step (2026-09-01). */}
+          {!dictation?.recording && (
+            <span className="inline-flex" data-tour="model">
+              {needsModel ? (
+                <button
+                  className="pill model-warn chip"
+                  onClick={() => props.onConnectModel?.()}
+                  title={t("composer.model.connect")}
+                  aria-label={t("composer.model.none_aria")}
+                >
+                  <span className="pill-label">{t("composer.model.none")}</span>
+                  <span className="model-warn-ico" aria-hidden>⚠</span>
+                </button>
+              ) : modelsLoaded ? (
+                <Dropdown value={props.model} options={modelOptions} onChange={props.onModelChange} align="right" />
+              ) : (
+                <button
+                  className="pill chip text-faint cursor-default"
+                  disabled
+                  data-testid="models-loading"
+                  title={t("composer.model.loading_title")}
+                >
+                  <span className="pill-label">{t("composer.model.loading")}</span>
+                </button>
+              )}
+            </span>
+          )}
 
           {/* mic — immediately before send (owner call, DMG #28 walkthrough) */}
           {isTauri() && (
