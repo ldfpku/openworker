@@ -354,3 +354,63 @@ def test_model_context_windows_covers_verified_entries_only():
     assert windows["anthropic:claude-fable-5"] == 1_000_000
     assert "together:thinkingmachines/Inkling" not in windows  # unverified stays absent
     assert all(isinstance(v, int) and v > 0 for v in windows.values())
+
+
+# -- compat-vendor usage shapes (2026-08-31) -------------------------------------------
+# A bare `getattr` chain silently reports cache_read=0 when a vendor hands the field back
+# in a shape the SDK didn't model — which is how "this vendor does no prompt caching"
+# gets concluded from a parsing miss. These pin the shapes we actually have to survive.
+
+
+def test_compat_usage_reads_cache_across_vendor_shapes():
+    from types import SimpleNamespace as NS
+
+    from coworker.providers.openai_provider import _usage_from
+
+    modeled = _usage_from(
+        NS(prompt_tokens=1000, completion_tokens=50, prompt_tokens_details=NS(cached_tokens=800))
+    )
+    as_dict = _usage_from(
+        NS(prompt_tokens=1000, completion_tokens=50, prompt_tokens_details={"cached_tokens": 800})
+    )
+    whole_dict = _usage_from(
+        {"prompt_tokens": 1000, "completion_tokens": 50, "prompt_tokens_details": {"cached_tokens": 800}}
+    )
+    # DeepSeek reports a flat hit/miss pair instead of the nested OpenAI shape.
+    flat = _usage_from(
+        NS(prompt_tokens=1000, completion_tokens=50, prompt_cache_hit_tokens=800, prompt_cache_miss_tokens=200)
+    )
+    for got in (modeled, as_dict, whole_dict, flat):
+        assert (got.input, got.output, got.cache_read) == (200, 50, 800)
+    # A miss count is prompt read fresh, NOT prompt written to a cache — pricing it as a
+    # cache write would be worse than reporting nothing.
+    assert flat.cache_write == 0
+
+
+def test_compat_usage_reports_a_real_zero_as_zero():
+    """NVIDIA NIM, probed live 2026-08-31: `cached_tokens` is modeled and genuinely 0,
+    and it carries a `cache_write_tokens` field that is null while caching is off. The
+    zero must survive as a zero — the whole point of the shape-tolerant reads is that a
+    zero now means the vendor said zero."""
+    from types import SimpleNamespace as NS
+
+    from coworker.providers.openai_provider import _usage_from
+
+    nim_today = _usage_from(
+        NS(
+            prompt_tokens=1545,
+            completion_tokens=16,
+            prompt_tokens_details={"cached_tokens": 0, "cache_write_tokens": None},
+        )
+    )
+    assert (nim_today.input, nim_today.cache_read, nim_today.cache_write) == (1545, 0, 0)
+
+    # …and the day that deployment turns caching on, the split is already right.
+    nim_later = _usage_from(
+        NS(
+            prompt_tokens=1545,
+            completion_tokens=16,
+            prompt_tokens_details={"cached_tokens": 1200, "cache_write_tokens": 345},
+        )
+    )
+    assert (nim_later.input, nim_later.cache_read, nim_later.cache_write) == (345, 1200, 345)

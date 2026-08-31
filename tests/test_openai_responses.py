@@ -326,6 +326,53 @@ def test_reasoning_summary_capability_rejects_unknown_mode():
         OpenAIResponsesProvider(client=SimpleNamespace(), reasoning_summary="auto")
 
 
+def test_complete_extracts_usage_with_cache_split():
+    # The Responses API reports `input_tokens` INCLUSIVE of the cached share; normalized
+    # like every other adapter — fresh input = input − cached, cache_read carries the
+    # cached share. Before this, the field was dropped entirely and every
+    # Responses-routed model (bare gpt-*, ark:, aigw:openai/*) metered as NO usage at
+    # all — the composer's token chip showed nothing for them.
+    resp = _response([_message_item("hello")])
+    resp.usage = SimpleNamespace(
+        input_tokens=1500,
+        output_tokens=80,
+        input_tokens_details=SimpleNamespace(cached_tokens=1400),
+    )
+    provider = OpenAIResponsesProvider(client=_FakeClient(response=resp))
+    turn = provider.complete(model="m", messages=[{"role": "user", "content": "hi"}])
+    assert turn.usage is not None
+    assert (turn.usage.input, turn.usage.output, turn.usage.cache_read) == (100, 80, 1400)
+
+
+def test_complete_usage_degrades_on_partial_or_missing_fields():
+    # Compat/older servers may omit `input_tokens_details` or the whole usage object —
+    # never a crash, and absence stays None (not a fake zero-usage).
+    resp = _response([_message_item("x")])
+    resp.usage = SimpleNamespace(input_tokens=500, output_tokens=20)  # no details
+    provider = OpenAIResponsesProvider(client=_FakeClient(response=resp))
+    turn = provider.complete(model="m", messages=[{"role": "user", "content": "hi"}])
+    assert (turn.usage.input, turn.usage.output, turn.usage.cache_read) == (500, 20, 0)
+
+    bare = _response([_message_item("y")])  # no usage attribute at all
+    turn2 = OpenAIResponsesProvider(client=_FakeClient(response=bare)).complete(
+        model="m", messages=[{"role": "user", "content": "hi"}]
+    )
+    assert turn2.usage is None
+
+
+def test_complete_usage_reads_details_handed_back_as_a_dict():
+    # Fork-specific hardening: a compat server that returns `input_tokens_details` as an
+    # unmodeled dict used to fall through a bare getattr and report cache_read=0 — the
+    # exact failure mode that made "this vendor does no caching" unfalsifiable.
+    resp = _response([_message_item("z")])
+    resp.usage = SimpleNamespace(
+        input_tokens=900, output_tokens=10, input_tokens_details={"cached_tokens": 850}
+    )
+    provider = OpenAIResponsesProvider(client=_FakeClient(response=resp))
+    turn = provider.complete(model="m", messages=[{"role": "user", "content": "hi"}])
+    assert (turn.usage.input, turn.usage.cache_read) == (50, 850)
+
+
 def test_complete_parses_function_calls_with_call_ids():
     fake = _FakeClient(
         response=_response(
@@ -551,6 +598,28 @@ def test_stream_without_terminal_event_keeps_accumulated_text():
         provider.stream(model="m", messages=[{"role": "user", "content": "x"}])
     )[-1].turn
     assert turn.text == "partial" and turn.finish_reason is None
+    assert turn.usage is None  # nothing terminal arrived — no usage to invent
+
+
+def test_stream_terminal_event_carries_usage():
+    # Streaming path: usage rides the terminal `response.completed` event's full
+    # response object, which the stream parses whole — same extraction as complete().
+    final = _response([_message_item("done")])
+    final.usage = SimpleNamespace(
+        input_tokens=1430,
+        output_tokens=65,
+        input_tokens_details=SimpleNamespace(cached_tokens=1408),
+    )
+    events = [
+        SimpleNamespace(type="response.output_text.delta", delta="done"),
+        SimpleNamespace(type="response.completed", response=final),
+    ]
+    provider = OpenAIResponsesProvider(client=_FakeClient(events=events))
+    turn = list(
+        provider.stream(model="m", messages=[{"role": "user", "content": "x"}])
+    )[-1].turn
+    assert turn.usage is not None
+    assert (turn.usage.input, turn.usage.output, turn.usage.cache_read) == (22, 65, 1408)
 
 
 def test_stream_requests_stream_flag():

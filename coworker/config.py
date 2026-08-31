@@ -32,6 +32,12 @@ class Config:
     model: str = "gpt-5.6-sol"
     mode: str = "interactive"
     max_iterations: int = 150
+    # Companion gate to max_iterations, in the unit the bill uses. Counting ROUNDS
+    # cannot distinguish a turn that read four small files from one that read four
+    # 40k-line logs, so the round gate stops both at the same place. 0 = off, which
+    # is the default: a ceiling that fires on legitimate long work is worse than none,
+    # and the right number is workload-specific (set it per workspace in config.toml).
+    max_turn_tokens: int = 0
     allowed_commands: list[str] = field(
         default_factory=lambda: list(DEFAULT_ALLOWED_COMMANDS)
     )
@@ -63,6 +69,7 @@ _FIELDS = {
     "model",
     "mode",
     "max_iterations",
+    "max_turn_tokens",
     "allowed_commands",
     "auto_allow",
     "host",

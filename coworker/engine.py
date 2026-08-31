@@ -75,6 +75,11 @@ class TurnEngine:
         instructions: Optional[str] = None,
         approver: Optional[Approver] = None,
         max_iterations: int = 12,
+        # Second gate on a runaway turn, in the unit the bill is actually denominated in.
+        # `max_iterations` counts ROUNDS: it cannot tell a turn that read four small files
+        # from one that read four 40k-line logs, so it stops the cheap turn and the
+        # expensive one at the same place. 0 disables. See `_loop`.
+        max_turn_tokens: int = 0,
         model_settings: Optional[dict[str, Any]] = None,
         messages: Optional[list[dict[str, Any]]] = None,
         audit_sink: Optional[Callable[[dict[str, Any]], None]] = None,
@@ -107,6 +112,7 @@ class TurnEngine:
         self.model = model
         self.approver = approver or _deny_all
         self.max_iterations = max_iterations
+        self.max_turn_tokens = max_turn_tokens
         self.model_settings = dict(model_settings or {})
         self.messages: list[dict[str, Any]] = list(messages or [])
         self.audit_sink = audit_sink
@@ -356,11 +362,31 @@ class TurnEngine:
 
     async def _loop(self) -> AsyncIterator[Event]:
         iterations = 0
+        spent = 0  # billed tokens this turn: prompt-side + output, accumulated per round
         while True:
+            # Two gates, whichever trips first. Both payloads carry BOTH numbers: a stop
+            # that says only "max iterations reached" tells the user about a mechanism
+            # instead of about their bill, and doesn't mention that replying continues —
+            # so the session sits idle, the provider cache goes cold, and resuming costs
+            # more than finishing would have.
             if iterations >= self.max_iterations:
                 yield Event(
                     EventType.TURN_END,
-                    {"status": "max_iterations_exceeded", "iterations": iterations},
+                    {
+                        "status": "max_iterations_exceeded",
+                        "iterations": iterations,
+                        "tokens": spent,
+                    },
+                )
+                return
+            if self.max_turn_tokens and spent >= self.max_turn_tokens:
+                yield Event(
+                    EventType.TURN_END,
+                    {
+                        "status": "max_tokens_exceeded",
+                        "iterations": iterations,
+                        "tokens": spent,
+                    },
                 )
                 return
             iterations += 1
@@ -442,6 +468,12 @@ class TurnEngine:
                 # The trigger signal: the prompt-side total that actually occupied the
                 # window on this round-trip (estimate fallback when never reported).
                 self._last_context_tokens = turn.usage.context_tokens
+                # …and the running bill for the token gate. Prompt-side is re-sent whole
+                # every round, so this sums what was actually billed, not the context
+                # size. No price table exists in the repo, so the unit is tokens: a
+                # cached read and a fresh one count the same here even though they cost
+                # 10x apart — the gate is a runaway backstop, not an accountant.
+                spent += turn.usage.context_tokens + turn.usage.output
 
             self._turn_truncated = turn.finish_reason == "length"
             _sanitize_mangled_calls(turn)
@@ -1606,12 +1638,47 @@ def _sanitize_mangled_calls(turn: AssistantTurn) -> None:
                 }
 
 
+# The one place a bound can be put on what a tool result costs FOREVER. A tool result is
+# appended to history and then re-sent on every subsequent round trip of the session, so
+# its size is paid once per remaining turn, not once. Until this cap existed the engine
+# enforced nothing and the ceiling was whatever each tool happened to choose — `run_shell`
+# alone allows 20,000 chars (~5,000 tokens), i.e. a SINGLE call could plant more in the
+# history than the entire system prompt and tool catalogue combined.
+#
+# 8,000 chars is deliberately generous: it clears a long file read or a full test run, so
+# the cap only bites on genuinely runaway output (a `find /`, a minified bundle, a 50k-line
+# log). The trailing marker is written FOR THE MODEL — it says how much was dropped and
+# what to do about it, because a silent truncation reads as "that's all there was" and
+# sends the model off reasoning about a file it only half saw.
+_TOOL_RESULT_MAX_CHARS = 8_000
+_TOOL_RESULT_HEAD_SHARE = 0.7  # keep mostly the head; the tail usually holds the summary
+
+
+def _clip_tool_result(content: str) -> str:
+    """Bound one tool result before it enters history. Keeps a head and a tail — the head
+    because output is usually front-loaded, the tail because exit codes, totals and error
+    summaries live at the end and dropping them is what makes a truncation misleading."""
+    if len(content) <= _TOOL_RESULT_MAX_CHARS:
+        return content
+    budget = _TOOL_RESULT_MAX_CHARS
+    head = int(budget * _TOOL_RESULT_HEAD_SHARE)
+    tail = budget - head
+    dropped = len(content) - budget
+    return (
+        content[:head]
+        + f"\n\n… [{dropped} chars omitted from the middle of this result to keep the "
+        "conversation affordable — it is NOT the whole output. Re-run narrowed (a filter, "
+        "a line range, a smaller path) if you need what was dropped.]\n\n"
+        + content[-tail:]
+    )
+
+
 def _tool_result_message(tool_call: ToolCall, result: Any) -> dict[str, Any]:
     content = result if isinstance(result, str) else json.dumps(result, default=str)
     return {
         "role": "tool",
         "tool_call_id": tool_call.id,
-        "content": content,
+        "content": _clip_tool_result(content),
         "ts": time.time(),
     }
 

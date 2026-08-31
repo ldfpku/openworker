@@ -439,3 +439,86 @@ def test_outbound_replaces_images_for_non_vision_models(tmp_path):
     assert all(p["type"] != "image_url" for p in parts)
     assert "not viewable" in parts[-1]["text"]
     assert engine.messages[-1]["content"][1]["type"] == "image_url"  # history untouched
+
+
+def test_tool_results_are_bounded_before_entering_history():
+    """A tool result is appended to history and then re-sent on EVERY later round trip,
+    so its size is paid once per remaining turn. The engine used to enforce no bound at
+    all — the ceiling was whatever each tool chose, and `run_shell` alone allows 20,000
+    chars, more than the entire system prompt plus tool catalogue."""
+    from coworker.engine import (
+        _TOOL_RESULT_MAX_CHARS,
+        _clip_tool_result,
+        _tool_result_message,
+    )
+    from coworker.providers import ToolCall
+
+    assert _clip_tool_result("small") == "small"
+    at_cap = "y" * _TOOL_RESULT_MAX_CHARS
+    assert _clip_tool_result(at_cap) == at_cap  # the cap itself is not truncation
+
+    runaway = "HEAD-MATTERS" + ("a" * 40_000) + "TAIL-exit_code=0"
+    clipped = _clip_tool_result(runaway)
+    assert len(clipped) < len(runaway)
+    # Head AND tail survive: output is front-loaded, but exit codes, totals and error
+    # summaries live at the end — dropping those is what makes a truncation misleading.
+    assert clipped.startswith("HEAD-MATTERS")
+    assert clipped.endswith("TAIL-exit_code=0")
+    # The marker is written FOR THE MODEL: a silent truncation reads as "that's all there
+    # was" and sends it off reasoning about output it only half saw.
+    assert "chars omitted" in clipped and "NOT the whole output" in clipped
+    assert "Re-run narrowed" in clipped
+
+    # The cap applies to dict results too (they are json.dumps'd on the way in).
+    message = _tool_result_message(
+        ToolCall(id="c1", name="run_shell", arguments={}), {"output": "z" * 40_000}
+    )
+    assert len(message["content"]) < 40_000
+    assert message["role"] == "tool" and message["tool_call_id"] == "c1"
+
+
+def test_token_gate_stops_a_runaway_turn_and_says_what_it_cost(tmp_path):
+    """`max_iterations` counts ROUNDS, so it cannot tell a turn that read four small
+    files from one that read four 40k-line logs — it stops both at the same place. The
+    token gate is the same backstop in the unit the bill is actually denominated in.
+
+    Both stops now report iterations AND tokens: naming only the mechanism left the user
+    puzzling instead of replying, and an idle session is the expensive kind (the provider
+    cache goes cold, so resuming re-bills the whole prompt at full price)."""
+    from coworker.providers.base import TokenUsage
+
+    turn = _tool_turn("list_files", {})
+    turn.usage = TokenUsage(input=900, output=100)  # 1,000 billed per round
+    engine, provider = _engine(tmp_path, [turn], loop=True, max_iterations=100)
+    engine.max_turn_tokens = 3_000
+    end = _collect(engine, "loop forever")[-1]
+
+    assert end.type == EventType.TURN_END
+    assert end.data["status"] == "max_tokens_exceeded"
+    assert end.data["tokens"] >= 3_000
+    assert end.data["iterations"] < 100  # the token gate tripped first, not the round one
+    assert provider.calls == 3  # 3 x 1,000 reaches the 3,000 ceiling
+    assert set(end.data) >= {"status", "iterations", "tokens"}
+
+
+def test_round_gate_also_reports_the_token_cost(tmp_path):
+    """The iteration stop carries the same two numbers, so the surfaces have one story."""
+    from coworker.providers.base import TokenUsage
+
+    turn = _tool_turn("list_files", {})
+    turn.usage = TokenUsage(input=40, output=10)
+    engine, _ = _engine(tmp_path, [turn], loop=True, max_iterations=3)
+    end = _collect(engine, "loop forever")[-1]
+
+    assert end.data["status"] == "max_iterations_exceeded"
+    assert end.data["iterations"] == 3 and end.data["tokens"] == 150
+
+
+def test_token_gate_is_off_by_default(tmp_path):
+    """A ceiling that fires on legitimate long work is worse than no ceiling — the
+    default stays 0 and only `max_iterations` guards, exactly as before."""
+    from coworker.config import Config
+
+    assert Config().max_turn_tokens == 0
+    engine, _ = _engine(tmp_path, [_text_turn("hi")])
+    assert engine.max_turn_tokens == 0

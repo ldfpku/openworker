@@ -227,3 +227,21 @@ def test_unencodable_command_fails_loudly_instead_of_running_corrupted(tmp_path)
         assert out["output"] == ""
     finally:
         ex.close()
+
+
+def test_command_is_not_stored_twice_in_history():
+    """A shell result used to echo the command verbatim — but the full text is already in
+    the assistant message's `tool_calls[].arguments`, so history carried two copies and
+    re-sent both on every later round trip. Worst case is a heredoc or an inline script,
+    where the duplicate dwarfs the actual output."""
+    from coworker.tools.shell import _ECHO_CHARS, _echo
+
+    short = "git status --porcelain"
+    assert _echo(short) == short  # short commands stay whole — they cost nothing
+
+    script = "python - <<'EOF'\n" + ("print('x')\n" * 200) + "EOF"
+    echoed = _echo(script)
+    assert len(echoed) < _ECHO_CHARS + 80
+    assert echoed.startswith("python - <<'EOF'")  # still identifies WHICH call this is
+    assert str(len(script)) in echoed  # and says how much was elided
+    assert "in the tool call" in echoed  # …and where the full text still lives

@@ -11,6 +11,8 @@ tools combined with reasoning on GPT-5.6+, so reasoning + tools needs `/v1/respo
 from __future__ import annotations
 
 import json
+import logging
+import os
 import re
 from typing import Any, Optional
 
@@ -23,6 +25,8 @@ from .base import (
     ToolCall,
 )
 from .capabilities import capabilities_for
+
+logger = logging.getLogger(__name__)
 
 
 def resolve_api_key(secrets: Any = None) -> Optional[str]:
@@ -120,19 +124,108 @@ def _param_fix_retry(kwargs: dict[str, Any], exc: Exception) -> dict[str, Any]:
     raise exc
 
 
+def _field(obj: Any, name: str) -> Any:
+    """One field off a usage object that may be a pydantic model OR a plain dict.
+
+    Load-bearing for compat vendors. The SDK models the fields OpenAI documents; a
+    vendor-specific extra (or a whole `prompt_tokens_details` the SDK didn't model)
+    arrives as a `dict` in `model_extra` instead. A bare `getattr` on that dict returns
+    the default and the value is lost SILENTLY — which is exactly how "this vendor does
+    no prompt caching" gets concluded from a parsing miss. Bedrock avoids this by
+    reading dicts with `.get()`; do both here.
+    """
+    if obj is None:
+        return None
+    value = getattr(obj, name, None)
+    if value is None and isinstance(obj, dict):
+        value = obj.get(name)
+    if value is None:
+        extra = getattr(obj, "model_extra", None)
+        if isinstance(extra, dict):
+            value = extra.get(name)
+    return value
+
+
+def _int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+# Cached-prompt tokens under the names compat vendors actually use. OpenAI's own shape
+# is `prompt_tokens_details.cached_tokens`; several vendors report a flat field instead
+# (DeepSeek's hit/miss pair is the widest-deployed example). Order matters only in that
+# the nested OpenAI shape is checked first — it is the one we can trust the meaning of.
+_CACHE_READ_FLAT_KEYS = ("prompt_cache_hit_tokens", "cached_tokens", "cache_read_input_tokens")
+
+
+def _cache_read_from(usage: Any) -> int:
+    details = _field(usage, "prompt_tokens_details")
+    nested = _int(_field(details, "cached_tokens"))
+    if nested:
+        return nested
+    for key in _CACHE_READ_FLAT_KEYS:
+        flat = _int(_field(usage, key))
+        if flat:
+            return flat
+    return 0
+
+
+def _cache_write_from(usage: Any) -> int:
+    """Cache-CREATION tokens, where a vendor reports them. OpenAI's own chat.completions
+    shape has no write side, which is why this used to be hardcoded 0 — but NVIDIA NIM,
+    for one, carries `prompt_tokens_details.cache_write_tokens` (observed 2026-08-31,
+    null while caching is off). Reading it costs nothing and means the metering is
+    already right on the day a vendor turns caching on."""
+    details = _field(usage, "prompt_tokens_details")
+    for key in ("cache_write_tokens", "cache_creation_tokens"):
+        value = _int(_field(details, key)) or _int(_field(usage, key))
+        if value:
+            return value
+    # Deliberately NOT `prompt_cache_miss_tokens` (DeepSeek): a miss is prompt that was
+    # read fresh, not prompt that was written to a cache. Counting it here would price
+    # ordinary input at the cache-write rate.
+    return 0
+
+
 def _usage_from(usage: Any) -> Optional[TokenUsage]:
     """chat.completions usage → normalized counts. `prompt_tokens` INCLUDES cached
-    tokens, so the cached share is subtracted into `cache_read`; no write-side split
-    exists on this API shape."""
+    tokens, so the cached share is subtracted into `cache_read`.
+
+    Set `OPENWORKER_DEBUG_USAGE=1` to log the raw usage object once per process. There
+    is no other way to tell "the vendor reported no cache hit" apart from "we failed to
+    find where the vendor put it", and that distinction decides real money — the whole
+    reason this function stopped being three `getattr` calls.
+    """
     if usage is None:
         return None
-    prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
-    details = getattr(usage, "prompt_tokens_details", None)
-    cached = int(getattr(details, "cached_tokens", 0) or 0)
+    _debug_usage_once(usage)
+    prompt = _int(_field(usage, "prompt_tokens"))
+    cached = _cache_read_from(usage)
     return TokenUsage(
         input=max(prompt - cached, 0),
-        output=int(getattr(usage, "completion_tokens", 0) or 0),
+        output=_int(_field(usage, "completion_tokens")),
         cache_read=cached,
+        cache_write=_cache_write_from(usage),
+    )
+
+
+_usage_logged = False
+
+
+def _debug_usage_once(usage: Any) -> None:
+    global _usage_logged
+    if _usage_logged or not os.environ.get("OPENWORKER_DEBUG_USAGE", "").strip():
+        return
+    _usage_logged = True
+    dumped: Any
+    try:
+        dumped = usage.model_dump()  # pydantic
+    except Exception:  # noqa: BLE001 - a dict, a namespace, anything
+        dumped = getattr(usage, "__dict__", None) or repr(usage)
+    logger.warning(
+        "raw chat.completions usage (type=%s): %r", type(usage).__name__, dumped
     )
 
 

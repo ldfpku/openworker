@@ -167,3 +167,58 @@ async def test_no_requester_still_returns_guidance(tmp_path):
     assert not [e for e in events if e.type is EventType.TOOL_REQUESTED]
     tool_msg = [m for m in engine.messages if m.get("role") == "tool"][-1]
     assert "degraded" in str(tool_msg["content"]).lower()
+
+
+# -- who actually gets request_tool (2026-08-31, prompt cost) --------------------------
+
+
+def test_request_tool_only_ships_to_personas_that_use_the_pinned_catalog(tmp_path):
+    """`toolchain.MANAGED` is a closed set of three security scanners, and the tool's own
+    text tells the model to install ANY other missing CLI with the shell instead. So a
+    persona that never mentions gitleaks/trivy/osv-scanner could not legitimately call
+    this — registering it anyway put ~1,150 chars of schema in front of every session
+    with a shell, uncached, on every round trip."""
+    from coworker.agent import _mentions_managed_tool, build_engine
+    from coworker.agents import code_agent, cowork_agent
+    from coworker.personas.registry import PersonaRegistry
+    from coworker.secrets import SecretStore
+
+    reg = PersonaRegistry()
+    for pid in ("security", "cloud-posture", "dep-audit", "secrets-worker", "posture-worker"):
+        assert _mentions_managed_tool(reg.agent(pid)) is True, pid
+    for pid in ("cowork", "code", "expert-lead", "production-planning", "failure-analysis"):
+        assert _mentions_managed_tool(reg.agent(pid)) is False, pid
+
+    # …and it really is absent from the roster, not merely unmentioned.
+    secrets = SecretStore(tmp_path / "secrets.json")
+    for agent in (cowork_agent(), code_agent()):
+        engine = build_engine(agent=agent, workspace=tmp_path, secrets=secrets)
+        assert "request_tool" not in engine.registry.names(), agent.name
+    sec = build_engine(agent=reg.agent("security"), workspace=tmp_path, secrets=secrets)
+    assert "request_tool" in sec.registry.names()
+
+
+def test_a_persona_whose_skills_use_a_pinned_tool_still_gets_it():
+    """The gate reads the persona's prompt and declared skill NAMES. Guard the gap: if a
+    persona's bundled skill body reaches for a managed tool, the persona had better name
+    it too — otherwise that persona silently loses its only way to ask for the install."""
+    from pathlib import Path
+
+    from coworker.agent import _mentions_managed_tool
+    from coworker.personas.registry import PersonaRegistry
+    from coworker.toolchain import MANAGED
+
+    reg = PersonaRegistry()
+    for entry in reg.list_all():
+        manifest = reg.get(entry["id"]).manifest
+        if manifest is None or not manifest.skills:
+            continue
+        skills_dir = Path(manifest.source).parent / "skills"
+        uses = False
+        for skill in manifest.skills:
+            body = skills_dir / skill / "SKILL.md"
+            if body.is_file():
+                text = body.read_text(encoding="utf-8", errors="replace").lower()
+                uses = uses or any(name.lower() in text for name in MANAGED)
+        if uses:
+            assert _mentions_managed_tool(reg.agent(entry["id"])), entry["id"]

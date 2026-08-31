@@ -31,15 +31,41 @@ class SkillLoader:
     def __init__(self, dirs: list[str | Path]) -> None:
         self._dirs = [Path(d) for d in dirs]
         self._skills: dict[str, Skill] = {}
+        self._fingerprint: Optional[tuple] = None
         self.rescan()
 
-    def rescan(self) -> None:
-        """Re-read the skill dirs. load_skill rescans on a miss so a skill created AFTER
-        the session's engine was built is still loadable (the catalog line stays static
-        until the next session, but an explicitly requested skill must not 404)."""
+    def _dir_fingerprint(self) -> tuple:
+        """(path, mtime) for every SKILL.md we would read. Cheap: one stat per skill, no
+        file reads, no parsing. Catches creation, deletion and edits alike."""
+        stamps: list[tuple[str, float]] = []
+        for directory in self._dirs:
+            if not directory.is_dir():
+                continue
+            for sub in sorted(directory.iterdir()):
+                md = sub / "SKILL.md"
+                try:
+                    if md.is_file():
+                        stamps.append((str(md), md.stat().st_mtime))
+                except OSError:  # vanished between listing and stat — next scan sees it
+                    continue
+        return tuple(stamps)
+
+    def rescan(self, *, force: bool = False) -> None:
+        """Re-read the skill dirs when something on disk actually changed.
+
+        `agent.py` calls this once per TURN while building the <system-context> block, so
+        without the fingerprint every round trip re-read and re-parsed every SKILL.md —
+        163 files of frontmatter to produce bytes that are almost always identical. The
+        stat-only check keeps the reason it is called per turn (a skill created after the
+        engine was built must still be loadable) without paying for it every time.
+        `force=True` skips the check for callers that just wrote a skill themselves."""
+        fingerprint = self._dir_fingerprint()
+        if not force and self._skills and fingerprint == self._fingerprint:
+            return
         self._skills = {}
         for directory in self._dirs:
             self._discover(directory)
+        self._fingerprint = fingerprint
 
     def _discover(self, directory: Path) -> None:
         if not directory.is_dir():
@@ -94,6 +120,28 @@ def _parse_skill(md: Path) -> Skill:
     )
 
 
+# The catalog rides the per-turn <system-context> block, which sits AFTER the last cache
+# breakpoint by construction — so every char here is fresh input on every single round
+# trip, for the whole session. It also scales linearly with what the user has installed:
+# the description is the author's raw frontmatter line, and across the shipped expert
+# library those average 413 chars (max 1,042). Install a 163-skill pack and the catalog
+# alone would be ~17K tokens per turn — more than the system prompt and the entire tool
+# catalogue combined.
+#
+# A catalog line has exactly one job: let the model decide whether to call
+# load_skill(name). The full instructions arrive on that call. One clause is enough for
+# that decision; the rest is paid every turn to say nothing new.
+_CATALOG_DESCRIPTION_CHARS = 160
+
+
+def _catalog_line(name: str, description: str) -> str:
+    text = " ".join((description or "").split())  # authors wrap; the catalog shouldn't
+    if len(text) > _CATALOG_DESCRIPTION_CHARS:
+        cut = text.rfind(" ", 0, _CATALOG_DESCRIPTION_CHARS)
+        text = text[: cut if cut > _CATALOG_DESCRIPTION_CHARS // 2 else _CATALOG_DESCRIPTION_CHARS] + "…"
+    return f"- {name}: {text}"  # shape unchanged from before the cap — only length
+
+
 def skill_catalog_text(
     loader: SkillLoader, allowed: Optional[set[str]] = None
 ) -> str:
@@ -102,7 +150,7 @@ def skill_catalog_text(
     ]
     if not catalog:
         return ""
-    lines = [f"- {c['name']}: {c['description']}" for c in catalog]
+    lines = [_catalog_line(c["name"], c["description"]) for c in catalog]
     return (
         "Available skills — call load_skill(name) to load one's full instructions when "
         "it's relevant to the task:\n" + "\n".join(lines)
@@ -174,7 +222,10 @@ def skill_tools(
         skill from the catalog is relevant to the current task."""
         skill = loader.get(name)
         if skill is None:
-            loader.rescan()  # created after this session started? pick it up now
+            # Created after this session started? Pick it up now. Forced past the
+            # fingerprint check: a miss is the one moment we positively expect the disk
+            # to have changed, and a same-second write can land on an unchanged mtime.
+            loader.rescan(force=True)
             skill = loader.get(name)
         gate = _allowed_now()
         if skill is None or (gate is not None and name not in gate):

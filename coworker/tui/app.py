@@ -197,8 +197,16 @@ class CoworkerApp(App):
         elif event.type is EventType.ERROR:
             self._write(f"[red]error: {data.get('error')}[/red]")
         elif event.type is EventType.TURN_END:
-            if data.get("status") == "max_iterations_exceeded":
-                self._write("[red]⚠ stopped: max iterations reached[/red]")
+            status = data.get("status")
+            if status in ("max_iterations_exceeded", "max_tokens_exceeded"):
+                # Say what it cost and that replying continues. The old text named the
+                # mechanism and stopped there, so people sat puzzling instead of typing —
+                # and an idle session is the expensive kind (the provider cache goes cold,
+                # so resuming re-bills the whole prompt at full price).
+                self._write(
+                    f"[yellow]⏸ paused after {data.get('iterations', 0)} steps, "
+                    f"~{data.get('tokens', 0):,} tokens. Reply to continue.[/yellow]"
+                )
 
     def _write(self, text: str) -> None:
         self.rendered.append(text)

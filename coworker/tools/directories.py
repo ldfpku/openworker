@@ -15,14 +15,16 @@ def request_directory_tool() -> object:
     def request_directory(
         reason: str, path: str = "", writable: bool = False, primary: bool = False
     ) -> dict:
-        """Ask the user for access to a directory when the task needs files outside the current
-        ones (e.g. to read a project the user mentioned, or to save a deliverable somewhere
-        specific). Explain why in `reason`; optionally suggest a `path` and whether you need
-        `writable` access. Set `primary=true` only when the granted folder should become the
-        session's main workspace (the project the whole conversation is about) — allowed once,
-        and only while the session is still running on its scratch directory. The user
-        picks/approves the folder; the result says whether it was granted. Do not use this to
-        escape sandboxing — only to serve the user's request.
+        # Trimmed 2026-08-31 for prompt cost. What survives is what changes behaviour:
+        # when to reach for it, the `primary` constraint, and the sandbox line. The
+        # blank line in the middle of the old text was a docstring accident that reached
+        # the model verbatim.
+        """Ask the user for access to a directory the task needs but doesn't have — a
+        project they mentioned, or somewhere specific to save a deliverable. Say why in
+        `reason`. Set `primary=true` only to make the granted folder the session's main
+        workspace (the project the whole conversation is about): allowed once, and only
+        while the session still runs on its scratch dir. The result says whether it was
+        granted. Only ever to serve the user's request — never to reach past sandboxing.
         """
         # Real handling lives in the engine (it needs the out-of-band GUI round-trip). This body
         # only runs if no requester is wired (e.g. a headless surface).

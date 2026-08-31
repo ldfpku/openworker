@@ -184,13 +184,17 @@ _FILE_SCHEMA = {
     "type": "function",
     "function": {
         "name": "send_file",
+        # Trimmed 2026-08-31 (prompt cost: this rides every messaging session, uncached
+        # on several routes). Two rules survive because they change behaviour — send the
+        # real file rather than a screenshot of it, and expect a separate approval. The
+        # `as_screenshot` sentence went because the parameter's own description already
+        # says exactly that; "(Slack)" went because it was stale anyway (weixin also has
+        # a file sender).
         "description": (
-            "Upload a file from the session's workspace into a connected chat (Slack). "
-            "`target` is the same handle send_message uses. Slack shows its own previews "
-            "for pdf/csv/images — send the actual file, not a screenshot of it. For .html "
-            "artifacts (which Slack can't preview) set as_screenshot=true to send a "
-            "rendered PNG instead. This is a DISTINCT permission from send_message: it "
-            "asks for approval even in threads where text replies are pre-approved."
+            "Upload a file from the session's workspace into a connected chat. `target` "
+            "is the handle send_message uses. Chats preview pdf/csv/images themselves — "
+            "send the actual file, never a screenshot of it. Approval is separate from "
+            "send_message: an upload asks even where text replies are pre-approved."
         ),
         "parameters": {
             "type": "object",

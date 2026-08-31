@@ -161,6 +161,19 @@ def _group_by_connector(
     return kept, held
 
 
+def _mentions_managed_tool(agent: Agent) -> bool:
+    """Does this persona actually work with a pinned-catalog tool? Checked against the
+    persona's own prompt and declared skill names — a persona that never says `gitleaks`
+    is never going to ask us to install it, and shipping the request tool to it is pure
+    prompt cost. Cheap substring test on text built once at engine build."""
+    from .toolchain import MANAGED
+
+    haystack = " ".join(
+        [agent.system_prompt or "", " ".join(getattr(agent, "skills", None) or [])]
+    ).lower()
+    return any(name.lower() in haystack for name in MANAGED)
+
+
 def _loaded_skill_names(messages: list[dict[str, Any]]) -> set[str]:
     """Skills whose instructions successfully entered THIS conversation (a load_skill call
     with a non-error result). Drives the disable countermand: a menu quietly shrinking is
@@ -290,21 +303,37 @@ def build_engine(
         )
         # Channel subscriptions (inbound): listen to a channel, catch up, (un)subscribe. The agent
         # obtains a channel via ask_user or from a channel message it's reacting to.
+        # Deferred like the connector sets: 4 schemas (~1,300 chars) for an explicitly
+        # task-shaped action — "start listening to this channel" — that a turn either
+        # sets out to do or never touches. The loader's own description names the four,
+        # and ToolRegistry.defer() means a model that calls one directly still gets it.
         if subscription_store is not None and channel_buffer is not None and session_id:
-            registry.register_all(
-                subscription_tools(
-                    subscription_store,
-                    session_id,
-                    channel_buffer,
-                    routing_targets=routing_targets,
+            registry.register(
+                make_deferred_toolset_loader(
+                    registry,
+                    label="subscription",
+                    title="Channel subscription",
+                    tool_name="load_subscription_tools",
+                    deferred_tools=subscription_tools(
+                        subscription_store,
+                        session_id,
+                        channel_buffer,
+                        routing_targets=routing_targets,
+                    ),
                 )
             )
     # Surfaces with a multi-root workspace can ask the user mid-task for another folder.
     if root_list:
         registry.register(request_directory_tool())
-    # Anything with a shell can hit a missing CLI (a scanner, aws, kubectl). Give it a way to
-    # ask instead of silently dropping the check that needed it (OPE-85).
-    if executor is not None:
+    # A persona that runs one of the PINNED catalog tools needs a way to ask for it
+    # instead of silently dropping the check (OPE-85). But the catalog is a closed set of
+    # three security scanners (`toolchain.MANAGED`), so registering this for every session
+    # with a shell put ~1,150 chars of schema in front of models that could never
+    # legitimately call it — for ANY other missing CLI the tool's own text says to install
+    # it with the shell instead. Gated on the persona actually naming one, which is
+    # derived rather than hand-maintained: add a managed tool and the personas that talk
+    # about it pick this up automatically.
+    if executor is not None and _mentions_managed_tool(agent):
         registry.register(request_tool_tool())
     if agent.connectors:
         enabled_connectors, enabled_tools = _enabled_connector_tools(secrets)
@@ -576,6 +605,7 @@ def build_engine(
         max_iterations=(
             max_iterations if max_iterations is not None else config.max_iterations
         ),
+        max_turn_tokens=config.max_turn_tokens,
         model_settings=model_settings,
         messages=messages,
         audit_sink=audit_sink,

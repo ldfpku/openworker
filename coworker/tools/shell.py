@@ -138,6 +138,18 @@ class _BackgroundTask:
             pass
 
 
+# How much of the command to echo back in its own result. Enough to tell two calls apart
+# in a transcript; not a second full copy of a heredoc.
+_ECHO_CHARS = 200
+
+
+def _echo(command: Any) -> str:
+    text = command if isinstance(command, str) else str(command)
+    if len(text) <= _ECHO_CHARS:
+        return text
+    return text[:_ECHO_CHARS] + f"… [{len(text)} chars; full text is in the tool call]"
+
+
 class LocalExecutor(Executor):
     def __init__(
         self,
@@ -355,7 +367,7 @@ class LocalExecutor(Executor):
         self._bg_tasks[task_id] = task
         return {
             "task_id": task_id,
-            "command": command,
+            "command": _echo(command),
             "status": "running",
             "note": "use shell_task_output to read its output, shell_task_kill to stop it",
         }
@@ -460,7 +472,12 @@ class LocalExecutor(Executor):
         self, command, exit_code, output, *, timed_out, truncated=False, error=None
     ):
         result = {
-            "command": command,
+            # Echoed back only far enough to identify WHICH call this is. The command is
+            # already in the assistant message's `tool_calls[].arguments`, verbatim and
+            # in full, so a complete echo stores the text twice in history and re-sends
+            # both copies on every later round trip — and the cost scales with the worst
+            # case, a heredoc or an inline script.
+            "command": _echo(command),
             "cwd": self.cwd,
             "exit_code": exit_code,
             "output": output,

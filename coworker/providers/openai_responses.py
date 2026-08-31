@@ -41,10 +41,11 @@ from .base import (
     ModelCapabilities,
     ProviderClient,
     StreamChunk,
+    TokenUsage,
     ToolCall,
 )
 from .capabilities import capabilities_for
-from .openai_provider import resolve_api_key
+from .openai_provider import _field, _int, resolve_api_key
 
 # Request params passed through from model settings; everything else (frequency_penalty,
 # reasoning_effort — no effort knob in v1, the server default rides) is dropped.
@@ -234,6 +235,30 @@ def _sidecar_extras(items: list[dict[str, Any]]) -> dict[str, Any]:
     return {}
 
 
+def _usage_from(usage: Any) -> Optional[TokenUsage]:
+    """Responses-API usage → normalized counts (upstream OPE-101, ported).
+
+    Until this existed, every model on `/v1/responses` — bare `gpt-*`, `ark:`,
+    `aigw:openai/*` — reported `usage = None`, so the composer's token chip showed
+    nothing at all for them and the session totals silently omitted them.
+
+    `input_tokens` INCLUDES the cached share, so fresh input = input_tokens −
+    cached_tokens (same convention as Chat Completions and Anthropic); `output_tokens`
+    already includes reasoning tokens. Reads go through `_field` rather than plain
+    `getattr` so a compat server that hands `input_tokens_details` back as a dict is
+    still understood — see the note there.
+    """
+    if usage is None:
+        return None
+    prompt = _int(_field(usage, "input_tokens"))
+    cached = _int(_field(_field(usage, "input_tokens_details"), "cached_tokens"))
+    return TokenUsage(
+        input=max(prompt - cached, 0),
+        output=_int(_field(usage, "output_tokens")),
+        cache_read=cached,
+    )
+
+
 def _parse_response(response: Any) -> AssistantTurn:
     """One Responses result → an AssistantTurn (+ `_openai` extras)."""
     items = [_dump(item) for item in getattr(response, "output", None) or []]
@@ -279,6 +304,7 @@ def _parse_response(response: Any) -> AssistantTurn:
         raw=response,
         reasoning="".join(summaries) or None,
         extras=_sidecar_extras(items),
+        usage=_usage_from(getattr(response, "usage", None)),
     )
 
 

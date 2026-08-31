@@ -608,15 +608,17 @@ _SAVE_SKILL_SCHEMA = {
     "type": "function",
     "function": {
         "name": "save_skill",
+        # Trimmed 2026-08-31 for prompt cost. The wording rules stay verbatim — they are
+        # brand copy, not description, and the model will drift straight back to
+        # "install it into <app>" without them. What went was the retelling of the
+        # approval card, which the user sees anyway and the model cannot influence.
         "description": (
-            "Propose adding a finished skill to the user's skills. The user reviews the "
-            "name, description, full instructions, and any bundled files on an approval "
-            "card before anything is saved; once they approve, the skill is usable in "
-            "every conversation. Use this after building or refining a skill in "
-            "conversation, and offer it in words like: 'Want me to add <name> to your "
-            "skills?' — say 'your skills', never the app name; say 'add', never "
-            "'install'. If a skill with this name already exists, approving overwrites "
-            "its instructions and adds the files."
+            "Propose adding a finished skill to the user's skills. Nothing is saved until "
+            "the user approves it on a card; after that it is available in every "
+            "conversation, and re-saving the same name overwrites its instructions. Use "
+            "after building or refining a skill in conversation, and offer it in words "
+            "like: 'Want me to add <name> to your skills?' — say 'your skills', never the "
+            "app name; say 'add', never 'install'."
         ),
         "parameters": {
             "type": "object",
