@@ -215,13 +215,13 @@ export function GalleryModal({
             >
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 mb-0.5">
-                  <span className="font-semibold text-[13px]">{p.name}</span>
+                  <span className="font-semibold text-[13px]">{t(p.name)}</span>
                   <span className={CHIP}>{p.family}</span>
                   <span className="text-[11px] text-faint">
                     {t("gallery.version_publisher", { version: p.version, publisher: p.publisher })}
                   </span>
                 </div>
-                <div className="text-[13px] text-muted mb-1.5">{p.tagline}</div>
+                <div className="text-[13px] text-muted mb-1.5">{t(p.tagline)}</div>
                 {p.recommended_connectors.length > 0 && (
                   <div className="flex flex-wrap gap-1.5">
                     {p.recommended_connectors.map((c) => (
@@ -278,10 +278,10 @@ export function GalleryModal({
           <div className="flex items-start gap-4">
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 mb-1">
-                <span className="font-semibold text-[16px]">{card.name}</span>
+                <span className="font-semibold text-[16px]">{t(card.name)}</span>
                 <span className={CHIP}>{card.family}</span>
               </div>
-              <div className="text-[13px] text-muted">{card.tagline}</div>
+              <div className="text-[13px] text-muted">{t(card.tagline)}</div>
               <div className="text-[12px] text-faint mt-1">
                 {t("gallery.detail_meta", { version: card.version, publisher: card.publisher, risk: card.risk_summary })}
               </div>

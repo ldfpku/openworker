@@ -354,6 +354,7 @@
   "Context optimization": "上下文优化",
   "Context window": "上下文窗口",
   "Context window {{pct}}% full · {{total}} tokens this session": "上下文窗口已用 {{pct}}% · 本会话共 {{total}} 个 token",
+  "Context window {{pct}}% full — {{used}} of {{window}}": "上下文窗口已用 {{pct}}% —— {{used}} / {{window}}",
   "Continue without it": "不装也继续",
   "Continue without sign-in": "不登录继续",
   "Conversations shown per coworker": "每位协作代理显示的会话数",

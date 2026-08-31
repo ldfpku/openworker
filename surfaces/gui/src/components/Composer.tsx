@@ -859,8 +859,12 @@ function UsageChip({
         aria-label={t("Token usage")}
         title={
           pct !== null
-            ? `Context window ${pct}% full — ${formatTokens(usage.context)} of ${formatTokens(contextWindow as number)}`
-            : `In context now: ${formatTokens(usage.context)} tokens`
+            ? t("Context window {{pct}}% full — {{used}} of {{window}}", {
+                pct,
+                used: formatTokens(usage.context),
+                window: formatTokens(contextWindow as number),
+              })
+            : t("In context now: {{tokens}} tokens", { tokens: formatTokens(usage.context) })
         }
         data-testid="usage-chip"
       >
@@ -891,7 +895,7 @@ function UsageChip({
             {contextWindow ? (
               <div className="mb-2.5">
                 <div className="text-[11px] uppercase tracking-[0.06em] text-faint font-semibold mb-1">
-                  Context window
+                  {t("Context window")}
                 </div>
                 <div className="h-1.5 rounded-full bg-line overflow-hidden">
                   <div
@@ -900,17 +904,21 @@ function UsageChip({
                   />
                 </div>
                 <div className="mt-1 text-[12px] text-muted tabular-nums">
-                  {formatTokens(usage.context)} of {formatTokens(contextWindow)} · {pct}%
+                  {t("{{used}} of {{window}} · {{pct}}%", {
+                    used: formatTokens(usage.context),
+                    window: formatTokens(contextWindow),
+                    pct,
+                  })}
                 </div>
               </div>
             ) : usage.context > 0 ? (
               <div className="mb-2.5 text-[12px] text-muted tabular-nums">
-                In context now: {formatTokens(usage.context)} tokens
+                {t("In context now: {{tokens}} tokens", { tokens: formatTokens(usage.context) })}
               </div>
             ) : null}
             {SHOW_SESSION_TOTALS && (<>
             <div className="text-[11px] uppercase tracking-[0.06em] text-faint font-semibold mb-1">
-              Session totals
+              {t("Session totals")}
             </div>
             <div className="flex flex-col gap-1.5">
               {Object.entries(usage.byModel).map(([id, u]) => (
@@ -939,13 +947,13 @@ function UsageChip({
               ))}
             </div>
             <div className="mt-2 pt-2 border-t border-line flex items-baseline justify-between text-[12px]">
-              <span className="text-faint">Total</span>
-              <span className="text-ink tabular-nums">{formatTokens(total)} tokens</span>
+              <span className="text-faint">{t("Total")}</span>
+              <span className="text-ink tabular-nums">{t("{{tokens}} tokens", { tokens: formatTokens(total) })}</span>
             </div>
             </>)}
             {model && !modelLabels?.[model] && contextWindow === undefined && (
               <div className="mt-1 text-[11px] text-faint leading-snug">
-                Context meter unavailable for custom models.
+                {t("Context meter unavailable for custom models.")}
               </div>
             )}
           </div>

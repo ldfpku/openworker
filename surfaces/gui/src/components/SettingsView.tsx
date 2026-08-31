@@ -311,7 +311,7 @@ function VoiceInputSection() {
               <div className="min-w-0 flex-1">
                 <div className="text-[13px] font-medium">{t("settings.voice_device_title")}</div>
                 <div className="text-[12px] text-muted mt-1">{status?.device_summary || t("settings.voice_checking")}</div>
-                {status?.compatibility_reason && <div className="text-[12px] text-red-600 mt-1.5">{status.compatibility_reason}</div>}
+                {status?.compatibility_reason && <div className="text-[12px] text-red-600 mt-1.5">{t(status.compatibility_reason)}</div>}
               </div>
               {status && (
                 <span className={"text-[12px] px-2 py-1 rounded-full " + (status.supported ? "bg-green-50 text-green-700" : "bg-red-50 text-red-600")}>

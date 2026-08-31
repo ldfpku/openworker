@@ -63,14 +63,38 @@ function initials(name: string): string {
 // per-provider ModelChecklist / read-only model preview (form view).
 export function ModelsTab() {
   const { t } = useTranslation();
-  const [settings, setSettings] = useState<ModelSettings | null>(null);
+  // undefined = still loading, null = the fetch failed, object = ready. Collapsing the two
+  // failure states into one (upstream's `null` default, which the 2026-08-31 merge brought
+  // in) makes a failed load indistinguishable from a slow one: the tab sits on "加载中…"
+  // forever with nothing to click, and the whole provider gallery — relay sign-in, gateway
+  // sign-in, pasting an nvapi- key, changing the default model — is unreachable. api.ts's
+  // getSettings/getProviders carry a 15s timeout specifically to fail fast INTO this retry.
+  const [settings, setSettings] = useState<ModelSettings | null | undefined>(undefined);
   const refreshSettings = () => getSettings().then(setSettings).catch(() => setSettings(null));
   const ps = useProviderSetup({ onSaved: refreshSettings });
   useEffect(() => {
     refreshSettings();
   }, []);
 
-  if (!settings) return <div className="text-[13px] text-muted">{t("manage.loading")}</div>;
+  if (settings === undefined) return <div className="text-[13px] text-muted">{t("manage.loading")}</div>;
+
+  if (settings === null) {
+    return (
+      <div className="text-[13px] text-muted flex items-center gap-2.5">
+        {t("Couldn't load providers.")}
+        <button
+          className={BTN_BORDERED}
+          onClick={() => {
+            setSettings(undefined);
+            refreshSettings();
+            ps.refreshProviders();
+          }}
+        >
+          {t("Retry")}
+        </button>
+      </div>
+    );
+  }
 
   const info = ps.info;
   const knownNames = ps.providers.map((p) => p.name);
@@ -542,11 +566,15 @@ export function ConnectorTools({ c, onChanged }: { c: Connector; onChanged: () =
               onChange={(e) => toggle(tool.name, e.target.checked)}
             />
             <span className="min-w-0">
-              <span className="block text-[13px]">{tool.label}</span>
+              {/* Wrapped even though tool_defs.py's labels/descriptions are almost entirely
+                  untranslated today: with the key missing, t() returns the key verbatim, so
+                  this renders exactly as the bare expression does — and translating them later
+                  becomes a catalog-only change. The merge stripped both wrappers. */}
+              <span className="block text-[13px]">{t(tool.label)}</span>
               <span className="block text-[12px] text-faint">
                 {t("manage.tool_asks_approval", { name: tool.name, kind: tool.kind })}
               </span>
-              <span className="block text-[12px] text-faint">{tool.description}</span>
+              <span className="block text-[12px] text-faint">{t(tool.description)}</span>
             </span>
           </label>
         ))}
@@ -669,7 +697,7 @@ export function ConnectSetup({
       {c.fields.map((f) => (
         <label className="conn-field" key={f.key}>
           <span className="conn-field-label">
-            {f.label}
+            {t(f.label)}
             {!f.required && <em> ({t("manage.optional")})</em>}
           </span>
           <input
@@ -687,7 +715,7 @@ export function ConnectSetup({
           {busy ? t("manage.validating") : t("manage.connect")}
         </button>
       </div>
-      {error && <div className="text-[13px] text-danger">{error}</div>}
+      {error && <div ref={errRef} className="text-[13px] text-danger">{error}</div>}
     </div>
   );
 }

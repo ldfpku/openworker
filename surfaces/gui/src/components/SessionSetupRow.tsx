@@ -92,7 +92,7 @@ export function SessionSetupRow(props: Props) {
                   {fullPersonaName(p.name, p.id)}
                 </span>
                 {p.tagline && (
-                  <span className="block text-[12px] text-muted truncate">{p.tagline}</span>
+                  <span className="block text-[12px] text-muted truncate">{t(p.tagline)}</span>
                 )}
               </button>
             ))}

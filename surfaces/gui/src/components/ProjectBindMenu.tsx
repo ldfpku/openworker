@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getProjectMenu, nameCurrentProject, setProjectBinding } from "../api";
 import type { ProjectMenu } from "../api";
+import { isComposing } from "../ime";
 import { Icon } from "./Icon";
 
 const MRU_VISIBLE = 5;
@@ -161,6 +162,12 @@ export function ProjectBindMenu(props: {
             value={nameDraft}
             onChange={(e) => setNameDraft(e.target.value)}
             onKeyDown={(e) => {
+              // An IME sends Enter/Escape to confirm or cancel its candidate list, and the
+              // browser still fires keydown for those. Unguarded, typing a Chinese project
+              // name and pressing Enter to pick a candidate would submit the half-composed
+              // draft instead. This component arrived with the 2026-08-31 upstream merge and
+              // was the only text input in the app missing the guard.
+              if (isComposing(e)) return;
               if (e.key === "Enter") nameCurrent();
               if (e.key === "Escape") setNaming(false);
             }}

@@ -126,7 +126,12 @@ export function itemsFromMessages(messages: ConversationMessage[]): Item[] {
                         { kind: "notice", tone: "info", title: (m as any).title || "Auto-approve is on.", text: m.text || "" }
                       : m.kind === "mode_switch"
                         ? { kind: "notice", tone: "info", text: m.text || "" }
-                  : { kind: "notice", tone: "warn", text: "Error: " + (m.text || "unknown"), retriable: true },
+                  : {
+                      kind: "notice",
+                      tone: "warn",
+                      text: t("Error: {{message}}", { message: m.text || t("unknown") }),
+                      retriable: true,
+                    },
       );
     }
     // system messages are omitted; tool-result messages are folded into the tool row above

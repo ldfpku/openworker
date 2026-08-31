@@ -107,7 +107,7 @@ export function ConnectorsList({
             <ConnectorBadge connector={c} size={34} title={c.title} />
             <span className="min-w-0 flex-1">
               <span className="font-medium text-[13px]">{c.title}</span>
-              <span className="block text-[12px] text-muted truncate">{c.blurb}</span>
+              <span className="block text-[12px] text-muted truncate">{c.blurb ? t(c.blurb) : c.blurb}</span>
             </span>
             <span
               className={PILL_QUIET + " cursor-pointer"}

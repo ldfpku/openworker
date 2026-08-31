@@ -543,7 +543,7 @@ export function ProviderForm({
           </button>
         )}
       </div>
-      {f.help && <p className="text-[12px] text-faint mt-1">{f.help}</p>}
+      {f.help && <p className="text-[12px] text-faint mt-1">{t(f.help)}</p>}
     </div>
   );
 
@@ -559,7 +559,7 @@ export function ProviderForm({
           {info ? ps.statusFor(info) : null}
         </span>
       </div>
-      {info?.blurb && <p className="text-[12px] text-faint mt-1">{info.blurb}</p>}
+      {info?.blurb && <p className="text-[12px] text-faint mt-1">{t(info.blurb)}</p>}
 
       {info?.auth === "oauth" && <OAuthSignIn info={info} tp={tp} onChanged={ps.refreshProviders} />}
 
@@ -718,7 +718,7 @@ export function ProviderForm({
                 </span>
               )}
             </div>
-            {ep.help && <p className="text-[12px] text-faint mt-1">{ep.help}</p>}
+            {ep.help && <p className="text-[12px] text-faint mt-1">{t(ep.help)}</p>}
           </div>
         );
       })()}

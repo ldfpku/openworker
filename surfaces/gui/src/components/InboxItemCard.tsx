@@ -330,7 +330,7 @@ export function InboxItemCard({
         </div>
       ) : isQuestion ? null : ( // QuestionCard owns its header + title (stepper needs them)
         <>
-          <div className={SEC}>{item.kind}</div>
+          <div className={SEC}>{t(item.kind)}</div>
           <div className="text-[14px] font-semibold mt-0.5 leading-snug">{item.title}</div>
         </>
       )}

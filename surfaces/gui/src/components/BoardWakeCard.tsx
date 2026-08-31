@@ -51,7 +51,11 @@ function rowText(t: TFunction, row: BoardWakeRow): string {
   const ref = `${item}${title}`;
   switch (row.kind) {
     case "moved":
-      return t("board.wake_moved", { ref, to: row.to, actor: row.actor });
+      // row.to is the store's raw state id ("review"), and the id ITSELF is the catalog key:
+      // English falls back to the key and stays byte-identical, Chinese gets a word. Going
+      // through board.state_* instead would render "→ In review by webb" — e2e/team.spec.ts
+      // catches exactly that.
+      return t("board.wake_moved", { ref, to: row.to ? t(row.to) : row.to, actor: row.actor });
     case "filed":
       return t("board.wake_filed", { ref, actor: row.actor });
     case "claimed":

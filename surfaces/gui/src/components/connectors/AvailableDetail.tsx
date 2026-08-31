@@ -31,7 +31,7 @@ export function AvailableDetail({
         <ConnectorBadge connector={c} size={44} title={c.title} />
         <div className="min-w-0 flex-1">
           <h2 className="text-[20px] font-semibold tracking-tight leading-tight">{c.title}</h2>
-          <div className="text-[13px] text-muted">{c.blurb}</div>
+          <div className="text-[13px] text-muted">{c.blurb ? t(c.blurb) : c.blurb}</div>
         </div>
         <button
           className={PILL_ACCENT}
@@ -78,8 +78,10 @@ export function AvailableDetail({
               tools.map((tool) => (
                 <div key={tool.name} className={ROW + " !min-h-[38px]"}>
                   <span className="min-w-0 flex-1">
-                    <span className="text-[13px]">{tool.label}</span>
-                    <span className="block text-[12px] text-muted">{tool.description}</span>
+                    {/* See ManageTabs: wrapped for the same reason — a missing key falls back
+                        to the key itself, so this is a no-op today and translatable tomorrow. */}
+                    <span className="text-[13px]">{t(tool.label)}</span>
+                    <span className="block text-[12px] text-muted">{t(tool.description)}</span>
                   </span>
                   {tool.kind !== "read" && <span className={TAG_QUIET}>{t("available.asks_first")}</span>}
                 </div>
