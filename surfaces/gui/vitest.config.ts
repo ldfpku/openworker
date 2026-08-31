@@ -8,6 +8,8 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     include: ["src/**/*.test.{ts,tsx}"],
-    setupFiles: ["./src/test-setup.ts"],
+    // Mirrors main.tsx's pre-render initI18n() so components under test resolve through the
+    // real catalog config (both key styles, separators off) — not a second, English-only init.
+    setupFiles: ["src/setupTests.ts"],
   },
 });
