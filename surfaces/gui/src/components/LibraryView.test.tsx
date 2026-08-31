@@ -470,4 +470,42 @@ describe("LibraryView — build an expert team", () => {
     expect(screen.getByTestId("library-team-modal")).toBeTruthy();
     expect(libraryActivateExpert).not.toHaveBeenCalled();
   });
+
+  it("makes the team checkbox findable — the unchecked box is a real control", async () => {
+    // Owner-hit 2026-08-31: unchecked was a 1px `--line` hairline with NO fill on a
+    // near-white card, so across 276 cards the one control that says "you may pick this"
+    // read as a rendering artifact. The user had to circle two of them in a screenshot
+    // to point at what they meant.
+    render(<LibraryView onStartExpertSession={vi.fn()} onStartTeamSession={vi.fn()} />);
+    await screen.findByText("地理学家");
+
+    const cardId = "expert-card-academic/academic-geographer";
+    const boxId = "expert-team-check-academic/academic-geographer";
+    expect(screen.queryByTestId(boxId)).toBeNull(); // no box until team mode
+
+    fireEvent.click(screen.getByTestId("library-team-toggle"));
+    const card = screen.getByTestId(cardId);
+    const box = screen.getByTestId(boxId);
+
+    // The CARD is the control — it is where the click lands, so the role and the state
+    // live there and the little box stays decorative.
+    expect(card.getAttribute("role")).toBe("checkbox");
+    expect(card.getAttribute("aria-checked")).toBe("false");
+    expect(card.getAttribute("tabindex")).toBe("0");
+
+    // Unchecked must still LOOK like a checkbox: a 2px strong border over a filled
+    // ground, never a hairline on nothing.
+    expect(box.className).toContain("border-2");
+    expect(box.className).toContain("border-lineStrong");
+    expect(box.className).toContain("bg-paper");
+    expect(box.className).not.toContain("border-line ");
+
+    // Keyboard reaches it too — Space toggles, like any checkbox.
+    fireEvent.keyDown(card, { key: " " });
+    expect(screen.getByTestId(cardId).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByTestId(boxId).className).toContain("bg-accent");
+
+    fireEvent.keyDown(screen.getByTestId(cardId), { key: "Enter" });
+    expect(screen.getByTestId(cardId).getAttribute("aria-checked")).toBe("false");
+  });
 });

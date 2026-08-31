@@ -652,9 +652,34 @@ function ExpertCard({
 
   return (
     <div
-      className={(teamMode && teamSelected ? CARD_SELECTED : CARD) + " p-3.5 flex flex-col" + (teamMode ? " cursor-pointer" : "")}
+      className={
+        (teamMode && teamSelected ? CARD_SELECTED : CARD) +
+        " p-3.5 flex flex-col" +
+        // In team mode the whole card is the hit target, so it has to LOOK like one.
+        // Without a hover response the only hint that 276 cards are selectable was a
+        // 1px hairline box in the corner (owner-hit 2026-08-31).
+        (teamMode
+          ? " cursor-pointer hover:border-lineStrong focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+          : "")
+      }
       data-testid={`expert-card-${entry.id}`}
       onClick={teamMode ? onToggleTeamSelect : undefined}
+      // The card is the control, not the little box — so the role and the state live
+      // here, where the click actually lands, and the box stays decorative.
+      role={teamMode ? "checkbox" : undefined}
+      aria-checked={teamMode ? teamSelected : undefined}
+      aria-label={teamMode ? entry.name : undefined}
+      tabIndex={teamMode ? 0 : undefined}
+      onKeyDown={
+        teamMode
+          ? (event) => {
+              if (event.key === " " || event.key === "Enter") {
+                event.preventDefault();
+                onToggleTeamSelect?.();
+              }
+            }
+          : undefined
+      }
     >
       <div className="flex items-start gap-2.5 mb-2">
         <div
@@ -669,10 +694,19 @@ function ExpertCard({
           <div className="text-[13.5px] font-semibold leading-snug">{entry.name}</div>
         </div>
         {teamMode ? (
+          // Unchecked used to be a 1px `--line` (#e8eaed) hairline with no fill, on a
+          // near-white card — invisible in practice, so the one control that says "you
+          // may pick this" read as a rendering artifact. Now it is a real unchecked
+          // checkbox: 2px `--line-strong` border over `--paper`, sized a touch larger.
+          // The ✓ stays transparent when unchecked (it holds the box's size; showing a
+          // faint one would read as "checked, but disabled").
           <span
             className={
-              "w-4 h-4 rounded border shrink-0 grid place-items-center text-[10px] leading-none " +
-              (teamSelected ? "border-accent bg-accent text-white" : "border-line text-transparent")
+              "w-[18px] h-[18px] rounded border-2 shrink-0 grid place-items-center " +
+              "text-[11px] leading-none transition-colors " +
+              (teamSelected
+                ? "border-accent bg-accent text-white"
+                : "border-lineStrong bg-paper text-transparent")
             }
             aria-hidden
             data-testid={`expert-team-check-${entry.id}`}
