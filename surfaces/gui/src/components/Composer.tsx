@@ -93,7 +93,7 @@ interface Props {
   // Context-window size (tokens) of the ACTIVE model, from the curated matrix;
   // undefined hides the fill meter (unverified/custom models) but keeps the counts.
   contextWindow?: number;
-  // Settings toggle (default off): true shows the fill bar instead of the session total.
+  // Settings toggle (default off): true shows the fill bar instead of the in-context count.
   contextBar?: boolean;
 }
 
@@ -775,13 +775,21 @@ function UsageChip({
                 pct,
                 total: formatTokens(total),
               })
-            : t("Token usage this session: {{total}}", { total: formatTokens(total) })
+            : usage.context > 0
+              ? t("{{ctx}} tokens in context · {{total}} billed this session", {
+                  ctx: formatTokens(usage.context),
+                  total: formatTokens(total),
+                })
+              : t("Token usage this session: {{total}}", { total: formatTokens(total) })
         }
         data-testid="usage-chip"
       >
         {/* The bar is the context-window fill; pairing it with the session TOTAL read as
             "total is N% of the window", which it never was. Bar alone when we have a
-            window, the session total only when we don't (so the chip is never empty). */}
+            window. Without one, the CONTEXT size — not the session total, which every
+            round trip re-adds the whole prompt to, so it climbs steeply on short
+            exchanges and reads as runaway waste when it's just re-billing. The session
+            total is a click away in the popover, and in the tooltip. */}
         {showBar ? (
           <span className="w-12 h-1.5 rounded-full bg-line overflow-hidden" aria-hidden="true">
             <span
@@ -790,7 +798,9 @@ function UsageChip({
             />
           </span>
         ) : (
-          <span className="tabular-nums">{formatTokens(total)}</span>
+          <span className="tabular-nums">
+            {formatTokens(usage.context > 0 ? usage.context : total)}
+          </span>
         )}
       </button>
       {open && (

@@ -23,6 +23,7 @@ from .connectors import (
     make_send_file_tool,
     make_send_message_tool,
 )
+from .connectors import get_descriptor as get_connector_descriptor
 from .engine import Approver, TurnEngine
 from .environment import environment_context
 from .memory import (
@@ -140,17 +141,23 @@ def _enabled_connector_tools(secrets: SecretStore) -> tuple[set[str], set[str]]:
     return enabled_connectors, enabled_tools
 
 
-def _split_off_connector(
-    tools: list[Callable[..., Any]], connector: str
-) -> tuple[list[Callable[..., Any]], list[Callable[..., Any]]]:
-    """Partition an already-filtered connector tool list: tools belonging to `connector`
-    (held back for on-demand loading, e.g. browser) vs everything else (registered as
-    usual). Runs AFTER `make_integration_tools`' own filtering, so this never re-decides
-    what's connected/enabled — it only decides WHEN an already-approved tool registers."""
+def _group_by_connector(
+    tools: list[Callable[..., Any]],
+) -> tuple[list[Callable[..., Any]], dict[str, list[Callable[..., Any]]]]:
+    """Partition an already-filtered connector tool list into (register now, hold back
+    per connector). Runs AFTER `make_integration_tools`' own filtering, so this never
+    re-decides what's connected/enabled — it only decides WHEN an already-approved tool
+    registers. A tool no connector claims (shouldn't happen, but a new toolset could
+    land before its `TOOL_TO_CONNECTOR` entry) registers eagerly rather than vanishing
+    behind a loader nobody knows to call."""
     kept: list[Callable[..., Any]] = []
-    held: list[Callable[..., Any]] = []
+    held: dict[str, list[Callable[..., Any]]] = {}
     for t in tools:
-        (held if connector_for_tool(t.__name__) == connector else kept).append(t)
+        connector = connector_for_tool(t.__name__)
+        if connector:
+            held.setdefault(connector, []).append(t)
+        else:
+            kept.append(t)
     return kept, held
 
 
@@ -318,26 +325,30 @@ def build_engine(
             enabled_tools=enabled_tools,
             roots=root_list or None,
         )
-        # Browser is 9 of a fresh roster's ~39 schemas and rarely touched turn one — hold
-        # those back behind a `load_browser_tools` meta-tool instead of registering them
-        # eagerly (the "browser" connector has auth="none", so it's always in
-        # enabled_connectors and its tools would otherwise always be present). This split
-        # happens AFTER every filter above, so per-tool toggles, the persona allowlist,
-        # and session mutes all still gate it exactly as before; only WHEN the tools
-        # register changes. If those filters already dropped every browser tool (muted,
-        # disabled, or undeclared for this persona), deferred is empty and no loader is
-        # registered either — nothing to load on demand.
-        connector_tools, deferred_browser_tools = _split_off_connector(
-            connector_tools, "browser"
-        )
+        # Progressive disclosure (the industry-standard answer to prompt bloat): EVERY
+        # connector's tools are held back behind one `load_<connector>_tools` meta-tool
+        # instead of being declared up front. Tool schemas are ~85% of a fresh session's
+        # prompt, connector schemas are most of that, and a first turn almost never
+        # touches an integration — yet with no prompt caching (several OpenAI-compatible
+        # vendors report none) that whole block is re-billed at full price every single
+        # round trip. A loader costs ~1/10 of the set it replaces and one extra round
+        # trip on the turns that DO use it. Started as browser-only; generalised because
+        # the cost scales with what the user has connected (Asana alone is 13 schemas).
+        # The split happens AFTER every filter above, so per-tool toggles, the persona
+        # allowlist, and session mutes all still gate tools exactly as before; only WHEN
+        # they register changes. A connector whose tools were all filtered away gets no
+        # loader either — a loader for an empty set is just a dead end.
+        connector_tools, deferred_by_connector = _group_by_connector(connector_tools)
         registry.register_all(connector_tools)
-        if deferred_browser_tools:
+        for connector, held in deferred_by_connector.items():
+            descriptor = get_connector_descriptor(connector)
             registry.register(
                 make_deferred_toolset_loader(
                     registry,
-                    label="browser",
-                    tool_name="load_browser_tools",
-                    deferred_tools=deferred_browser_tools,
+                    label=connector,
+                    title=(descriptor.title if descriptor else None),
+                    tool_name=f"load_{connector}_tools",
+                    deferred_tools=held,
                 )
             )
     # Web search + fetch: research tools for every agent (keyless DuckDuckGo default).
@@ -363,6 +374,13 @@ def build_engine(
         )
     # Scheduling: opted-in surfaces with a workspace can set up scheduled tasks (origin = this
     # session). Code stays out (it fans out to explorers instead).
+    # Self-wake: scheduling surfaces can suspend + schedule their own resumption (timer /
+    # on-completion / on-event). The scheduler tick resumes due wakes.
+    # Both go behind ONE `load_scheduling_tools` loader, for the same reason the connector
+    # sets do: 7 schemas (~1,050 tokens, a sixth of a fresh Cowork prompt) that a normal
+    # turn never calls, re-billed every round trip. They are one group because "run this
+    # later" and "wake me when" are the same intent arriving at the model together.
+    timing_tools: list[Callable[..., Any]] = []
     if task_store is not None and ws is not None and agent.scheduling:
         origin = {
             "surface": agent.name,
@@ -370,13 +388,21 @@ def build_engine(
             "workspace": str(ws),
             "agent": agent.name,
         }
-        registry.register_all(
-            scheduling_tools(task_store, origin=origin, default_workspace=str(ws))
+        timing_tools += scheduling_tools(
+            task_store, origin=origin, default_workspace=str(ws)
         )
-    # Self-wake: scheduling surfaces can suspend + schedule their own resumption (timer /
-    # on-completion / on-event). The scheduler tick resumes due wakes.
     if wake_store is not None and session_id and agent.scheduling:
-        registry.register_all(selfwake_tools(wake_store, session_id))
+        timing_tools += selfwake_tools(wake_store, session_id)
+    if timing_tools:
+        registry.register(
+            make_deferred_toolset_loader(
+                registry,
+                label="scheduling",
+                title="Scheduling",
+                tool_name="load_scheduling_tools",
+                deferred_tools=timing_tools,
+            )
+        )
 
     instructions = f"{agent.system_prompt}\n\n{_NARRATION_GUIDANCE}"
     if ws is not None:

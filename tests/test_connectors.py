@@ -298,6 +298,11 @@ def test_engine_connector_tools_are_cowork_scoped(tmp_path):
         provider=_StubProvider(),
         secrets=secrets,
     )
+    # Every connector's tools are on-demand, not just the browser's: connecting GitHub
+    # adds ONE loader schema to the prompt, and the 8 real tools arrive when it's called.
+    assert "load_github_tools" in cowork_with_github.registry.names()
+    assert "github_search" not in cowork_with_github.registry.names()
+    cowork_with_github.registry.execute("load_github_tools")
     assert "github_search" in cowork_with_github.registry.names()
     # §36: github_search is a registry READ — free; the write sibling still gates.
     assert (
@@ -1837,3 +1842,161 @@ def test_experimental_package_loads_cleanly():
 
     assert EXPERIMENTAL_DESCRIPTORS == []
     assert all(d.experimental is False for d in DESCRIPTORS if d.name != "dangerzone")
+
+
+# -- every connector's tools are on-demand (prompt-cost work: tool schemas were ~85% of a
+# fresh session's prompt and connector schemas most of that) ----------------------------
+
+
+def test_every_connected_integration_defers_behind_its_own_loader(tmp_path):
+    """Connect two integrations and the prompt grows by two LOADER schemas, not by their
+    15 tools. The loader names the tools it holds (so the model can tell what the set is
+    for without loading it) and uses the connector's display title, not its id."""
+    import json
+
+    from coworker.agent import build_engine
+    from coworker.agents import cowork_agent
+
+    secrets = SecretStore(tmp_path / "secrets.json")
+    secrets.put("github:default", {"token": "ghp_test", "enabled": True})
+    secrets.put("outlook:default", {"access_token": "t", "enabled": True})
+    eng = build_engine(
+        agent=cowork_agent(),
+        workspace=tmp_path,
+        provider=_StubProvider(),
+        secrets=secrets,
+    )
+
+    names = set(eng.registry.names())
+    assert {"load_github_tools", "load_outlook_tools"} <= names
+    assert not any(n.startswith(("github_", "outlook_")) for n in names)
+
+    schemas = {s["function"]["name"]: s["function"] for s in eng.registry.schemas()}
+    assert "GitHub tools" in schemas["load_github_tools"]["description"]  # title, not id
+    assert "github_create_issue" in schemas["load_github_tools"]["description"]
+    assert schemas["load_github_tools"]["parameters"]["properties"] == {}
+
+    # The whole point: a loader costs a fraction of the set it stands in for.
+    loader_chars = len(json.dumps(schemas["load_github_tools"], ensure_ascii=False))
+    eng.registry.execute("load_github_tools")
+    real = [
+        s
+        for s in eng.registry.schemas()
+        if s["function"]["name"].startswith("github_")
+    ]
+    assert len(real) == 8
+    assert loader_chars < sum(len(json.dumps(s, ensure_ascii=False)) for s in real) / 4
+
+    assert "outlook_send_mail" not in eng.registry.names()  # loading one leaves the other
+
+
+def test_scheduling_and_self_wake_share_one_loader(tmp_path):
+    """The 7 scheduling + self-wake schemas are one deferred group ("run this later" and
+    "wake me when" are one intent), absent until the loader is called."""
+    from coworker.agent import build_engine
+    from coworker.agents import cowork_agent
+    from coworker.automation import TaskStore
+    from coworker.selfwake import WakeStore
+
+    eng = build_engine(
+        agent=cowork_agent(),
+        workspace=tmp_path,
+        provider=_StubProvider(),
+        secrets=SecretStore(tmp_path / "secrets.json"),
+        task_store=TaskStore(tmp_path / "tasks.db"),
+        wake_store=WakeStore(tmp_path / "wakes.db"),
+        session_id="s1",
+    )
+
+    assert "load_scheduling_tools" in eng.registry.names()
+    assert "create_scheduled_task" not in eng.registry.names()
+    assert "sleep_until" not in eng.registry.names()
+
+    result = eng.registry.execute("load_scheduling_tools")
+    assert result.startswith("Scheduling tools loaded: ")
+    names = set(eng.registry.names())
+    assert {
+        "create_scheduled_task",
+        "list_scheduled_tasks",
+        "update_scheduled_task",
+        "delete_scheduled_task",
+        "sleep_until",
+        "wake_on",
+        "wake_on_event",
+    } <= names
+
+
+def test_no_scheduling_loader_without_the_stores(tmp_path):
+    """A loader for an empty set is a dead end: no task/wake store, no loader."""
+    from coworker.agent import build_engine
+    from coworker.agents import cowork_agent
+
+    eng = build_engine(
+        agent=cowork_agent(),
+        workspace=tmp_path,
+        provider=_StubProvider(),
+        secrets=SecretStore(tmp_path / "secrets.json"),
+    )
+    assert "load_scheduling_tools" not in eng.registry.names()
+
+
+def test_calling_a_held_back_tool_by_name_loads_its_set(tmp_path):
+    """The names travel even while the tools don't — the loader's own description lists
+    them, and prompts elsewhere in the app name them outright (the team-lead backstop
+    asks for `sleep_until`). A call that names one materialises the set instead of
+    failing, so deferral can never turn into a dead end."""
+    from coworker.agent import build_engine
+    from coworker.agents import cowork_agent
+    from coworker.selfwake import WakeStore
+
+    secrets = SecretStore(tmp_path / "secrets.json")
+    secrets.put("github:default", {"token": "ghp_test", "enabled": True})
+    eng = build_engine(
+        agent=cowork_agent(),
+        workspace=tmp_path,
+        provider=_StubProvider(),
+        secrets=secrets,
+        wake_store=WakeStore(tmp_path / "wakes.db"),
+        session_id="s1",
+    )
+
+    assert "sleep_until" not in eng.registry.names()
+    # get() is the path every tool call takes (permission lookup, parallel-safety,
+    # execution), so resolving here is what makes the direct call work.
+    spec = eng.registry.get("sleep_until")
+    assert spec is not None and spec.name == "sleep_until"
+    assert "wake_on" in eng.registry.names()  # the whole set came with it
+
+    assert eng.registry.get("github_search") is not None
+    assert eng.registry.get("no_such_tool_at_all") is None
+
+    # Loading on this path doesn't put the tools in the PROMPT before they're wanted:
+    # schemas() never materialises anything.
+    fresh = build_engine(
+        agent=cowork_agent(),
+        workspace=tmp_path,
+        provider=_StubProvider(),
+        secrets=secrets,
+    )
+    assert not any(
+        s["function"]["name"].startswith("github_") for s in fresh.registry.schemas()
+    )
+
+
+def test_a_muted_connectors_tools_are_not_reachable_by_name(tmp_path):
+    """The auto-load fallback must not become a permission hole: a connector filtered
+    out never gets a loader, so its names were never deferred and stay unknown."""
+    from coworker.agent import build_engine
+    from coworker.agents import cowork_agent
+
+    secrets = SecretStore(tmp_path / "secrets.json")
+    secrets.put("github:default", {"token": "ghp_test", "enabled": True})
+    eng = build_engine(
+        agent=cowork_agent(),
+        workspace=tmp_path,
+        provider=_StubProvider(),
+        secrets=secrets,
+        connector_filter=set(),
+    )
+    assert eng.registry.get("github_search") is None
+    assert eng.registry.get("browser_click") is None

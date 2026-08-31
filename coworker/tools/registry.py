@@ -25,6 +25,13 @@ class ToolSpec:
 class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, ToolSpec] = {}
+        # name → the loader that would register it (see tools/deferred.py). Held-back
+        # tools are absent from schemas() but NOT unknown: their names travel anyway —
+        # the loader's own description lists them, a resumed transcript contains past
+        # calls, and prompts elsewhere in the app name them outright (the team-lead
+        # backstop asks for `sleep_until`). So a call that names one materialises the
+        # set instead of failing; see `get`.
+        self._deferred: dict[str, Callable[[], Any]] = {}
 
     def register(
         self,
@@ -50,17 +57,34 @@ class ToolRegistry:
         for func in funcs:
             self.register(func)
 
+    def defer(self, names: list[str], loader: Callable[[], Any]) -> None:
+        """Declare that `names` exist but aren't registered yet, and that calling
+        `loader` registers them. Names already registered win — deferral only ever adds
+        a fallback, never hides a live tool."""
+        for name in names:
+            self._deferred.setdefault(name, loader)
+
     def names(self) -> list[str]:
         return list(self._tools)
 
     def get(self, name: str) -> Optional[ToolSpec]:
-        return self._tools.get(name)
+        """The tool, materialising its deferred set first if that's where it lives.
+        Every caller that resolves a tool call goes through here (permission lookup,
+        parallel-safety, execution), so a model that calls a held-back tool by name gets
+        it — one silent load instead of a confusing "no such tool"."""
+        spec = self._tools.get(name)
+        if spec is None and name in self._deferred:
+            self._deferred.pop(name)()
+            spec = self._tools.get(name)
+        return spec
 
     def schemas(self) -> list[dict[str, Any]]:
+        """What the model is TOLD it has. Deliberately does not materialise anything —
+        the whole point of a deferred set is to stay out of the prompt until used."""
         return [spec.schema for spec in self._tools.values()]
 
     def execute(self, name: str, arguments: Optional[dict[str, Any]] = None) -> Any:
-        spec = self._tools.get(name)
+        spec = self.get(name)
         if spec is None:
             raise KeyError(f"Tool not registered: {name}")
         return spec.func(**(arguments or {}))

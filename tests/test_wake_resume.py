@@ -48,6 +48,10 @@ def test_selfwake_tools_registered_for_knowledge(tmp_path):
         wake_store=WakeStore(tmp_path / "wakes.json"),
         session_id="s1",
     )
+    # On demand, grouped with scheduling: "run this later" and "wake me when" arrive as
+    # one intent, and 7 schemas nobody calls on a normal turn are not worth the prompt.
+    assert "load_scheduling_tools" in set(engine.registry.names())
+    engine.registry.execute("load_scheduling_tools")
     names = set(engine.registry.names())
     assert {"sleep_until", "wake_on", "wake_on_event"} <= names
 

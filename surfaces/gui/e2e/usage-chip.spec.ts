@@ -20,10 +20,12 @@ test("usage chip appears after a turn and opens the breakdown popover", async ({
     timeout: 10_000,
   });
 
-  // Default: no bar (owner ask 2026-07-30) — the chip states the session total
-  // (1k + 200 + 8k + 800 = 10k). The bar is opt-in via Settings.
+  // Default: no bar (owner ask 2026-07-30) — the chip states what is IN CONTEXT
+  // (prompt-side of the last round trip: 1k + 8k + 800 = 9.8k), not the session total,
+  // which every round trip re-adds the whole prompt to. The bar is opt-in via Settings.
   const chip = page.getByTestId("usage-chip");
-  await expect(chip).toContainText("10k");
+  await expect(chip).toContainText("9.8k");
+  await expect(chip).toHaveAttribute("title", /10k billed this session/);
 
   // Popover: context fill (9.8k prompt-side of 200k = 5%) + per-model breakdown.
   await chip.click();
@@ -42,7 +44,9 @@ test("usage chip appears after a turn and opens the breakdown popover", async ({
   await expect(pop).toContainText("9.8k");
   await expect(pop).toContainText("10k tokens");
 
-  // Second turn accumulates (totals double), and the scrim click closes the popover.
+  // Second turn: the session total accumulates (doubles) but the CONTEXT doesn't — the
+  // fixture reports the same prompt size each turn. That split is the point of the chip:
+  // it tracks how big the conversation is, not how much re-billing has piled up.
   await page.mouse.click(10, 10);
   await expect(pop).toHaveCount(0);
   await box.fill("again");
@@ -50,7 +54,10 @@ test("usage chip appears after a turn and opens the breakdown popover", async ({
   await expect(page.getByText("Echo: again", { exact: false }).first()).toBeVisible({
     timeout: 10_000,
   });
-  await expect(chip).toContainText("20k");
+  await expect(chip).toContainText("9.8k");
+  await expect(chip).toHaveAttribute("title", /20k billed this session/);
+  await chip.click();
+  await expect(page.getByTestId("usage-popover")).toContainText("20k tokens");
 });
 
 test("usage resets on a new session", async ({ page }) => {
@@ -73,7 +80,7 @@ test("Settings toggle turns the context bar on; default is the session total", a
   await box.fill("hello");
   await box.press("Enter");
   const chip = page.getByTestId("usage-chip");
-  await expect(chip).toContainText("10k", { timeout: 10_000 }); // default: total, no bar
+  await expect(chip).toContainText("9.8k", { timeout: 10_000 }); // default: context, no bar
 
   // Turn the bar ON in Settings -> General.
   await page.getByTestId("account-row").click();
@@ -94,6 +101,6 @@ test("Settings toggle turns the context bar on; default is the session total", a
   await page.getByPlaceholder(/Ask the coworker/).press("Enter");
   const bar = page.getByTestId("usage-chip");
   await expect(bar).toBeVisible({ timeout: 10_000 });
-  await expect(bar).not.toContainText("10k");
+  await expect(bar).not.toContainText("9.8k");
   await expect(bar).toHaveAttribute("title", /Context window 5% full/);
 });

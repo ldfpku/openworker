@@ -846,7 +846,7 @@ function ContextBarCard() {
         <span>
           <span className="block text-[13px] text-ink">{t("Show the context window bar")}</span>
           <span className="block text-[12px] text-muted">
-            {t("A small meter showing how full the model’s context window is. Turn it off to show this session’s token total instead; either way the full breakdown is one click away.")}
+            {t("A small meter showing how full the model’s context window is. Turn it off to show the token count in context instead; either way the full breakdown is one click away.")}
           </span>
         </span>
       </label>

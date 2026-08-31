@@ -272,16 +272,18 @@ def test_declared_connector_allowlist_gates_session_tools(tmp_path):
         engine = build_engine(agent=agent, workspace=tmp_path, secrets=secrets)
         return set(engine.registry.names())
 
+    # Connector tools are on-demand, so the grant shows up as the presence or absence of
+    # the connector's LOADER — which is exactly the gate: no loader, no way in.
     scoped = names_for(("linear",))
-    assert any(n.startswith("linear_") for n in scoped)
-    assert not any(n.startswith("box_") for n in scoped)
+    assert "load_linear_tools" in scoped
+    assert "load_box_tools" not in scoped
+    assert not any(n.startswith(("linear_", "box_")) for n in scoped)
 
     general = names_for(True)  # the `all` sentinel: general builtins only
-    assert any(n.startswith("linear_") for n in general)
-    assert any(n.startswith("box_") for n in general)
+    assert {"load_linear_tools", "load_box_tools"} <= general
 
     none = names_for(False)
-    assert not any(n.startswith(("linear_", "box_")) for n in none)
+    assert not any(n.startswith(("linear_", "box_", "load_linear", "load_box")) for n in none)
 
 
 def test_allowlist_persona_drawer_and_effective_set_exclude_undeclared(
