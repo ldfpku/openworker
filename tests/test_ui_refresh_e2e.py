@@ -55,8 +55,21 @@ class E2EProvider(ProviderClient):
     def __init__(self, turns):
         self._turns = list(turns)
         self.calls: list[list[dict]] = []
+        self.title_calls: list[list[dict]] = []
 
     def complete(self, *, model, messages, tools=None, **settings):
+        # The manager's fire-and-forget auto-title completion (manager.py, fired from
+        # mark_idle) rides a worker thread and lands at a nondeterministic moment after
+        # the turn. Keep it out of `calls`, recognized by the titling system prompt the
+        # same way tests/test_autotitle.py does. Left in `calls` it makes every "how many
+        # turns ran?" assertion a coin flip (it did: `assert 4 == 3` on CI, 2026-08-31),
+        # and — the quieter trap — it pops `_turns`, so the moment anyone scripts a spare
+        # turn the title silently eats it and the chat script diverges while the test
+        # still passes. The small-talk sentinel keeps titling inert: the manager drops the
+        # title before writing or broadcasting it.
+        if messages and "title chat sessions" in str(messages[0].get("content", "")):
+            self.title_calls.append([dict(m) for m in messages])
+            return _text("small-talk")
         self.calls.append([dict(m) for m in messages])
         return self._turns.pop(0)
 
@@ -228,7 +241,11 @@ async def test_ui_refresh_cross_cutting_e2e(fake_slack, tmp_path, monkeypatch):
         sent = first_users[-2]
         assert "source" not in sent
         assert "subscribed" in sent["content"]
-        assert all("source" not in m for call in provider.calls for m in call)
+        assert all(
+            "source" not in m
+            for call in provider.calls + provider.title_calls
+            for m in call
+        )
 
         # (Step 2) the live turn_start carried the same resolved source (card shows live).
         starts = [e for e in ws_events if e.get("type") == "turn_start"]
@@ -265,9 +282,10 @@ async def test_ui_refresh_cross_cutting_e2e(fake_slack, tmp_path, monkeypatch):
         assert mgr.inbox.get(item_id).state == "resolved"
 
         # -- Step 4: mute Slack for the session -> a further post does NOT wake it, still buffered -
-        # The turn's mark_idle fired an auto-title completion (fire-and-forget, on a worker
-        # thread); let it settle so its provider call can't land between the snapshot below
-        # and the "provider not re-invoked" assertion.
+        # The turn's mark_idle fired an auto-title completion (fire-and-forget, on a
+        # worker thread). E2EProvider now keeps it out of `calls`, so the assertions below
+        # no longer depend on when it lands — but this wait stays load-bearing: aclose()
+        # never awaits _autotitle_tasks, so without it the task can outlive the manager.
         assert await _wait_until(lambda: SID not in mgr._autotitle_inflight)
         msgcount_before = len(mgr.session_messages(SID))
         calls_before = len(provider.calls)
@@ -287,12 +305,15 @@ async def test_ui_refresh_cross_cutting_e2e(fake_slack, tmp_path, monkeypatch):
                 for m in mgr.channel_buffer.recent(f"slack:{CHANNEL}")
             )
         ), "muted message was not buffered"
-        # the skip-delivery decision is synchronous with the buffering above (no await between);
-        # a short settle guards against any stray scheduled delivery, then assert nothing woke.
-        await asyncio.sleep(0.1)
-        assert len(mgr.session_messages(SID)) == msgcount_before  # no new turn/message
-        assert len(provider.calls) == calls_before  # provider not re-invoked
-        assert not mgr.is_running(SID)
+        # the skip-delivery decision is synchronous with the buffering above (no await
+        # between). Hold the invariant across the whole settle window instead of sampling
+        # once at the end: a stray delivery that woke the session and finished inside the
+        # window would slip straight past a single trailing sample.
+        for _ in range(15):
+            await asyncio.sleep(0.02)
+            assert len(mgr.session_messages(SID)) == msgcount_before  # no new turn/message
+            assert len(provider.calls) == calls_before  # provider not re-invoked
+            assert not mgr.is_running(SID)
 
         # -- Step 5: attention == the persona's account-unconnected connector recommends ----------
         detail = client.get("/v1/personas/ops").json()
