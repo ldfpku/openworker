@@ -6,6 +6,7 @@ import { isComposing } from "../ime";
 import { getSettings, inspectPdf, sessionSkills, type SessionSkillRow } from "../api";
 import { formatTokens, totalTokens } from "../usage";
 import { Dropdown, type Option } from "./Dropdown";
+import { isFreeModel } from "../providers/logos";
 import { Icon } from "./Icon";
 import { Toggle } from "./Toggle";
 import {
@@ -448,6 +449,10 @@ export function Composer(props: Props) {
   ).map((m) => ({
     value: m,
     label: props.modelLabels?.[m] || shortModel(m),
+    // Which line costs nothing per token has to be visible where the choice is made.
+    ...(isFreeModel(m)
+      ? { badge: t("Free"), badgeTitle: t("Runs on the company NVIDIA relay or your own machine — no model bill") }
+      : {}),
   }));
 
   const iconBtn =

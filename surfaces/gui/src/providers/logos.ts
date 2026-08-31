@@ -80,6 +80,16 @@ export const PROVIDER_ORDER = [
   "xai",
 ];
 
+// The two routes that cost nobody anything per token: the company's NVIDIA NIM relay
+// (admin-issued keys, no model bill) and a model running on the user's own machine. The
+// model picker and the Models checklist tag these with a quiet "Free" badge so the cheap
+// choice is visible at the moment of choosing, not just in the manual.
+const FREE_PROVIDERS = ["nvidia", "ollama"];
+
+export function isFreeModel(id: string): boolean {
+  return FREE_PROVIDERS.some((p) => id.startsWith(`${p}:`));
+}
+
 export function providerRank(name: string): number {
   const i = PROVIDER_ORDER.indexOf(name);
   return i === -1 ? PROVIDER_ORDER.length : i;

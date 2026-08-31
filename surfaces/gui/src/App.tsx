@@ -77,6 +77,8 @@ import { PersonaView } from "./components/PersonaView";
 import { AuditView } from "./components/AuditView";
 import { InboxView } from "./components/InboxView";
 import { LibraryView } from "./components/LibraryView";
+import { HelpView } from "./components/HelpView";
+import { parseAppTarget, type HelpAction, type HelpSettingsTab } from "./help";
 import { ApprovalCard } from "./components/ApprovalCard";
 import { ToolRequestCard } from "./components/ToolRequestCard";
 import { DirectoryRequestCard } from "./components/DirectoryRequestCard";
@@ -247,12 +249,10 @@ export function App() {
   const [scheduledOpenId, setScheduledOpenId] = useState<string | null>(null);
   const [gateCreate, setGateCreate] = useState(false);
   // Which Settings section the full-page Settings surface opens on (§ Settings-as-page).
-  const [settingsTab, setSettingsTab] = useState<
-    "appearance" | "models" | "skills" | "voice" | "memory" | "personas"
-  >("appearance");
-  const openSettings = (
-    tab: "appearance" | "models" | "skills" | "voice" | "memory" | "personas" = "appearance",
-  ) => {
+  const [settingsTab, setSettingsTab] = useState<HelpSettingsTab>("appearance");
+  // "context" (Context optimization) was reachable only by clicking the sub-nav until the
+  // in-app manual needed to send readers straight at the token-savings card.
+  const openSettings = (tab: HelpSettingsTab = "appearance") => {
     setSettingsTab(tab);
     setSurface("settings");
   };
@@ -261,8 +261,16 @@ export function App() {
   // load; corrected by loadSettings.
   const [modelReady, setModelReady] = useState(true);
   const [surface, setSurface] = useState<
-    "session" | "scheduled" | "integrations" | "audit" | "inbox" | "persona" | "settings" | "library"
+    | "session" | "scheduled" | "integrations" | "audit" | "inbox" | "persona" | "settings"
+    | "library" | "help"
   >("session");
+  // Which manual chapter the Help surface opens on; null = its card overview. Bumped through
+  // a counter-free state because chapter-to-chapter jumps happen inside HelpView itself.
+  const [helpChapter, setHelpChapter] = useState<string | undefined>(undefined);
+  const openHelp = (chapter?: string) => {
+    setHelpChapter(chapter);
+    setSurface("help");
+  };
   // A remembered Scheduled-detail target must not outlive the surface (see the
   // scheduledOpenId comment above): nav re-entry lands on the list, never a
   // possibly-deleted automation's dead detail.
@@ -288,6 +296,14 @@ export function App() {
   const endTour = () => {
     try { localStorage.setItem(TOUR_DONE_KEY, "1"); } catch { /* best effort */ }
     setTourOpen(false);
+  };
+  // One place that turns a manual link into navigation — used both by HelpView's "take me
+  // there" buttons and by the `app:` chips inside chapter bodies.
+  const runHelpAction = (action: HelpAction) => {
+    if (action.kind === "settings") return openSettings(action.tab);
+    if (action.kind === "surface") return setSurface(action.to);
+    if (action.kind === "help") return openHelp(action.chapter);
+    startTour();
   };
   // The persona whose detail page is showing (surface === "persona"); empty falls back to the
   // active session's persona. Phase 5 wires the grouped-nav gear + "Manage personas…" entry points.
@@ -396,6 +412,19 @@ export function App() {
     };
     window.addEventListener("ocw-open-board", show);
     return () => window.removeEventListener("ocw-open-board", show);
+  }, []);
+  // The in-app manual's [label](app:…) chips. Markdown only reports the raw spec; the routing
+  // table lives in help/index.ts and the doing lives here, beside the other deep-link
+  // helpers. An unparseable spec is ignored rather than guessed at.
+  useEffect(() => {
+    const jump = (e: Event) => {
+      const spec = (e as CustomEvent<{ spec?: string }>).detail?.spec;
+      const action = spec ? parseAppTarget(spec) : null;
+      if (action) runHelpAction(action);
+    };
+    window.addEventListener("ocw-open-app-target", jump);
+    return () => window.removeEventListener("ocw-open-app-target", jump);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   // The command-palette search, openable from the collapsed-sidebar topbar cluster (§22). The
   // expanded sidebar owns its own instance; this one exists so search never disappears with it.
@@ -1708,12 +1737,14 @@ export function App() {
         onOpenAudit={() => setSurface("audit")}
         onOpenInbox={() => setSurface("inbox")}
         onOpenLibrary={() => setSurface("library")}
+        onOpenHelp={() => openHelp()}
         onStartTour={startTour}
         scheduledActive={surface === "scheduled"}
         integrationsActive={surface === "integrations"}
         auditActive={surface === "audit"}
         inboxActive={surface === "inbox"}
         libraryActive={surface === "library"}
+        helpActive={surface === "help"}
         collapsed={navCollapsed}
         onCollapse={toggleNav}
         onPeekLeave={() => setNavPeek(false)}
@@ -1764,6 +1795,8 @@ export function App() {
             );
           }}
         />
+      ) : surface === "help" ? (
+        <HelpView initialChapter={helpChapter} onNavigate={runHelpAction} />
       ) : surface === "persona" ? (
         <PersonaView
           personaId={personaViewId || agent}

@@ -61,7 +61,7 @@ export function GuidedTour(props: { onDone: () => void }) {
       badge: t("Expert library"),
       title: t("Experts, skills and settings"),
       body: t(
-        "The account menu lives here: the Expert library offers 270+ experts and 160+ research skills, and Settings ▸ Models is where you sign in and paste your key on first use.",
+        "The account menu lives here: Help is the full manual, the Expert library offers 270+ experts and 160+ research skills, and Settings ▸ Models is where you sign in and paste your key on first use.",
       ),
       selectors: ['[data-testid="account-row"]'],
     },

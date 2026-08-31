@@ -15,6 +15,27 @@ export const OPEN_ARTIFACT_EVENT = "ocw-open-artifact";
 // un-hides the rail and bumps the key that expands the section.
 export const OPEN_BOARD_EVENT = "ocw-open-board";
 
+// The in-app manual writes [去设置 ▸ 模型](app:settings/models) and friends. Same plumbing as the two
+// above: a chip that dispatches, and App — which owns openSettings/setSurface/startTour —
+// resolves the spec. Markdown stays ignorant of what surfaces exist.
+export const OPEN_APP_TARGET_EVENT = "ocw-open-app-target";
+
+function AppLinkChip({ spec, label }: { spec: string; label: string }) {
+  return (
+    <button
+      className="applink-chip"
+      data-testid="app-link-chip"
+      data-target={spec}
+      onClick={() =>
+        window.dispatchEvent(new CustomEvent(OPEN_APP_TARGET_EVENT, { detail: { spec } }))
+      }
+    >
+      <span>{label}</span>
+      <Icon name="chevronRight" size={12} />
+    </button>
+  );
+}
+
 function BoardChip({ label }: { label: string }) {
   const { t } = useTranslation();
   return (
@@ -62,10 +83,12 @@ export function Markdown({ text }: { text: string }) {
     <div className="md">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        // artifact:/board: are ours — keep them through the sanitizer (everything else gets
+        // artifact:/board:/app: are ours — keep them through the sanitizer (everything else gets
         // the default http/https/mailto policy).
         urlTransform={(url) =>
-          url.startsWith("artifact:") || url.startsWith("board:") ? url : defaultUrlTransform(url)
+          url.startsWith("artifact:") || url.startsWith("board:") || url.startsWith("app:")
+            ? url
+            : defaultUrlTransform(url)
         }
         components={{
           a: ({ node: _n, href, children, ...props }) => {
@@ -76,6 +99,10 @@ export function Markdown({ text }: { text: string }) {
             if (href?.startsWith("board:")) {
               const label = Array.isArray(children) ? children.join("") : String(children ?? "");
               return <BoardChip label={label} />;
+            }
+            if (href?.startsWith("app:")) {
+              const label = Array.isArray(children) ? children.join("") : String(children ?? "");
+              return <AppLinkChip spec={href.slice("app:".length)} label={label} />;
             }
             return (
               <a href={href} {...props} target="_blank" rel="noreferrer">

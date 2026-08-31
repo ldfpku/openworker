@@ -5,6 +5,10 @@ export interface Option {
   value: string;
   label: string;
   description?: string;
+  /** Quiet pill after the label (e.g. "Free" on models that cost nothing per token). */
+  badge?: string;
+  /** Tooltip for the badge — say what "free" actually means rather than overclaiming. */
+  badgeTitle?: string;
 }
 
 interface Props {
@@ -46,6 +50,11 @@ export function Dropdown({ prefix, value, options, onChange, align = "left", cla
               >
                 <div className="dd-label">
                   {o.label}
+                  {o.badge && (
+                    <span className="dd-badge" title={o.badgeTitle}>
+                      {o.badge}
+                    </span>
+                  )}
                   {o.value === value && <span className="chk">✓</span>}
                 </div>
                 {o.description && <div className="dd-desc">{o.description}</div>}

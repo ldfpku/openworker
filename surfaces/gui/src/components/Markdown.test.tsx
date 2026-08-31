@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { Markdown, OPEN_ARTIFACT_EVENT, OPEN_BOARD_EVENT } from "./Markdown";
+import { Markdown, OPEN_APP_TARGET_EVENT, OPEN_ARTIFACT_EVENT, OPEN_BOARD_EVENT } from "./Markdown";
 
 afterEach(cleanup);
 
@@ -50,5 +50,21 @@ describe("Markdown artifact links", () => {
     expect(fired).toBe(1);
 
     window.removeEventListener(OPEN_BOARD_EVENT, listener);
+  });
+
+  // The in-app manual's [label](app:…) links. Markdown only reports the raw spec — App owns
+  // the routing — so the chip must carry the spec through untouched.
+  it("renders an app: link as a chip and dispatches the raw spec", () => {
+    const seen: string[] = [];
+    const listener = (e: Event) => seen.push((e as CustomEvent).detail.spec);
+    window.addEventListener(OPEN_APP_TARGET_EVENT, listener);
+
+    render(<Markdown text="先去 [设置 ▸ 模型](app:settings/models) 填一次 key。" />);
+    const chip = screen.getByTestId("app-link-chip");
+    expect(chip.textContent).toContain("设置 ▸ 模型");
+    fireEvent.click(chip);
+    expect(seen).toEqual(["settings/models"]);
+
+    window.removeEventListener(OPEN_APP_TARGET_EVENT, listener);
   });
 });

@@ -152,6 +152,8 @@ interface Props {
   onOpenAudit: () => void;
   onOpenInbox: () => void;
   onOpenLibrary: () => void;
+  // The in-app user manual (account menu entry).
+  onOpenHelp: () => void;
   // Replay the first-run guided tour (account menu entry).
   onStartTour: () => void;
   scheduledActive: boolean;
@@ -159,6 +161,7 @@ interface Props {
   auditActive: boolean;
   inboxActive: boolean;
   libraryActive: boolean;
+  helpActive: boolean;
   // Collapse controls (⌘B / hover-peek). `onCollapse` docks/undocks; `onPeekLeave` hides the
   // floating peek when the pointer leaves the panel.
   collapsed?: boolean;
@@ -1226,6 +1229,7 @@ export function Sidebar(props: Props) {
                 )}
                 {/* No Automations here — the sidebar's top nav already carries it. */}
                 {appMenuItem("audit", t("Activity"), props.onOpenAudit, props.auditActive)}
+                {appMenuItem("file", t("Help"), props.onOpenHelp, props.helpActive)}
                 {appMenuItem("sparkle", t("Guided tour"), props.onStartTour)}
                 {cloud?.signed_in && (
                   <>

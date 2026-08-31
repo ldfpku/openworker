@@ -2,6 +2,7 @@ import { isComposing } from "../ime";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { addModel, getSettings, removeModel, setDefaultModel } from "../api";
+import { isFreeModel } from "../providers/logos";
 
 // Cloud-account providers dispatch by a family segment baked into the model id
 // (`bedrock:claude/…`, `vertex:openweight/…`). The add-model row shows a dropdown so
@@ -103,6 +104,14 @@ export function ModelChecklist({
               <span className="mlist-name" title={id}>
                 {labels?.[id] || bare(id)}
               </span>
+              {isFreeModel(id) && (
+                <span
+                  className="mlist-free"
+                  title={t("Runs on the company NVIDIA relay or your own machine — no model bill")}
+                >
+                  {t("Free")}
+                </span>
+              )}
             </label>
             {isDefault ? (
               <span className="mlist-default">{t("default")}</span>
