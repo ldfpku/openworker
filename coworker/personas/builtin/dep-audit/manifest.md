@@ -1,4 +1,5 @@
 ---
+ships: false  # 下井装备制造企业用不上软件/云安全审查（owner 2026-08-31）；代码还在，OPENWORKER_UNSHIPPED=1 可开
 group: security
 id: dep-audit
 name: Dependency Audit Coworker

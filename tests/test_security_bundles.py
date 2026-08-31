@@ -39,7 +39,11 @@ def test_bundles_register_as_enabled_code_builtins(tmp_path):
         entry = reg.get(pid)
         assert entry is not None and entry.builtin
         assert entry.requires_folder  # folder pick at send, like Code
-        assert reg.is_enabled(pid) is True  # in the picker out of the box
+        # Ships OFF and unshipped both (owner 2026-08-31: a downhole-equipment release
+        # has no use for software security) — but surfaced, so one Settings checkbox on
+        # an internal build puts it back in the picker.
+        assert reg.is_enabled(pid) is False
+        assert reg.is_surfaced(pid) is True
         agent = reg.agent(pid)  # catalog-expanded tools materialize
         assert agent.requires_folder and agent.subagents
 

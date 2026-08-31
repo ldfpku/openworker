@@ -25,7 +25,7 @@ VALID_TEAM = {"lead", "worker"}
 VALID_MODES = {"discuss", "plan", "interactive", "custom", "auto"}
 VALID_REC_KINDS = {"connector", "mcp"}
 VALID_REC_TIERS = {"core", "optional"}
-VALID_GROUPS = {"general", "security"}
+VALID_GROUPS = {"general", "operations", "research", "security"}
 
 
 class ManifestError(ValueError):

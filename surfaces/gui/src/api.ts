@@ -1205,7 +1205,7 @@ export interface Persona {
   default: boolean;
   // Distribution flag (ships:false = internal builds only) + settings-page group.
   ships?: boolean;
-  group?: string; // "general" | "security"
+  group?: string; // "general" | "operations" | "research" | "security"
   version?: string;
   installed_at?: string;
 }

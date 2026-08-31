@@ -63,13 +63,18 @@ class PersonaEntry:
     default_surfaced: bool = (
         True  # whether it shows in the picker before any user choice
     )
-    # Whether it ships enabled before any user choice. Builtins default on (UX-029: the
-    # composer picker is their front door) — except Code (owner call 2026-08-21: ships
-    # disabled). Installed third-party personas always start disabled pending consent.
-    default_enabled: bool = True
+    # Whether it ships enabled before any user choice. Default off (owner call
+    # 2026-08-31): the shipped coworkers other than OpenWorker are EXAMPLES of what a
+    # coworker can be, and a picker that opens pre-stocked with roles this customer
+    # doesn't do reads as the product's opinion of their work. One checkbox in Settings
+    # turns any of them on. Installed third-party personas also start disabled pending
+    # consent. The exception is team workers, which stay enabled-but-unsurfaced so a
+    # lead can staff them — see `_register_manifest`.
+    default_enabled: bool = False
     # Distribution flag (owner, 2026-08-21): ships:false = absent from release builds.
     ships: bool = True
-    # Settings-page grouping ("general" | "security") — cosmetic only.
+    # Settings-page grouping ("general" | "operations" | "research" | "security") —
+    # cosmetic only.
     group: str = "general"
     _builder: Optional[Callable[[], Agent]] = None
     manifest: Optional[PersonaManifest] = None
@@ -220,8 +225,11 @@ class PersonaRegistry:
             manifest=m,
             # Team workers never surface in the picker: they are purpose-built to be
             # STAFFED by a lead, not started solo (their prompts talk to a lead, not
-            # a human). They stay enabled so the staffing gate can resolve them.
+            # a human). They stay enabled so the staffing gate can resolve them — the
+            # ship-disabled default is about what the user is OFFERED, and a worker is
+            # never offered; disabling it would just break its lead.
             default_surfaced=m.team != "worker",
+            default_enabled=m.team == "worker",
         )
 
     def _load_installed(self) -> None:
@@ -403,6 +411,10 @@ class PersonaRegistry:
         del self._entries[persona_id]
         self._enabled.pop(persona_id, None)
         self._surfaced.pop(persona_id, None)
+        # Install provenance goes with it. Left behind it is an orphan row naming a
+        # persona that no longer exists, and a later re-install of the same id would
+        # read back the OLD source and version as if nothing had happened.
+        self._installed_meta.pop(persona_id, None)
         if self._default == persona_id:
             self._default = DEFAULT_PERSONA_ID
         if self.installed_dir is not None:

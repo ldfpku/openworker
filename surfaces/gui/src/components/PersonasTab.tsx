@@ -1,5 +1,5 @@
 import { isComposing } from "../ime";
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   getPersonasIndex,
@@ -28,6 +28,20 @@ const BTN_BORDERED =
 
 const QUIET_ROW =
   "w-full flex items-center gap-2 px-4 pt-2 mt-6 text-[12.5px] text-muted select-none";
+
+// Settings sections, in render order. A persona's `group` comes from its manifest
+// (coworker/personas/manifest.py VALID_GROUPS); anything unrecognised falls into General
+// so a persona from a newer manifest can never render nowhere. Keep this list and
+// VALID_GROUPS in step.
+const GROUPS = [
+  { id: "general", label: "General" },
+  { id: "operations", label: "Production & operations" },
+  { id: "research", label: "R&D" },
+  { id: "security", label: "Security" },
+] as const;
+const KNOWN_GROUPS: ReadonlySet<string> = new Set<string>(
+  GROUPS.filter((g) => g.id !== "general").map((g) => g.id),
+);
 
 export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) => void }) {
   const { t } = useTranslation();
@@ -241,8 +255,18 @@ export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) =>
     <div>
       {/* One toggle per row (enable implies picker); ★ marks the default. Everything
           else — in-picker nuance, default, export, delete — lives on the detail page. */}
-      {group(t("General"), personas.filter((p) => p.ships !== false && p.group !== "security"))}
-      {group(t("Security"), personas.filter((p) => p.ships !== false && p.group === "security"))}
+      {GROUPS.map(({ id, label }) => (
+        <Fragment key={id}>
+          {group(
+            t(label),
+            personas.filter(
+              (p) =>
+                p.ships !== false &&
+                (id === "general" ? !KNOWN_GROUPS.has(p.group || "") : p.group === id),
+            ),
+          )}
+        </Fragment>
+      ))}
 
       {unshipped.length > 0 && (
         <>

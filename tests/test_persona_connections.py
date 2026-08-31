@@ -65,7 +65,9 @@ def test_persona_detail_endpoint(tmp_path, monkeypatch):
     # identity + capabilities (from the manifest/entry)
     assert detail["id"] == "ops"
     assert detail["name"] == "Ops Coworker"
-    assert detail["enabled"] is True  # builtins ship enabled (UX-029)
+    # Ships off (owner 2026-08-31): every coworker but OpenWorker is an example the
+    # user opts into. The detail page still renders it in full.
+    assert detail["enabled"] is False
     assert detail["requires_folder"] is False  # ops is a scratch persona
     assert detail["default_permission_mode"] == "interactive"
     assert "anthropic:claude-opus-4-8" in detail["recommended_models"]
@@ -130,8 +132,8 @@ def test_persona_enable_toggle(tmp_path, monkeypatch):
     client = TestClient(create_app(mgr))
 
     before = {p["id"]: p for p in client.get("/v1/personas").json()["personas"]}
-    assert before["ops"]["enabled"] is True  # builtins ship enabled (UX-029)
-    assert before["cowork"]["enabled"] is True
+    assert before["ops"]["enabled"] is False  # ships off (owner 2026-08-31)
+    assert before["cowork"]["enabled"] is True  # …OpenWorker alone ships on
 
     resp = client.post("/v1/personas/ops/enable", json={"enabled": True}).json()
     assert resp["ok"] is True

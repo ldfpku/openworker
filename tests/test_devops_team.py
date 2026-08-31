@@ -28,6 +28,13 @@ def test_bundle_registers_with_team_traits(tmp_path):
 def test_lead_surfaces_workers_do_not(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENWORKER_UNSHIPPED", "1")  # teams are ships:false — internal builds
     reg = _reg(tmp_path)
+    # Nothing but OpenWorker ships enabled (owner 2026-08-31), so surfacing is read off
+    # the entry, not the picker: enable the lead and it appears; its workers never do,
+    # because a worker is staffed by its lead, not started by a human.
+    listed = {p["id"]: p for p in reg.list_all()}
+    assert listed["devops-lead"]["surfaced"] is True
+    assert not any(listed[pid]["surfaced"] for pid in ROSTER)
+    reg.set_enabled("devops-lead", True)
     ids = [e["name"] for e in reg.sidebar()]
     assert "devops-lead" in ids
     assert not any(pid in ids for pid in ROSTER)

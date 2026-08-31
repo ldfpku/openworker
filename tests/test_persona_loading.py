@@ -96,12 +96,18 @@ def test_uninstall_removes_entry_state_and_snapshot(tmp_path):
     snap = reg.installed_dir / "acme-ops"
     assert snap.is_dir()
 
+    assert reg.installed_meta("acme-ops")
+
     reg.uninstall("acme-ops")
     assert "acme-ops" not in reg.ids()
     assert not snap.exists()
+    # Install provenance goes too — an orphan row would name a persona that no longer
+    # exists, and a re-install of the same id would read back the OLD source/version.
+    assert not reg.installed_meta("acme-ops")
     # Gone for good — a fresh registry must not resurrect it from the snapshot area.
     reg2 = PersonaRegistry(state_path=tmp_path / "personas.json")
     assert "acme-ops" not in reg2.ids()
+    assert not reg2.installed_meta("acme-ops")
 
 
 def test_uninstall_default_falls_back_to_cowork(tmp_path):

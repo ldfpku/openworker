@@ -60,12 +60,12 @@ def test_chat_completions_openai_shape(tmp_path):
 def test_agents_and_memory_rest(tmp_path):
     client = _client(tmp_path, [])
     agents = client.get("/v1/agents").json()["agents"]
-    # The picker lists enabled+surfaced personas. Release lineup (owner 2026-08-21):
-    # OpenWorker + the security bundles; Code ships disabled, Chat is gone, and
-    # ships:false personas (teams, ops, design) need OPENWORKER_UNSHIPPED=1.
+    # The picker lists enabled+surfaced personas. Release lineup (owner 2026-08-31):
+    # OpenWorker alone. Every other shipped coworker — Code, the expert lead, and the
+    # eight production/R&D roles — is an example listed in Settings with its toggle
+    # off; Chat is gone; ships:false personas need OPENWORKER_UNSHIPPED=1.
     names = [a["name"] for a in agents]
-    assert names[0] == "cowork"
-    assert set(names) == {"cowork", "security", "cloud-posture", "dep-audit", "expert-lead"}
+    assert names == ["cowork"]
     assert "skills" in client.get("/v1/skills").json()  # catalog (may be empty)
 
     added = client.post("/v1/memory", json={"content": "prefer pathlib"}).json()

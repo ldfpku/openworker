@@ -29,24 +29,55 @@ def test_builtins_present(tmp_path):
     assert reg.get("code").manifest is None
 
 
+# The shipped industry roster (owner 2026-08-31): the customer makes high-end downhole
+# oil equipment, so the examples are production/operations and R&D roles. Software and
+# cloud security went ships:false in the same call.
+_OPERATIONS = {
+    "production-planning", "quality-system", "supply-chain", "equipment-maintenance",
+    "process-tooling",
+}
+_RESEARCH = {"product-design", "test-validation", "failure-analysis", "rd-project-ip"}
+
+
 def test_release_lineup(tmp_path, monkeypatch):
-    # A release build (no flag) offers exactly OpenWorker + the security coworkers;
-    # Code is listed in Settings but disabled + unsurfaced (the recovery path).
+    # A release build (no flag) offers exactly OpenWorker in the picker. Every other
+    # shipped coworker is an EXAMPLE: listed in Settings with its toggle off, one
+    # checkbox from the picker. A lineup that opens pre-stocked with roles this
+    # customer doesn't do reads as the product's opinion of their work.
     monkeypatch.delenv("OPENWORKER_UNSHIPPED", raising=False)
     reg = _reg(tmp_path)
-    assert [e["name"] for e in reg.sidebar()] == [
-        "cowork", "cloud-posture", "dep-audit", "expert-lead", "security",
-    ]
+    assert [e["name"] for e in reg.sidebar()] == ["cowork"]
     listed = {p["id"]: p for p in reg.list_all()}
-    assert set(listed) == {
-        "cowork", "code", "cloud-posture", "dep-audit", "expert-lead", "security",
-    }
-    assert listed["code"]["enabled"] is False and listed["code"]["surfaced"] is False
-    assert listed["cloud-posture"]["group"] == "security"
+    assert set(listed) == {"cowork", "code", "expert-lead"} | _OPERATIONS | _RESEARCH
+    for pid, entry in listed.items():
+        assert entry["enabled"] is (pid == "cowork"), pid
+    # Code alone is also UNsurfaced (the recovery path); the industry coworkers surface,
+    # so enabling one is the only step between Settings and the picker.
+    assert listed["code"]["surfaced"] is False
+    assert listed["expert-lead"]["surfaced"] is True
     assert listed["cowork"]["group"] == "general"
+    assert {listed[i]["group"] for i in _OPERATIONS} == {"operations"}
+    assert {listed[i]["group"] for i in _RESEARCH} == {"research"}
+    # Software/cloud security is not part of a downhole-equipment release.
+    assert not {"security", "cloud-posture", "dep-audit"} & set(listed)
     # Enabling Code from Settings puts it in the picker (enable implies surface).
     reg.set_enabled("code", True)
     assert "code" in [e["name"] for e in reg.sidebar()]
+
+
+def test_industry_personas_are_knowledge_work_not_repo_work(tmp_path, monkeypatch):
+    """The industry coworkers are business/engineering roles: they work on documents
+    and data in the session scratch, never on a checked-out repo. A stray `code_files`
+    or `requires_folder` would put a folder gate in front of a production planner."""
+    monkeypatch.delenv("OPENWORKER_UNSHIPPED", raising=False)
+    reg = _reg(tmp_path)
+    for pid in sorted(_OPERATIONS | _RESEARCH):
+        entry = reg.get(pid)
+        assert entry.tools == ["files", "search", "shell", "todo"], pid
+        assert entry.requires_folder is False, pid
+        assert entry.manifest is not None and entry.manifest.team is None, pid
+        # Named in the customer's language — these ship to a Chinese factory floor.
+        assert any("一" <= c <= "鿿" for c in entry.name), pid
 
 
 def test_unshipped_hidden_unless_enabled(tmp_path, monkeypatch):
@@ -63,26 +94,30 @@ def test_unshipped_hidden_unless_enabled(tmp_path, monkeypatch):
 def test_sidebar_defaults_to_surfaced_builtins(tmp_path, internal):
     reg = _reg(tmp_path)
     sidebar = reg.sidebar()
-    ids = [e["name"] for e in sidebar]
-    # Built-ins ship enabled (UX-029: the coworker picker is their front door) except
-    # Code (owner 2026-08-21). Installed personas remain opt-in.
-    assert ids[0] == "cowork"
-    # Leads surface (the user's entry to a team — "the team IS the lead"); team
-    # workers never do.
-    assert set(ids) == {
-        "cowork", "ops", "security", "cloud-posture", "dep-audit",
-        "expert-lead", "swe-lead", "devsecops-lead", "devops-lead",
-    }
-    assert not any(
-        i in ids
-        for i in (
-            "swe-worker", "design-worker", "test-worker",
-            "appsec-worker", "secrets-worker", "posture-worker",
-            "logs-worker", "infra-worker", "change-worker",
-        )
-    )
+    # Only OpenWorker ships enabled (owner 2026-08-31) — everything else is an example
+    # waiting behind its Settings toggle, on internal builds too.
+    assert [e["name"] for e in sidebar] == ["cowork"]
     assert sidebar[0]["default"] is True
-    # An explicit disable removes a builtin from the picker.
+
+    # SURFACING is a separate axis and unchanged: leads surface (the user's entry to a
+    # team — "the team IS the lead"), team workers never do.
+    listed = {p["id"]: p for p in reg.list_all()}
+    for lead in ("expert-lead", "swe-lead", "devsecops-lead", "devops-lead"):
+        assert listed[lead]["surfaced"] is True, lead
+    for worker in (
+        "swe-worker", "design-worker", "test-worker",
+        "appsec-worker", "secrets-worker", "posture-worker",
+        "logs-worker", "infra-worker", "change-worker",
+    ):
+        assert listed[worker]["surfaced"] is False, worker
+        # …and they stay ENABLED regardless: a worker is never OFFERED to the user, so
+        # shipping it off would only break its lead's staffing gate.
+        assert listed[worker]["enabled"] is True, worker
+
+    # Enabling from Settings puts a coworker in the picker (enable implies surface),
+    # and an explicit disable takes it back out.
+    reg.set_enabled("security", True)
+    assert "security" in [e["name"] for e in reg.sidebar()]
     reg.set_enabled("security", False)
     assert "security" not in [e["name"] for e in reg.sidebar()]
 
