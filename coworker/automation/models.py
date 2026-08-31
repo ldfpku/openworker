@@ -10,7 +10,10 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-_DOW = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+# Indexed by cron day-of-week: 0 and 7 are Sunday, 1 is Monday … 6 is Saturday. Must start
+# at Sunday — indexing a Monday-first list by the cron dow labelled every weekly schedule one
+# day late (dow 1/Monday rendered "周二", dow 0/Sunday rendered "周一").
+_DOW = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
 
 
 def _now() -> float:

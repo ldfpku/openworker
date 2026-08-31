@@ -48,7 +48,7 @@ export function AddFolderForm({
   if (!open) {
     return (
       <button className={"addfolder-trigger" + (compact ? " compact" : "")} onClick={() => setOpen(true)}>
-        <Icon name="folderPlus" size={15} /> {t("Give access to a folder")}
+        <Icon name="folderPlus" size={15} /> {t("access.give_folder")}
       </button>
     );
   }
@@ -59,7 +59,7 @@ export function AddFolderForm({
         <input
           className="addfolder-path"
           autoFocus
-          placeholder={t("Choose or paste a folder path…")}
+          placeholder={t("access.addfolder_path_placeholder")}
           value={path}
           spellCheck={false}
           onChange={(e) => setPath(e.target.value)}
@@ -69,21 +69,21 @@ export function AddFolderForm({
             else if (e.key === "Escape") reset();
           }}
         />
-        <button className="btn icon-only" onClick={browse} title={t("Choose location")} aria-label={t("Choose location")}>
+        <button className="btn icon-only" onClick={browse} title={t("access.choose_location")} aria-label={t("access.choose_location")}>
           <Icon name="folder" size={15} />
         </button>
       </div>
       <div className="addfolder-actions">
-        <label className="addfolder-write" title={t("Off = read-only. Tick to let the agent write here.")}>
+        <label className="addfolder-write" title={t("access.allow_writes_help")}>
           <input type="checkbox" checked={writable} onChange={(e) => setWritable(e.target.checked)} />
-          {t("Allow writes")}
+          {t("access.allow_writes")}
         </label>
         <span className="spacer" />
         <button className="btn" onClick={reset}>
-          {t("Cancel")}
+          {t("access.cancel")}
         </button>
         <button className="btn primary" disabled={busy || !path.trim()} onClick={submit}>
-          {t("Add")}
+          {t("access.add_btn")}
         </button>
       </div>
     </div>

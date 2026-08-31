@@ -5,27 +5,25 @@
 // card: a connector message is a foreign message, a board wake is a report —
 // different shape, different affordances (they only share the visual family).
 import { useState } from "react";
+import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import type { BoardWakeRow, MessageSource } from "../api";
-import i18n from "../i18n";
 import { Icon } from "./Icon";
 
-// One key per English form (singular AND plural) so the English fallback stays
-// byte-identical ("1 review" / "2 reviews"). Chinese has no plural inflection, so both
-// forms carry the same wording — only the measure word differs where it reads better.
-const COUNT_KEYS: Record<string, [string, string]> = {
-  review: ["{{count}} review", "{{count}} reviews"],
-  blocked: ["{{count}} blocked", "{{count}} blockeds"],
-  canceled: ["{{count}} canceled", "{{count}} canceleds"],
-  move: ["{{count}} move", "{{count}} moves"],
-  filing: ["{{count}} filing", "{{count}} filings"],
-  claim: ["{{count}} claim", "{{count}} claims"],
-  assignment: ["{{count}} assignment", "{{count}} assignments"],
-  comment: ["{{count}} comment", "{{count}} comments"],
-  "chat message": ["{{count}} chat message", "{{count}} chat messages"],
+// Summary buckets → plural-aware catalog keys ("1 review", "2 reviews", …).
+const WAKE_COUNT_KEYS: Record<string, string> = {
+  review: "board.wake_review",
+  blocked: "board.wake_blocked",
+  canceled: "board.wake_canceled",
+  move: "board.wake_move",
+  filing: "board.wake_filing",
+  claim: "board.wake_claim",
+  assignment: "board.wake_assignment",
+  comment: "board.wake_comment",
+  chat: "board.wake_chat_message",
 };
 
-function summarize(rows: BoardWakeRow[]): { text: string; attention: boolean } {
+function summarize(t: TFunction, rows: BoardWakeRow[]): { text: string; attention: boolean } {
   const counts: Record<string, number> = {};
   const bump = (key: string) => (counts[key] = (counts[key] || 0) + 1);
   for (const row of rows) {
@@ -37,45 +35,35 @@ function summarize(rows: BoardWakeRow[]): { text: string; attention: boolean } {
     else if (row.kind === "claimed") bump("claim");
     else if (row.kind === "assigned") bump("assignment");
     else if (row.kind === "comment") bump("comment");
-    else if (row.kind === "chat") bump("chat message");
+    else if (row.kind === "chat") bump("chat");
   }
-  const parts = Object.entries(counts).map(([label, n]) => {
-    const [one, many] = COUNT_KEYS[label];
-    return i18n.t(n === 1 ? one : many, { count: n });
-  });
+  const parts = Object.entries(counts).map(([bucket, n]) =>
+    t(WAKE_COUNT_KEYS[bucket], { count: n })
+  );
   // reviews/blocked demand a decision — those tint the collapsed line amber
   const attention = (counts.review || 0) + (counts.blocked || 0) > 0;
-  return { text: parts.join(", ") || i18n.t("update"), attention };
+  return { text: parts.join(", ") || t("board.wake_update"), attention };
 }
 
-function rowText(row: BoardWakeRow): string {
+function rowText(t: TFunction, row: BoardWakeRow): string {
   const item = row.item != null ? `#${row.item}` : "";
   const title = row.title ? ` ${row.title}` : "";
+  const ref = `${item}${title}`;
   switch (row.kind) {
     case "moved":
-      return i18n.t("{{item}}{{title}} → {{to}} by {{actor}}", {
-        item,
-        title,
-        // row.to is the store's raw state id, and English has always shown it verbatim
-        // ("→ review by webb"). So the id ITSELF is the catalog key: English falls back to
-        // the key and stays byte-identical, Chinese gets a word. Mapping through the
-        // capitalised STATE_LABEL table instead would have turned English into
-        // "→ In review by webb" — e2e/team.spec.ts catches exactly that.
-        to: row.to ? i18n.t(row.to) : row.to,
-        actor: row.actor,
-      });
+      return t("board.wake_moved", { ref, to: row.to, actor: row.actor });
     case "filed":
-      return i18n.t("{{actor}} filed {{item}}{{title}}", { actor: row.actor, item, title });
+      return t("board.wake_filed", { ref, actor: row.actor });
     case "claimed":
-      return i18n.t("{{actor}} claimed {{item}}{{title}}", { actor: row.actor, item, title });
+      return t("board.wake_claimed", { ref, actor: row.actor });
     case "assigned":
-      return i18n.t("{{item}}{{title}} assigned to you", { item, title });
+      return t("board.wake_assigned", { ref });
     case "comment":
-      return i18n.t("{{actor}} commented on {{item}}{{title}}", { actor: row.actor, item, title });
+      return t("board.wake_commented", { ref, actor: row.actor });
     case "chat":
-      return i18n.t("# team chat — {{actor}}", { actor: row.actor });
+      return t("board.wake_chat", { actor: row.actor });
     default:
-      return `${item}${title}`;
+      return ref;
   }
 }
 
@@ -92,7 +80,7 @@ export function BoardWakeCard({ source }: { source: MessageSource }) {
   const [open, setOpen] = useState(false);
   const [openNotes, setOpenNotes] = useState<Record<number, boolean>>({});
   const rows = source.board?.rows || [];
-  const { text, attention } = summarize(rows);
+  const { text, attention } = summarize(t, rows);
   return (
     <div
       className={"boardwake" + (attention ? " attention" : "")}
@@ -105,7 +93,7 @@ export function BoardWakeCard({ source }: { source: MessageSource }) {
         aria-expanded={open}
       >
         <Icon name="table" size={14} />
-        <span className="boardwake-title">{t("Board wake")}</span>
+        <span className="boardwake-title">{t("board.wake_title")}</span>
         <span className="boardwake-summary">{text}</span>
         <span className="spacer" />
         <span className={"boardwake-chevron" + (open ? " open" : "")}>
@@ -118,7 +106,7 @@ export function BoardWakeCard({ source }: { source: MessageSource }) {
             <div className="boardwake-row" key={i}>
               <span className={stateDot(row)} />
               <span className="boardwake-row-main">
-                <span className="boardwake-row-text">{rowText(row)}</span>
+                <span className="boardwake-row-text">{rowText(t, row)}</span>
                 {row.note &&
                   (openNotes[i] ? (
                     <span className="boardwake-note">{row.note}</span>
@@ -128,8 +116,8 @@ export function BoardWakeCard({ source }: { source: MessageSource }) {
                       onClick={() => setOpenNotes((s) => ({ ...s, [i]: true }))}
                     >
                       {row.kind === "chat" || row.kind === "comment"
-                        ? t("show message")
-                        : t("show hand-off")}
+                        ? t("board.wake_show_message")
+                        : t("board.wake_show_handoff")}
                     </button>
                   ))}
               </span>

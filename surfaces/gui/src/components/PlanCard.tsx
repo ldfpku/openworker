@@ -25,7 +25,7 @@ export function PlanCard({
     <div className="dirreq-card plan-card">
       <div className="dirreq-head">
         <Icon name="sparkle" size={16} className="ico" />
-        <span>{t("The agent proposed a plan")}</span>
+        <span>{t("plan.proposed")}</span>
       </div>
       <div className="plan-body">
         <Markdown text={item.plan} />
@@ -34,7 +34,7 @@ export function PlanCard({
         <div className="dirreq-actions">
           <input
             className="dirreq-path"
-            placeholder={t("What should change about the plan?")}
+            placeholder={t("plan.feedback_placeholder")}
             value={feedback}
             autoFocus
             onChange={(e) => setFeedback(e.target.value)}
@@ -44,27 +44,27 @@ export function PlanCard({
             }}
           />
           <button className="btn" onClick={() => setRejecting(false)}>
-            {t("Back")}
+            {t("plan.back")}
           </button>
           <button
             className="btn primary"
             disabled={!feedback.trim()}
             onClick={() => onRespond(false, undefined, feedback.trim())}
           >
-            {t("Send feedback")}
+            {t("plan.send_feedback")}
           </button>
         </div>
       ) : (
         <div className="dirreq-actions">
           <button className="btn" onClick={() => setRejecting(true)}>
-            {t("Request changes")}
+            {t("plan.request_changes")}
           </button>
           <span className="spacer" />
           <button className="btn" onClick={() => onRespond(true, "interactive")}>
-            {t("Approve — ask per step")}
+            {t("plan.approve_ask")}
           </button>
           <button className="btn primary" onClick={() => onRespond(true, "auto")}>
-            {t("Approve & run")}
+            {t("plan.approve_and_run")}
           </button>
         </div>
       )}

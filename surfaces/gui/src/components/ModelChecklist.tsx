@@ -98,7 +98,7 @@ export function ModelChecklist({
                 type="checkbox"
                 checked={checked(id)}
                 disabled={isDefault}
-                title={isDefault ? t("The default model is always shown — make another model default first") : undefined}
+                title={isDefault ? t("models.default_locked") : undefined}
                 onChange={(e) => tick(id, e.target.checked)}
               />
               <span className="mlist-name" title={id}>
@@ -114,10 +114,10 @@ export function ModelChecklist({
               )}
             </label>
             {isDefault ? (
-              <span className="mlist-default">{t("default")}</span>
+              <span className="mlist-default">{t("models.default_badge")}</span>
             ) : (
               <button className="mlist-make" onClick={() => makeDefault(id)}>
-                {t("Make default")}
+                {t("models.make_default")}
               </button>
             )}
           </div>
@@ -139,7 +139,7 @@ export function ModelChecklist({
           </select>
         )}
         <input
-          placeholder={t("Add another model…")}
+          placeholder={t("models.add_placeholder")}
           value={draft}
           spellCheck={false}
           autoComplete="off"
@@ -147,7 +147,7 @@ export function ModelChecklist({
           onKeyDown={(e) => e.key === "Enter" && !isComposing(e) && add()}
         />
         <button className="btn-primary sm" onClick={add} disabled={!draft.trim()}>
-          {t("Add")}
+          {t("models.add_btn")}
         </button>
       </div>
     </div>

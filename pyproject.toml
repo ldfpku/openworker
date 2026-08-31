@@ -28,7 +28,7 @@ dependencies = [
     "docstring_parser",
     "pyyaml>=6",  # persona manifest frontmatter (YAML)
     "pydantic>=2",
-    "mcp>=1.1,<2",  # MCP client (stdio + streamable-http); 2.0 removed streamablehttp_client
+    "mcp>=1.28.1,<2",  # MCP client (stdio + streamable-http); floor >=1.28.1 avoids PYSEC-2026-3481/3482/3483 (fixed in 1.27.2/1.28.1); <2 since 2.0.0 removed streamablehttp_client
     # [socks] pulls in socksio: httpx imports it dynamically the moment the user's env
     # carries ALL_PROXY=socks5h://… (v2rayN/Clash setups) and hard-fails without it.
     "httpx[socks]>=0.27",  # sync outbound senders for messaging connectors (send_message tool)
@@ -84,4 +84,7 @@ coworker = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The reviewer-eval tests import from the repo-root scripts/ package; the pytest
+# console script (CI) does not put the root on sys.path the way `python -m pytest` does.
+pythonpath = ["."]
 asyncio_mode = "auto"

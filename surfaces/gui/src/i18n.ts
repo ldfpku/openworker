@@ -1,66 +1,106 @@
-// Locale: English (default) or Chinese, picked from the system language or pinned by hand.
-// Mirrors theme.ts's pref pattern exactly — same localStorage shape, same auto/explicit split.
-// English strings ARE the i18next keys and the en catalog is never populated: a missing zh-CN
-// entry falls back to the key itself, so English output is byte-identical whether or not this
-// module ran (43 test files assert English literals — this guarantees they stay green).
-import { useEffect, useState } from "react";
+/**
+ * i18n initialization (react-i18next).
+ *
+ * Locale resources live in src/locales/*.json. English is the default and
+ * fallback; the language follows the system locale unless the user picks one
+ * explicitly in Settings (persisted in localStorage).
+ */
 import i18n from "i18next";
 import { initReactI18next } from "react-i18next";
-import zhCN from "./locales/zh-CN.json";
 
-export type LocalePref = "auto" | "en" | "zh-CN";
-export type Locale = "en" | "zh-CN";
+import en from "./locales/en.json";
+import zh from "./locales/zh.json";
+// The fork's original catalog, keyed by the English source string itself. Upstream later
+// built its own scheme (dotted keys + en/zh.json) and we adopted it in the 2026-08-31 merge,
+// but ~200 call sites still live in fork-only files (the Expert library, the in-app manual,
+// the Gemini/Gateway sign-in panes, the WeChat QR pane) where English-as-key costs nothing —
+// upstream has no such files, so they can never conflict. Keeping this catalog loaded means
+// those keep rendering Chinese instead of silently falling back to their English key.
+import zhLegacy from "./locales/zh-CN.json";
 
-const KEY = "openwork-locale";
-const PREF_EVENT = "openwork:locale-pref";
+const STORAGE_KEY = "openworker.lang";
 
-export function getLocalePref(): LocalePref {
+export const SUPPORTED_LANGS = ["en", "zh"] as const;
+export type Lang = (typeof SUPPORTED_LANGS)[number];
+
+/** The user's explicit choice wins; otherwise follow the system locale. */
+function resolveLang(): Lang {
   try {
-    const v = localStorage.getItem(KEY);
-    return v === "en" || v === "zh-CN" ? v : "auto";
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored && (SUPPORTED_LANGS as readonly string[]).includes(stored)) {
+      return stored as Lang;
+    }
   } catch {
-    return "auto";
+    /* localStorage unavailable — fall through to system locale */
   }
+  const nav = (typeof navigator !== "undefined" && navigator.language) || "";
+  return nav.toLowerCase().startsWith("zh") ? "zh" : "en";
 }
 
-export function resolveLocale(pref: LocalePref): Locale {
-  if (pref === "en" || pref === "zh-CN") return pref;
-  return navigator.language.startsWith("zh") ? "zh-CN" : "en";
-}
-
-export function setLocalePref(pref: LocalePref) {
-  try {
-    if (pref === "auto") localStorage.removeItem(KEY);
-    else localStorage.setItem(KEY, pref);
-  } catch {
-    /* private mode etc. — still applies for this session */
+/** Nested catalog -> flat dotted keys, so lookups can run with keySeparator disabled. */
+function flatten(obj: Record<string, unknown>, prefix = ""): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    const key = prefix ? `${prefix}.${k}` : k;
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      Object.assign(out, flatten(v as Record<string, unknown>, key));
+    } else if (typeof v === "string") {
+      out[key] = v;
+    }
   }
-  i18n.changeLanguage(resolveLocale(pref));
-  window.dispatchEvent(new CustomEvent(PREF_EVENT));
+  return out;
 }
 
-/** Call once at startup, alongside initTheme(): wires up i18next and applies the stored pref. */
-export function initLocale() {
-  i18n.use(initReactI18next).init({
-    resources: { "zh-CN": { translation: zhCN } },
-    lng: resolveLocale(getLocalePref()),
-    fallbackLng: "en",
+export async function initI18n() {
+  // Both key styles have to resolve from one catalog: upstream's "nav.settings" and the
+  // fork's "Note: Google Workspace and Microsoft 365 accounts…". The latter is full of dots
+  // and colons, which i18next would otherwise read as path and namespace separators — so we
+  // flatten upstream's nesting up front and turn both separators off, making every lookup a
+  // literal key match.
+  await i18n.use(initReactI18next).init({
     keySeparator: false,
     nsSeparator: false,
-    interpolation: { escapeValue: false }, // React already escapes.
+    resources: {
+      en: { translation: flatten(en as Record<string, unknown>) },
+      zh: { translation: { ...zhLegacy, ...flatten(zh as Record<string, unknown>) } },
+    },
+    lng: resolveLang(),
+    fallbackLng: "en",
+    interpolation: { escapeValue: false }, // React already escapes
+    returnNull: false,
   });
+  return i18n;
 }
 
-/** The settings control's hook — stays in sync if the pref changes elsewhere. */
-export function useLocalePref(): [LocalePref, (p: LocalePref) => void] {
-  const [pref, setPref] = useState<LocalePref>(getLocalePref);
-  useEffect(() => {
-    const sync = () => setPref(getLocalePref());
-    window.addEventListener(PREF_EVENT, sync);
-    return () => window.removeEventListener(PREF_EVENT, sync);
-  }, []);
-  return [pref, setLocalePref];
+/** Switch language at runtime and persist the choice. Pass null to follow the system locale again. */
+export function setLanguage(lang: Lang | null) {
+  try {
+    if (lang === null) localStorage.removeItem(STORAGE_KEY);
+    else localStorage.setItem(STORAGE_KEY, lang);
+  } catch {
+    /* persistence failure shouldn't block the switch */
+  }
+  return i18n.changeLanguage(lang ?? resolveLang());
 }
 
-// Non-component modules translate via `import i18n from "./i18n"; i18n.t(...)`.
+/** The user's persisted choice, or null when following the system locale. */
+export function getStoredLanguage(): Lang | null {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored && (SUPPORTED_LANGS as readonly string[]).includes(stored)) {
+      return stored as Lang;
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+export function getCurrentLanguage(): Lang {
+  const l = i18n.language;
+  return (l && l.startsWith("zh") ? "zh" : "en") as Lang;
+}
+
+// Fork-only surfaces (LibraryView, the manual, the sign-in panes) import the instance
+// directly to read i18n.language when choosing a bundled zh asset.
 export default i18n;

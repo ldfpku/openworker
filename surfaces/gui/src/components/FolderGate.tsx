@@ -28,7 +28,7 @@ export function FolderGate({ onChoose, onCancel, create }: Props) {
     setError("");
     const res = await openWorkspace(p.trim(), doCreate);
     if (res.ok) onChoose(res.path, res.git_branch);
-    else setError(res.error || t("could not open that folder"));
+    else setError(res.error || t("folder_gate.open_error"));
   };
 
   const browse = async () => {
@@ -43,33 +43,33 @@ export function FolderGate({ onChoose, onCancel, create }: Props) {
     <div className="gate-overlay">
       <div className="gate">
         <div className="gate-mark">✦</div>
-        <h2>{create ? t("New project") : t("Choose a project folder")}</h2>
+        <h2>{create ? t("sidebar.new_project") : t("folder_gate.choose_folder")}</h2>
         <p className="gate-sub">
           {create
-            ? t("Pick a folder or enter a path. If the path doesn't exist, it will be created.")
-            : t("This coworker needs a workspace to read, edit, and run in.")}
+            ? t("folder_gate.create_sub")
+            : t("folder_gate.choose_sub")}
         </p>
 
         <div className="gate-input">
           <input
-            placeholder={t("/path/to/your/project")}
+            placeholder={t("folder_gate.path_placeholder")}
             value={path}
             onChange={(e) => setPath(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && !isComposing(e) && open(path, create)}
             autoFocus
           />
-          <button className="btn" onClick={browse} title={t("Pick a folder")}>
-            {t("Browse…")}
+          <button className="btn" onClick={browse} title={t("folder_gate.pick_folder")}>
+            {t("folder_gate.browse")}
           </button>
           <button className="btn primary" onClick={() => open(path, create)} disabled={!path.trim()}>
-            {create ? t("Create") : t("Open")}
+            {create ? t("folder_gate.create") : t("folder_gate.open")}
           </button>
         </div>
         {error && <div className="gate-error">{error}</div>}
 
         {recents.length > 0 && (
           <>
-            <div className="gate-label">{t("Recent")}</div>
+            <div className="gate-label">{t("sidebar.recent")}</div>
             <div className="gate-recents">
               {recents.map((w) => (
                 <div className="gate-recent" key={w.path} onClick={() => open(w.path)} title={w.path}>
@@ -84,7 +84,7 @@ export function FolderGate({ onChoose, onCancel, create }: Props) {
         {onCancel && (
           <div className="gate-foot">
             <button className="btn gate-cancel" onClick={onCancel}>
-              {t("Cancel")}
+              {t("folder_gate.cancel")}
             </button>
           </div>
         )}

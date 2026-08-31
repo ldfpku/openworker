@@ -428,6 +428,7 @@ class OpenAIResponsesProvider(ProviderClient):
 
         text_parts: list[str] = []
         reasoning_parts: list[str] = []
+        done_items: list[Any] = []
         final: Optional[Any] = None
         for event in events:
             kind = getattr(event, "type", None)
@@ -441,13 +442,29 @@ class OpenAIResponsesProvider(ProviderClient):
                 if delta:
                     reasoning_parts.append(delta)
                     yield StreamChunk(reasoning_delta=delta)
+            elif kind == "response.output_item.done":
+                item = getattr(event, "item", None)
+                if item is not None:
+                    done_items.append(item)
             elif kind in ("response.completed", "response.incomplete", "response.failed"):
                 final = getattr(event, "response", None)
 
         if final is not None:
             # The terminal event carries the full response — parse it whole so tool
             # calls, finish reason, and the `_openai` sidecar come from one place.
-            yield StreamChunk(turn=_parse_response(final))
+            # Some Responses-compatible backends (the subscription backend) leave the
+            # terminal response's `output` EMPTY — the items only ever stream — so
+            # graft the streamed output_item.done items back on before parsing, or a
+            # turn's text and tool calls silently vanish.
+            if not (getattr(final, "output", None) or []) and done_items:
+                try:
+                    final.output = done_items
+                except Exception:
+                    pass
+            turn = _parse_response(final)
+            if turn.text is None and not turn.tool_calls and text_parts:
+                turn.text = "".join(text_parts)
+            yield StreamChunk(turn=turn)
         else:
             yield StreamChunk(
                 turn=AssistantTurn(

@@ -124,10 +124,10 @@ export function ConnectorsSection() {
           data-testid="connectors-breadcrumb"
           onClick={() => setDetail(null)}
         >
-          {t("‹ Connectors")}
+          {t("connector.back_to_connectors")}
         </button>
         {!c ? (
-          <div className="text-[13px] text-muted">{t("Loading…")}</div>
+          <div className="text-[13px] text-muted">{t("connector.loading")}</div>
         ) : !c.connected ? (
           /* Pre-connect page (§38). When a connect completes, the poll flips
              c.connected and this same route re-renders as the connected page. */
@@ -169,22 +169,19 @@ function GenericDetail({
   onChanged,
   onGone,
 }: DetailProps & { onGone: () => void }) {
-  const { t } = useTranslation();
-  // A QR login expires on its own schedule, and re-scanning is the documented fix.
-  // Without this the only way back in was Disconnect, which deletes the profile —
-  // allow-list included — so a routine expiry cost the user every sender they had
-  // approved. The backend has always supported re-scan-in-place (the QR commit
-  // carries `allowed_users` forward); nothing reached it while connected.
+  // QR connectors (WeChat) re-authenticate without disconnecting — the merge kept this
+  // component's "Scan again" button and its modal but dropped the state behind them.
   const [rescan, setRescan] = useState(false);
+  const { t } = useTranslation();
   return (
     <div>
       <div className="flex items-center gap-3.5 mb-5">
         <ConnectorBadge connector={c} size={44} title={c.title} />
         <div className="min-w-0 flex-1">
           <h2 className="text-[20px] font-semibold tracking-tight leading-tight">{c.title}</h2>
-          <div className="text-[12.5px] text-muted flex items-center gap-1.5">
+          <div className="text-[13px] text-muted flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-ok" />
-            {c.account || (c.auth === "none" ? t("Built in") : t("Connected"))}
+            {c.account || (c.auth === "none" ? t("connector.built_in") : t("connector.connected"))}
           </div>
         </div>
         {c.auth === "qr" && (
@@ -199,14 +196,14 @@ function GenericDetail({
         )}
         {c.auth !== "none" && (
           <button
-            className="text-[12.5px] text-danger/80 hover:text-danger shrink-0"
+            className="text-[13px] text-danger/80 hover:text-danger shrink-0"
             onClick={async () => {
               await disconnectConnector(c.name);
               onChanged();
               onGone();
             }}
           >
-            {t("Disconnect")}
+            {t("connector.disconnect")}
           </button>
         )}
       </div>

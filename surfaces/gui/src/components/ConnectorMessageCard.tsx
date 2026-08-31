@@ -16,23 +16,22 @@
 import { useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import type { MessageSource } from "../api";
-import i18n from "../i18n";
 import { ConnectorBadge, hexToRgba, NEUTRAL } from "../connectors/ConnectorIcon";
 import { resolveConnector } from "../connectors/registry";
 
 /** Coarse relative time from epoch seconds: "just now" / "5m ago" / "2h ago" / "3d ago" / a date. */
-function relativeTime(tsSeconds: number): string {
+function relativeTime(tsSeconds: number, t: (key: string, opts?: any) => string): string {
   if (!tsSeconds || !isFinite(tsSeconds)) return "";
   const then = tsSeconds * 1000;
   const diff = Date.now() - then;
-  if (diff < 0) return i18n.t("just now");
-  if (diff < 45_000) return i18n.t("just now");
+  if (diff < 0) return t("inbox.rel_just_now");
+  if (diff < 45_000) return t("inbox.rel_just_now");
   const mins = Math.round(diff / 60_000);
-  if (mins < 60) return i18n.t("{{mins}}m ago", { mins });
+  if (mins < 60) return t("inbox.rel_minutes_ago", { count: mins });
   const hrs = Math.round(diff / 3_600_000);
-  if (hrs < 24) return i18n.t("{{hrs}}h ago", { hrs });
+  if (hrs < 24) return t("inbox.rel_hours_ago", { count: hrs });
   const days = Math.round(diff / 86_400_000);
-  if (days < 7) return i18n.t("{{days}}d ago", { days });
+  if (days < 7) return t("inbox.rel_days_ago", { count: days });
   return new Date(then).toLocaleDateString();
 }
 
@@ -80,22 +79,22 @@ export function ConnectorMessageCard({
       >
         <ConnectorBadge connector={{ logo: source.connector, brand_color: color }} size={20} title={entry.label} />
         {showIds ? (
-          <span className="font-mono text-[11.5px] text-faint">{ids}</span>
+          <span className="font-mono text-[12px] text-faint">{ids}</span>
         ) : (
           <>
-            <span className="text-[12.5px] font-semibold" style={{ color: "var(--brand)" }}>
+            <span className="text-[13px] font-semibold" style={{ color: "var(--brand)" }}>
               {source.channel_name}
             </span>
             <span className="text-faint">·</span>
-            <span className="text-[12.5px] font-medium">{source.sender_name}</span>
-            <span className="text-[11px] text-faint ml-0.5">{t("via {{label}}", { label: entry.label })}</span>
+            <span className="text-[13px] font-medium">{source.sender_name}</span>
+            <span className="text-[11px] text-faint ml-0.5">{t("inbox.connector_via", { label: entry.label })}</span>
           </>
         )}
         <time className="ml-auto text-[11px] text-faint whitespace-nowrap" title={clockTime(source.ts)}>
-          {relativeTime(source.ts)}
+          {relativeTime(source.ts, t)}
         </time>
       </header>
-      <div className="px-3.5 py-2.5 text-[14.5px] leading-relaxed whitespace-pre-wrap">{source.text}</div>
+      <div className="px-3.5 py-2.5 text-[14px] leading-relaxed whitespace-pre-wrap">{source.text}</div>
     </article>
   );
 }

@@ -7,7 +7,7 @@ export function TodoPanel({ items }: { items: TodoItem[] }) {
   const box = (s: string) => (s === "done" ? "☑" : s === "in_progress" ? "◉" : "☐");
   return (
     <div className="todo">
-      <h4>{t("Tasks")}</h4>
+      <h4>{t("todo.title")}</h4>
       {items.map((it, i) => (
         <div className="item" key={i}>
           <span className="box">{box(it.status)}</span>

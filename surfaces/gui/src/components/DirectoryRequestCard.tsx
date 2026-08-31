@@ -30,26 +30,24 @@ export function DirectoryRequestCard({
         <Icon name="folderPlus" size={16} className="ico" />
         <span>
           {item.primary
-            ? t("The agent asks to make a folder this session's workspace")
-            : t("The agent is requesting access to a folder")}
+            ? t("dirreq.requesting_workspace")
+            : t("dirreq.requesting_access")}
         </span>
       </div>
       {item.reason && <div className="dirreq-reason">“{item.reason}”</div>}
       {item.primary && (
         <div className="dirreq-reason">
-          {t(
-            "Granting makes this folder the session's primary working directory (read-write); the scratch directory stays available for temporary files and artifacts.",
-          )}
+          {t("dirreq.primary_note")}
         </div>
       )}
       <div className="dirreq-pathrow">
         <input
           className="dirreq-path"
-          placeholder={t("Choose or paste a folder path…")}
+          placeholder={t("dirreq.path_placeholder")}
           value={path}
           onChange={(e) => setPath(e.target.value)}
         />
-        <button className="btn icon-only" onClick={browse} title={t("Choose location")} aria-label={t("Choose location")}>
+        <button className="btn icon-only" onClick={browse} title={t("dirreq.choose_location")} aria-label={t("dirreq.choose_location")}>
           <Icon name="folder" size={15} />
         </button>
       </div>
@@ -57,19 +55,19 @@ export function DirectoryRequestCard({
         {!item.primary && (
           <label className="dirreq-access">
             <input type="checkbox" checked={writable} onChange={(e) => setWritable(e.target.checked)} />
-            {t("Allow writing (read-write)")}
+            {t("dirreq.allow_writing")}
           </label>
         )}
         <span className="spacer" />
         <button className="btn" onClick={() => onRespond(false)}>
-          {t("Decline")}
+          {t("dirreq.decline")}
         </button>
         <button
           className="btn primary"
           disabled={!path.trim()}
           onClick={() => onRespond(true, path.trim(), item.primary ? true : writable)}
         >
-          {item.primary ? t("Make workspace") : t("Grant access")}
+          {item.primary ? t("dirreq.make_workspace") : t("dirreq.grant_access")}
         </button>
       </div>
     </div>

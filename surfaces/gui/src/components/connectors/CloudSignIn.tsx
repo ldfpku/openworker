@@ -28,10 +28,10 @@ export function CloudSignInInline({ blurb }: { blurb?: string }) {
           });
         }}
       >
-        {waiting ? t("Check your browser…") : t("Sign in to OpenWorker Cloud")}
+        {waiting ? t("cloud.check_browser") : t("cloud.sign_in")}
       </button>
-      <div className="text-[11.5px] text-faint">
-        {blurb || t("Sign-in unlocks one-click connects — or switch to Manual, which works without it.")}
+      <div className="text-[12px] text-faint">
+        {blurb || "Sign-in unlocks one-click connects — or switch to Manual, which works without it."}
       </div>
     </div>
   );
@@ -47,7 +47,7 @@ export function CloudStatusPending() {
       className="text-[12px] text-faint py-2 text-center"
       data-testid="cloud-status-pending"
     >
-      {t("Checking OpenWorker Cloud sign-in…")}
+      {t("cloud.checking")}
     </div>
   );
 }

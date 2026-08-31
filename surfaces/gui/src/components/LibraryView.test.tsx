@@ -297,13 +297,13 @@ describe("LibraryView — install a skill", () => {
 
 describe("LibraryView — skills zh translation layer", () => {
   // 中文界面优先展示译文层（description_zh / skill_md_zh），英文界面或缺译文时回退英文。
-  // 注意：切到 zh-CN 后 UI 文案本身也会走 zh 词表（"查看说明" 等），选择器按中文取。
+  // 注意：切到 zh 后 UI 文案本身也会走 zh 词表（"查看说明" 等），选择器按中文取。
   afterEach(async () => {
     await i18n.changeLanguage("en");
   });
 
   it("prefers the zh description and zh doc under a zh UI", async () => {
-    await i18n.changeLanguage("zh-CN");
+    await i18n.changeLanguage("zh");
     const { librarySkills, librarySkillDetail } = await import("../api");
     vi.mocked(librarySkills).mockResolvedValueOnce([
       { ...SKILLS[0], description_zh: "Python 单细胞分析工具包。" },

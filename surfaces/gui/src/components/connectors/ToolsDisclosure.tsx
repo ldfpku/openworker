@@ -8,14 +8,14 @@ import { GRP, ROW, TAG_QUIET, TAG_WARN } from "./ui";
 export function ToolsDisclosure({ c, onChanged }: { c: Connector; onChanged: () => void }) {
   const { t } = useTranslation();
   if (!c.tools?.length) return null;
-  const enabled = c.tools.filter((t) => t.enabled).length;
+  const enabled = c.tools.filter((tool) => tool.enabled).length;
   return (
     <div className={GRP + " mt-6"}>
       <details>
         <summary className={ROW + " cursor-pointer hover:bg-paper/60 list-none [&::-webkit-details-marker]:hidden"}>
-          <span className="text-[12.5px] text-muted w-24 shrink-0">{t("› Tools")}</span>
-          <span className="min-w-0 flex-1 text-[12.5px] text-muted">
-            {t("{{enabled}} of {{total}} enabled", { enabled, total: c.tools.length })}
+          <span className="text-[13px] text-muted w-24 shrink-0">{t("connector.tools_label")}</span>
+          <span className="min-w-0 flex-1 text-[13px] text-muted">
+            {t("connector.tools_enabled", { enabled, total: c.tools.length })}
           </span>
         </summary>
         {c.tools.map((tool) => (
@@ -30,7 +30,7 @@ export function ToolsDisclosure({ c, onChanged }: { c: Connector; onChanged: () 
             />
             <span className="min-w-0 flex-1 text-[13px] font-medium">{t(tool.label)}</span>
             <span className={tool.kind === "write" ? TAG_WARN : TAG_QUIET}>
-              {tool.kind === "write" ? t("asks first") : t("read")}
+              {tool.kind === "write" ? t("connector.asks_first") : t("connector.read")}
             </span>
           </label>
         ))}

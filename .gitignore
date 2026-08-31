@@ -15,3 +15,4 @@ gemini-relay/scripts/roster.csv
 
 # Throwaway local diagnostics (probe scripts, one-off dumps) — never committed.
 /scratch/
+.claude/settings.local.json

@@ -22,9 +22,7 @@ export function TeamRequestCard({
       <div className="teamreq-head">
         <Icon name="diamond" size={15} />
         <span className="teamreq-title">
-          {item.members.length === 1
-            ? t("Proposed team — {{count}} worker", { count: item.members.length })
-            : t("Proposed team — {{count}} workers", { count: item.members.length })}
+          {t("team.proposed", { count: item.members.length })}
         </span>
       </div>
       {item.note && <div className="teamreq-note">{item.note}</div>}
@@ -48,33 +46,24 @@ export function TeamRequestCard({
           onChange={(e) => setChat(e.target.checked)}
         />
         <span>
-          <Trans>
-            Enable <b># team chat</b>
-          </Trans>
+          <Trans i18nKey="team.enable_chat" components={{ b: <b /> }} />
         </span>
-        <span
-          className="teamreq-info"
-          title={t(
-            "A group channel for questions and consensus — @mentions wake the mentioned coworker. Status stays on the board either way.",
-          )}
-        >
+        <span className="teamreq-info" title={t("team.chat_info")}>
           i
         </span>
       </label>
       <div className="dirreq-actions">
-        <span className="teamreq-grant">
-          {t("Approving grants the lead create, assign & steer — this team only, revocable.")}
-        </span>
+        <span className="teamreq-grant">{t("team.grant_note")}</span>
         <span className="spacer" />
         <button className="btn" onClick={() => onRespond(false)}>
-          {t("Not now")}
+          {t("team.not_now")}
         </button>
         <button
           className="btn primary"
           data-testid="teamreq-approve"
           onClick={() => onRespond(true, undefined, chat)}
         >
-          {t("Create team & start")}
+          {t("team.create_start")}
         </button>
       </div>
     </div>

@@ -1,6 +1,7 @@
 import { isComposing } from "../ime";
 import { useRef, useState } from "react";
 import { useEffect } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import {
   createSkill,
   deleteSkill,
@@ -15,7 +16,6 @@ import {
 } from "../api";
 import { chooseFolder, isTauri } from "../tauri";
 import { Icon } from "./Icon";
-import { Trans, useTranslation } from "react-i18next";
 
 // Settings ▸ Skills (SKILLS-SPEC §5/§6) — the management home: the LIST is the page; every
 // add-surface appears only when summoned from the single "Add skill" menu (the three doors:
@@ -26,13 +26,13 @@ import { Trans, useTranslation } from "react-i18next";
 // Persona-bundled skills arrive with personas (§10), managed on the persona page, not here.
 
 const CARD = "rounded-xl2 border border-line bg-panel";
-const FIELD_LABEL = "text-[12.5px] font-medium text-ink";
+const FIELD_LABEL = "text-[13px] font-medium text-ink";
 const INPUT =
   "w-full min-w-0 px-3 py-2 rounded-lg border border-line bg-paper text-[13px] text-ink outline-none focus:border-accent";
 const BTN_ACCENT =
-  "text-[12.5px] px-3 py-2 rounded-lg bg-accent text-white shrink-0 disabled:opacity-40";
+  "text-[13px] px-3 py-2 rounded-lg bg-accent text-white shrink-0 disabled:opacity-40";
 const BTN_BORDERED =
-  "text-[12.5px] px-3 py-2 rounded-lg border border-line bg-paper hover:border-lineStrong shrink-0";
+  "text-[13px] px-3 py-2 rounded-lg border border-line bg-paper hover:border-lineStrong shrink-0";
 const BADGE =
   "text-[11px] px-2 py-0.5 rounded-full border border-line bg-paper text-muted shrink-0";
 
@@ -96,13 +96,9 @@ export function SkillsTab({
   // model will be told…") or engineering timing ("from the next message") — owner-driver
   // review rounds, 2026-07-27. The engine countermands disabled-but-loaded skills silently;
   // the copy promises only the guaranteed part.
-  const CONFIRMATION = t("— the worker can now use it in every conversation.");
-  const OFF_NOTE = t(
-    "turned off everywhere. If a conversation already used it, start a new one for a completely clean slate.",
-  );
-  const DELETE_NOTE = t(
-    "removed. If a conversation already used it, start a new one for a completely clean slate.",
-  );
+  const CONFIRMATION = t("skills.confirmation");
+  const OFF_NOTE = t("skills.off_note");
+  const DELETE_NOTE = t("skills.delete_note");
 
   const refresh = () => listSkills().then(setRows);
   useEffect(() => {
@@ -112,7 +108,7 @@ export function SkillsTab({
   const fail = (res: { ok?: boolean; error?: string }) => {
     setNotice(null);
     if (res.ok === false) {
-      setError(res.error || t("Something went wrong."));
+      setError(res.error || t("skills.error_generic"));
       return true;
     }
     setError("");
@@ -162,7 +158,7 @@ export function SkillsTab({
     const res = await confirmSkillUpload(upload.token);
     if (fail(res)) return;
     setUpload(null);
-    setNotice({ name: upload.name || t("Skill"), text: CONFIRMATION, tone: "ok" });
+    setNotice({ name: upload.name || t("skills.fallback_name"), text: CONFIRMATION, tone: "ok" });
     refresh();
   };
 
@@ -182,10 +178,8 @@ export function SkillsTab({
     <section>
       <div className="flex items-start justify-between gap-3 mb-4">
         <div>
-          <h2 className="text-[16px] font-semibold">{t("Skills")}</h2>
-          <p className="text-[12.5px] text-muted mt-1 leading-relaxed">
-            {t("Reusable instructions the worker can follow in every conversation. Off here means off everywhere.")}
-          </p>
+          <h2 className="text-[16px] font-semibold">{t("settings.tab.skills")}</h2>
+          <p className="text-[13px] text-muted mt-1 leading-relaxed">{t("skills.subtitle")}</p>
         </div>
         {/* One add-action, three doors behind it (SKILLS-SPEC §5): the list is the page. */}
         <div className="relative shrink-0">
@@ -196,7 +190,7 @@ export function SkillsTab({
             onClick={() => setAddOpen((v) => !v)}
           >
             <span className="inline-flex items-center gap-1.5">
-              <Icon name="plus" size={13} /> {t("Add skill")}
+              <Icon name="plus" size={13} /> {t("skills.add_skill")}
             </span>
           </button>
           {addOpen ? (
@@ -215,10 +209,8 @@ export function SkillsTab({
                     setEditor(emptyEditor());
                   }}
                 >
-                  <div className="text-[13px] font-medium">{t("Write it myself")}</div>
-                  <div className="text-[11.5px] text-muted">
-                    {t("A name, a description, and the instructions")}
-                  </div>
+                  <div className="text-[13px] font-medium">{t("skills.door_write")}</div>
+                  <div className="text-[12px] text-muted">{t("skills.door_write_sub")}</div>
                 </button>
                 <button
                   role="menuitem"
@@ -228,10 +220,8 @@ export function SkillsTab({
                     fileInput.current?.click();
                   }}
                 >
-                  <div className="text-[13px] font-medium">{t("Import a file")}</div>
-                  <div className="text-[11.5px] text-muted">
-                    {t("A .zip or SKILL.md someone shared — you review before it installs")}
-                  </div>
+                  <div className="text-[13px] font-medium">{t("skills.door_import")}</div>
+                  <div className="text-[12px] text-muted">{t("skills.door_import_sub")}</div>
                 </button>
                 {isTauri() && (
                   <button
@@ -258,10 +248,8 @@ export function SkillsTab({
                     onCreateSkill?.("");
                   }}
                 >
-                  <div className="text-[13px] font-medium">{t("Create with OpenWorker")}</div>
-                  <div className="text-[11.5px] text-muted">
-                    {t("Starts a conversation — the worker builds it and asks before adding it to your skills")}
-                  </div>
+                  <div className="text-[13px] font-medium">{t("skills.door_ai")}</div>
+                  <div className="text-[12px] text-muted">{t("skills.door_ai_sub")}</div>
                 </button>
               </div>
             </>
@@ -273,7 +261,7 @@ export function SkillsTab({
         type="file"
         accept=".zip,.md"
         className="hidden"
-        aria-label={t("Upload a skill archive")}
+        aria-label={t("skills.upload_aria")}
         onChange={(e) => {
           onPickFile(e.target.files?.[0]);
           e.target.value = "";
@@ -281,7 +269,7 @@ export function SkillsTab({
       />
 
       {error ? (
-        <div className="text-[12.5px] text-red-500 mb-3" role="alert">
+        <div className="text-[13px] text-red-500 mb-3" role="alert">
           {error}
         </div>
       ) : null}
@@ -289,7 +277,7 @@ export function SkillsTab({
         <div
           role="status"
           className={
-            "mb-3 flex items-start gap-2 rounded-lg border px-3 py-2 text-[12.5px] " +
+            "mb-3 flex items-start gap-2 rounded-lg border px-3 py-2 text-[13px] " +
             (notice.tone === "ok"
               ? "bg-tealSoft/70 text-tealInk border-tealInk/20"
               : "bg-warnSoft/70 text-warnInk border-warnInk/20")
@@ -300,7 +288,7 @@ export function SkillsTab({
           </span>
           <button
             className="ml-auto shrink-0 opacity-60 hover:opacity-100"
-            aria-label={t("Dismiss")}
+            aria-label={t("common.dismiss")}
             onClick={() => setNotice(null)}
           >
             ✕
@@ -310,35 +298,34 @@ export function SkillsTab({
 
       {upload ? (
         <div className={`${CARD} p-4 mb-4`}>
-          <div className="text-[13px] font-medium mb-1">{t("Review before installing")}</div>
-          <p className="text-[12.5px] text-muted mb-3">
-            {t("Read the instructions — installing a skill means the worker will follow them.")}
-          </p>
+          <div className="text-[13px] font-medium mb-1">{t("skills.review_title")}</div>
+          <p className="text-[13px] text-muted mb-3">{t("skills.review_sub")}</p>
           <div className="text-[13px] mb-1">
             <span className="font-medium">{upload.name}</span>
-            <span className="text-muted"> — {upload.description || t("no description")}</span>
+            <span className="text-muted"> — {upload.description || t("skills.no_description")}</span>
           </div>
           <pre className="text-[12px] bg-paper border border-line rounded-lg p-3 whitespace-pre-wrap max-h-64 overflow-y-auto mb-2">
             {upload.instructions}
           </pre>
           {upload.files?.length ? (
             <div className="text-[12px] text-muted mb-2">
-              {t("Bundled files: {{files}}", { files: upload.files.join(", ") })}
+              {t("skills.bundled_files", { files: upload.files.join(", ") })}
             </div>
           ) : null}
-          {/* The filter is automatic but never silent: a user who is told nothing was
-              dropped can end up sure they installed something they did not. */}
+          {/* The import filter is automatic but never silent: a user told nothing was dropped
+              can end up sure they installed something they did not. Fork-only — upstream has
+              no import hygiene gate, so the merge removed this and left the test asserting it. */}
           {upload.skipped?.length ? (
             <div className="text-[12px] text-muted mb-2" data-testid="upload-skipped">
-              {t("Excluded automatically: {{items}}", { items: upload.skipped.join(", ") })}
+              {t("skills.excluded_automatically", { items: upload.skipped.join(", ") })}
             </div>
           ) : null}
           <div className="flex gap-2 mt-3">
             <button className={BTN_ACCENT} onClick={confirmUpload}>
-              {t("Install skill")}
+              {t("skills.install_skill")}
             </button>
             <button className={BTN_BORDERED} onClick={() => setUpload(null)}>
-              {t("Cancel")}
+              {t("folder_gate.cancel")}
             </button>
           </div>
         </div>
@@ -347,37 +334,39 @@ export function SkillsTab({
       {editor ? (
         <div className={`${CARD} p-4 mb-4`}>
           <div className="text-[13px] font-medium mb-3">
-            {editor.mode === "new" ? t("New skill") : t("Edit {{name}}", { name: editor.name })}
+            {editor.mode === "new"
+              ? t("skills.editor_new")
+              : t("skills.editor_edit", { name: editor.name })}
           </div>
           <label className={FIELD_LABEL} htmlFor="skill-name">
-            {t("Name")}
+            {t("skills.name_label")}
           </label>
           <input
             id="skill-name"
             className={`${INPUT} mt-1 mb-3`}
             value={editor.name}
             disabled={editor.mode === "edit"}
-            placeholder={t("weekly-report")}
+            placeholder={t("skills.name_placeholder")}
             onChange={(e) => setEditor({ ...editor, name: e.target.value })}
           />
           <label className={FIELD_LABEL} htmlFor="skill-desc">
-            {t("Description")}
+            {t("skills.desc_label")}
           </label>
           <input
             id="skill-desc"
             className={`${INPUT} mt-1 mb-3`}
             value={editor.description}
-            placeholder={t("One line the worker uses to decide when this applies")}
+            placeholder={t("skills.desc_placeholder")}
             onChange={(e) => setEditor({ ...editor, description: e.target.value })}
           />
           <label className={FIELD_LABEL} htmlFor="skill-instructions">
-            {t("Instructions")}
+            {t("skills.instructions_label")}
           </label>
           <textarea
             id="skill-instructions"
             className={`${INPUT} mt-1 mb-3 min-h-[140px] font-mono`}
             value={editor.instructions}
-            placeholder={t("1. Gather last week's updates\n2. Write the report, under 300 words")}
+            placeholder={t("skills.instructions_placeholder")}
             onChange={(e) => setEditor({ ...editor, instructions: e.target.value })}
           />
           <div className="flex gap-2 mt-3">
@@ -386,10 +375,10 @@ export function SkillsTab({
               disabled={!editor.name.trim() || !editor.instructions.trim()}
               onClick={save}
             >
-              {t("Save skill")}
+              {t("skills.save_skill")}
             </button>
             <button className={BTN_BORDERED} onClick={() => setEditor(null)}>
-              {t("Cancel")}
+              {t("folder_gate.cancel")}
             </button>
           </div>
         </div>
@@ -398,10 +387,7 @@ export function SkillsTab({
       <div className={`${CARD} divide-y divide-line`}>
         {rows.length === 0 && !editor ? (
           <div className="p-5 text-[13px] text-muted">
-            <Trans i18nKey="No skills yet — <1>Add skill</1> teaches your worker its first one, like “prepare my Monday status report”.">
-              No skills yet — <b>Add skill</b> teaches your worker its first one, like
-              “prepare my Monday status report”.
-            </Trans>
+            <Trans i18nKey="skills.empty" components={{ b: <b /> }} />
           </div>
         ) : null}
         {rows.map((row) => (
@@ -418,13 +404,10 @@ export function SkillsTab({
                 {row.files ? (
                   <button
                     className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded-md border border-line bg-paper text-muted hover:text-ink hover:border-lineStrong shrink-0"
-                    title={t("Show folder")}
+                    title={t("skills.show_folder")}
                     onClick={() => revealSkill(row.name)}
                   >
-                    <Icon name="folder" size={11} />{" "}
-                    {row.files === 1
-                      ? t("{{files}} file", { files: row.files })
-                      : t("{{files}} files", { files: row.files })}
+                    <Icon name="folder" size={11} /> {t("skills.file_count", { count: row.files })}
                   </button>
                 ) : null}
               </div>
@@ -434,7 +417,7 @@ export function SkillsTab({
             </div>
             <button
               className={BTN_BORDERED}
-              title={t("Edit")}
+              title={t("skills.edit_tip")}
               onClick={() =>
                 setEditor({
                   mode: "edit",
@@ -448,17 +431,21 @@ export function SkillsTab({
             </button>
             <button
               className={BTN_BORDERED}
-              aria-label={t("Delete {{name}}", { name: row.name })}
+              aria-label={t("skills.delete_aria", { name: row.name })}
               onClick={() => remove(row)}
               onBlur={() => setArmedDelete(null)}
             >
-              {armedDelete === row.name ? t("Confirm delete") : <Icon name="trash" size={13} />}
+              {armedDelete === row.name ? (
+                t("skills.confirm_delete")
+              ) : (
+                <Icon name="trash" size={13} />
+              )}
             </button>
             <label className="inline-flex items-center gap-1.5 text-[12px] text-muted">
               <input
                 type="checkbox"
                 role="switch"
-                aria-label={t("{{name}} enabled", { name: row.name })}
+                aria-label={t("skills.enabled_aria", { name: row.name })}
                 checked={row.enabled}
                 onChange={(e) => {
                   const on = e.target.checked;
@@ -473,7 +460,7 @@ export function SkillsTab({
                   });
                 }}
               />
-              {t("On")}
+              {t("skills.on")}
             </label>
           </div>
         ))}

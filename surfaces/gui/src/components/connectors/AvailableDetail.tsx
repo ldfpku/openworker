@@ -31,14 +31,14 @@ export function AvailableDetail({
         <ConnectorBadge connector={c} size={44} title={c.title} />
         <div className="min-w-0 flex-1">
           <h2 className="text-[20px] font-semibold tracking-tight leading-tight">{c.title}</h2>
-          <div className="text-[12.5px] text-muted">{c.blurb ? t(c.blurb) : c.blurb}</div>
+          <div className="text-[13px] text-muted">{c.blurb}</div>
         </div>
         <button
           className={PILL_ACCENT}
           data-testid="available-connect"
           onClick={() => setConnecting(true)}
         >
-          {t("Connect")}
+          {t("available.connect")}
         </button>
       </div>
 
@@ -46,7 +46,7 @@ export function AvailableDetail({
 
       {(c.access?.length ?? 0) > 0 && (
         <>
-          <div className={GRP_H}>{t("Access")}</div>
+          <div className={GRP_H}>{t("available.access")}</div>
           <div className={GRP} data-testid="available-access">
             {c.access!.map((line) => (
               <div key={line} className={ROW + " !min-h-[36px] !py-2 text-[13px]"}>
@@ -55,14 +55,14 @@ export function AvailableDetail({
             ))}
           </div>
           <div className={FOOT}>
-            {t("Keys and tokens are stored only on this computer. Disconnect anytime.")}
+            {t("available.access_foot")}
           </div>
         </>
       )}
 
       {tools.length > 0 && (
         <>
-          <div className={GRP_H}>{t("Tools")}</div>
+          <div className={GRP_H}>{t("available.tools")}</div>
           <div className={GRP}>
             <button
               className={ROW + " w-full text-left hover:bg-paper/60 text-[13px]"}
@@ -70,20 +70,18 @@ export function AvailableDetail({
               onClick={() => setShowTools((v) => !v)}
             >
               <span className="min-w-0 flex-1 text-muted">
-                {tools.length === 1
-                  ? t("{{count}} tool this connector adds", { count: tools.length })
-                  : t("{{count}} tools this connector adds", { count: tools.length })}
+                {t("available.tools_added", { count: tools.length })}
               </span>
-              <span className="text-faint text-[13px] shrink-0">{showTools ? t("Hide") : t("View")}</span>
+              <span className="text-faint text-[13px] shrink-0">{showTools ? t("available.hide") : t("available.view")}</span>
             </button>
             {showTools &&
               tools.map((tool) => (
                 <div key={tool.name} className={ROW + " !min-h-[38px]"}>
                   <span className="min-w-0 flex-1">
-                    <span className="text-[13px]">{t(tool.label)}</span>
-                    <span className="block text-[12px] text-muted">{t(tool.description)}</span>
+                    <span className="text-[13px]">{tool.label}</span>
+                    <span className="block text-[12px] text-muted">{tool.description}</span>
                   </span>
-                  {tool.kind !== "read" && <span className={TAG_QUIET}>{t("asks first")}</span>}
+                  {tool.kind !== "read" && <span className={TAG_QUIET}>{t("available.asks_first")}</span>}
                 </div>
               ))}
           </div>

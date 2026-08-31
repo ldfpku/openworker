@@ -514,7 +514,8 @@ def test_matrix_labels_and_custom_model_fallback():
     assert labels["zai:glm-5.2"] == "GLM-5.2 · Z AI"
     # Deliberately small: agent-capable current models only (owner call, 2026-07-04).
     # The per-provider bound is the one that matters — the GUI's pickers filter by
-    # provider, so that is the list a human actually reads. The total is a sprawl alarm.
+    # provider, so that is the list a human actually reads. The total is a sprawl alarm:
+    # reclaim slack by pruning retired entries before raising it again.
     from collections import Counter
 
     assert len(MATRIX) < 90

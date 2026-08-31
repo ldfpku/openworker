@@ -78,31 +78,25 @@ export function TeamChatView({ teamId, onClose }: { teamId: string; onClose: () 
         <button
           className="artifact-icon-btn"
           onClick={onClose}
-          aria-label={t("Back to session")}
-          title={t("Back")}
+          aria-label={t("team.back_to_session")}
+          title={t("rail.back")}
         >
           <Icon name="arrowLeft" size={16} />
         </button>
         <div className="board-overlay-title">
           <span className="chat-hash">#</span>
-          <span>{t("team chat")}</span>
-          <span className="board-overlay-space">
-            {t("questions & consensus — status lives on the board")}
-          </span>
+          <span>{t("rail.team_chat")}</span>
+          <span className="board-overlay-space">{t("team.chat_tagline")}</span>
         </div>
       </div>
       <div className="chat-view-body">
         <div className="chat-scroll">
           {messages.length === 0 && (
-            <div className="chat-empty">
-              {t(
-                "No messages yet. Agents post here only when something needs a reply — @mention a coworker to reach it.",
-              )}
-            </div>
+            <div className="chat-empty">{t("team.chat_empty")}</div>
           )}
           {messages.map((m, i) => {
             const grouped = i > 0 && messages[i - 1].author === m.author;
-            const label = m.author_role === "user" ? t("You") : m.author;
+            const label = m.author_role === "user" ? t("team.you") : m.author;
             return (
               <div className={"chat-msg" + (grouped ? " grouped" : "")} key={m.seq}>
                 {!grouped && (
@@ -125,7 +119,7 @@ export function TeamChatView({ teamId, onClose }: { teamId: string; onClose: () 
           <input
             className="chat-input"
             data-testid="chat-input"
-            placeholder={t("Message # team chat…  (posts as you — every member sees it)")}
+            placeholder={t("team.chat_placeholder")}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
@@ -134,7 +128,7 @@ export function TeamChatView({ teamId, onClose }: { teamId: string; onClose: () 
             }}
           />
           <button className="btn primary" data-testid="chat-send" disabled={busy || !draft.trim()} onClick={send}>
-            {t("Send")}
+            {t("common.send")}
           </button>
         </div>
       </div>

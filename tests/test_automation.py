@@ -34,9 +34,28 @@ def _task(**kw) -> ScheduledTask:
 # -- model / schedule ----------------------------------------------------------
 def test_schedule_human():
     assert Schedule("cron", cron="10 19 * * *").human() == "每天 ~19:10"
-    assert "周一" in Schedule("cron", cron="0 9 * * 0").human()
+    # Cron day-of-week: 0 (and 7) = Sunday, 1 = Monday … 6 = Saturday.
+    assert "周日" in Schedule("cron", cron="0 9 * * 0").human()
+    assert "周一" in Schedule("cron", cron="0 9 * * 1").human()
+    assert "周六" in Schedule("cron", cron="0 9 * * 6").human()
+    assert "周日" in Schedule("cron", cron="0 9 * * 7").human()  # 7 也是周日
     assert Schedule("cron", cron="0 9 5 * *").human() == "每月 5 日 ~09:00"
     assert Schedule("once", fire_at="2026-07-01T09:00:00").human().startswith("单次于")
+
+
+def test_weekly_label_matches_croniter_fire_day():
+    """The rendered weekday must equal the day croniter actually fires on (regression: a
+    Monday-first name list indexed by cron dow labelled every weekly schedule a day late)."""
+    from croniter import croniter
+
+    # Independent oracle: indexed by datetime.weekday() (Mon=0), not by the cron dow the
+    # label builder uses — so a rotated name list in models.py still trips this test.
+    zh_dow = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    for dow in range(7):
+        label = Schedule("cron", cron=f"0 9 * * {dow}").human()
+        base = datetime(2026, 7, 20, 0, 0)  # a Monday
+        fires = croniter(f"0 9 * * {dow}", base).get_next(datetime)
+        assert zh_dow[fires.weekday()] in label, (dow, label, fires.strftime("%A"))
 
 
 def test_task_gets_own_thread_id():
@@ -67,6 +86,27 @@ def test_compute_next_run_once_in_past_is_none():
     past = "2020-01-01T00:00:00+00:00"
     t = _task(schedule=Schedule(kind="once", fire_at=past))
     assert compute_next_run(t) is None
+
+
+def test_compute_next_run_once_local_is_dst_aware(monkeypatch):
+    """A one-time 'local' task set while EDT is in effect but firing on a winter EST date must
+    fire at the requested wall-clock, not an hour off. Binding the naive datetime to the
+    offset in effect at compute time (the old bug) misfired by the DST delta."""
+    import time as _time
+
+    monkeypatch.setenv("TZ", "America/New_York")
+    _time.tzset()
+    try:
+        # Compute "now" during summer (EDT, -04:00); the task fires on a winter date (EST).
+        summer_now = datetime(2026, 7, 1, 12, 0).timestamp()
+        t = _task(schedule=Schedule(kind="once", fire_at="2026-12-25T08:00:00"))
+        nxt = compute_next_run(t, after=summer_now)
+        fires_local = datetime.fromtimestamp(nxt)
+        assert (fires_local.hour, fires_local.minute) == (8, 0)
+        assert fires_local.date() == datetime(2026, 12, 25, 8, 0).date()
+    finally:
+        monkeypatch.delenv("TZ", raising=False)
+        _time.tzset()
 
 
 # -- store ---------------------------------------------------------------------
@@ -111,14 +151,21 @@ async def test_scheduler_runs_due_task_and_advances(tmp_path):
     store._conn.commit()
 
     ran: list[str] = []
+    ran_once = asyncio.Event()
 
     async def runner(task, trigger):
         ran.append(task.id)
+        ran_once.set()
         return TaskRun(task_id=task.id, status="ok", trigger=trigger)
 
     sched = Scheduler(store, runner, tick_seconds=0.05)
     sched.start()
-    await asyncio.sleep(0.2)
+    # Wait for the run instead of sleeping a fixed window: with an every-minute cron, a
+    # fixed sleep that happens to straddle a minute boundary lets the advanced task come
+    # due AGAIN and legitimately fire twice. Stopping right after the first run (the
+    # advance is synchronous once the runner returns) makes the single-fire assertion
+    # deterministic.
+    await asyncio.wait_for(ran_once.wait(), timeout=5.0)
     await sched.stop()
     assert ran == [t.id]
     advanced = store.get(t.id)
