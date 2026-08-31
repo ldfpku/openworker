@@ -5,12 +5,15 @@ import {
   connectManaged,
   connectMcpBacked,
   disallowUser,
+  getDmRoute,
+  getSessions,
   getSettings,
   getSubscriptions,
   removeModel,
   resolveUnauthorized,
   unsubscribeChannel,
   setDefaultModel,
+  setDmRoute,
   updateConnectorTools,
   type CloudStatus,
   type Connector,
@@ -18,6 +21,7 @@ import {
   type ModelSettings,
   type ProviderInfo,
 } from "../api";
+import type { SessionInfo } from "../types";
 import { CloudSignInInline, CloudStatusPending } from "./connectors/CloudSignIn";
 import { ModelChecklist } from "./ModelChecklist";
 import { ProviderCards, ProviderForm, useProviderSetup } from "../providers/ProviderSetup";
@@ -240,6 +244,86 @@ function ComposerPickerCard({
 // §21: connected-first list + per-connector detail subpages). This file keeps the
 // shared building blocks the detail pages reuse: ConnectSetup, ConnectorTools, and
 // the two-way blocks (Allowlist/Unauthorized/ListeningSessions).
+
+// How a DM-only connector (two-way, no channels — WeChat) actually works, on the page where
+// people set it up. Written because the flow reads as one step and is two: allow-listing a
+// sender delivers their message, but only a designated session ANSWERS it, and that switch
+// lives on the Inbox ▸ Configure screen. Owners hit "I allowed them and got no reply" with
+// nothing on this page to explain the silence. The backend now opens a session on first
+// contact, so this block states the shape rather than issuing homework — plus where to look
+// when a reply still doesn't arrive.
+export function DmHowItWorks({ c }: { c: Connector }) {
+  const { t } = useTranslation();
+  const steps = [
+    t("They message the bot once — the sender shows up under Recent senders below."),
+    t("You press Allow & deliver — that adds them and replays what they already said; nobody has to message twice."),
+    t("A session picks it up and replies straight back to {{title}}. With none designated, the first DM opens one.", { title: c.title }),
+  ];
+  return (
+    <div className="border-t border-line px-3.5 py-3">
+      <div className={SEC_H + " mb-2"}>{t("How this works")}</div>
+      <ol className="space-y-1.5">
+        {steps.map((step, n) => (
+          <li className="flex gap-2 text-[12.5px] leading-relaxed" key={n}>
+            <span className="w-4 h-4 mt-0.5 shrink-0 rounded-full bg-accentSoft text-accent grid place-items-center text-[9px] font-bold">
+              {n + 1}
+            </span>
+            <span className="text-muted">{step}</span>
+          </li>
+        ))}
+      </ol>
+      <p className="text-[11.5px] text-faint mt-2.5 leading-relaxed">
+        {t("No reply arriving? Inbox ▸ Configure ▸ Unrouted keeps every message that reached nobody, with the reason.")}
+      </p>
+    </div>
+  );
+}
+
+// Which session answers this connector's DMs, shown on the connector page rather than only on
+// Inbox ▸ Configure — for a DM-only connector this IS the delivery setting, so hiding it a
+// screen away is what made "allowed them, heard nothing" possible. Unset is no longer a
+// dead end (the first DM opens a session), so the empty state says that instead of warning.
+export function DmRouteBlock({ c }: { c: Connector }) {
+  const { t } = useTranslation();
+  const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const [dm, setDm] = useState<string>("");
+
+  const load = () => {
+    getSessions().then(setSessions).catch(() => setSessions([]));
+    getDmRoute(c.name).then((s) => setDm(s || "")).catch(() => setDm(""));
+  };
+  // Reload whenever the connector's own state moves, not just on mount: Allow & deliver
+  // routes the message server-side, and an undesignated route opens a session in the
+  // process. Mount-only left this reading "Automatic" right after the press that filled it.
+  useEffect(load, [c.allowed_users.length, c.unauthorized?.length]);
+
+  // `__`-prefixed ids are internal scratch sessions (runs, previews) — never routing targets.
+  const real = sessions.filter((s) => !s.session_id.startsWith("__"));
+  return (
+    <div className="border-t border-line px-3.5 py-3" data-testid={`dm-route-${c.name}`}>
+      <div className={SEC_H + " mb-2"}>{t("Answers DMs")}</div>
+      <select
+        className="w-full px-2.5 py-1.5 rounded-lg border border-line bg-paper text-[13px] text-ink"
+        value={dm}
+        onChange={async (e) => {
+          setDm(e.target.value);
+          await setDmRoute(e.target.value, c.name);
+          load();
+        }}
+      >
+        <option value="">{t("Automatic — the first DM opens a session")}</option>
+        {real.map((s) => (
+          <option key={s.session_id} value={s.session_id}>
+            {s.title || s.session_id}
+          </option>
+        ))}
+      </select>
+      <p className="text-[11.5px] text-faint mt-2 leading-relaxed">
+        {t("Every DM from {{title}} lands in this one session, whoever sent it — so the conversation stays in one place. Other connectors keep their own. Its replies go back out without asking you each time.", { title: c.title })}
+      </p>
+    </div>
+  );
+}
 
 // Parked messages from senders not on the allow-list (§19). The gateway keeps what they said
 // instead of dropping it, so first contact is one step: Allow & deliver replays the original

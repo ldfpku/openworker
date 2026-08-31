@@ -13,8 +13,16 @@ import {
 } from "../../api";
 import { McpServerDetail } from "./CustomMcp";
 import { ConnectorBadge } from "../../connectors/ConnectorIcon";
-import { AllowlistBlock, ConnectorTools, ListeningSessionsBlock, UnauthorizedBlock } from "../ManageTabs";
+import {
+  AllowlistBlock,
+  ConnectorTools,
+  DmHowItWorks,
+  DmRouteBlock,
+  ListeningSessionsBlock,
+  UnauthorizedBlock,
+} from "../ManageTabs";
 import { AccountsDetail } from "./AccountsDetail";
+import { AddConnectionModal } from "./AddConnectionModal";
 import { AvailableDetail } from "./AvailableDetail";
 import { CalendarDetail } from "./CalendarDetail";
 import { ConnectorsList } from "./ConnectorsList";
@@ -22,7 +30,7 @@ import { GithubDetail } from "./GithubDetail";
 import { GmailDetail } from "./GmailDetail";
 import { HubSpotDetail } from "./HubSpotDetail";
 import { SlackDetail } from "./SlackDetail";
-import { GRP } from "./ui";
+import { GRP, PILL_LINE } from "./ui";
 
 // Connectors surface = LIST ⇄ per-connector DETAIL SUBPAGE (UX-DECISIONS §21). The
 // Integrations sub-nav never grows per-connector items; detail pages live behind a
@@ -162,6 +170,12 @@ function GenericDetail({
   onGone,
 }: DetailProps & { onGone: () => void }) {
   const { t } = useTranslation();
+  // A QR login expires on its own schedule, and re-scanning is the documented fix.
+  // Without this the only way back in was Disconnect, which deletes the profile —
+  // allow-list included — so a routine expiry cost the user every sender they had
+  // approved. The backend has always supported re-scan-in-place (the QR commit
+  // carries `allowed_users` forward); nothing reached it while connected.
+  const [rescan, setRescan] = useState(false);
   return (
     <div>
       <div className="flex items-center gap-3.5 mb-5">
@@ -173,6 +187,16 @@ function GenericDetail({
             {c.account || (c.auth === "none" ? t("Built in") : t("Connected"))}
           </div>
         </div>
+        {c.auth === "qr" && (
+          <button
+            className={PILL_LINE}
+            data-testid={`rescan-${c.name}`}
+            title={t("Sign in again without losing who you've allowed")}
+            onClick={() => setRescan(true)}
+          >
+            {t("Scan again")}
+          </button>
+        )}
         {c.auth !== "none" && (
           <button
             className="text-[12.5px] text-danger/80 hover:text-danger shrink-0"
@@ -187,14 +211,32 @@ function GenericDetail({
         )}
       </div>
 
+      {rescan && (
+        <AddConnectionModal
+          c={c}
+          cloud={_cloud}
+          title={t("Sign in to {{title}} again", { title: c.title })}
+          onClose={() => setRescan(false)}
+          onChanged={() => {
+            setRescan(false);
+            onChanged();
+          }}
+        />
+      )}
+
       <div className={GRP}>
         <ConnectorTools c={c} onChanged={onChanged} />
       </div>
 
       {c.two_way && (
         <div className={GRP + " mt-4"}>
+          {/* No channels means every inbound message is a DM, so this page owns the whole
+              delivery path — explain it here and put the DM route here too, instead of
+              leaving both to Inbox ▸ Configure where nobody thinks to look (WeChat). */}
+          {!c.channels && <DmHowItWorks c={c} />}
           <AllowlistBlock c={c} onChanged={onChanged} />
           <UnauthorizedBlock c={c} onChanged={onChanged} />
+          {!c.channels && <DmRouteBlock c={c} />}
           {/* Channel subscriptions are a chat-platform concept — GitHub is two_way via the
               relay (inbound mentions) but has no channels. */}
           {c.channels && <ListeningSessionsBlock c={c} />}

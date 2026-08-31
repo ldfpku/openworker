@@ -1598,6 +1598,15 @@ class SessionManager:
 
         async def _commit(creds: dict[str, Any]) -> None:
             existing = self.secrets.get("weixin:default") or {}
+            # Scanning IS the answer to "who is connecting": the QR status hands back
+            # the scanner's own WeChat id, so allow-list them here. Without it the
+            # owner's very first DM to their own bot parked with no reply and no
+            # obvious cause — the exact failure Slack's managed install fixes by
+            # pre-adding the installer (setup.py). Everyone else still gets gated.
+            allowed = list(existing.get("allowed_users") or [])
+            scanner = str(creds.get("user_id") or "").strip()
+            if scanner and scanner not in allowed:
+                allowed.append(scanner)
             self.secrets.put(
                 "weixin:default",
                 {
@@ -1606,9 +1615,9 @@ class SessionManager:
                     "bot_token": creds["token"],
                     "account_id": creds["account_id"],
                     "base_url": creds["base_url"],
-                    "user_id": creds.get("user_id", ""),
+                    "user_id": scanner,
                     "account": creds["account_id"],
-                    "allowed_users": existing.get("allowed_users") or [],
+                    "allowed_users": allowed,
                 },
             )
             from ..connectors.weixin_state import WeixinState
@@ -3142,20 +3151,53 @@ class SessionManager:
         )
 
     # -- direct-message routing -------------------------------------------------
-    def dm_session(self) -> Optional[str]:
-        """The session a DM to the bot is routed to (user-designated). None → DMs are parked."""
-        sid = self._prefs.get("dm_session")
-        return sid or None
+    # PER CONNECTOR, with a shared fallback. One global slot meant WeChat, Slack and
+    # Telegram DMs all landed in whichever session claimed it first — so a WeChat
+    # message could silently arrive in a session opened for Slack, and the picker gave
+    # no hint that the platforms shared a slot. They are different conversations with
+    # different people; they get different sessions.
+    _DM_ANY = "*"  # the fallback slot: connectors with no route of their own
 
-    def set_dm_session(self, session_id: Optional[str]) -> dict[str, Any]:
-        """Designate (or clear, with a falsy id) the session that handles incoming DMs."""
+    def dm_session(self, platform: Optional[str] = None) -> Optional[str]:
+        """The session a DM routes to — this connector's, else the shared fallback."""
+        routes = self._prefs.get("dm_sessions") or {}
+        if platform:
+            own = routes.get(platform)
+            if own:
+                return str(own)
+        # Legacy single-slot pref, still honoured as the fallback.
+        return str(routes.get(self._DM_ANY) or self._prefs.get("dm_session") or "") or None
+
+    def set_dm_session(
+        self, session_id: Optional[str], platform: Optional[str] = None
+    ) -> dict[str, Any]:
+        """Designate (or clear, with a falsy id) the session handling a connector's DMs.
+        With no platform this sets the shared fallback."""
         sid = (session_id or "").strip()
+        key = platform or self._DM_ANY
+        routes = dict(self._prefs.get("dm_sessions") or {})
         if sid:
-            self._prefs["dm_session"] = sid
+            routes[key] = sid
         else:
+            routes.pop(key, None)
+        self._prefs["dm_sessions"] = routes
+        if key == self._DM_ANY:
+            # Keep the legacy key in step so a downgrade still finds the fallback.
             self._prefs.pop("dm_session", None)
         self._save_prefs()
-        return {"ok": True, "dm_session": self.dm_session()}
+        return {"ok": True, "dm_session": self.dm_session(platform), "platform": platform}
+
+    def _forget_dm_session(self, session_id: str) -> None:
+        """Drop every route pointing at a session that no longer exists."""
+        routes = {
+            k: v
+            for k, v in (self._prefs.get("dm_sessions") or {}).items()
+            if v != session_id
+        }
+        self._prefs["dm_sessions"] = routes
+        if self._prefs.get("dm_session") == session_id:
+            self._prefs.pop("dm_session", None)
+        self._save_prefs()
 
     # -- aigw per-user model gate (gateway-guard's /gate/policy) -----------------
     # The company gateway's guard Worker restricts some models (e.g. the priciest
@@ -4554,8 +4596,9 @@ class SessionManager:
                         pass
                 return
             return  # channel with no subscribers — nobody is listening
-        # DM (or any non-channel): route to the designated session, else park it for visibility.
-        dm = self.dm_session()
+        # DM (or any non-channel): route to the designated session — opening one on first
+        # contact when the user never designated any (`_ensure_dm_session`).
+        dm = self._ensure_dm_session(src)
         if dm and self._inbound_connector_allowed(dm, src.platform):
             if src.platform == "weixin":
                 # Weixin DMs are pure reply handles (no threads, no mention router):
@@ -4571,7 +4614,10 @@ class SessionManager:
                     engine.permissions.task_rules.setdefault(
                         "send_message", set()
                     ).add(src.target)
-            await self.deliver_to_session(dm, event.tagged_text(), source=ms.to_dict())
+                self._grant_media_dir(dm)
+            await self.deliver_to_session(
+                dm, self._dm_opening(event, src), source=ms.to_dict()
+            )
         elif dm:
             # Designated, but this session has muted the connector → park rather than deliver.
             self.unrouted.record(
@@ -4579,8 +4625,100 @@ class SessionManager:
             )
         else:
             self.unrouted.record(
-                src.target, who, text, reason="no DM session designated"
+                src.target, who, text, reason="could not open a DM session"
             )
+
+    def _grant_media_dir(self, session_id: str) -> None:
+        """Let the DM session read the attachments it is being handed.
+
+        Inbound media is downloaded, AES-decrypted and cached under
+        `state_dir()/weixin/media` — outside every session root, so the agent received an
+        absolute path its own `read_file` refused ("path escapes the session's
+        directories"). The whole media pipeline worked except the last step. Read-only,
+        and only for the session that owns these DMs.
+        """
+        from ..connectors.weixin_state import WeixinState
+
+        try:
+            media = WeixinState().media_dir()
+        except Exception:
+            return
+        try:
+            self.add_root(session_id, str(media), writable=False)
+        except Exception:
+            logger.debug("weixin: could not grant %s", media, exc_info=True)
+
+    @staticmethod
+    def _dm_opening(event, src) -> str:
+        """What a DM actually says to the agent.
+
+        `tagged_text()` carries a reply HANDLE (`reply→weixin:<peer>`) and nothing else —
+        it names where a reply could go without ever saying one is expected. So the agent
+        did the reasonable thing with a question in its transcript: it answered in the
+        session, and the person on WeChat got silence. The Slack mention path has always
+        spelled this out (`_route_mention`); the DM path never did. It says so now.
+        """
+        if src.platform == "gui":
+            return event.tagged_text()
+        note = (
+            f"{event.tagged_text()}\n"
+            f'(This arrived from {src.platform}. They cannot see this session — answering '
+            f'here reaches nobody. Reply with the send_message tool, target "{src.target}"; '
+            f"replies to this person are pre-approved and never prompt the user. Keep it "
+            f"chat-length, and send the whole answer — it is all they will see."
+        )
+        if src.platform == "weixin":
+            # WeChat's client re-renders the message as Markdown and its subset drops
+            # ``` fences, so inline code arrives soft-wrapped into one run-on line.
+            # The formatter salvages short snippets; anything real belongs in a file.
+            note += (
+                " WeChat cannot render code blocks — send code longer than a few lines "
+                f'with send_file to "{src.target}" instead of pasting it inline.'
+            )
+        return note + ")"
+
+    def _ensure_dm_session(self, src) -> Optional[str]:
+        """The session a DM routes to — opening and designating one on first contact when the
+        user never picked any.
+
+        A DM carries no routing ambiguity (there are no channels to choose between), so "which
+        session?" is not a decision worth blocking first contact on. It used to be exactly that:
+        allow-listing a sender on the connector page delivered their message to `unrouted` and
+        nothing answered, because the switch that would have routed it lives on a different
+        screen (Inbox ▸ Configure ▸ Direct messages) and nothing on the connector page said so.
+        First contact silently produced no reply. Now the first DM opens a session and
+        designates it; the picker still re-points it afterwards.
+        """
+        import uuid
+
+        # NOT the module-level `get_descriptor` — that one is the PROVIDER registry, which
+        # knows nothing about connectors and would quietly fall back to the platform id.
+        from ..connectors.descriptors import get_descriptor as connector_descriptor
+
+        sid = self.dm_session(src.platform)
+        if sid:
+            return sid
+        sid = uuid.uuid4().hex
+        engine = self.get_engine(sid, agent=self.personas.default_id())
+        if engine is None:
+            return None
+        # Full access, deliberately. The person is on their phone, by definition away
+        # from this computer, and every approval prompt renders HERE — so an interactive
+        # DM session doesn't ask them, it just stops, and they wait for an answer that
+        # is never coming. Observed 2026-08-31: a WeChat request to write code stalled
+        # on a shell prompt nobody could see. Owner's call (2026-08-31); the allow-list
+        # is what gates who can reach this session at all.
+        engine.permissions.mode = Mode.AUTO
+        self.save(sid, engine)  # the sessions row must exist before rename/set_origin
+        descriptor = connector_descriptor(src.platform)
+        title = (descriptor.title if descriptor else "") or src.platform
+        self.session_store.rename(sid, f"来自{title}的私信")
+        self.session_store.set_origin(sid, src.platform, "DMs")
+        # Claims THIS connector's slot only — never the shared fallback, so an
+        # auto-opened WeChat session can't start swallowing Slack DMs.
+        self.set_dm_session(sid, platform=src.platform)
+        logger.info("no DM session designated — opened %s for %s", sid, src.platform)
+        return sid
 
     # -- mention router (§31) ----------------------------------------------------
     async def _route_mention(self, event, ms: MessageSource, subs) -> None:
@@ -5386,6 +5524,10 @@ class SessionManager:
         self.subscriptions.remove_session(session_id)
         # ...and releases any Slack threads it owned (§31): the next tag there spawns fresh.
         self.mention_sessions.remove_session(session_id)
+        # ...and gives up the DM route if it held it. A pointer at a deleted session isn't
+        # inert: `get_engine` would rebuild the dead id as an empty session on the next DM.
+        # Cleared, the next DM opens a fresh one (`_ensure_dm_session`).
+        self._forget_dm_session(session_id)
         # ...and drops its per-session connector overrides (§4.2, like subscriptions).
         self.session_connections.remove_session(session_id)
         # ...and its per-session skill mutes (SKILLS-SPEC §3 — mutes die with the session).

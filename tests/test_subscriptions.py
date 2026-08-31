@@ -173,13 +173,16 @@ def test_dispatch_fans_out_to_subscribers(tmp_path, monkeypatch):
     assert delivered == []
     assert mgr.channel_buffer.recent("slack:C2")[-1]["text"] == "noise"
 
-    # a DM with no designated session → parked as unrouted, nobody delivered
+    # a DM with no designated session → one is opened and designated, then delivered to
+    assert mgr.dm_session("slack") is None
     asyncio.run(mgr._dispatch_inbound(_event("hi there", chat_type="dm", chat_id="D1")))
-    assert delivered == []
-    assert mgr.unrouted.list()[0]["reason"] == "no DM session designated"
+    opened = mgr.dm_session("slack")
+    assert opened and delivered[-1][0] == opened
+    assert mgr.unrouted.list() == []
 
-    # a DM with a designated session → delivered to it
-    mgr.set_dm_session("sDM")
+    # a DM with a designated session → delivered to it. Re-pointing SLACK's own slot;
+    # the shared fallback would lose to the connector-specific route set just above.
+    mgr.set_dm_session("sDM", platform="slack")
     asyncio.run(mgr._dispatch_inbound(_event("hello", chat_type="dm", chat_id="D1")))
     assert delivered[-1][0] == "sDM"
 

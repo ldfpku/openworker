@@ -47,12 +47,12 @@ test("+ Add a source: full catalog on focus, filter as you type → connect-in-c
   await page.getByTestId("access-toggle").click();
 
   // Focusing the empty input shows the FULL catalog (FB-012) — every available connector
-  // minus the already-connected three, before any typing.
+  // minus the three already on THIS session (CONNECTIONS.connected), before any typing.
   await page.getByTestId("access-add-source").click();
   const search = page.getByTestId("access-add-search");
   await expect(search).toBeFocused();
   const rows = page.locator('[data-testid^="access-add-"]:not([data-testid="access-add-search"])');
-  await expect(rows).toHaveCount(9); // 12 in the catalog − browser/slack/github (connected)
+  await expect(rows).toHaveCount(10); // 13 in the catalog − browser/slack/github
   await expect(page.getByTestId("access-add-notion")).toBeVisible();
 
   // Already-connected sources don't match (Slack and GitHub are connected in fixtures)…
@@ -63,7 +63,7 @@ test("+ Add a source: full catalog on focus, filter as you type → connect-in-c
 
   // …and clearing the query restores the full list ("filter as you type", not search-only).
   await search.fill("");
-  await expect(rows).toHaveCount(9);
+  await expect(rows).toHaveCount(10);
 
   // Capability aliases match too: "calendar" surfaces Outlook (title alone never would).
   await search.fill("calendar");

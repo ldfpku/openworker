@@ -161,7 +161,8 @@ function InboxRoutingCard() {
   );
 }
 
-// Which session handles incoming DMs to the bot. None → DMs park in the Unrouted section below.
+// Which session handles incoming DMs to the bot. Unpicked is no longer a dead end: the first DM
+// opens a session and claims this slot, so first contact answers without anyone finding this page.
 function DmRouteCard() {
   const { t } = useTranslation();
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
@@ -188,14 +189,14 @@ function DmRouteCard() {
     <div className={CARD + " p-4"}>
       <div className="font-semibold text-[13.5px] mb-1">{t("Direct messages")}</div>
       <p className="text-[12px] text-muted mb-3">
-        {t("Session that handles DMs to the bot. With none, DMs park under Unrouted below.")}
+        {t("Session that handles DMs to the bot. With none picked, the first DM opens one and takes this slot.")}
       </p>
       <div className="flex items-center gap-2">
         <span className="text-muted shrink-0">
           <Icon name="chat" size={16} />
         </span>
         <select className={"flex-1 " + SELECT} value={dm} onChange={(e) => choose(e.target.value)}>
-          <option value="">{t("No session — park DMs")}</option>
+          <option value="">{t("Automatic — the first DM opens a session")}</option>
           {real.map((s) => (
             <option key={s.session_id} value={s.session_id}>
               {s.title || s.session_id}

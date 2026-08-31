@@ -24,15 +24,20 @@ import asyncio
 import hashlib
 import logging
 import re
+import time
 import uuid
+from contextlib import asynccontextmanager
 from typing import Optional
 
 import httpx
 
 from .base import BasePlatformAdapter, MessageEvent, SendResult, SessionSource
 from .senders import _send_weixin
+from .weixin_lock import LOCK_BUSY_MESSAGE, TokenLock
 from .weixin_protocol import (
+    EP_GET_CONFIG,
     EP_GET_UPDATES,
+    EP_SEND_TYPING,
     ILINK_BASE_URL,
     ITEM_FILE,
     ITEM_IMAGE,
@@ -41,10 +46,15 @@ from .weixin_protocol import (
     LONG_POLL_TIMEOUT_S,
     SESSION_EXPIRED_ERRCODE,
     SPLIT_THRESHOLD,
+    TYPING_KEEPALIVE_S,
+    TYPING_START,
+    TYPING_STOP,
+    TYPING_TICKET_TTL_S,
     WEIXIN_CDN_BASE_URL,
     MessageDeduplicator,
     api_post,
     assert_weixin_cdn_url,
+    build_typing_payload,
     cdn_download_url,
     extract_text,
     guess_chat_type,
@@ -113,10 +123,26 @@ class WeixinAdapter(BasePlatformAdapter):
         self._batch_tasks: dict[str, asyncio.Task] = {}
         # Fire-and-forget per-message tasks, kept so disconnect() can cancel them.
         self._msg_tasks: set[asyncio.Task] = set()
+        # Held between connect() and disconnect() — see weixin_lock.
+        self._lock: Optional[TokenLock] = None
+        # peer -> (typing_ticket, expires_at monotonic)
+        self._typing_tickets: dict[str, tuple[str, float]] = {}
 
     async def connect(self) -> bool:
         if not self._token or not self._account_id:
             logger.warning("weixin: profile missing bot_token/account_id — skipping")
+            return False
+        # One poller per token, enforced rather than merely documented (weixin_lock):
+        # a second instance would take half the messages and nothing would say so.
+        self._lock = TokenLock(self._token, self._state.root)
+        if not self._lock.acquire():
+            held_by = self._lock.holder_pid()
+            self._lock = None
+            logger.error(
+                "weixin: %s%s",
+                LOCK_BUSY_MESSAGE,
+                f" (holder pid {held_by})" if held_by else "",
+            )
             return False
         self._client = httpx.AsyncClient()
         # Runtime state lets the stateless sender find the per-account base URL and
@@ -149,6 +175,12 @@ class WeixinAdapter(BasePlatformAdapter):
                 await client.aclose()
             except Exception:
                 pass
+        # Released LAST: the token stays claimed until this adapter has genuinely
+        # stopped polling, so a refresh_gateway disconnect/reconnect cycle can't
+        # briefly run two pollers. (The OS also drops it if we die outright.)
+        if self._lock is not None:
+            lock, self._lock = self._lock, None
+            lock.release()
 
     async def send(
         self, chat_id: str, text: str, *, thread_id: Optional[str] = None
@@ -244,6 +276,116 @@ class WeixinAdapter(BasePlatformAdapter):
                     # pool; a fresh client starts the next attempt from zero fds.
                     await self._recycle_client()
 
+    # -- "对方正在输入中" -------------------------------------------------------
+    # A WeChat DM looks like a chat, so silence between question and answer reads as
+    # "it didn't get my message" — and openworker makes that gap longer than most,
+    # since inbound text is debounced for seconds before the turn even starts. The
+    # indicator costs one cheap call and covers the whole wait.
+    #
+    # Every failure here is swallowed: a missing typing bubble is cosmetic, and must
+    # never cost the user their reply.
+    async def _typing_ticket(self, peer: str) -> Optional[str]:
+        cached = self._typing_tickets.get(peer)
+        now = time.monotonic()
+        if cached and now < cached[1]:
+            return cached[0]
+        client = self._client
+        if client is None:
+            return None
+        try:
+            response = await api_post(
+                client,
+                base_url=self._base_url,
+                endpoint=EP_GET_CONFIG,
+                # `ilink_user_id`, not `user_id` — see build_typing_payload.
+                payload={"ilink_user_id": peer},
+                token=self._token,
+                timeout_s=10.0,
+            )
+        except Exception as exc:
+            logger.warning("weixin: getconfig failed for typing ticket: %s", exc)
+            return None
+        if response.get("ret") not in (0, None):
+            # Logged, not swallowed: a wrong field name here cost a whole round of
+            # "the typing indicator still doesn't show" with nothing in the log.
+            logger.warning("weixin: getconfig refused a typing ticket: %s", response)
+            return None
+        ticket = str(response.get("typing_ticket") or "")
+        if not ticket:
+            return None
+        self._typing_tickets[peer] = (ticket, now + TYPING_TICKET_TTL_S)
+        return ticket
+
+    async def _send_typing(self, peer: str, status: int) -> bool:
+        ticket = await self._typing_ticket(peer)
+        client = self._client
+        if not ticket or client is None:
+            return False
+        try:
+            response = await api_post(
+                client,
+                base_url=self._base_url,
+                endpoint=EP_SEND_TYPING,
+                payload=build_typing_payload(peer, ticket, status),
+                token=self._token,
+                timeout_s=10.0,
+            )
+        except Exception as exc:
+            logger.warning("weixin: sendtyping(%s) failed: %s", status, exc)
+            self._typing_tickets.pop(peer, None)
+            return False
+        if response.get("ret") not in (0, None):
+            logger.warning("weixin: sendtyping(%s) refused: %s", status, response)
+            # A ticket the server has stopped accepting must not stick around.
+            self._typing_tickets.pop(peer, None)
+            return False
+        return True
+
+    async def _typing_keepalive(self, peer: str) -> None:
+        """Re-assert "typing" until cancelled — the bubble self-clears otherwise."""
+        try:
+            while True:
+                if not await self._send_typing(peer, TYPING_START):
+                    return  # unsupported or refused: stop trying for this turn
+                await asyncio.sleep(TYPING_KEEPALIVE_S)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("weixin: typing keepalive stopped", exc_info=True)
+
+    @asynccontextmanager
+    async def _typing(self, peer: str):
+        """Hold "typing" for the duration of the block."""
+        task: Optional[asyncio.Task] = None
+        if peer:
+            task = asyncio.create_task(self._typing_keepalive(peer))
+        try:
+            yield
+        finally:
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                # Clear it explicitly; waiting for the client's own timeout leaves the
+                # bubble up next to an answer that has already arrived.
+                try:
+                    await self._send_typing(peer, TYPING_STOP)
+                except Exception:
+                    pass
+
+    async def _dispatch(self, event: MessageEvent) -> None:
+        """Hand one event to the gateway, showing "typing…" until the turn returns.
+
+        `handle_message` is awaited all the way through the agent's turn, so the
+        indicator's lifetime is the turn's lifetime for free. (A busy session queues
+        the text as steering and returns early — the bubble clears then, which is
+        honest: that turn's answer belongs to the message already in flight.)
+        """
+        async with self._typing(event.source.user_id or ""):
+            await self.handle_message(event)
+
     async def _recycle_client(self) -> None:
         """Swap-then-close so concurrent message tasks never observe a closed client."""
         if not self._running:
@@ -322,7 +464,7 @@ class WeixinAdapter(BasePlatformAdapter):
 
         event = MessageEvent(text=text, source=source, message_id=message_id or None)
         if media_notes:
-            await self.handle_message(event)  # media-bearing: dispatch immediately
+            await self._dispatch(event)  # media-bearing: dispatch immediately
         else:
             self._enqueue_text_event(event)
 
@@ -388,7 +530,7 @@ class WeixinAdapter(BasePlatformAdapter):
             event = self._pending_batches.pop(key, None)
             self._pending_last_len.pop(key, None)
             if event is not None:
-                await self.handle_message(event)
+                await self._dispatch(event)
         finally:
             if self._batch_tasks.get(key) is current:
                 self._batch_tasks.pop(key, None)
@@ -417,7 +559,10 @@ class WeixinAdapter(BasePlatformAdapter):
         elif item_type == ITEM_VOICE:
             media = (item.get("voice_item") or {}).get("media") or {}
             if not (media.get("encrypt_query_param") or media.get("full_url")):
-                return  # transcript-only voice: extract_text already used the STT text
+                return  # transcript-only voice: nothing to download
+            # Saved ALONGSIDE the transcript, which extract_text now always prefers
+            # when Tencent supplies one. Nothing here decodes SILK, so the audio is
+            # a keepsake for the user, not something the agent can read.
             await self._save_media(
                 item, "voice_item", notes, ext=".silk", timeout_s=60.0
             )

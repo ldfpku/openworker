@@ -367,6 +367,7 @@ export async function mockApi(page: import("@playwright/test").Page) {
       localStorage.setItem("coworker:tour-done:v1", "1");
     } catch { /* ignore */ }
   });
+  const dmRoutes: Record<string, string> = {};
   const subscriptions: any[] = [
     // One existing subscription (a non-pinned session) so the Slack page's per-workspace
     // "Listening" row has an entry. Relay-mode channels are team-qualified (slack:T…/C…).
@@ -428,6 +429,21 @@ export async function mockApi(page: import("@playwright/test").Page) {
     managed_profile: githubState.mode === "relay", mode: githubState.mode,
     installations: githubState.installations.map((i) => ({ ...i, allowed_users: [...i.allowed_users] })),
     unauthorized: githubParked.map((x) => ({ ...x })),
+  });
+  // WeChat — the DM-only shape (two_way, channels: false, no bespoke detail page), so the
+  // GenericDetail DM blocks have a subject. One parked first-contact message and an empty
+  // allow-list: exactly the state an owner lands in after connecting.
+  const weixinParked: any[] = [
+    { id: "wx-pk1", platform: "weixin", chat_id: "o9cq@im.wechat", chat_name: "o9cq@im.wechat", user_id: "o9cq@im.wechat", user_name: "o9cq@im.wechat", chat_type: "dm", text: "你当前使用的是哪种模型？", ts: Date.now() / 1000 - 60 },
+  ];
+  const weixinState = { allowed_users: [] as string[] };
+  const weixinConnector = () => ({
+    name: "weixin", title: "微信", icon: "微", blurb: "个人微信收发消息。",
+    auth: "qr", two_way: true, channels: false, available: true, brand_color: "#07c160", logo: "weixin",
+    fields: [], instructions: [], connected: true, account: "cb076c30413a@im.bot", enabled: true,
+    allowed_users: [...weixinState.allowed_users], tools: [], managed: false, managed_profile: false,
+    recent: [{ user_id: "o9cq@im.wechat", user_name: "o9cq@im.wechat", chat_type: "dm", authorized: weixinState.allowed_users.includes("o9cq@im.wechat") }],
+    unauthorized: weixinParked.map((x) => ({ ...x })),
   });
   // Gmail — PER-TEST multi-account state (starts disconnected; managed connects add
   // mailboxes instantly, mirroring the backend's gmail:account:<email> profiles).
@@ -1479,6 +1495,25 @@ export async function mockApi(page: import("@playwright/test").Page) {
       }
       return json({ ok: true });
     }
+    // WeChat: a flat allow-list and DM-only parked items (no workspaces, no channels).
+    if (/\/v1\/connectors\/weixin\/unauthorized\/[^/]+$/.test(p) && m === "POST") {
+      const id = p.split("/").pop();
+      const i = weixinParked.findIndex((x) => x.id === id);
+      if (i < 0) return json({ ok: false, error: "unknown item" });
+      const item = weixinParked.splice(i, 1)[0];
+      const b = req.postDataJSON();
+      if (b.action === "allow" || b.action === "allow_deliver") {
+        if (!weixinState.allowed_users.includes(item.user_id)) weixinState.allowed_users.push(item.user_id);
+      }
+      return json({ ok: true });
+    }
+    if (/\/v1\/connectors\/weixin\/(allow|disallow)$/.test(p) && m === "POST") {
+      const b = req.postDataJSON();
+      const i = weixinState.allowed_users.indexOf(b.user_id);
+      if (p.endsWith("/allow") && i < 0) weixinState.allowed_users.push(b.user_id);
+      if (p.endsWith("/disallow") && i >= 0) weixinState.allowed_users.splice(i, 1);
+      return json({ ok: true, allowed_users: [...weixinState.allowed_users] });
+    }
     // Per-workspace allow/disallow (team_id in the body) + the flat manual list without it.
     if (/\/v1\/connectors\/slack\/(allow|disallow)$/.test(p) && m === "POST") {
       const b = req.postDataJSON();
@@ -1693,6 +1728,7 @@ export async function mockApi(page: import("@playwright/test").Page) {
         connectors: [
           slackConnector(),
           githubConnector(),
+          weixinConnector(),
           ...CONNECTORS.connectors.map((c: any) =>
             c.name === "gmail"
               ? gmailConnector()
@@ -2071,6 +2107,21 @@ export async function mockApi(page: import("@playwright/test").Page) {
       }
     }
     if (p.endsWith("/v1/unrouted")) return json([]);
+
+    // DM route — mutable, so picking a session on the connector page (or Inbox ▸ Configure)
+    // reflects back through the real UI. Empty means "the first DM opens one" server-side.
+    // Per-connector routes with a shared fallback, mirroring the backend.
+    if (p.includes("/v1/messaging/dm-route") && m === "GET") {
+      const platform = new URL(req.url()).searchParams.get("platform") || "";
+      return json({ dm_session: (platform && dmRoutes[platform]) || dmRoutes["*"] || null });
+    }
+    if (p.includes("/v1/messaging/dm-route") && m === "POST") {
+      const b = req.postDataJSON();
+      const key = b.platform || "*";
+      if (b.session_id) dmRoutes[key] = String(b.session_id);
+      else delete dmRoutes[key];
+      return json({ ok: true, dm_session: dmRoutes[key] || null, platform: b.platform ?? null });
+    }
 
     // channel subscriptions — mutable so add/remove reflect through the UI
     if (p.endsWith("/v1/subscriptions") && m === "GET") return json({ subscriptions });

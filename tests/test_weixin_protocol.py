@@ -161,11 +161,23 @@ def test_extract_text_voice_transcript_without_media():
     assert wp.extract_text(items) == "[语音转写] 开会时间改到三点"
 
 
-def test_extract_text_voice_with_media_is_empty():
-    # Raw audio present -> body stays empty; the adapter saves the .silk file.
+def test_extract_text_voice_transcript_wins_over_audio():
+    # Tencent's transcript is used WHENEVER it is supplied, audio attached or not.
+    # It used to be dropped as soon as media was present, and since nothing here
+    # decodes SILK the spoken words became unreachable -- the agent saw a file path
+    # and nothing else.
     items = [
-        {"type": 3, "voice_item": {"text": "ignored", "media": {"aes_key": "k"}}}
+        {
+            "type": 3,
+            "voice_item": {"text": "开会时间改到三点", "media": {"aes_key": "k"}},
+        }
     ]
+    assert wp.extract_text(items) == "[语音转写] 开会时间改到三点"
+
+
+def test_extract_text_voice_without_transcript_is_empty():
+    # No transcript from Tencent -> empty body; the adapter still saves the .silk.
+    items = [{"type": 3, "voice_item": {"media": {"aes_key": "k"}}}]
     assert wp.extract_text(items) == ""
 
 
@@ -211,13 +223,85 @@ def test_format_outbound_collapses_blank_runs_and_wraps():
     assert " ".join(out.split()) == long_line  # no words lost or broken
 
 
-def test_format_outbound_skips_fences_tables_and_long_urls():
-    fence = "```\n" + "z" * 150 + "\n\n\nstill inside\n```"
-    assert wp.format_outbound(fence) == fence  # untouched inside the fence
-    table = "| " + "a" * 130 + " |"
-    assert wp.format_outbound(table) == table
+def test_format_outbound_skips_long_urls():
     url = "https://example.com/" + "p" * 150
     assert wp.format_outbound(url) == url  # break_long_words=False keeps it whole
+    # A pipe line with no header rule is not a table -- ASCII art and prose survive.
+    pipes = "| " + "a" * 130 + " |"
+    assert wp.format_outbound(pipes) == pipes
+
+
+def test_format_outbound_rewrites_headings():
+    # WeChat renders neither '#' nor bold, but the brackets read as a heading and a
+    # bare '##' reads as stray punctuation.
+    assert wp.format_outbound("# 季度回顾") == "【季度回顾】"
+    assert wp.format_outbound("## 关键数字") == "**关键数字**"
+    assert wp.format_outbound("#### 细节") == "**细节**"
+    assert wp.format_outbound("# Closed ###") == "【Closed】"  # closing hashes dropped
+    assert wp.format_outbound("#nospace") == "#nospace"  # not a heading
+    # '#' inside a fence is a comment in most languages -- never a heading.
+    assert "【" not in wp.format_outbound("```python\n# a comment\n```")
+
+
+NBSP = " "
+
+
+def test_format_outbound_hardens_code_against_wechats_soft_wrap():
+    """WeChat re-renders the message as Markdown and its subset ignores ``` fences, so
+    code was soft-wrapped like prose: every newline became a space and the indentation
+    vanished. Observed in the field 2026-08-31 -- a 119-line answer arrived as one
+    run-on paragraph. Blank lines and NBSP are what survive that renderer."""
+    code = (
+        "```python\n"
+        "class Priority(Enum):\n"
+        '    LOW = "low"\n'
+        "\n"
+        "def add(self, title):\n"
+        "    self.tasks.append(title)\n"
+        "```"
+    )
+    out = wp.format_outbound(code)
+    assert "```" not in out  # the markers only render as literal junk
+    # Every code line still ends up on its own line, blank-line separated -- the only
+    # break that survives (an empty line inside the code collapses away, cosmetic).
+    lines = [ln for ln in out.split("\n\n") if ln.strip()]
+    assert lines == [
+        "class Priority(Enum):",
+        NBSP * 4 + 'LOW = "low"',
+        "def add(self, title):",
+        NBSP * 4 + "self.tasks.append(title)",
+    ]
+    assert "    LOW" not in out  # plain leading spaces would be collapsed away
+
+
+def test_format_outbound_leaves_prose_and_lists_alone():
+    # Both already render correctly in WeChat: prose soft-wraps (fine) and '- item'
+    # becomes a real bullet on its own line. Only fenced code needed hardening.
+    assert wp.format_outbound("just a sentence") == "just a sentence"
+    assert wp.format_outbound("- one\n- two") == "- one\n- two"
+
+
+def test_format_outbound_flattens_tables_into_labelled_records():
+    table = (
+        "| 指标 | 本季 |\n"
+        "| --- | --- |\n"
+        "| 收入 | 1200 万 |\n"
+        "| 毛利 | 430 万 |"
+    )
+    out = wp.format_outbound(table)
+    assert "|" not in out  # a chat bubble has no table rendering and no h-scroll
+    assert out == "- 指标: 收入\n- 本季: 1200 万\n\n- 指标: 毛利\n- 本季: 430 万"
+
+
+def test_format_outbound_table_edge_cases():
+    # Empty cells are dropped rather than emitting a label with nothing after it.
+    out = wp.format_outbound("| a | b |\n| --- | --- |\n| 1 |  |")
+    assert out == "- a: 1"
+    # An escaped pipe belongs to its cell, not to the column split.
+    out = wp.format_outbound("| k | v |\n| --- | --- |\n| or | a \\| b |")
+    assert out == "- k: or\n- v: a | b"
+    # A header with no body rows says nothing at all.
+    assert wp.format_outbound("| a | b |\n| --- | --- |") == ""
 
 
 def test_split_for_delivery_passthrough_and_empty():
@@ -243,9 +327,62 @@ def test_split_for_delivery_never_splits_fences():
     assert chunks[1].startswith("```python") and chunks[1].endswith("```")
 
 
-def test_split_for_delivery_oversized_block_hard_truncated():
-    # A single blank-line-free block over the limit is truncated, not torn.
-    assert wp.split_for_delivery("y" * 5000, max_length=2000) == ["y" * 2000]
+def test_split_for_delivery_oversized_block_is_split_not_truncated():
+    # Blocks are only cut at blank lines and fences, so a table, a long list or one
+    # long paragraph is a single block however long it runs. This used to be cut to
+    # the limit and the tail silently dropped -- a 5000-char answer arrived as 2000.
+    chunks = wp.split_for_delivery("y" * 5000, max_length=2000)
+    assert "".join(chunks) == "y" * 5000  # nothing lost
+    assert all(len(c) <= 2000 for c in chunks)
+
+
+def test_split_for_delivery_oversized_block_breaks_at_line_ends():
+    rows = [f"| row {i} | " + "v" * 60 + " |" for i in range(60)]
+    body = "\n".join(rows)
+    chunks = wp.split_for_delivery(body, max_length=800)
+    assert "\n".join(chunks) == body  # every row survives, none torn mid-line
+    assert all(len(c) <= 800 for c in chunks)
+    assert all(c.startswith("| row ") for c in chunks)
+
+
+def test_split_for_delivery_oversized_fence_closes_and_reopens():
+    # Cutting a fenced block mid-body used to ship an unbalanced ``` -- the WeChat
+    # client then reads everything after it as code.
+    lines = [f"x{i} = compute({i})" for i in range(300)]
+    fence = "```python\n" + "\n".join(lines) + "\n```"
+    chunks = wp.split_for_delivery(fence, max_length=2000)
+    assert len(chunks) > 1
+    for chunk in chunks:
+        assert len(chunk) <= 2000
+        assert chunk.startswith("```python")
+        assert chunk.endswith("```")
+        assert chunk.count("```") % 2 == 0  # balanced on its own
+    body = [
+        line
+        for chunk in chunks
+        for line in chunk.splitlines()
+        if not line.startswith("```")
+    ]
+    assert body == lines  # every statement survives, in order
+
+
+def test_split_for_delivery_keeps_indentation_across_seams():
+    # Cutting at a newline must consume the newline and nothing else. Stripping the
+    # remainder took the next line's indentation with it, so a split Python block came
+    # out de-indented at every seam and would not run when copied out of WeChat.
+    lines = []
+    for i in range(120):
+        lines.append(f"def f{i}(x):")
+        lines.append(f"    return {i} + compute(x)")
+    chunks = wp.split_for_delivery("```python\n" + "\n".join(lines) + "\n```", 2000)
+    assert len(chunks) > 1
+    body = [
+        line
+        for chunk in chunks
+        for line in chunk.splitlines()
+        if not line.startswith("```")
+    ]
+    assert body == lines  # byte-exact, indentation included
 
 
 # -- media crypto & CDN --------------------------------------------------------

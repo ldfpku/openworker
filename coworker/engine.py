@@ -1440,17 +1440,18 @@ class TurnEngine:
             msg = out[i]
             repaired.append(msg)
             i += 1
-            calls = msg.get("tool_calls") if msg.get("role") == "assistant" else None
-            if not calls:
+            if msg.get("role") != "assistant":
+                continue
+            call_ids = _calls_awaiting_output(msg)
+            if not call_ids:
                 continue
             answered: set[str] = set()
             while i < len(out) and out[i].get("role") == "tool":
                 answered.add(str(out[i].get("tool_call_id") or ""))
                 repaired.append(out[i])
                 i += 1
-            for call in calls:
-                call_id = str((call or {}).get("id") or "")
-                if call_id and call_id not in answered:
+            for call_id in call_ids:
+                if call_id not in answered:
                     repaired.append(
                         {
                             "role": "tool",
@@ -1528,6 +1529,26 @@ class TurnEngine:
         block = f"{SYSTEM_CONTEXT_OPEN}\n{context}\n</system-context>"
         out.append({"role": "user", "content": block})
         return out
+
+
+def _calls_awaiting_output(message: dict[str, Any]) -> list[str]:
+    """Every call id on one assistant message that a strict provider will demand a result for,
+    in call order and deduped.
+
+    Canonical `tool_calls` is the usual source, but it is not the only one: a provider-private
+    sidecar (`_openai`) is replayed to that provider VERBATIM, so a `function_call` item living
+    only there is sent unanswered and 400s the whole conversation ("No tool output found for
+    function call …") even though the canonical fields look clean. Reading both keeps the repair
+    honest about what actually goes on the wire.
+    """
+    ids = [str((call or {}).get("id") or "") for call in message.get("tool_calls") or []]
+    for key, sidecar in message.items():
+        if not key.startswith("_") or not isinstance(sidecar, dict):
+            continue
+        for item in sidecar.get("items") or []:
+            if isinstance(item, dict) and item.get("type") == "function_call":
+                ids.append(str(item.get("call_id") or ""))
+    return list(dict.fromkeys(i for i in ids if i))
 
 
 def _assistant_message(turn: AssistantTurn, model: Optional[str] = None) -> dict[str, Any]:

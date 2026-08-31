@@ -41,6 +41,18 @@ EP_GET_UPDATES = "ilink/bot/getupdates"
 EP_SEND_MESSAGE = "ilink/bot/sendmessage"
 EP_GET_BOT_QR = "ilink/bot/get_bot_qrcode"
 EP_GET_QR_STATUS = "ilink/bot/get_qrcode_status"
+EP_GET_CONFIG = "ilink/bot/getconfig"  # mints the per-peer typing_ticket
+EP_SEND_TYPING = "ilink/bot/sendtyping"
+EP_GET_UPLOAD_URL = "ilink/bot/getuploadurl"  # reserves a CDN slot for outbound media
+
+TYPING_START = 1
+TYPING_STOP = 2
+# The client clears the bubble on its own a few seconds after the last signal, so a
+# turn that outlives one interval has to keep saying so.
+TYPING_KEEPALIVE_S = 5.0
+# Ticket lifetime is reportedly much longer (~24h); re-minting every 10 minutes costs
+# one cheap call and keeps a stale ticket from silently killing the indicator.
+TYPING_TICKET_TTL_S = 600.0
 
 ITEM_TEXT = 1
 ITEM_IMAGE = 2
@@ -64,6 +76,7 @@ QR_TIMEOUT_S = 35.0
 _COPY_LINE_WIDTH = 120  # WeChat clients make copying long display lines painful
 _FENCE_RE = re.compile(r"^```([^\n`]*)\s*$")
 _TABLE_RULE_RE = re.compile(r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$")
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 
 
 # -- request plumbing ----------------------------------------------------------
@@ -189,13 +202,17 @@ def guess_chat_type(message: dict, account_id: str) -> tuple[str, str]:
 
 
 def extract_text(item_list: list[dict]) -> str:
-    """First ITEM_TEXT wins, with quote-reply prefixes; media-less voice items
-    fall back to Tencent's own transcript.
+    """First ITEM_TEXT wins, with quote-reply prefixes; a voice item falls back to
+    Tencent's own transcript, prefixed "[语音转写] ".
 
-    Unlike Hermes (which drops Tencent's STT and re-transcribes locally), we
-    have no local STT: a voice item WITHOUT media returns the Tencent
-    transcript prefixed "[语音转写] "; a voice item WITH media returns "" —
-    the raw .silk audio is collected separately by the adapter.
+    The transcript wins WHENEVER Tencent supplies one, audio attached or not. It
+    used to be taken only from a voice item with no media, on the belief that the
+    reference adapter drops Tencent's STT and re-transcribes locally — the opposite
+    of what that adapter documents ("若有文字转录，提取为文本；否则下载 SILK 格式的音频").
+    The old order cost real words: nothing here decodes SILK, so a voice message
+    carrying both audio and a transcript reached the agent as a `.silk` path and
+    nothing else. The adapter still saves the audio alongside; the transcript is
+    the body.
     """
     for item in item_list:
         if item.get("type") == ITEM_TEXT:
@@ -220,10 +237,9 @@ def extract_text(item_list: list[dict]) -> str:
     for item in item_list:
         if item.get("type") == ITEM_VOICE:
             voice_item = item.get("voice_item") or {}
-            if not (voice_item.get("media") or {}):
-                voice_text = str(voice_item.get("text") or "")
-                if voice_text:
-                    return f"[语音转写] {voice_text}"
+            voice_text = str(voice_item.get("text") or "").strip()
+            if voice_text:
+                return f"[语音转写] {voice_text}"
             continue
     return ""
 
@@ -247,6 +263,21 @@ def build_send_payload(
     if context_token:
         message["context_token"] = context_token
     return {"msg": message}
+
+
+def build_typing_payload(user_id: str, ticket: str, status: int) -> dict:
+    """`sendtyping` payload — shows/hides "对方正在输入中" in the peer's WeChat.
+
+    `base_info` is added by `_post_body` like every other call, so only the three
+    call-specific fields belong here. The ticket comes from `getconfig` and is
+    per-peer; `status` is TYPING_START or TYPING_STOP.
+
+    The peer field is `ilink_user_id`, NOT `user_id` — verified against the live API
+    2026-08-31, where `user_id` gets `{"ret": -2, "errmsg": "ilink_user_id required"}`
+    and `ilink_user_id` gets `{"ret": 0}`. Third-party protocol write-ups say
+    `user_id`; they are wrong, and the failure is silent from the caller's side.
+    """
+    return {"ilink_user_id": user_id, "typing_ticket": ticket, "status": status}
 
 
 # -- outbound formatting -------------------------------------------------------
@@ -311,10 +342,161 @@ def _wrap_copy_friendly_lines(content: str) -> str:
     return "\n".join(wrapped).strip()
 
 
+def _split_table_row(line: str) -> list[str]:
+    """`| a | b |` -> ["a", "b"]. Escaped pipes (`\\|`) stay inside their cell."""
+    body = line.strip()
+    if body.startswith("|"):
+        body = body[1:]
+    if body.endswith("|") and not body.endswith("\\|"):
+        body = body[:-1]
+    cells, current, escaped = [], [], False
+    for ch in body:
+        if escaped:
+            current.append(ch)
+            escaped = False
+        elif ch == "\\":
+            escaped = True
+        elif ch == "|":
+            cells.append("".join(current).strip())
+            current = []
+        else:
+            current.append(ch)
+    cells.append("".join(current).strip())
+    return cells
+
+
+def _flatten_tables(content: str) -> str:
+    """Pipe tables -> labelled `- 列名: 值` records.
+
+    A WeChat chat bubble is a narrow single-column view with no table rendering and no
+    horizontal scroll, so a pipe table arrives as a wall of `|` that says nothing about
+    which column a value belongs to. One labelled block per row survives the width.
+
+    A pipe block without a header rule is not a table (ASCII art, code, a Chinese
+    sentence full of `|`) and is left alone. Fenced content is never touched.
+    """
+    lines = content.splitlines()
+    out: list[str] = []
+    in_code_block = False
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        if _FENCE_RE.match(stripped):
+            in_code_block = not in_code_block
+            out.append(line)
+            i += 1
+            continue
+        is_table_head = (
+            not in_code_block
+            and stripped.startswith("|")
+            and i + 1 < len(lines)
+            and _TABLE_RULE_RE.match(lines[i + 1].strip())
+        )
+        if not is_table_head:
+            out.append(line)
+            i += 1
+            continue
+        headers = _split_table_row(stripped)
+        i += 2  # header + rule
+        records: list[str] = []
+        while i < len(lines) and lines[i].strip().startswith("|"):
+            cells = _split_table_row(lines[i].strip())
+            record = [
+                f"- {headers[n] or '—'}: {cell}"
+                for n, cell in enumerate(cells)
+                if n < len(headers) and cell
+            ]
+            if record:
+                records.append("\n".join(record))
+            i += 1
+        if records:
+            out.append("\n\n".join(records))
+        # A header with no body rows collapses to nothing — an empty table says nothing.
+    return "\n".join(out)
+
+
+def _reformat_headings(content: str) -> str:
+    """`# H1` -> `【H1】`, `## H2` and deeper -> `**H2**`.
+
+    WeChat renders neither `#` nor bold, but it does render the brackets, and either
+    form reads as a heading in plain text — where a bare `##` just looks like stray
+    punctuation. Fenced content is left alone (`#` is a comment in most languages).
+    """
+    out: list[str] = []
+    in_code_block = False
+    for raw_line in content.splitlines():
+        stripped = raw_line.strip()
+        if _FENCE_RE.match(stripped):
+            in_code_block = not in_code_block
+            out.append(raw_line)
+            continue
+        match = None if in_code_block else _HEADING_RE.match(raw_line)
+        if match is None:
+            out.append(raw_line)
+            continue
+        title = match.group(2).strip()
+        if not title:
+            out.append(raw_line)
+            continue
+        out.append(f"【{title}】" if len(match.group(1)) == 1 else f"**{title}**")
+    return "\n".join(out)
+
+
+def _harden_code_blocks(content: str) -> str:
+    """Make fenced code survive WeChat's renderer.
+
+    WeChat re-renders the message as Markdown, and its subset does NOT honour ```
+    fences: the markers vanish and the code inside is soft-wrapped like prose, so every
+    newline collapses to a space and the indentation disappears. Field evidence
+    (2026-08-31): a 119-line Python answer arrived as one run-on paragraph —
+    `import json from dataclasses import dataclass, field` — unreadable, uncopyable,
+    unrunnable.
+
+    Two things do survive, from the same evidence: a BLANK line still breaks a
+    paragraph, and `- item` still renders as its own bulleted line. So each code line
+    is separated by a blank line, and its leading indentation is rewritten with U+00A0,
+    which Markdown does not collapse. Verbose, and correct — for code that is the trade
+    worth making. (Long code is better sent as a file; see the DM opening instruction.)
+    """
+    if "```" not in content:
+        return content
+    out: list[str] = []
+    code: list[str] | None = None
+    for raw_line in content.splitlines():
+        if _FENCE_RE.match(raw_line.strip()):
+            if code is None:
+                code = []
+            else:
+                # Blank-line separated so each source line stays a line, with the indent
+                # carried by non-breaking spaces.
+                out.append("\n\n".join(code))
+                code = None
+            continue
+        if code is None:
+            out.append(raw_line)
+            continue
+        stripped = raw_line.lstrip(" \t")
+        indent = len(raw_line) - len(stripped)
+        code.append(" " * indent + stripped if stripped else " ")
+    if code:  # unterminated fence — keep the content rather than dropping it
+        out.append("\n\n".join(code))
+    return "\n".join(out)
+
+
 def format_outbound(text: str) -> str:
-    """Markdown passes through (WeChat renders fences/tables/links); the only
-    transforms are blank-line normalization and the 120-col copy-friendly wrap."""
-    return _wrap_copy_friendly_lines(_normalize_markdown_blocks(text))
+    """Prepare agent markdown for a WeChat chat bubble.
+
+    WeChat re-renders what we send as Markdown, and its subset is narrow: lists and
+    links work, headings/tables/``` fences do not. So headings and tables are rewritten
+    into forms it does render, fenced code is hardened against soft-wrapping, and then
+    blank-line normalization and the 120-col copy-friendly wrap run as before.
+    """
+    return _wrap_copy_friendly_lines(
+        _normalize_markdown_blocks(
+            _harden_code_blocks(_flatten_tables(_reformat_headings(text)))
+        )
+    )
 
 
 def _split_markdown_blocks(content: str) -> list[str]:
@@ -350,9 +532,71 @@ def _split_markdown_blocks(content: str) -> list[str]:
     return [block for block in blocks if block]
 
 
+def _fence_opener(block: str) -> str | None:
+    """The opening fence line of a fenced block (e.g. "```python"), else None."""
+    first = block.lstrip().splitlines()[0].strip() if block.strip() else ""
+    return first if _FENCE_RE.match(first) else None
+
+
+def _split_oversized_block(block: str, max_length: int) -> list[str]:
+    """One block that alone exceeds max_length -> several chunks, losing nothing.
+
+    Blocks are only cut at blank lines and fences upstream, so a table, a long list
+    or a single paragraph is ONE block however long it runs — and this is the path
+    they land on. It used to be `block[:max_length]`, which silently dropped the
+    tail (a 5.8k code block arrived as 2k with 3.8k gone and no ellipsis), and cut
+    fenced code mid-block, shipping an unbalanced ``` that swallows the rest of the
+    conversation in the WeChat client. Cut at a line break where possible, then a
+    space, then mid-run as a last resort; a fenced block closes its fence at every
+    cut and reopens with the original language tag so each piece renders alone.
+    """
+    fence = _fence_opener(block)
+    if fence:
+        body = block.strip()
+        lines = body.splitlines()
+        # Drop the opener and the closer; they are re-added per piece below.
+        inner = lines[1:]
+        if inner and _FENCE_RE.match(inner[-1].strip()):
+            inner = inner[:-1]
+        body = "\n".join(inner)
+        # Every piece costs the opener + a newline + a closing fence.
+        budget = max_length - (len(fence) + 1) - 4
+        pieces = _hard_wrap(body, budget) if budget > 0 else _hard_wrap(body, max_length)
+        return [f"{fence}\n{piece}\n```" for piece in pieces]
+    return _hard_wrap(block, max_length)
+
+
+def _hard_wrap(text: str, limit: int) -> list[str]:
+    """`text` -> pieces of at most `limit` chars, preferring a line break, then a
+    space, then an exact cut. Drops only the one separator character it cuts on.
+
+    That last part is load-bearing for code: `lstrip()`ing the remainder would eat the
+    next line's indentation along with the newline, so a split Python block came out
+    de-indented at every seam and would not run when copied out of WeChat. Trailing
+    spaces go, blank lines stay.
+    """
+    if limit <= 0:
+        return [text]
+    pieces: list[str] = []
+    rest = text
+    while len(rest) > limit:
+        window = rest[: limit + 1]
+        cut, sep = window.rfind("\n"), 1
+        if cut <= 0:
+            cut = window.rfind(" ")
+        if cut <= 0:
+            cut, sep = limit, 0  # no breathing room (CJK runs, minified text)
+        pieces.append(rest[:cut].rstrip(" \t"))
+        rest = rest[cut + sep :]
+    if rest:
+        pieces.append(rest)
+    return [p for p in pieces if p.strip()]
+
+
 def _greedy_pack_blocks(blocks: list[str], max_length: int) -> list[str]:
     """Greedily re-pack blocks into chunks of at most max_length, joined with
-    a blank line. A single block that alone exceeds the limit is hard-truncated."""
+    a blank line. A single block that alone exceeds the limit is SPLIT, not
+    truncated (`_split_oversized_block`)."""
     packed: list[str] = []
     current = ""
     for block in blocks:
@@ -366,7 +610,7 @@ def _greedy_pack_blocks(blocks: list[str], max_length: int) -> list[str]:
         if len(block) <= max_length:
             current = block
             continue
-        packed.append(block[:max_length])
+        packed.extend(_split_oversized_block(block, max_length))
     if current:
         packed.append(current)
     return packed
@@ -415,6 +659,80 @@ def aes128_ecb_decrypt(ciphertext: bytes, key: bytes) -> bytes:
     if 1 <= pad_len <= 16 and padded.endswith(bytes([pad_len]) * pad_len):
         return padded[:-pad_len]
     return padded
+
+
+def new_aes_key() -> bytes:
+    """A fresh 16-byte AES-128 key for one outbound upload."""
+    import secrets as _secrets
+
+    return _secrets.token_bytes(16)
+
+
+def aes128_ecb_encrypt(plaintext: bytes, key: bytes) -> bytes:
+    """The inverse of `aes128_ecb_decrypt` — AES-128-ECB with real PKCS7 padding.
+
+    Padding is added unconditionally (a whole extra block when the input is already
+    aligned), which is what PKCS7 requires and what the decrypt side's tolerant
+    unpad expects.
+    """
+    try:
+        from cryptography.hazmat.backends import default_backend
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    except ImportError as exc:
+        raise RuntimeError(
+            "cryptography is required to send WeChat media (pip install cryptography)"
+        ) from exc
+    pad_len = 16 - (len(plaintext) % 16)
+    padded = plaintext + bytes([pad_len]) * pad_len
+    cipher = Cipher(algorithms.AES(key), modes.ECB(), backend=default_backend())
+    encryptor = cipher.encryptor()
+    return encryptor.update(padded) + encryptor.finalize()
+
+
+def build_media_item(
+    kind: int, cdn_url: str, aes_key: bytes, filesize: int, filename: str | None = None
+) -> dict:
+    """One `item_list` entry referencing media already uploaded to the CDN.
+
+    The key travels as 32 hex chars — the `image_item.aeskey` form the inbound parser
+    already understands (`image_aes_key`), so a message we send round-trips through our
+    own reader.
+    """
+    body: dict = {"url": cdn_url, "aeskey": aes_key.hex(), "filesize": int(filesize)}
+    if kind == ITEM_IMAGE:
+        return {"type": kind, "image_item": body}
+    if kind == ITEM_VIDEO:
+        return {"type": kind, "video_item": body}
+    if filename:
+        body["filename"] = filename
+    return {"type": ITEM_FILE, "file_item": body}
+
+
+def build_item_send_payload(
+    to: str, item: dict, context_token: str | None, client_id: str
+) -> dict:
+    """`build_send_payload` for any single item_list entry, not just text."""
+    message: dict = {
+        "from_user_id": "",
+        "to_user_id": to,
+        "client_id": client_id,
+        "message_type": MSG_TYPE_BOT,
+        "message_state": MSG_STATE_FINISH,
+        "item_list": [item],
+    }
+    if context_token:
+        message["context_token"] = context_token
+    return {"msg": message}
+
+
+def media_type_for(ext: str) -> int:
+    """The item type a file extension should be sent as."""
+    ext = (ext or "").lower().lstrip(".")
+    if ext in {"jpg", "jpeg", "png", "gif", "bmp", "webp"}:
+        return ITEM_IMAGE
+    if ext in {"mp4", "mov", "m4v", "avi", "mkv"}:
+        return ITEM_VIDEO
+    return ITEM_FILE
 
 
 def media_reference(item: dict, key: str) -> dict:

@@ -324,6 +324,151 @@ def _send_slack_file(
     return SendResult(False, error=data_out.get("error") or "slack file send failed")
 
 
+def _send_weixin_file(
+    token: str,
+    chat_id: str,
+    thread_id: Optional[str],
+    filename: str,
+    data: bytes,
+    title: Optional[str] = None,
+    comment: Optional[str] = None,
+) -> SendResult:
+    """Personal WeChat attachment via the iLink encrypted CDN (no threads).
+
+    WeChat never takes the bytes directly. Every attachment goes: reserve a slot
+    (`getuploadurl`) -> encrypt locally with AES-128-ECB + PKCS7 -> POST the ciphertext
+    to the returned CDN URL -> `sendmessage` with an item that carries the CDN url, the
+    key as hex, and the PLAINTEXT size. The server may hand back its own `aes_key`; when
+    it does we use it rather than minting one, since the CDN will be decrypting with it.
+
+    Extension picks the item type, so a .jpg arrives as a real photo rather than a
+    file card. `comment` rides as a separate text message — items are one per message.
+    """
+    import uuid
+
+    import httpx
+
+    from .weixin_protocol import (
+        API_TIMEOUT_S,
+        EP_GET_UPLOAD_URL,
+        EP_SEND_MESSAGE,
+        ITEM_FILE,
+        aes128_ecb_encrypt,
+        api_post_sync,
+        build_item_send_payload,
+        build_media_item,
+        media_type_for,
+        new_aes_key,
+        parse_aes_key,
+    )
+    from .weixin_state import WeixinState
+
+    state = WeixinState()
+    runtime = state.load_runtime()
+    account_id = str(runtime.get("account_id") or "")
+    base_url = str(runtime.get("base_url") or "")
+    if not account_id or not base_url:
+        return SendResult(False, error="weixin not connected")
+    if not data:
+        return SendResult(False, error="empty file")
+
+    ext = filename.rsplit(".", 1)[-1] if "." in filename else ""
+    kind = media_type_for(ext)
+    context_token = state.context_token(account_id, chat_id)
+    try:
+        with httpx.Client() as client:
+            reserved = api_post_sync(
+                client,
+                base_url=base_url,
+                endpoint=EP_GET_UPLOAD_URL,
+                payload={"media_type": kind},
+                token=token,
+                timeout_s=API_TIMEOUT_S,
+            )
+            upload_url = str(
+                reserved.get("upload_url") or reserved.get("uploadurl") or ""
+            )
+            if not upload_url:
+                # Probed against the live API 2026-08-31: `getuploadurl` exists (sibling
+                # spellings 404, this one doesn't) but answers a bare `ret: -2` to every
+                # payload shape, with no errmsg — while `getconfig` on the same token
+                # answers ret 0 and names its missing field when one is absent. That is
+                # a capability gate, not a payload we can guess: a QR-minted personal
+                # bot appears not to be allowed to upload media at all. Say so, so the
+                # agent stops offering files and falls back to text.
+                return SendResult(
+                    False,
+                    error=(
+                        "this WeChat bot cannot send attachments — Tencent refused the "
+                        f"upload slot ({reserved.get('errmsg') or reserved}). Personal "
+                        "QR-login bots appear to be text-only. Send the content as a "
+                        "message, or tell them the local file path instead."
+                    ),
+                )
+            server_key = str(reserved.get("aes_key") or "")
+            key = parse_aes_key(server_key) if server_key else new_aes_key()
+            ticket = str(
+                reserved.get("upload_ticket") or reserved.get("uploadticket") or ""
+            )
+
+            headers = {"Content-Type": "application/octet-stream"}
+            if ticket:
+                headers["Upload-Ticket"] = ticket
+            uploaded = client.post(
+                upload_url,
+                content=aes128_ecb_encrypt(data, key),
+                headers=headers,
+                timeout=120.0,
+            )
+            if not uploaded.is_success:
+                return SendResult(
+                    False,
+                    error=f"weixin CDN upload HTTP {uploaded.status_code}: {uploaded.text[:160]}",
+                )
+            try:
+                body = uploaded.json()
+            except Exception:
+                body = {}
+            cdn_url = str(
+                body.get("cdn_url") or body.get("url") or body.get("file_url") or ""
+            ) or upload_url.split("?")[0]
+
+            item = build_media_item(
+                kind,
+                cdn_url,
+                key,
+                len(data),  # PLAINTEXT size — the receiver unpads after decrypting
+                filename=filename if kind == ITEM_FILE else None,
+            )
+            sent = api_post_sync(
+                client,
+                base_url=base_url,
+                endpoint=EP_SEND_MESSAGE,
+                payload=build_item_send_payload(
+                    chat_id, item, context_token, f"ow-weixin-{uuid.uuid4().hex}"
+                ),
+                token=token,
+                timeout_s=API_TIMEOUT_S,
+            )
+    except RuntimeError as exc:  # cryptography missing, or an iLink HTTP error
+        return SendResult(False, error=str(exc))
+    except Exception as exc:
+        return SendResult(False, error=f"weixin file send failed: {exc}")
+
+    ret, errcode = sent.get("ret", 0), sent.get("errcode", 0)
+    if ret not in (0, None) or errcode not in (0, None):
+        return SendResult(
+            False,
+            error=f"weixin rejected the attachment (ret={ret} errcode={errcode}): "
+            f"{sent.get('errmsg') or ''}".strip(),
+        )
+    caption = (comment or title or "").strip()
+    if caption:
+        _send_weixin(token, chat_id, caption, thread_id)  # best-effort, separate bubble
+    return SendResult(True, message_id=str(sent.get("message_id") or "") or None)
+
+
 DEFAULT_FILE_SENDERS: dict[str, FileSender] = {
     "slack": _send_slack_file,
+    "weixin": _send_weixin_file,
 }

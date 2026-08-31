@@ -2002,16 +2002,23 @@ export interface RecentSender {
 }
 
 // -- direct-message routing ---------------------------------------------------
-export async function getDmRoute(): Promise<string | null> {
-  const res = await fetch(`${httpBase()}/v1/messaging/dm-route`);
+// DM routes are PER CONNECTOR: pass `platform` for one connector's own slot, omit it
+// for the shared fallback every connector without its own route falls back to. One
+// global slot used to mean a WeChat DM could land in a session opened for Slack.
+export async function getDmRoute(platform?: string): Promise<string | null> {
+  const q = platform ? `?platform=${encodeURIComponent(platform)}` : "";
+  const res = await fetch(`${httpBase()}/v1/messaging/dm-route${q}`);
   return (await res.json()).dm_session ?? null;
 }
 
-export async function setDmRoute(sessionId: string): Promise<{ ok: boolean; dm_session: string | null }> {
+export async function setDmRoute(
+  sessionId: string,
+  platform?: string,
+): Promise<{ ok: boolean; dm_session: string | null }> {
   const res = await fetch(`${httpBase()}/v1/messaging/dm-route`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: sessionId }),
+    body: JSON.stringify({ session_id: sessionId, platform }),
   });
   return res.json();
 }

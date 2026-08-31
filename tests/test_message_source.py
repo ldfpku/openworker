@@ -235,6 +235,53 @@ def test_outbound_repairs_dangling_tool_call(tmp_path):
     )
 
 
+def test_outbound_repairs_sidecar_only_tool_call(tmp_path):
+    """The canonical fields are not the whole truth about what goes on the wire: an assistant
+    message's `_openai` sidecar is replayed to that provider VERBATIM, so a `function_call`
+    living only there reaches the provider unanswered and 400s the conversation while
+    `tool_calls` looks clean. The repair reads both."""
+    engine = TurnEngine(
+        provider=CapturingProvider([]),
+        registry=ToolRegistry(),
+        permissions=PermissionEngine(workspace_root=tmp_path),
+        model="gpt-5.5",
+    )
+    engine.messages.extend(
+        [
+            {"role": "user", "content": "check the repo"},
+            {
+                "role": "assistant",
+                "content": "",
+                "_openai": {
+                    "items": [
+                        {"type": "reasoning", "encrypted_content": "xx"},
+                        {
+                            "type": "function_call",
+                            "call_id": "call_sidecar",
+                            "name": "run_shell",
+                            "arguments": "{}",
+                        },
+                    ]
+                },
+            },
+            {"role": "user", "content": "a DM arrived while that hung"},
+        ]
+    )
+    out = engine._outbound_messages()
+    tools = [m for m in out if m.get("role") == "tool"]
+    assert [t["tool_call_id"] for t in tools] == ["call_sidecar"]
+    # ...and an id carried by BOTH sources is stubbed once, not twice.
+    engine.messages[1]["tool_calls"] = [
+        {
+            "id": "call_sidecar",
+            "type": "function",
+            "function": {"name": "run_shell", "arguments": "{}"},
+        }
+    ]
+    again = [m for m in engine._outbound_messages() if m.get("role") == "tool"]
+    assert [t["tool_call_id"] for t in again] == ["call_sidecar"]
+
+
 def test_outbound_messages_real_users_byte_stable_across_calls(tmp_path):
     """Two consecutive `_outbound_messages()` calls must leave every REAL (persisted)
     message byte-identical — only the ephemeral `<system-context>` tail may differ. This

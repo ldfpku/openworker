@@ -279,9 +279,59 @@ async def test_manager_qr_start_commits_and_greets(tmp_path, monkeypatch):
     assert st["state"] == "confirmed" and st["account"] == "newbot@im.bot"
     prof = mgr.secrets.get("weixin:default")
     assert prof["bot_token"] == "tok-x" and prof["account_id"] == "newbot@im.bot"
+    # Scanning IS the answer to "who is connecting" -- the QR status returns the
+    # scanner's own WeChat id, so they are allow-listed by the act of scanning.
+    # Without this the owner's very first DM to their own bot parked, unanswered,
+    # with nothing on screen explaining why.
+    assert prof["allowed_users"] == ["wxid_scanner"]
     assert done.wait(timeout=2), "connect greeting was never attempted"
     assert greeted["chat_id"] == "wxid_scanner"
     assert "OpenWorker" in greeted["text"] and "newbot@im.bot" in greeted["text"]
+
+
+@pytest.mark.asyncio
+async def test_qr_rescan_keeps_existing_contacts_and_adds_the_scanner(monkeypatch, tmp_path):
+    """Re-scanning after a session expiry must not cost the user their allow-list."""
+    from coworker.connectors.base import SendResult
+    from coworker.providers import ModelCapabilities, ProviderClient
+    from coworker.server.manager import SessionManager
+
+    class NoTurns(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            raise AssertionError("no turns expected")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    mgr = SessionManager(workspace=tmp_path, provider=NoTurns())
+    mgr.secrets.put(
+        "weixin:default",
+        {"bot_token": "old", "account_id": "old@im.bot", "allowed_users": ["wxid_a"]},
+    )
+
+    async def fake_flow(*, on_state, **kw):
+        return {
+            "account_id": "new@im.bot",
+            "token": "tok-y",
+            "base_url": "https://api.example",
+            "user_id": "wxid_scanner",
+        }
+
+    monkeypatch.setattr("coworker.connectors.weixin_login.qr_login_flow", fake_flow)
+
+    async def fake_refresh():
+        pass
+
+    monkeypatch.setattr(mgr, "refresh_gateway", fake_refresh)
+    monkeypatch.setattr(
+        "coworker.connectors.senders._send_weixin",
+        lambda *a, **k: SendResult(True, message_id="m"),
+    )
+
+    await mgr.weixin_qr_start()
+    await mgr._weixin_qr_task
+    allowed = mgr.secrets.get("weixin:default")["allowed_users"]
+    assert allowed == ["wxid_a", "wxid_scanner"]  # kept, and the scanner appended
 
 
 # -- stateless sender ----------------------------------------------------------

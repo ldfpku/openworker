@@ -2076,13 +2076,18 @@ def create_app(manager: SessionManager) -> FastAPI:
 
     # -- direct-message routing -------------------------------------------------
     @app.get("/v1/messaging/dm-route")
-    def dm_route_get() -> dict[str, Any]:
-        return {"dm_session": manager.dm_session()}
+    def dm_route_get(platform: str = "") -> dict[str, Any]:
+        # `platform` asks for one connector's route (falling back to the shared slot);
+        # omitting it reads the shared slot itself.
+        return {"dm_session": manager.dm_session(platform or None), "platform": platform}
 
     @app.post("/v1/messaging/dm-route")
     def dm_route_set(body: dict) -> dict[str, Any]:
-        # A falsy session_id clears the designation (DMs then park as unrouted).
-        return manager.set_dm_session((body or {}).get("session_id", ""))
+        # A falsy session_id clears the designation (DMs then open one on next contact).
+        body = body or {}
+        return manager.set_dm_session(
+            body.get("session_id", ""), platform=(body.get("platform") or None)
+        )
 
     if os.environ.get("COWORKER_DEBUG_INJECT") == "1":
         # Dev-only (env-gated, localhost): feed a message through the real inbound path so the
