@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   allowUser,
   connectConnector,
@@ -598,6 +598,15 @@ export function ConnectSetup({
   const [waiting, setWaiting] = useState(false); // managed flow: browser is open
   const [error, setError] = useState<string | null>(null);
 
+  // The add-connection modal's body scrolls now (AddConnectionModal): this error renders
+  // BELOW the Connect button, so a failed submit while scrolled to the end would land past
+  // the visible edge and the click would read as "nothing happened". Pull it into view.
+  // Optional-called — jsdom has no scrollIntoView.
+  const errRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (error) errRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [error]);
+
   const submit = async () => {
     setBusy(true);
     setError(null);
@@ -700,7 +709,7 @@ export function ConnectSetup({
           {busy ? t("Validating…") : t("Connect")}
         </button>
       </div>
-      {error && <div className="text-[12.5px] text-danger">{error}</div>}
+      {error && <div ref={errRef} className="text-[12.5px] text-danger">{error}</div>}
     </div>
   );
 }

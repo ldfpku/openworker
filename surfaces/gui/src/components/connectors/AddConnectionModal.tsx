@@ -61,11 +61,11 @@ export function AddConnectionModal({
     <div className="fixed inset-0 z-40" data-testid="add-connection-modal">
       <div className="absolute inset-0 bg-black/30" onClick={onClose} />
       <div
-        className="absolute left-1/2 top-[14%] -translate-x-1/2 w-[480px] max-w-[calc(100vw-2rem)] bg-panel rounded-2xl border border-line shadow-2xl"
+        className="absolute left-1/2 top-[14%] -translate-x-1/2 w-[480px] max-w-[calc(100vw-2rem)] max-h-[80vh] bg-panel rounded-2xl border border-line shadow-2xl overflow-hidden flex flex-col"
         role="dialog"
         aria-label={title || t("Connect {{title}}", { title: c.title })}
       >
-        <div className="flex items-center gap-3 px-5 pt-5">
+        <div className="flex items-center gap-3 px-5 pt-5 pb-3 border-b border-line shrink-0">
           <ConnectorBadge connector={c} size={34} title={c.title} />
           <div className="flex-1 font-semibold text-[16px] tracking-tight">
             {title || t("Connect {{title}}", { title: c.title })}
@@ -75,6 +75,13 @@ export function AddConnectionModal({
           </button>
         </div>
 
+        {/* One scrolling body under the pinned header — the house capped-modal shape
+            (ModalShell, LibraryView.tsx:826-847). The tallest pane, email/IMAP with its 4
+            numbered steps and 7 fields, used to render 850px tall and run past the window
+            bottom with Connect unreachable and no page scroll to recover it. The cap is
+            max-h, never h, so short one-click panes still hug their content. 14% + 80vh
+            leaves a margin at every size down to the 640px minimum window. */}
+        <div className="flex-1 min-h-0 overflow-y-auto hairline-scroll" data-testid="modal-body">
         {twoModes ? (
           <>
             <div className="px-5 pt-4">
@@ -121,11 +128,16 @@ export function AddConnectionModal({
           /* MCP-backed with no manual fields (monday): one-click IS the flow. */
           <McpOneClick c={c} onConnected={() => { onChanged(); onClose(); }} />
         ) : (
-          <div className="px-1.5 pb-2">
+          /* The pinned header carries the divider now, so suppress ConnectSetup's own
+             border-t (ManageTabs.tsx:629) here — stacked they read as one 2px rule. The
+             Manual pane above keeps its border-t: there it separates the mode pills from
+             the form. */
+          <div className="px-1.5 pb-2 [&>div]:border-t-0">
             {/* Existing combined setup (managed button + manual fields) for everything else. */}
             <ConnectSetup c={c} cloud={cloud} onConnected={() => { onChanged(); onClose(); }} />
           </div>
         )}
+        </div>
       </div>
     </div>
   );
