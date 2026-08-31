@@ -1,6 +1,6 @@
 import { isComposing } from "../ime";
 import { useEffect, useState } from "react";
-import { getI18n, useTranslation } from "react-i18next";
+import { getI18n, Trans, useTranslation } from "react-i18next";
 import { getStoredLanguage, setLanguage as setI18nLanguage, type Lang } from "../i18n";
 import {
   getSettings,
@@ -878,6 +878,7 @@ function ContextBarCard() {
 // user-global (a cloned repo can't turn either on). Shadow is nested under the main flag — it
 // only makes sense to measure the reviewer once you know what it is.
 function AutoApproveCard() {
+  const { t } = useTranslation();
   const [on, setOn] = useState<boolean | null>(null);
   const [shadow, setShadow] = useState(false);
 
@@ -902,7 +903,11 @@ function AutoApproveCard() {
   if (on === null) return null;
   return (
     <div className={CARD + " p-4 mb-4"} data-testid="auto-approve-card">
-      <div className={FIELD_LABEL}>Auto-approve (experimental)</div>
+      {/* Upstream shipped this whole card with no i18n at all — not even one of their own
+          dotted keys — so it arrived in the 2026-08-31 merge as bare English sitting in an
+          otherwise Chinese Settings page. Keyed here on the English source (the fork's legacy
+          scheme), which lives only in zh-CN.json and therefore can never conflict upstream. */}
+      <div className={FIELD_LABEL}>{t("Auto-approve (experimental)")}</div>
       <label className="flex items-start gap-3 py-2">
         <input
           type="checkbox"
@@ -912,12 +917,12 @@ function AutoApproveCard() {
           onChange={(e) => saveOn(e.target.checked)}
         />
         <span>
-          <span className="block text-[13px] text-ink">Enable Auto-approve mode</span>
+          <span className="block text-[13px] text-ink">{t("Enable Auto-approve mode")}</span>
           <span className="block text-[12px] text-muted">
-            Adds an <em>Auto-approve</em> option to the mode picker. In that mode, your session
-            model reviews each action that would normally need approval and clears the routine
-            ones; anything doubtful still asks you. It can never allow something the rules
-            block. One extra model call per check, billed to your usage.
+            <Trans
+              i18nKey="Adds an <em>Auto-approve</em> option to the mode picker. In that mode, your session model reviews each action that would normally need approval and clears the routine ones; anything doubtful still asks you. It can never allow something the rules block. One extra model call per check, billed to your usage."
+              components={{ em: <em /> }}
+            />
           </span>
         </span>
       </label>
@@ -931,12 +936,13 @@ function AutoApproveCard() {
         />
         <span>
           <span className="block text-[13px] text-ink">
-            Shadow evaluation <span className="text-faint">(for measuring)</span>
+            {t("Shadow evaluation")} <span className="text-faint">{t("(for measuring)")}</span>
           </span>
           <span className="block text-[12px] text-muted">
-            On any mode, the reviewer records what it <em>would</em> have decided next to your
-            own choice — without changing anything. Lets you see how it would behave before
-            trusting it. Also costs one model call per approval.
+            <Trans
+              i18nKey="On any mode, the reviewer records what it <em>would</em> have decided next to your own choice — without changing anything. Lets you see how it would behave before trusting it. Also costs one model call per approval."
+              components={{ em: <em /> }}
+            />
           </span>
         </span>
       </label>
