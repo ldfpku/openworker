@@ -52,7 +52,7 @@ import type {
 import { fullPersonaName, isProjectScoped } from "./personaScope";
 import { baseName } from "./paths";
 import { itemsFromMessages } from "./itemsFromMessages";
-import { addTurnUsage, emptyUsage, usageFromMessages } from "./usage";
+import { addTurnUsage, emptyUsage, formatTokens, usageFromMessages } from "./usage";
 import { streamMode } from "./streamGate";
 import { InboxItemCard } from "./components/InboxItemCard";
 import { chooseFolder, isTauri, platformOS, startWindowDrag } from "./tauri";
@@ -901,8 +901,23 @@ export function App() {
           }
           break;
         case "turn_end":
-          if (d.status === "max_iterations_exceeded")
-            setItems((p) => [...p, { kind: "notice", tone: "warn", text: t("Stopped: max iterations reached.") }]);
+          // Both gates report the same way. The old text named the mechanism ("max
+          // iterations reached") and stopped there — it never said what the turn cost,
+          // nor that replying resumes it, so people sat puzzling instead of typing. An
+          // idle session is the expensive kind: the provider cache goes cold and
+          // resuming re-bills the whole prompt at full price.
+          if (d.status === "max_iterations_exceeded" || d.status === "max_tokens_exceeded")
+            setItems((p) => [
+              ...p,
+              {
+                kind: "notice",
+                tone: "warn",
+                text: t("Paused after {{steps}} steps, ~{{tokens}} tokens. Reply to continue.", {
+                  steps: d.iterations ?? 0,
+                  tokens: formatTokens(Number(d.tokens) || 0),
+                }),
+              },
+            ]);
           break;
         case "model_changed":
           // Mid-session switch (server-applied): update the header fact and drop the
