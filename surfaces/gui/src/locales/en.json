@@ -644,18 +644,18 @@
   "intro": {
     "greeting": "What should we produce?",
     "lede": "Pick a task to start — I'll do the work and save the result. Or just type what you need below.",
-    "task_folder_title": "Analyze the files in a directory",
-    "task_folder_sub": "I'll read them and summarize what matters",
+    "task_folder_title": "Analyze the files in a folder",
+    "task_folder_sub": "Drawings, reports, logbooks — I'll read through and summarize what matters",
     "task_folder_cta": "Pick a folder →",
-    "task_hubspot_title": "Create a report from my HubSpot leads",
-    "task_hubspot_sub": "Sources, stages, and who needs follow-up",
-    "task_ghslack_title": "Automate a weekly GitHub progress report to Slack",
-    "task_ghslack_sub": "Repo activity, summarized and posted every Friday",
+    "task_downtime_title": "Find recurring failures in downtime records",
+    "task_downtime_sub": "Failure counts and downtime by machine, with maintenance priorities",
+    "task_weekly_title": "Auto-generate a weekly production report to WeChat",
+    "task_weekly_sub": "Summarize the week's progress and issues, sent every Friday",
     "cta_start": "Start →",
     "cta_configure": "Configure ›",
     "folder_prompt": "Analyze the files in this folder and summarize what matters.",
-    "hubspot_prompt": "Create a report on my recent HubSpot leads: sources, stages, and who needs follow-up.",
-    "ghslack_prompt": "Set up a weekly progress report: summarize activity in my GitHub repos and post it to Slack every Friday morning."
+    "downtime_prompt": "Read the equipment logs and downtime/repair records in this folder, aggregate failure counts and downtime by machine, identify the most frequent failures, and produce a brief equipment-status report with maintenance recommendations.",
+    "weekly_prompt": "Set up a weekly scheduled task: every Friday morning, read the files added or updated this week in the work folder, produce a weekly production report (progress, issues, next week's plan), and send it to me on WeChat."
   },
   "access": {
     "section_title": "Access",

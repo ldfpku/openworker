@@ -8,17 +8,24 @@ import { useRoots } from "../useRoots";
 import { AddFolderForm } from "./AddFolderForm";
 
 // Empty-state for a fresh Cowork session (§27): a greeting, exactly three concrete template
-// tasks, and the composer — nothing else. Each task carries its own setup: no icon tiles (the
-// title is the row), connector dots on the sub-line (brand color = connected and enabled for
-// this session, grayscale = not — §23's vocabulary), and sub-line copy that is always the task's
-// OUTCOME, never connection state. Sources ready → "Start →" on hover, click prefills the
-// composer. Not ready → "Configure ›" always visible (for a gated row the setup action IS the
-// row's meaning), opening the §23 Session settings drawer — no second setup surface here.
+// tasks aimed at a manufacturing-floor audience (equipment/process/scheduling/quality/supply
+// roles, not developers), and the composer — nothing else. No icon tiles (the title is the row);
+// sub-line copy is always the task's OUTCOME, never connection state.
+//
+// Two mechanisms, three cards:
+//  - Folder-driven (cards 1 & 2): no connector involved. A shared folder already on the session
+//    → prefill straight away; otherwise the inline AddFolderForm opens first and the prefill
+//    fires once the folder's added. Both cards route through the same `pickFolder` helper, which
+//    remembers which card's prompt to fire via `pendingPrompt`.
+//  - Connector-gated (card 3): dots on the sub-line (brand color = connected and enabled for this
+//    session, grayscale = not — §23's vocabulary). Ready → "Start →" on hover, click prefills the
+//    composer. Not ready → "Configure ›" always visible (for a gated row the setup action IS the
+//    row's meaning), opening the §23 Session settings drawer — no second setup surface here.
 
 // These prompts prefill the user's composer — visible to the user, so localized.
 const FOLDER_PROMPT_KEY = "intro.folder_prompt";
-const HUBSPOT_PROMPT_KEY = "intro.hubspot_prompt";
-const GH_SLACK_PROMPT_KEY = "intro.ghslack_prompt";
+const DOWNTIME_PROMPT_KEY = "intro.downtime_prompt";
+const WEEKLY_PROMPT_KEY = "intro.weekly_prompt";
 
 export function SessionIntro({
   sessionId,
@@ -34,7 +41,9 @@ export function SessionIntro({
   const { roots, busy, error, addRoot } = useRoots(sessionId);
   const [live, setLive] = useState<Set<string>>(new Set());
   const [byName, setByName] = useState<ConnectorMap>({});
-  const [addingFolder, setAddingFolder] = useState(false);
+  // Which card's prompt to prefill once the AddFolderForm succeeds (card 1 or card 2 — they
+  // share this one mechanism); null when the form isn't open.
+  const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
 
   useEffect(() => {
     // Live = what this session can touch right now (connected AND not muted here) — the same
@@ -48,8 +57,7 @@ export function SessionIntro({
   }, [sessionId]);
 
   const shared = roots.filter((r) => !r.primary);
-  const hubspotReady = live.has("hubspot");
-  const ghSlackReady = live.has("github") && live.has("slack");
+  const weixinReady = live.has("weixin");
 
   const dot = (name: string, on: boolean) => (
     <span className={"task-dot" + (on ? "" : " off")} key={name}>
@@ -57,10 +65,10 @@ export function SessionIntro({
     </span>
   );
 
-  const pickFolder = () => {
+  const pickFolder = (promptKey: string) => {
     // A shared folder already exists → straight to the prompt; otherwise share one first.
-    if (shared.length > 0) onPrefill(t(FOLDER_PROMPT_KEY));
-    else setAddingFolder((v) => !v);
+    if (shared.length > 0) onPrefill(t(promptKey));
+    else setPendingPrompt(promptKey);
   };
 
   return (
@@ -71,61 +79,59 @@ export function SessionIntro({
       <p className="intro-lede">{t("intro.lede")}</p>
 
       <div className="intro-tasks">
-        <button className="task-card" data-testid="intro-task-folder" onClick={pickFolder}>
+        <button
+          className="task-card"
+          data-testid="intro-task-folder"
+          onClick={() => pickFolder(FOLDER_PROMPT_KEY)}
+        >
           <span className="task-card-body">
             <span className="task-card-title">{t("intro.task_folder_title")}</span>
             <span className="task-card-sub">{t("intro.task_folder_sub")}</span>
           </span>
           <span className="task-card-act">{t("intro.task_folder_cta")}</span>
         </button>
-        {addingFolder && (
+        {pendingPrompt && (
           <div className="intro-addfolder">
             <AddFolderForm
               startOpen
               busy={busy}
               onAdd={async (path, writable) => {
                 const ok = await addRoot(path, writable);
-                if (ok !== false) onPrefill(t(FOLDER_PROMPT_KEY));
+                if (ok !== false) onPrefill(t(pendingPrompt));
                 return ok;
               }}
-              onDismiss={() => setAddingFolder(false)}
+              onDismiss={() => setPendingPrompt(null)}
             />
             {error && <div className="roots-err">{error}</div>}
           </div>
         )}
 
         <button
-          className={"task-card" + (hubspotReady ? "" : " gated")}
-          data-testid="intro-task-hubspot"
-          onClick={() => (hubspotReady ? onPrefill(t(HUBSPOT_PROMPT_KEY)) : onOpenSessionSettings())}
+          className="task-card"
+          data-testid="intro-task-downtime"
+          onClick={() => pickFolder(DOWNTIME_PROMPT_KEY)}
         >
           <span className="task-card-body">
-            <span className="task-card-title">{t("intro.task_hubspot_title")}</span>
-            <span className="task-card-sub">
-              {dot("hubspot", hubspotReady)}
-              {t("intro.task_hubspot_sub")}
-            </span>
+            <span className="task-card-title">{t("intro.task_downtime_title")}</span>
+            <span className="task-card-sub">{t("intro.task_downtime_sub")}</span>
           </span>
-          <span className="task-card-act">
-            {hubspotReady ? t("intro.cta_start") : t("intro.cta_configure")}
-          </span>
+          <span className="task-card-act">{t("intro.task_folder_cta")}</span>
         </button>
 
         <button
-          className={"task-card" + (ghSlackReady ? "" : " gated")}
-          data-testid="intro-task-github-slack"
-          onClick={() => (ghSlackReady ? onPrefill(t(GH_SLACK_PROMPT_KEY)) : onOpenSessionSettings())}
+          className={"task-card" + (weixinReady ? "" : " gated")}
+          data-testid="intro-task-weekly"
+          onClick={() => (weixinReady ? onPrefill(t(WEEKLY_PROMPT_KEY)) : onOpenSessionSettings())}
         >
           <span className="task-card-body">
-            <span className="task-card-title">{t("intro.task_ghslack_title")}</span>
+            <span className="task-card-title">{t("intro.task_weekly_title")}</span>
             <span className="task-card-sub">
-              {dot("github", live.has("github"))}
-              {dot("slack", live.has("slack"))}
-              {t("intro.task_ghslack_sub")}
+              {dot("weixin", weixinReady)}
+              {t("intro.task_weekly_sub")}
             </span>
           </span>
           <span className="task-card-act">
-            {ghSlackReady ? t("intro.cta_start") : t("intro.cta_configure")}
+            {weixinReady ? t("intro.cta_start") : t("intro.cta_configure")}
           </span>
         </button>
       </div>

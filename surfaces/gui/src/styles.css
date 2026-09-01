@@ -900,7 +900,7 @@ button.btn.danger { color: var(--accent); }
   background: color-mix(in srgb, var(--faint) 28%, transparent);
   color: var(--ink); font-size: 11px; font-weight: 600; text-align: center;
 }
-/* the inline add-folder form sits under the "Analyze the files in a directory" task row */
+/* the inline add-folder form sits under the "Analyze the files in a folder" task row */
 .intro-addfolder { padding: 4px 6px 14px 6px; border-top: 1px solid var(--line); }
 
 /* request_directory prompt (agent-initiated) */

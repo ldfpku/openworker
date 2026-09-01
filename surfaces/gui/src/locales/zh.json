@@ -634,18 +634,18 @@
   "intro": {
     "greeting": "我们要做点什么？",
     "lede": "选择一个任务开始——我会完成工作并保存结果。也可以直接在下方输入你的需求。",
-    "task_folder_title": "分析目录中的文件",
-    "task_folder_sub": "我会通读并总结其中的要点",
+    "task_folder_title": "分析文件夹里的资料",
+    "task_folder_sub": "图纸、报告、台账——我会通读并总结要点",
     "task_folder_cta": "选择文件夹 →",
-    "task_hubspot_title": "从我的 HubSpot 潜在客户生成报告",
-    "task_hubspot_sub": "来源、阶段，以及谁需要跟进",
-    "task_ghslack_title": "自动生成每周 GitHub 进度报告并发送到 Slack",
-    "task_ghslack_sub": "汇总仓库活动，每周五自动发布",
+    "task_downtime_title": "从停机维修记录里找出高频故障",
+    "task_downtime_sub": "按设备汇总故障与停机时长，给出保养重点",
+    "task_weekly_title": "每周自动生成生产周报并发到微信",
+    "task_weekly_sub": "汇总本周进展与问题，每周五自动发送",
     "cta_start": "开始 →",
     "cta_configure": "配置 ›",
     "folder_prompt": "分析此文件夹中的文件，并总结其中的要点。",
-    "hubspot_prompt": "为我最近的 HubSpot 潜在客户生成一份报告：来源、阶段，以及谁需要跟进。",
-    "ghslack_prompt": "设置每周进度报告：汇总我 GitHub 仓库中的活动，并在每周五早上发布到 Slack。"
+    "downtime_prompt": "通读此文件夹中的设备台账和停机/维修记录，按设备汇总故障频次与停机时长，找出最高频的几类故障，并给出保养建议，输出一份设备状况简报。",
+    "weekly_prompt": "设置每周计划任务：每周五上午，通读工作文件夹中本周新增或更新的文件，生成一份生产周报（进展、问题、下周计划），并通过微信发给我。"
   },
   "access": {
     "section_title": "访问权限",
