@@ -3044,6 +3044,11 @@ class SessionManager:
                 if d.name == "openai-codex":
                     row["authorizing"] = self._codex_authorizing
                     row["last_error"] = self._codex_error
+            if d.name == "custom" and profile.get("display_name"):
+                # The one field that isn't sent straight to the endpoint: the person's own
+                # name for it, threaded through to the provider list and the card header so
+                # the gallery reads "Acme Gateway" instead of the generic descriptor title.
+                row["title"] = profile["display_name"]
             out.append(row)
         return out
 
@@ -3286,6 +3291,21 @@ class SessionManager:
             missing = [f.label for f in d.fields if f.required and not merged.get(f.key)]
             if missing:
                 return {"ok": False, "error": "missing: " + ", ".join(missing)}
+        elif d.needs_key and has_key_field:
+            # A keyed provider can still declare its OWN extra required field the wire
+            # call never touches (custom's display_name — nothing sends it to the
+            # endpoint). Without this, a passing Test auto-saves via set_provider, which
+            # silently no-ops on that same missing field (its own "missing:" check) while
+            # the GUI still flashes green — Test would lie about having saved anything.
+            # base_url is excluded: verify_provider_key below owns that guard, with a
+            # message aimed at "why did my URL-less Test fail" rather than a generic list.
+            other_required = [
+                f.label
+                for f in d.fields
+                if f.required and f.key not in ("api_key", "base_url") and not merged.get(f.key)
+            ]
+            if other_required:
+                return {"ok": False, "error": "missing: " + ", ".join(other_required)}
         if name == "gemini":
             # Not a descriptor field (nothing types it into a form), so the merge loop above
             # never picks it up — but the relay refuses an unauthenticated probe, so Test

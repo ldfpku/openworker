@@ -67,6 +67,104 @@ function makePs(fields: Record<string, string>, setFieldValue = vi.fn()): Provid
   };
 }
 
+// NVIDIA-shaped: base_url is OPTIONAL with a vendor-prefilled default, so it hides behind
+// the quiet "Custom endpoint" disclosure. The "Custom endpoint" provider itself (below)
+// instead ships a REQUIRED base_url with no default, which must stay inline.
+const NVIDIA_LIKE: ProviderInfo = {
+  name: "nvidia",
+  title: "NVIDIA (NIM)",
+  needs_key: true,
+  configured: false,
+  values: {},
+  suggested_models: [],
+  recommended_model: "moonshotai/kimi-k3",
+  fields: [
+    { key: "api_key", label: "NVIDIA API key", secret: true, required: true, help: "", placeholder: "nvapi-…" },
+    {
+      key: "base_url",
+      label: "Endpoint",
+      secret: false,
+      required: false,
+      help: "Prefilled with the company relay to NVIDIA NIM; normally leave it as is.",
+      placeholder: "https://nvidia.smjtools.com/v1",
+      default: "https://nvidia.smjtools.com/v1",
+    },
+  ],
+};
+
+const CUSTOM: ProviderInfo = {
+  name: "custom",
+  title: "Custom endpoint",
+  needs_key: true,
+  configured: false,
+  values: {},
+  suggested_models: [],
+  recommended_model: null,
+  fields: [
+    {
+      key: "display_name",
+      label: "Endpoint name",
+      secret: false,
+      required: true,
+      help: "Shown as this provider's name in the provider list.",
+      placeholder: "",
+    },
+    { key: "api_key", label: "API key", secret: true, required: true, help: "", placeholder: "" },
+    {
+      key: "base_url",
+      label: "Endpoint",
+      secret: false,
+      required: true,
+      help: "OpenAI-compatible base URL, usually ending in /v1.",
+      placeholder: "https://…/v1",
+    },
+  ],
+};
+
+function makePsForInfo(info: ProviderInfo, fields: Record<string, string>): ProviderSetupState {
+  return {
+    providers: [info],
+    ordered: [info],
+    refreshProviders: async () => {},
+    sel: info.name,
+    info,
+    fields,
+    setFieldValue: vi.fn(),
+    dirty: false,
+    verify: { state: "idle" },
+    showEndpoint: false,
+    setShowEndpoint: () => {},
+    keylessOk: new Set(),
+    credentialed: false,
+    savedState: false,
+    secretFilled: true,
+    openProvider: () => {},
+    backToGallery: () => {},
+    runTestAndSave: async () => true,
+    removeKey: async () => {},
+    cancelBackTimer: () => {},
+    statusFor: () => null,
+    saveField: async () => {},
+    fieldSaved: null,
+  };
+}
+
+describe("Custom-endpoint field visibility (required vs. optional base_url)", () => {
+  it("NVIDIA-shaped provider hides its optional, prefilled base_url behind the disclosure", () => {
+    render(<ProviderForm ps={makePsForInfo(NVIDIA_LIKE, {})} tp="t" />);
+    expect(screen.queryByTestId("t-field-base_url")).toBeNull();
+    expect(screen.getByTestId("t-endpoint-link")).toBeTruthy();
+  });
+
+  it("the Custom-endpoint provider's required base_url renders inline, not behind a disclosure", () => {
+    render(<ProviderForm ps={makePsForInfo(CUSTOM, {})} tp="t" />);
+    expect(screen.getByTestId("t-field-display_name")).toBeTruthy();
+    expect(screen.getByTestId("t-field-api_key")).toBeTruthy();
+    expect(screen.getByTestId("t-field-base_url")).toBeTruthy();
+    expect(screen.queryByTestId("t-endpoint-link")).toBeNull();
+  });
+});
+
 describe("ProviderForm auth-method choice", () => {
   it("renders only the selected method's fields", () => {
     render(<ProviderForm ps={makePs({ auth_method: "api_key" })} tp="t" />);

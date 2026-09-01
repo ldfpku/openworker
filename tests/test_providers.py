@@ -666,3 +666,76 @@ def test_over_limit_max_tokens_is_dropped_and_retried():
     calls = client.chat.completions.calls
     assert turn.text == "ok" and len(calls) == 2
     assert "max_tokens" not in calls[1]
+
+
+# -- Custom endpoint provider (one user-named OpenAI-compatible endpoint, single instance) ---
+
+
+def test_custom_descriptor_shape():
+    from coworker.providers.registry import get_descriptor
+
+    d = get_descriptor("custom")
+    assert d is not None and d.needs_key
+    assert d.title == "Custom endpoint"
+    # Unlike the vendor _compat cards: nothing to prefill, so no recommended model and no
+    # env var (an env fallback would let a stale key from a previous typed-over endpoint
+    # keep "working" silently against whatever server used to live at that address).
+    assert d.recommended_model is None
+    assert d.env_key is None
+    assert [f.key for f in d.fields] == ["display_name", "api_key", "base_url"]
+    display_name = next(f for f in d.fields if f.key == "display_name")
+    base_url = next(f for f in d.fields if f.key == "base_url")
+    assert display_name.required
+    assert base_url.required and not base_url.default
+
+
+def test_custom_builder_uses_profile_fields():
+    from coworker.providers.registry import build_provider_client
+
+    p = build_provider_client(
+        "custom",
+        {
+            "display_name": "Acme Gateway",
+            "api_key": "ak-test",
+            "base_url": "https://acme.example/v1",
+        },
+        None,
+    )
+    assert isinstance(p, OpenAIProvider)
+    assert p._api_key == "ak-test"
+    assert p._base_url == "https://acme.example/v1"
+
+
+def test_custom_builder_fails_fast_with_a_pointer_to_settings():
+    import pytest
+
+    from coworker.providers.registry import build_provider_client
+
+    with pytest.raises(RuntimeError, match="endpoint URL"):
+        build_provider_client("custom", {"api_key": "ak-test"}, None)
+    with pytest.raises(RuntimeError, match="API key"):
+        build_provider_client(
+            "custom", {"base_url": "https://acme.example/v1"}, None
+        )
+
+
+def test_custom_configured_requires_key_and_endpoint():
+    """Unlike the generic 'has an api_key field' rule, custom also needs base_url (and its
+    other required field, display_name) — a bare key would build a client that immediately
+    raises, since there's no vendor default standing in behind it."""
+    from coworker.providers.registry import descriptor_configured, get_descriptor
+
+    d = get_descriptor("custom")
+    assert not descriptor_configured(d, {})
+    assert not descriptor_configured(d, {"api_key": "ak-test"})
+    assert not descriptor_configured(
+        d, {"api_key": "ak-test", "base_url": "https://acme.example/v1"}
+    )  # display_name still missing
+    assert descriptor_configured(
+        d,
+        {
+            "display_name": "Acme Gateway",
+            "api_key": "ak-test",
+            "base_url": "https://acme.example/v1",
+        },
+    )

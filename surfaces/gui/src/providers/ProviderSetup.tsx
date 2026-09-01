@@ -459,6 +459,14 @@ export function ProviderForm({
     "w-full px-3 py-2 rounded-lg border bg-panel text-[13px] outline-none focus:border-accent";
   const fieldsAll = info?.fields || [];
   const keyed = fieldsAll.some((x) => x.secret);
+  // An optional, vendor-prefilled endpoint (NVIDIA's relay, the OpenAI-compat vendors) hides
+  // behind the quiet "Custom endpoint" disclosure below — most people never touch it. A
+  // REQUIRED base_url with no default (the "Custom endpoint" provider itself: there is no
+  // vendor default to prefill) is the one field the person came here to fill in, so it stays
+  // inline with the rest instead of hiding behind a disclosure named after itself.
+  const collapsibleEndpoint = keyed
+    ? fieldsAll.find((f) => f.key === "base_url" && !f.required)
+    : undefined;
   // Cloud providers declare a segmented auth-method choice; the selected method's
   // credential fields render inside a panel with its own Test & save footer.
   const choice = fieldsAll.find((f) => f.choices && f.choices.length);
@@ -578,7 +586,7 @@ export function ProviderForm({
           (f) =>
             !f.show_when &&
             !(f.choices && f.choices.length) &&
-            !(f.key === "base_url" && keyed),
+            f !== collapsibleEndpoint,
         )
         .map((f) => fieldRow(f, !choice && f.key === testKey))}
 
@@ -679,49 +687,47 @@ export function ProviderForm({
         </p>
       )}
 
-      {/* Custom endpoint (keyed providers only): a quiet disclosure BELOW the key help,
-          with enough separation to read as its own advanced row — no explainer copy
-          (owner calls 2026-07-18 + 2026-07-19). */}
-      {(() => {
-        const keyed = (info?.fields || []).some((x) => x.secret);
-        const ep = keyed ? (info?.fields || []).find((f) => f.key === "base_url") : undefined;
-        if (!ep) return null;
-        if (!ps.showEndpoint)
-          return (
-            <button
-              className="block self-start text-[13px] text-muted hover:text-ink mt-4"
-              onClick={() => ps.setShowEndpoint(true)}
-              data-testid={`${tp}-endpoint-link`}
-            >
-              {t("provider.custom_endpoint")} ⌄
-            </button>
-          );
-        return (
+      {/* Custom endpoint (keyed providers with an optional, vendor-prefilled base_url): a
+          quiet disclosure BELOW the key help, with enough separation to read as its own
+          advanced row — no explainer copy (owner calls 2026-07-18 + 2026-07-19). A REQUIRED
+          base_url (the "Custom endpoint" provider) already rendered inline above and has no
+          `collapsibleEndpoint` match, so this block is a no-op for it. */}
+      {collapsibleEndpoint &&
+        (!ps.showEndpoint ? (
+          <button
+            className="block self-start text-[13px] text-muted hover:text-ink mt-4"
+            onClick={() => ps.setShowEndpoint(true)}
+            data-testid={`${tp}-endpoint-link`}
+          >
+            {t("provider.custom_endpoint")} ⌄
+          </button>
+        ) : (
           <div className="mt-4">
-            <label className={label}>{t(ep.label)}</label>
+            <label className={label}>{t(collapsibleEndpoint.label)}</label>
             <div className="relative">
               <input
                 className={input + " border-line"}
                 type="text"
-                placeholder={ep.placeholder && t(ep.placeholder)}
-                value={ps.fields[ep.key] || ""}
-                data-testid={`${tp}-field-${ep.key}`}
-                onChange={(e) => ps.setFieldValue(ep.key, e.target.value)}
-                onBlur={() => void ps.saveField(ep.key)}
+                placeholder={collapsibleEndpoint.placeholder && t(collapsibleEndpoint.placeholder)}
+                value={ps.fields[collapsibleEndpoint.key] || ""}
+                data-testid={`${tp}-field-${collapsibleEndpoint.key}`}
+                onChange={(e) => ps.setFieldValue(collapsibleEndpoint.key, e.target.value)}
+                onBlur={() => void ps.saveField(collapsibleEndpoint.key)}
               />
-              {ps.fieldSaved === ep.key && (
+              {ps.fieldSaved === collapsibleEndpoint.key && (
                 <span
                   className="absolute right-2 top-1/2 -translate-y-1/2 text-[11px] font-medium text-ok bg-okSoft rounded-full px-2 py-0.5 pointer-events-none"
-                  data-testid={`${tp}-field-saved-${ep.key}`}
+                  data-testid={`${tp}-field-saved-${collapsibleEndpoint.key}`}
                 >
                   {t("provider.saved_pill")}
                 </span>
               )}
             </div>
-            {ep.help && <p className="text-[12px] text-faint mt-1">{t(ep.help)}</p>}
+            {collapsibleEndpoint.help && (
+              <p className="text-[12px] text-faint mt-1">{t(collapsibleEndpoint.help)}</p>
+            )}
           </div>
-        );
-      })()}
+        ))}
 
       {/* Error line: fixed height so failures never reflow the form. */}
       <div className="mt-3 min-h-[19px] text-[13px]">

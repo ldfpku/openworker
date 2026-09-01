@@ -1108,6 +1108,92 @@ def test_set_provider_persists_extra_fields(tmp_path):
     assert "base_url" not in providers["ollama"]["values"]
 
 
+def test_custom_provider_display_name_overrides_the_title(tmp_path):
+    """The one custom-endpoint field that never reaches the wire: the person's own label
+    for it, threaded through get_providers into the row the gallery/card header render."""
+    client = _client(tmp_path, [])
+    assert client.post(
+        "/v1/providers",
+        json={
+            "name": "custom",
+            "fields": {
+                "display_name": "Acme Gateway",
+                "api_key": "ak-test",
+                "base_url": "https://acme.example/v1",
+            },
+        },
+    ).json()["ok"]
+    prov = {p["name"]: p for p in client.get("/v1/providers").json()}
+    assert prov["custom"]["title"] == "Acme Gateway"
+    assert prov["custom"]["configured"]
+
+    assert client.delete("/v1/providers/custom").json()["ok"]
+    prov = {p["name"]: p for p in client.get("/v1/providers").json()}
+    assert prov["custom"]["title"] == "Custom endpoint"  # back to the descriptor default
+    assert not prov["custom"]["configured"]
+
+
+def test_verify_custom_route_requires_the_endpoint_name_too(tmp_path):
+    """display_name never reaches the wire, so the read-only credential probe can't catch
+    it missing on its own — Test must still refuse (not silently pass, then have the
+    auto-save that follows it no-op on the same field while the GUI flashes green)."""
+    client = _client(tmp_path, [])
+    res = client.post(
+        "/v1/providers/verify",
+        json={
+            "name": "custom",
+            "fields": {"api_key": "ak-test", "base_url": "https://acme.example/v1"},
+        },
+    ).json()
+    assert res["ok"] is False and "Endpoint name" in res["error"]
+
+
+def test_verify_custom_route_requires_endpoint_first(tmp_path):
+    """The Test button's guard (no vendor default to fall back to) survives the full
+    manager.verify_provider merge — an api_key with no base_url anywhere (form or stored
+    profile) must not fall through to a network probe. display_name is filled in so this
+    isolates the base_url guard from the "missing: Endpoint name" check above."""
+    client = _client(tmp_path, [])
+    res = client.post(
+        "/v1/providers/verify",
+        json={
+            "name": "custom",
+            "fields": {"display_name": "Acme Gateway", "api_key": "ak-test"},
+        },
+    ).json()
+    assert res == {"ok": False, "error": "Enter the endpoint URL first."}
+
+
+def test_verify_custom_route_forwards_the_typed_base_url(tmp_path, monkeypatch):
+    """The Test button sends the whole form, including the not-yet-saved endpoint field —
+    the route must probe THAT address, not a stale saved one."""
+    from types import SimpleNamespace
+
+    captured: dict = {}
+
+    def fake_get(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return SimpleNamespace(status_code=200)
+
+    monkeypatch.setattr("httpx.get", fake_get)
+    client = _client(tmp_path, [])
+    res = client.post(
+        "/v1/providers/verify",
+        json={
+            "name": "custom",
+            "fields": {
+                "display_name": "Acme Gateway",
+                "api_key": "ak-test",
+                "base_url": "https://acme.example/v1",
+            },
+        },
+    ).json()
+    assert res == {"ok": True}
+    assert captured["url"] == "https://acme.example/v1/models"
+    assert captured["headers"]["Authorization"] == "Bearer ak-test"
+
+
 def test_mcp_connect_route_flags_authorizing_immediately(tmp_path, monkeypatch):
     """Owner-hit 2026-08-21: the Test button looked dead — the connect ran as a
     background task, and the GUI's first refresh landed before the task set

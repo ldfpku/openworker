@@ -223,3 +223,32 @@ def test_verify_unexpected_status(monkeypatch):
     res = verify_provider_key("anthropic", api_key="sk-ant-x")
     assert res["ok"] is False
     assert "500" in res["error"]
+
+
+# -- custom endpoint: no vendor default, so a blank URL must never probe api.openai.com ---
+
+
+def test_verify_custom_blank_endpoint_is_refused_without_a_network_call(monkeypatch):
+    def fail(*a, **k):
+        raise AssertionError("must not reach the network with no endpoint typed")
+
+    monkeypatch.setattr("httpx.get", fail)
+    assert verify_provider_key("custom", api_key="ak-test", base_url="") == {
+        "ok": False,
+        "error": "Enter the endpoint URL first.",
+    }
+    assert verify_provider_key("custom", api_key="ak-test") == {
+        "ok": False,
+        "error": "Enter the endpoint URL first.",
+    }
+
+
+def test_verify_custom_hits_the_typed_endpoint(monkeypatch):
+    cap: dict = {}
+    _patch_get(monkeypatch, status=200, capture=cap)
+    res = verify_provider_key(
+        "custom", api_key="ak-test", base_url="https://acme.example/v1"
+    )
+    assert res == {"ok": True}
+    assert cap["url"] == "https://acme.example/v1/models"
+    assert cap["headers"]["Authorization"] == "Bearer ak-test"

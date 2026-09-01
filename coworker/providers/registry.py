@@ -13,7 +13,9 @@ Chat Completions path), `anthropic` (native Messages API via
 (models in the user's own AWS account — Claude natively, everything else via Converse),
 `vertex` (the user's own GCP project — Gemini and Claude natively, open-weight via the
 MaaS endpoint), `aigw` (Cloudflare AI Gateway — many vendors on one work-account sign-in,
-address baked in, `aigateway_provider.py`), and `ollama` (local, OpenAI-compatible `/v1`).
+address baked in, `aigateway_provider.py`), `ollama` (local, OpenAI-compatible `/v1`), and
+`custom` (one user-named OpenAI-compatible endpoint — the escape hatch for anything not
+listed above; single instance, see its descriptor's comment for why).
 """
 
 from __future__ import annotations
@@ -339,6 +341,26 @@ def _compat(
         env_key=env_key,
         blurb=f"Uses {vendor}'s OpenAI-compatible API — the endpoint is prefilled, just add your key.",
     )
+
+
+def _build_custom(profile: dict[str, Any], secrets: Any) -> ProviderClient:
+    """Builder for the single user-defined "Custom endpoint" provider — unlike every
+    `_compat` vendor above, there is no vendor default to fall back to: both fields are
+    the whole credential, so a missing one fails fast with a pointer back to Settings
+    instead of silently probing api.openai.com (OpenAIProvider's own bare-key default).
+    """
+    p = profile or {}
+    base_url = (p.get("base_url") or "").strip()
+    api_key = (p.get("api_key") or "").strip()
+    if not base_url:
+        raise RuntimeError(
+            "No endpoint URL configured for the custom provider — add it in Settings ▸ Models."
+        )
+    if not api_key:
+        raise RuntimeError(
+            "No API key configured for the custom provider — add it in Settings ▸ Models."
+        )
+    return OpenAIProvider(api_key=api_key, base_url=base_url)
 
 
 def _responses_compat(
@@ -788,6 +810,45 @@ DESCRIPTORS: list[ProviderDescriptor] = [
         # `ollama pull qwen3-coder:30b`.
         recommended_model="qwen3-coder:30b",
     ),
+    # The escape hatch for every OpenAI-compatible server not named above: a self-hosted
+    # vLLM/TGI box, an in-house gateway, a vendor we haven't curated a card for yet. Unlike
+    # every `_compat`/nvidia descriptor there is no vendor to prefill — `display_name` is
+    # the person's own label for whatever they're pointing at, and `manager.get_providers`
+    # uses it to overwrite this row's title (so the gallery card and provider list read by
+    # what they typed, not the generic "Custom endpoint"). Single instance only:
+    # one `provider:custom` SecretStore profile, like every other provider —
+    # multiple simultaneous custom endpoints would need a namespaced profile key and list UI
+    # neither the GUI nor the router have today, so that stays out of scope until someone
+    # actually needs a second one. No `env_key`: an env-var fallback would let the provider
+    # "work" with a stale key from a previous endpoint the person typed over, silently
+    # pointing traffic at whatever server used to live at that address.
+    ProviderDescriptor(
+        name="custom",
+        title="Custom endpoint",
+        needs_key=True,
+        fields=[
+            ProviderField(
+                "display_name",
+                "Endpoint name",
+                required=True,
+                help="Shown as this provider's name in the provider list.",
+            ),
+            ProviderField(
+                "api_key",
+                "API key",
+                secret=True,
+            ),
+            ProviderField(
+                "base_url",
+                "Endpoint",
+                required=True,
+                placeholder="https://…/v1",
+                help="OpenAI-compatible base URL, usually ending in /v1.",
+            ),
+        ],
+        build=_build_custom,
+        blurb="Any OpenAI-compatible endpoint — name it, then add the address (with /v1) and your API key.",
+    ),
 ]
 
 _BY_NAME = {d.name: d for d in DESCRIPTORS}
@@ -836,6 +897,13 @@ def descriptor_configured(d: ProviderDescriptor, profile: dict[str, Any]) -> boo
             oauth.get("access_token") or oauth.get("refresh_token")
         )
         return signed_in or bool(resolve_settings(profile)[1])
+    if d.name == "custom":
+        # Unlike the vendor `_compat` cards, there is no default endpoint standing in — a
+        # key alone would build an OpenAIProvider `_build_custom` immediately raises on, so
+        # "configured" here also needs the required base_url (and display_name) present.
+        return bool(profile.get("api_key")) and all(
+            profile.get(f.key) for f in d.fields if f.required
+        )
     if any(f.key == "api_key" for f in d.fields):
         return bool(profile.get("api_key")) or bool(
             d.env_key and os.environ.get(d.env_key)
@@ -1206,6 +1274,11 @@ def verify_provider_key(
         return _verify_vertex(fields or {}, timeout)
     if name == "aigw":
         return _verify_aigw(fields or {}, timeout)
+    if name == "custom" and not (base_url or "").strip():
+        # No vendor default to fall back to (unlike the `_compat` cards below) — without
+        # this guard an empty URL would fall all the way through the generic branch to its
+        # "https://api.openai.com/v1" fallback and Test a completely different service.
+        return {"ok": False, "error": "Enter the endpoint URL first."}
     try:
         if name == "anthropic":
             resp = httpx.get(
