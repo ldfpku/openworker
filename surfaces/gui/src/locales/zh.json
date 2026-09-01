@@ -136,6 +136,8 @@
     "starting_mic": "正在启动麦克风…",
     "approvals_to_inbox_help": "无人值守运行时，审批请求会进入收件箱。",
     "listening_sr": "正在聆听，{{time}}",
+    "attach_skipped": "已跳过 {{names}} —— 仅支持附加 10 MB 以内的图片、PDF 和文本文件",
+    "folder_drop_unsupported": "不支持整个文件夹拖入 —— 把文件夹路径直接写在话里即可，代理会请求授权",
     "pdf_could_not_read": "无法读取该 PDF。",
     "pdf_too_big": "已跳过 {{name}} —— {{mb}} MB 超过 {{limit}} MB 上限（设置 → Token 节省）",
     "pdf_too_many_pages": "已跳过 {{name}} —— {{pages}} 页超过 {{limit}} 页上限（设置 → Token 节省）",

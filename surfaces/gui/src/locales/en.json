@@ -138,6 +138,8 @@
     "starting_mic": "Starting microphone…",
     "approvals_to_inbox_help": "When a run is unattended, approval asks go to the Inbox.",
     "listening_sr": "Listening, {{time}}",
+    "attach_skipped": "{{names}} skipped — only images, PDFs, and text files up to 10 MB can be attached",
+    "folder_drop_unsupported": "Whole folders can't be dropped here — write the folder path in your message instead and the agent will ask for access",
     "pdf_could_not_read": "Couldn't read that PDF.",
     "pdf_too_big": "{{name}} skipped — {{mb}} MB is over your {{limit}} MB limit (Settings → Token savings)",
     "pdf_too_many_pages": "{{name}} skipped — {{pages}} pages is over your {{limit}}-page limit (Settings → Token savings)",

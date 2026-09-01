@@ -9,6 +9,39 @@ const TEXT_RE =
 export const isPdfFile = (file: File) =>
   file.type === "application/pdf" || /\.pdf$/i.test(file.name);
 
+// Split a drop's DataTransfer into attachable files and folder entries. Folders must be
+// caught HERE: with Tauri's native drag-drop handler disabled, a dropped directory arrives
+// as an HTML5 File whose FileReader only errors, so readFile() would swallow it without a
+// trace. webkitGetAsEntry() (present in WebView2/Chromium) is authoritative when it returns
+// an entry; otherwise fall back to the shape a directory File takes — no MIME type and zero
+// bytes. A real extensionless text file keeps its byte size, so it stays a file.
+export function splitDataTransfer(dt: DataTransfer): { files: File[]; folders: number } {
+  const looksLikeFolder = (f: File) => f.type === "" && f.size === 0;
+  const files: File[] = [];
+  let folders = 0;
+  const items = dt.items ? Array.from(dt.items) : [];
+  if (items.some((it) => it.kind === "file")) {
+    for (const item of items) {
+      if (item.kind !== "file") continue;
+      const entry = item.webkitGetAsEntry?.();
+      if (entry?.isDirectory) {
+        folders += 1;
+        continue;
+      }
+      const file = item.getAsFile();
+      if (!file) continue;
+      if (!entry && looksLikeFolder(file)) folders += 1;
+      else files.push(file);
+    }
+  } else {
+    for (const file of Array.from(dt.files)) {
+      if (looksLikeFolder(file)) folders += 1;
+      else files.push(file);
+    }
+  }
+  return { files, folders };
+}
+
 export function readFile(file: File): Promise<Attachment | null> {
   const isImage = file.type.startsWith("image/");
   const isPdf = isPdfFile(file);
