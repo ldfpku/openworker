@@ -12,6 +12,7 @@ import {
   type RecentChannel,
 } from "../api";
 import { ConnectorBadge } from "../connectors/ConnectorIcon";
+import { AddConnectionModal } from "./connectors/AddConnectionModal";
 import { ChannelPicker } from "./SubscriptionsChip";
 import { SelectMenu } from "./SelectMenu";
 
@@ -55,67 +56,71 @@ interface QuickTemplate {
   needsRepo?: boolean;
   needsChannel?: boolean;
   consent?: boolean; // write recipes carry the §25 consent line; reads carry disclosure
-  deliver?: boolean; // Morning brief's deliver-to choice
+  deliver?: boolean; // the delivery-risk check's deliver-to choice
   day: string;
   time: string;
-  instructions: (ctx: { repo: string; channel: string; deliver: "app" | "slack" }) => string;
+  instructions: (ctx: { repo: string; channel: string; deliver: "app" | "weixin" }) => string;
 }
 
+// The manufacturing lineup (2026-09-01, the session-intro cards' shift continued): the
+// audience is equipment/quality/scheduling people, not developers. Two cards deliver over
+// WeChat — the only gated connector left; its connect is the LOCAL QR modal, never the cloud
+// broker — and the rest read the work folder, so they run with no connections at all.
 const TEMPLATES: QuickTemplate[] = [
   {
-    key: "github",
-    titleKey: "automations.tmpl_github_title",
-    blurbKey: "automations.tmpl_github_blurb",
-    cadenceKey: "automations.cadence_weekly",
-    conns: [
-      { name: "slack", whyKey: "automations.why_digest_posts" },
-      { name: "github", whyKey: "automations.why_digest_summarizes" },
-    ],
-    needsRepo: true,
+    key: "inspection",
+    titleKey: "automations.tmpl_inspection_title",
+    blurbKey: "automations.tmpl_inspection_blurb",
+    cadenceKey: "automations.cadence_weekdays",
+    conns: [{ name: "weixin", whyKey: "automations.why_weixin_delivers" }],
     needsChannel: true,
     consent: true,
-    day: "mon",
-    time: "09:00",
-    instructions: ({ repo, channel }) => {
-      const gt = getI18n().t;
-      return gt("automations.tmpl_github_instructions", { repo: repo || gt("automations.tmpl_github_repo_default"), channel });
-    },
-  },
-  {
-    key: "pipeline",
-    titleKey: "automations.tmpl_pipeline_title",
-    blurbKey: "automations.tmpl_pipeline_blurb",
-    cadenceKey: "automations.cadence_weekly",
-    conns: [
-      { name: "slack", whyKey: "automations.why_digest_posts" },
-      { name: "hubspot", whyKey: "automations.why_pipeline_activity" },
-    ],
-    needsChannel: true,
-    consent: true,
-    day: "mon",
-    time: "09:00",
+    day: "weekdays",
+    time: "07:30",
     instructions: ({ channel }) => {
       const gt = getI18n().t;
-      return gt("automations.tmpl_pipeline_instructions", { channel });
+      return gt("automations.tmpl_inspection_instructions", { channel });
     },
   },
   {
-    key: "brief",
-    titleKey: "automations.tmpl_brief_title",
-    blurbKey: "automations.tmpl_brief_blurb",
-    cadenceKey: "automations.cadence_daily",
-    conns: [
-      { name: "google_calendar", whyKey: "automations.why_meetings_gaps" },
-      { name: "gmail", whyKey: "automations.why_overnight_email" },
-    ],
+    key: "quality",
+    titleKey: "automations.tmpl_quality_title",
+    blurbKey: "automations.tmpl_quality_blurb",
+    cadenceKey: "automations.cadence_weekly",
+    conns: [{ name: "weixin", whyKey: "automations.why_weixin_delivers" }],
+    needsChannel: true,
+    consent: true,
+    day: "fri",
+    time: "16:30",
+    instructions: ({ channel }) => {
+      const gt = getI18n().t;
+      return gt("automations.tmpl_quality_instructions", { channel });
+    },
+  },
+  {
+    key: "delivery",
+    titleKey: "automations.tmpl_delivery_title",
+    blurbKey: "automations.tmpl_delivery_blurb",
+    cadenceKey: "automations.cadence_weekdays",
+    conns: [],
     deliver: true,
-    day: "daily",
-    time: "08:00",
+    day: "weekdays",
+    time: "08:30",
     instructions: ({ deliver }) => {
       const gt = getI18n().t;
-      return gt("automations.tmpl_brief_instructions_prefix") +
-        (deliver === "app" ? gt("automations.tmpl_brief_save") : gt("automations.tmpl_brief_slack"));
+      return gt("automations.tmpl_delivery_instructions_prefix") +
+        (deliver === "app" ? gt("automations.tmpl_delivery_save") : gt("automations.tmpl_delivery_weixin"));
     },
+  },
+  {
+    key: "spares",
+    titleKey: "automations.tmpl_spares_title",
+    blurbKey: "automations.tmpl_spares_blurb",
+    cadenceKey: "automations.cadence_weekly",
+    conns: [],
+    day: "mon",
+    time: "08:30",
+    instructions: () => getI18n().t("automations.tmpl_spares_instructions"),
   },
   {
     key: "news",
@@ -128,24 +133,14 @@ const TEMPLATES: QuickTemplate[] = [
     instructions: () => getI18n().t("automations.tmpl_news_instructions"),
   },
   {
-    key: "inboxdigest",
-    titleKey: "automations.tmpl_inbox_title",
-    blurbKey: "automations.tmpl_inbox_blurb",
-    cadenceKey: "automations.cadence_weekdays",
-    conns: [{ name: "gmail", whyKey: "automations.why_unread_email" }],
-    day: "weekdays",
-    time: "09:00",
-    instructions: () => getI18n().t("automations.tmpl_inbox_instructions"),
-  },
-  {
-    key: "cleanup",
-    titleKey: "automations.tmpl_cleanup_title",
-    blurbKey: "automations.tmpl_cleanup_blurb",
+    key: "filing",
+    titleKey: "automations.tmpl_filing_title",
+    blurbKey: "automations.tmpl_filing_blurb",
     cadenceKey: "automations.cadence_weekly",
     conns: [],
     day: "fri",
     time: "17:30",
-    instructions: () => getI18n().t("automations.tmpl_cleanup_instructions"),
+    instructions: () => getI18n().t("automations.tmpl_filing_instructions"),
   },
 ];
 
@@ -179,8 +174,11 @@ export function AutomationQuickstart({
   const [channel, setChannel] = useState("");
   const [day, setDay] = useState("mon");
   const [time, setTime] = useState("09:00");
-  const [deliver, setDeliver] = useState<"app" | "slack">("app");
+  const [deliver, setDeliver] = useState<"app" | "weixin">("app");
   const [consent, setConsent] = useState(true);
+  // The weixin connect row's target: its sign-in is the LOCAL QR modal (auth: "qr"), so the
+  // broker flow below — and its cloud sign-in gate — must never see it.
+  const [qrConn, setQrConn] = useState<Connector | null>(null);
 
   const refresh = () => {
     getConnectors().then(setConnectors).catch(() => {});
@@ -236,6 +234,13 @@ export function AutomationQuickstart({
   };
 
   const startConnect = async (name: string) => {
+    // QR connectors (weixin) sign in locally — open their standard connect modal and skip
+    // the cloud machinery entirely (the broker would leave the row waiting forever).
+    const qr = connState(name);
+    if (qr?.auth === "qr") {
+      setQrConn(qr);
+      return;
+    }
     if (!cloud?.signed_in) {
       setPendingConn(name); // the pane appears; sign-in completes it
       return;
@@ -529,9 +534,9 @@ export function AutomationQuickstart({
                     value={deliver}
                     options={[
                       { value: "app", label: t("automations.deliver_app") },
-                      { value: "slack", label: t("automations.deliver_slack") },
+                      { value: "weixin", label: t("automations.deliver_weixin") },
                     ]}
-                    onChange={(v) => setDeliver(v as "app" | "slack")}
+                    onChange={(v) => setDeliver(v as "app" | "weixin")}
                   />
                 </>
               )}
@@ -587,6 +592,17 @@ export function AutomationQuickstart({
             </button>
           </div>
         </div>
+      )}
+
+      {/* The QR connector's connect surface — the same modal the Connectors page opens.
+          onChanged refreshes immediately; the 3s poll would catch it anyway. */}
+      {qrConn && (
+        <AddConnectionModal
+          c={connState(qrConn.name) || qrConn}
+          cloud={cloud}
+          onClose={() => setQrConn(null)}
+          onChanged={refresh}
+        />
       )}
     </div>
   );

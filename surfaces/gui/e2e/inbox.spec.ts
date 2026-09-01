@@ -59,7 +59,7 @@ test("routing: Configure tab binds the mirror channel; Pending's status line fol
   await page.getByTestId("inbox-route-configure").click();
   const mirror = page.getByTestId("inbox-mirror-card");
   await expect(mirror).toContainText("in-app Inbox only");
-  await mirror.getByPlaceholder("slack:C0123 or channel link").fill("slack:T1DL/C0777");
+  await mirror.getByPlaceholder("Name or address (weixin:…, slack:C0123)").fill("slack:T1DL/C0777");
   await mirror.getByRole("button", { name: "Set", exact: true }).click();
   await expect(mirror).toContainText("slack:T1DL/C0777");
 

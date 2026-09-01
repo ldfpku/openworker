@@ -23,7 +23,7 @@ test("Slack channels drill-down: gating, add (auto-prefixed), remove", async ({ 
   await expect(page.getByText(/Not listening to any Slack channel yet/)).toBeVisible();
 
   // Add a bare channel id — the panel scopes it to the connector (→ "slack:C0123").
-  await page.getByPlaceholder("slack:C0123 or channel link").fill("C0123");
+  await page.getByPlaceholder("Name or address (weixin:…, slack:C0123)").fill("C0123");
   await page.getByRole("button", { name: "Add", exact: true }).click();
   await expect(page.getByText("slack:C0123", { exact: true })).toBeVisible();
   await expect(page.getByText(/Subscribed channels · 1/)).toBeVisible();
@@ -45,7 +45,7 @@ test("recent channels popover: opens on focus, filters, picks", async ({ page })
   await page.getByTestId("access-toggle").click();
   await page.getByRole("button", { name: /Channels · 0/ }).click();
 
-  const input = page.getByPlaceholder("slack:C0123 or channel link");
+  const input = page.getByPlaceholder("Name or address (weixin:…, slack:C0123)");
   await input.click();
   const pop = page.getByTestId("channel-suggestions");
   // Named channels show "#name" with the address as a sub-label; unnamed fall back to the address.
@@ -83,7 +83,7 @@ test("channel add: link URLs resolve, bare #names are rejected with a hint", asy
   await page.getByTestId("access-toggle").click();
   await page.getByRole("button", { name: /Channels · 0/ }).click();
 
-  const input = page.getByPlaceholder("slack:C0123 or channel link");
+  const input = page.getByPlaceholder("Name or address (weixin:…, slack:C0123)");
   await input.fill("#general");
   await page.getByRole("button", { name: "Add", exact: true }).click();
   await expect(page.getByTestId("channel-add-error")).toContainText(

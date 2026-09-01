@@ -53,7 +53,7 @@ test("channel typeahead: a NAME resolves to the workspace's id-address", async (
   await page.getByTestId("access-toggle").click();
   await page.getByRole("button", { name: /Channels · 0/ }).click();
 
-  const input = page.getByPlaceholder("slack:C0123 or channel link");
+  const input = page.getByPlaceholder("Name or address (weixin:…, slack:C0123)");
   await input.fill("launch");
   // Two workspaces are connected → the hit is labeled with its workspace.
   const hit = page.getByTestId("roster-channel-slack:T1DL/C9LAUNCH");
@@ -74,7 +74,7 @@ test("channel typeahead: private and not-a-member states are honest", async ({ p
   await page.getByTestId("access-toggle").click();
   await page.getByRole("button", { name: /Channels · 0/ }).click();
 
-  await page.getByPlaceholder("slack:C0123 or channel link").fill("l");
+  await page.getByPlaceholder("Name or address (weixin:…, slack:C0123)").fill("l");
   await expect(page.getByTestId("roster-channel-slack:T1DL/C8LEADS")).toContainText("🔒");
   await expect(page.getByTestId("roster-channel-slack:T1DL/C7LOBBY")).toContainText(
     "invite @ocw",
