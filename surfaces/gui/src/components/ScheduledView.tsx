@@ -14,21 +14,10 @@ import {
 import { Icon } from "./Icon";
 import { PanelHead } from "./IntegrationsView";
 import { AutomationQuickstart } from "./AutomationQuickstart";
+import { FREQ_OPTIONS, fromCron, toCron } from "../schedule";
 
 // Shared utility strings (the §28 page shell — mirrors IntegrationsView's constants).
 const CARD = "rounded-xl2 border border-line bg-panel";
-
-// Parse a simple "min hour * * dow" cron back into the time + frequency the editor uses.
-// Falls back to 09:00 / daily for anything it doesn't recognize (e.g. agent-written crons).
-function fromCron(cron?: string | null): { time: string; freq: string } {
-  const parts = (cron || "").trim().split(/\s+/);
-  if (parts.length !== 5) return { time: "09:00", freq: "daily" };
-  const [m, h, , , dow] = parts;
-  const hh = String(Math.min(23, Math.max(0, parseInt(h, 10) || 9))).padStart(2, "0");
-  const mm = String(Math.min(59, Math.max(0, parseInt(m, 10) || 0))).padStart(2, "0");
-  const freq = dow === "1-5" ? "weekdays" : dow === "0,6" || dow === "6,0" ? "weekends" : "daily";
-  return { time: `${hh}:${mm}`, freq };
-}
 
 const fmt = (t: number | null) =>
   t ? new Date(t * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "—";
@@ -61,13 +50,6 @@ function runTriggerLabel(t: (key: string) => string, trigger?: string | null): s
     default:
       return trigger || "";
   }
-}
-
-// Map a simple time-of-day + frequency selection to a 5-field cron string.
-function toCron(time: string, freq: string): string {
-  const [h, m] = (time || "09:00").split(":").map((x) => parseInt(x, 10) || 0);
-  const dow = freq === "weekdays" ? "1-5" : freq === "weekends" ? "0,6" : "*";
-  return `${m} ${h} * * ${dow}`;
 }
 
 // The §28 page shell: full-bleed main, centered ≤4xl column — same as Connectors/Activity/Inbox.
@@ -278,9 +260,9 @@ function NewAutomationForm({
             value={freq}
             onChange={(e) => setFreq(e.target.value)}
           >
-            <option value="daily">{t("automations.freq_daily")}</option>
-            <option value="weekdays">{t("automations.freq_weekdays")}</option>
-            <option value="weekends">{t("automations.freq_weekends")}</option>
+            {FREQ_OPTIONS.map((o) => (
+              <option key={o.key} value={o.key}>{t(o.labelKey)}</option>
+            ))}
           </select>
         </label>
       </div>
@@ -328,6 +310,9 @@ function TaskDetail({
   const [instructions, setInstructions] = useState("");
   const [time, setTime] = useState("09:00");
   const [freq, setFreq] = useState("daily");
+  // False when the stored schedule says more than the simple form can (agent-written
+  // cron, once-tasks) — saving would rewrite it, so the edit form must say so.
+  const [cronMatched, setCronMatched] = useState(true);
   const [saving, setSaving] = useState(false);
 
   // The seen mark AS OF opening — the "new" pills compare against this frozen value
@@ -368,9 +353,10 @@ function TaskDetail({
   const startEdit = () => {
     setTitle(task.title);
     setInstructions(task.instructions);
-    const { time: t, freq: f } = fromCron(task.schedule_raw?.cron);
+    const { time: t, freq: f, matched } = fromCron(task.schedule_raw?.cron);
     setTime(t);
     setFreq(f);
+    setCronMatched(matched);
     setEditing(true);
   };
   const saveEdit = async () => {
@@ -437,20 +423,29 @@ function TaskDetail({
         </div>
 
         {editing ? (
-          <div className="tmpl-sched sched-edit-sched">
-            <label className="tmpl-field">
-              <span>{t("automations.at")}</span>
-              <input type="time" className="tmpl-input tmpl-time" value={time} onChange={(e) => setTime(e.target.value)} />
-            </label>
-            <label className="tmpl-field">
-              <span>{t("automations.repeat")}</span>
-              <select className="tmpl-input tmpl-select" value={freq} onChange={(e) => setFreq(e.target.value)}>
-                <option value="daily">{t("automations.freq_daily")}</option>
-                <option value="weekdays">{t("automations.freq_weekdays")}</option>
-                <option value="weekends">{t("automations.freq_weekends")}</option>
-              </select>
-            </label>
-          </div>
+          <>
+            <div className="tmpl-sched sched-edit-sched">
+              <label className="tmpl-field">
+                <span>{t("automations.at")}</span>
+                <input type="time" className="tmpl-input tmpl-time" value={time} onChange={(e) => setTime(e.target.value)} />
+              </label>
+              <label className="tmpl-field">
+                <span>{t("automations.repeat")}</span>
+                <select className="tmpl-input tmpl-select" value={freq} onChange={(e) => setFreq(e.target.value)}>
+                  {FREQ_OPTIONS.map((o) => (
+                    <option key={o.key} value={o.key}>{t(o.labelKey)}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            {!cronMatched && (
+              <p className="text-[12px] text-warnInk mt-1" data-testid="cron-rewrite-warning">
+                {t("automations.cron_rewrite_warning", {
+                  schedule: task.schedule_raw?.cron || task.schedule,
+                })}
+              </p>
+            )}
+          </>
         ) : (
           <div className="conn-meta">
             <label className="switch">

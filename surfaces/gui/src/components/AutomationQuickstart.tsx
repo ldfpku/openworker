@@ -15,6 +15,7 @@ import { ConnectorBadge } from "../connectors/ConnectorIcon";
 import { AddConnectionModal } from "./connectors/AddConnectionModal";
 import { ChannelPicker } from "./SubscriptionsChip";
 import { SelectMenu } from "./SelectMenu";
+import { FREQ_OPTIONS, toCron } from "../schedule";
 
 // The Automations quickstart (UX-DECISIONS §29): ONE template system. The former onboarding
 // recipe step (§24's role recipes) merged into the page's "Start from a template" grid — every
@@ -23,29 +24,15 @@ import { SelectMenu } from "./SelectMenu";
 // sign-in pane), channel-by-name, day × time, and the §25 consent line for write recipes.
 // The `ob-*` testids moved here with the machinery.
 
-// "When" = day choice × free time (owner call 2026-07-11); the cron assembles from the two.
-// Labels are i18n keys (resolved in the component via t()).
-const DAYS: Record<string, { labelKey: string; dow: string }> = {
-  mon: { labelKey: "automations.day_mon", dow: "1" },
-  tue: { labelKey: "automations.day_tue", dow: "2" },
-  wed: { labelKey: "automations.day_wed", dow: "3" },
-  thu: { labelKey: "automations.day_thu", dow: "4" },
-  fri: { labelKey: "automations.day_fri", dow: "5" },
-  sat: { labelKey: "automations.day_sat", dow: "6" },
-  sun: { labelKey: "automations.day_sun", dow: "0" },
-  weekdays: { labelKey: "automations.freq_weekdays", dow: "1-5" },
-  daily: { labelKey: "automations.freq_daily", dow: "*" },
-};
+// "When" = day choice × free time (owner call 2026-07-11); the cron assembles from the
+// two via the shared schedule vocabulary (../schedule) — the same list the automation
+// editor's "Repeat" select uses, so every choice made here survives a later edit.
+
 // §30 connect-state spinner (the app has no other spinner — waits elsewhere are label swaps).
 // Exported for Onboarding page 2's sign-in button (same states, same look).
 export const Spinner = () => (
   <span className="inline-block w-3 h-3 rounded-full border-[1.5px] border-line2 border-t-accent animate-spin" />
 );
-
-const cronFor = (dayKey: string, hhmm: string) => {
-  const [h, m] = hhmm.split(":");
-  return `${Number(m) || 0} ${Number(h) || 9} * * ${DAYS[dayKey]?.dow ?? "*"}`;
-};
 
 interface QuickTemplate {
   key: string;
@@ -289,7 +276,7 @@ export function AutomationQuickstart({
     onCreate({
       title: t(picked.titleKey),
       instructions: picked.instructions({ repo, channel, deliver }),
-      cron: cronFor(day, time),
+      cron: toCron(time, day),
       permissions:
         picked.consent && consent && channel
           ? [{ tool: "send_message", target: channel, access: "write" }]
@@ -514,7 +501,7 @@ export function AutomationQuickstart({
                   <SelectMenu
                     ariaLabel={t("automations.day_aria")}
                     value={day}
-                    options={Object.entries(DAYS).map(([k, v]) => ({ value: k, label: t(v.labelKey) }))}
+                    options={FREQ_OPTIONS.map((o) => ({ value: o.key, label: t(o.labelKey) }))}
                     onChange={setDay}
                   />
                 </div>
