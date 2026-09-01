@@ -10,9 +10,18 @@
 # That is exactly what shipped in v0.3.2 (owner report 2026-09-01, Core Ultra 9 290HX).
 #
 # So: pin the instruction-set baseline. The binary must be a function of the source, not of
-# whichever machine compiled it. AVX2 has been universal on x86-64 since 2013 and is what
+# whichever machine compiled it. AVX2 has been universal on x86-64 since 2013 — every Windows
+# PC and every Intel Mac new enough for our macOS 12 floor has it — and it is the tier
 # whisper.cpp's own Windows releases target.
+#
+# All four x86 flags have to be named, not just AVX2: MSVC folds FMA and F16C into /arch:AVX2,
+# but clang and gcc do not, and ggml's AVX2 kernels call _mm256_fmadd_ps. Turning on AVX2
+# alone fails to compile there (macOS x64, v0.3.3). The flags are no-ops on Apple Silicon.
 [env]
 GGML_NATIVE = "OFF"
+GGML_SSE42 = "ON"
+GGML_AVX = "ON"
 GGML_AVX2 = "ON"
+GGML_FMA = "ON"
+GGML_F16C = "ON"
 GGML_AVX512 = "OFF"
