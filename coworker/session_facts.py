@@ -59,6 +59,11 @@ def _git_remotes(cwd: Path) -> tuple[tuple[str, str], ...]:
             cwd=str(cwd),
             capture_output=True,
             text=True,
+            # Same reason as projects.py: text=True would decode git's UTF-8 with cp936 on
+            # zh-CN Windows. Rarer here (remote URLs are usually ASCII), but a strict decode
+            # failure would raise straight past the OSError guard below.
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
             check=False,
         )

@@ -23,7 +23,11 @@ def _git_common_dir(workspace: Path) -> Optional[Path]:
     try:
         out = subprocess.run(
             ["git", "-C", str(workspace), "rev-parse", "--git-common-dir"],
-            capture_output=True, text=True, timeout=5,
+            # git emits UTF-8 paths on every platform, but text=True decodes with the
+            # LOCALE codec — cp936 on zh-CN Windows. A project folder with Chinese in its
+            # name came back as mojibake, and this path feeds project_key(), so the memory
+            # and board bindings keyed off it silently pointed at a garbled identity.
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
