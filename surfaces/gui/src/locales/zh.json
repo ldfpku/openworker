@@ -409,6 +409,8 @@
     "notice": {
       "max_iterations": "已停止：达到最大迭代次数。",
       "model_switched": "已切换模型",
+      "model_switched_to": "模型已切换为 {{label}}",
+      "model_switched_no_vision": "——此前的图片该模型无法读取",
       "interrupted": "已中断。",
       "error": "错误：",
       "context_compacted": "已压缩上下文",

@@ -417,6 +417,8 @@
     "notice": {
       "max_iterations": "Stopped: max iterations reached.",
       "model_switched": "Model switched",
+      "model_switched_to": "Model switched to {{label}}",
+      "model_switched_no_vision": " — earlier images can't be read by this model",
       "interrupted": "Interrupted.",
       "error": "Error: ",
       "context_compacted": "Context compacted",

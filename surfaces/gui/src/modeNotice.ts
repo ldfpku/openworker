@@ -59,3 +59,19 @@ export function reviewerPausedText(raw: string): string {
   const match = REVIEWER_PAUSED_RE.exec(raw);
   return match ? i18n.t("app.notice.reviewer_paused", { n: match[1] }) : raw;
 }
+
+// coworker/engine.py switch_model: "Model switched to {label}", plus an optional
+// " — earlier images can't be read by this model" suffix when the new model lacks vision.
+// The label is the model's display name (matrix.py `model_labels()`, falling back to the
+// raw id) — it travels through the sentence as data, so only the scaffold is translated.
+const MODEL_SWITCH_RE =
+  /^Model switched to (.+?)( — earlier images can't be read by this model)?$/;
+
+/** The mid-session model-switch marker: scaffold localized, model label kept verbatim;
+ *  unrecognized text renders unchanged. */
+export function modelSwitchText(raw: string): string {
+  const match = MODEL_SWITCH_RE.exec(raw);
+  if (!match) return raw;
+  const base = i18n.t("app.notice.model_switched_to", { label: match[1] });
+  return match[2] ? base + i18n.t("app.notice.model_switched_no_vision") : base;
+}

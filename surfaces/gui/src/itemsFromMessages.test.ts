@@ -240,4 +240,37 @@ describe("itemsFromMessages mode switch/notice localization", () => {
       text: "自动审批已为本轮对话暂停——审查器连续拦截了 5 次操作，之后的批准将改为询问你。",
     });
   });
+
+  it("localizes the model_switch marker's scaffold under zh, keeping the label verbatim", async () => {
+    await i18n.changeLanguage("zh");
+    expect(
+      itemsFromMessages([
+        { role: "notice", kind: "model_switch", text: "Model switched to Kimi K2.6 · Moonshot" },
+      ] as any)[0],
+    ).toEqual({ kind: "notice", tone: "info", text: "模型已切换为 Kimi K2.6 · Moonshot" });
+    // The no-vision suffix travels with the same marker (engine.py appends it when the new
+    // model can't read images already in history).
+    expect(
+      itemsFromMessages([
+        {
+          role: "notice",
+          kind: "model_switch",
+          text: "Model switched to glm-5.2 — earlier images can't be read by this model",
+        },
+      ] as any)[0],
+    ).toEqual({
+      kind: "notice",
+      tone: "info",
+      text: "模型已切换为 glm-5.2——此前的图片该模型无法读取",
+    });
+  });
+
+  it("keeps an unrecognized model_switch text unchanged under zh", async () => {
+    await i18n.changeLanguage("zh");
+    expect(
+      itemsFromMessages([
+        { role: "notice", kind: "model_switch", text: "Model swapped for something" },
+      ] as any)[0],
+    ).toEqual({ kind: "notice", tone: "info", text: "Model swapped for something" });
+  });
 });

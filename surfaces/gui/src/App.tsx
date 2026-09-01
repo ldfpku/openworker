@@ -52,7 +52,7 @@ import type {
 import { fullPersonaName, isProjectScoped } from "./personaScope";
 import { baseName } from "./paths";
 import { sessionDisplayTitle } from "./sessionTitle";
-import { modeNoticeBody, modeOnText, reviewerPausedText } from "./modeNotice";
+import { modelSwitchText, modeNoticeBody, modeOnText, reviewerPausedText } from "./modeNotice";
 import { itemsFromMessages } from "./itemsFromMessages";
 import { addTurnUsage, emptyUsage, formatTokens, usageFromMessages } from "./usage";
 import { streamMode } from "./streamGate";
@@ -983,7 +983,7 @@ export function App() {
           // Mid-session switch (server-applied): update the header fact and drop the
           // persisted marker into the live transcript (replay renders it from history).
           if (d.model) setModel(d.model);
-          setItems((p) => [...p, { kind: "notice", tone: "info", text: d.text || t("app.notice.model_switched") }]);
+          setItems((p) => [...p, { kind: "notice", tone: "info", text: d.text ? modelSwitchText(String(d.text)) : t("app.notice.model_switched") }]);
           break;
         case "memory_saved":
           // §5.1 save notice — inline in the transcript, where the user is already

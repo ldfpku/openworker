@@ -8,7 +8,7 @@
 import type { ConversationMessage } from "./api";
 import i18n from "./i18n";
 import type { Attachment, Item } from "./types";
-import { modeNoticeBody, modeOnText, reviewerPausedText } from "./modeNotice";
+import { modelSwitchText, modeNoticeBody, modeOnText, reviewerPausedText } from "./modeNotice";
 
 // i18n.t() returns undefined before init() (bare unit tests call this mapper without
 // initLocale(); the app always inits in main.tsx). Mirror react-i18next's graceful
@@ -104,7 +104,7 @@ export function itemsFromMessages(messages: ConversationMessage[]): Item[] {
         m.kind === "interrupted"
           ? { kind: "notice", tone: "warn", text: t("Interrupted.") }
           : m.kind === "model_switch"
-            ? { kind: "notice", tone: "info", text: m.text || t("Model switched") }
+            ? { kind: "notice", tone: "info", text: m.text ? modelSwitchText(m.text) : t("Model switched") }
             : m.kind === "compacted"
               ? // The subtle "compacted here" divider (OPE-27) — the transcript itself is intact.
                 { kind: "notice", tone: "info", text: m.text || t("Context compacted") }
