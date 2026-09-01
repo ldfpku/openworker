@@ -86,7 +86,11 @@ export const getDictationStatus = () => invoke<DictationStatus>("get_dictation_s
  * live waveform. Cheap; poll at ~10Hz. */
 export const getDictationLevel = () => invoke<number>("dictation_level");
 export const startDictation = () => invokeStrict<DictationStatus>("start_dictation");
-export const stopDictation = () => invokeStrict<string>("stop_dictation");
+/** Stops recording and returns the local transcript. The engine recognises speech in the
+ * interface language rather than auto-detecting it — on the base model that is the difference
+ * between a Chinese sentence coming back in Chinese and coming back as something else. */
+export const stopDictation = () =>
+  invokeStrict<string>("stop_dictation", { language: i18n.language });
 export const cancelDictation = () => invokeStrict<void>("cancel_dictation");
 export const downloadDictationModel = () => invokeStrict<DictationStatus>("download_dictation_model");
 export const cancelDictationModelDownload = () => invokeStrict<void>("cancel_dictation_model_download");

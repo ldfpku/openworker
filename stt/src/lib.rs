@@ -303,7 +303,12 @@ impl Dictation {
 
     /// Stops capture and returns a final local transcript. This is intentionally synchronous so
     /// hosts can run it off their UI thread and decide how to present completion/error states.
-    pub fn stop_and_transcribe(&self) -> Result<String, String> {
+    ///
+    /// `ui_language` is the host's current interface language (`"zh"`, `"en"`, …). Naming the
+    /// language beats leaving the model to auto-detect: on the base model a short Chinese
+    /// utterance is regularly misheard as some other language, and the tag also lets us pin
+    /// the output script (see [`transcribe`]). `None` falls back to auto-detection.
+    pub fn stop_and_transcribe(&self, ui_language: Option<&str>) -> Result<String, String> {
         let (reply, result) = mpsc::channel();
         self.commands
             .send(Command::Stop(reply))
@@ -317,7 +322,11 @@ impl Dictation {
         if samples.len() < (sample_rate as usize / 4) {
             return Ok(String::new());
         }
-        transcribe(&self.model_path, &resample_mono(&samples, sample_rate))
+        transcribe(
+            &self.model_path,
+            &resample_mono(&samples, sample_rate),
+            ui_language,
+        )
     }
 
     /// Instantaneous input loudness of the in-flight recording, 0.0..=1.0 — RMS over the
@@ -592,7 +601,49 @@ fn resample_mono(input: &[f32], source_rate: u32) -> Vec<f32> {
         .collect()
 }
 
-fn transcribe(model_path: &Path, samples: &[f32]) -> Result<String, String> {
+/// Whisper's language tag for a host interface language. Anything we don't recognise is left
+/// to the model's own detection rather than guessed at.
+fn whisper_language(ui_language: Option<&str>) -> &'static str {
+    let Some(tag) = ui_language else {
+        return "auto";
+    };
+    let tag = tag.trim().to_ascii_lowercase();
+    if tag.starts_with("zh") {
+        "zh"
+    } else if tag.starts_with("en") {
+        "en"
+    } else {
+        "auto"
+    }
+}
+
+/// Whisper writes Mandarin in Traditional characters unless it is primed otherwise. Seeding the
+/// decoder with a Simplified sentence is whisper.cpp's documented way to pin the script, and it
+/// costs nothing on audio that turns out not to be Chinese.
+const SIMPLIFIED_CHINESE_PRIMER: &str = "以下是普通话的句子。";
+
+/// Whisper marks stretches with no speech using bracketed labels — `[BLANK_AUDIO]`, `(音乐)`,
+/// `[MUSIC]`. Those are not a transcript: pasting one into the composer, or accepting one as a
+/// passing microphone test, is worse than reporting nothing at all.
+fn is_only_non_speech_markers(text: &str) -> bool {
+    let mut depth = 0_i32;
+    let mut spoken = String::new();
+    for character in text.chars() {
+        match character {
+            '[' | '(' | '【' | '（' => depth += 1,
+            ']' | ')' | '】' | '）' => depth = (depth - 1).max(0),
+            _ if depth == 0 => spoken.push(character),
+            _ => {}
+        }
+    }
+    spoken.trim().is_empty()
+}
+
+fn transcribe(
+    model_path: &Path,
+    samples: &[f32],
+    ui_language: Option<&str>,
+) -> Result<String, String> {
     if !model_path.is_file() {
         return Err("The local voice model is not installed yet.".to_owned());
     }
@@ -606,8 +657,12 @@ fn transcribe(model_path: &Path, samples: &[f32]) -> Result<String, String> {
     let mut state = context
         .create_state()
         .map_err(|e| format!("Could not prepare transcription: {e}"))?;
+    let language = whisper_language(ui_language);
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-    params.set_language(Some("auto"));
+    params.set_language(Some(language));
+    if language == "zh" {
+        params.set_initial_prompt(SIMPLIFIED_CHINESE_PRIMER);
+    }
     params.set_translate(false);
     params.set_print_progress(false);
     params.set_print_special(false);
@@ -624,7 +679,11 @@ fn transcribe(model_path: &Path, samples: &[f32]) -> Result<String, String> {
             .map_err(|e| format!("Could not read the transcript: {e}"))?;
         text.push_str(segment);
     }
-    Ok(text.trim().to_owned())
+    let text = text.trim();
+    if is_only_non_speech_markers(text) {
+        return Ok(String::new());
+    }
+    Ok(text.to_owned())
 }
 
 #[cfg(test)]
@@ -635,9 +694,27 @@ mod tests {
     };
 
     use super::{
-        resample_mono, write_verification_marker, Dictation, DEFAULT_MODEL_BYTES,
-        DEFAULT_MODEL_FILE,
+        is_only_non_speech_markers, resample_mono, whisper_language, write_verification_marker,
+        Dictation, DEFAULT_MODEL_BYTES, DEFAULT_MODEL_FILE,
     };
+
+    #[test]
+    fn the_interface_language_chooses_the_recognition_language() {
+        assert_eq!(whisper_language(Some("zh")), "zh");
+        assert_eq!(whisper_language(Some("zh-CN")), "zh");
+        assert_eq!(whisper_language(Some("en-US")), "en");
+        // Anything we have no mapping for is the model's problem, not a guess of ours.
+        assert_eq!(whisper_language(Some("fr")), "auto");
+        assert_eq!(whisper_language(None), "auto");
+    }
+
+    #[test]
+    fn silence_labels_do_not_count_as_a_transcript() {
+        assert!(is_only_non_speech_markers("[BLANK_AUDIO]"));
+        assert!(is_only_non_speech_markers(" [MUSIC] （音乐） "));
+        assert!(!is_only_non_speech_markers("你好，这是一次测试。"));
+        assert!(!is_only_non_speech_markers("[BLANK_AUDIO] 你好"));
+    }
 
     #[test]
     fn resampling_preserves_a_16khz_stream() {

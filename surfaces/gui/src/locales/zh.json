@@ -353,7 +353,7 @@
     "voice_unsupported": "不支持",
     "voice_verified": "已验证",
     "voice_verifying": "验证中…",
-    "voice_whisper_title": "Whisper Base · 英语",
+    "voice_whisper_title": "Whisper Base · 多语言（含中文）",
     "voice_windows": "Windows",
     "voice_windows_detail": "下载一个 whisper.cpp 模型以启用语音输入。",
     "trusted_workspaces": "受信任的工作区",

@@ -566,10 +566,15 @@ async fn start_dictation(
     .map_err(|e| format!("Dictation failed to start: {e}"))?
 }
 
+/// `language` is the SPA's current interface language; the engine recognises speech in it
+/// instead of guessing, which is what makes short Chinese utterances come out as Chinese.
 #[tauri::command]
-async fn stop_dictation(state: tauri::State<'_, Arc<Dictation>>) -> Result<String, String> {
+async fn stop_dictation(
+    state: tauri::State<'_, Arc<Dictation>>,
+    language: Option<String>,
+) -> Result<String, String> {
     let dictation = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || dictation.stop_and_transcribe())
+    tauri::async_runtime::spawn_blocking(move || dictation.stop_and_transcribe(language.as_deref()))
         .await
         .map_err(|e| format!("Dictation stopped unexpectedly: {e}"))?
 }

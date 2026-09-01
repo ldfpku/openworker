@@ -1,0 +1,18 @@
+# Cargo settings that must hold for every build of this repo — local, CI, and release alike.
+#
+# Why this file exists: the local speech-to-text engine (stt/) statically links whisper.cpp,
+# whose CMake defaults to GGML_NATIVE=ON. That probes the CPU of the machine doing the BUILD
+# and bakes whatever it finds into the binary. A release compiled on a GitHub Actions Windows
+# runner that happens to have AVX-512 therefore ships AVX-512 instructions, and every user
+# whose CPU lacks them — every Intel hybrid chip since Alder Lake, every AMD before Zen 4 —
+# gets STATUS_ILLEGAL_INSTRUCTION (0xc000001d) the instant dictation starts transcribing. The
+# process dies on the spot: no error dialog, no transcript, the window simply disappears.
+# That is exactly what shipped in v0.3.2 (owner report 2026-09-01, Core Ultra 9 290HX).
+#
+# So: pin the instruction-set baseline. The binary must be a function of the source, not of
+# whichever machine compiled it. AVX2 has been universal on x86-64 since 2013 and is what
+# whisper.cpp's own Windows releases target.
+[env]
+GGML_NATIVE = "OFF"
+GGML_AVX2 = "ON"
+GGML_AVX512 = "OFF"
