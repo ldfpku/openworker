@@ -438,9 +438,12 @@ def test_build_code_engine_injects_memory(tmp_path):
         workspace=tmp_path, provider=_StubProvider(), memory_store=store
     )
     try:
-        assert {"remember", "memory_update", "memory_forget"} <= set(
-            engine.registry.names()
-        )
+        # `remember` stays listed (the common-path write); memory_update/memory_forget
+        # are prompt-budget round 3's hold_back list — registered but out of schemas()
+        # until called by name, so check reachability via get() instead of names().
+        assert "remember" in engine.registry.names()
+        assert engine.registry.get("memory_update") is not None
+        assert engine.registry.get("memory_forget") is not None
         assert engine.messages[0]["role"] == "system"
         # when-to-remember guidance is static (it never changes)...
         assert "memory_update" in engine.messages[0]["content"]
@@ -525,7 +528,9 @@ def test_engine_registers_memory_read_and_revised_guidance(tmp_path):
         workspace=tmp_path, provider=_StubProvider(), memory_store=store
     )
     try:
-        assert "memory_read" in engine.registry.names()
+        # Held back (prompt-budget round 3): registered, just out of schemas() until
+        # called by name — check reachability via get() instead of names().
+        assert engine.registry.get("memory_read") is not None
         sys_prompt = engine.messages[0]["content"]
         # spec §4.2: conservative bias, sensitive-ask-first, announce-on-save
         assert "Save conservatively" in sys_prompt

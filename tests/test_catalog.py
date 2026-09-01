@@ -37,8 +37,9 @@ COWORK_TOOLS = {
     "list_files",
     "read_file",  # numbered/windowed — one reader everywhere (owner ruling 2026-08-20)
     "write_file",
-    "apply_unified_diff",
-    "apply_patch",
+    # `apply_patch` / `apply_unified_diff` are Code-only (see CODE_TOOLS): knowledge-work
+    # personas only need one editor, `replace_in_file` — three overlapping ones just cost
+    # schema (prompt-budget round 3, 2026-09-01).
     "replace_in_file",
     "grep",
     "run_shell",

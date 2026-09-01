@@ -2840,6 +2840,13 @@ def create_app(manager: SessionManager) -> FastAPI:
                     else:
                         previous = engine.permissions.mode
                         engine.permissions.mode = new_mode
+                        if new_mode is Mode.PLAN:
+                            # propose_plan is held back at build time (prompt-budget
+                            # cut) unless the session STARTED in plan mode; a mid-
+                            # session flip into plan mode needs it ready for the very
+                            # next turn's schema, not left to a blind first call.
+                            # None for a lead session, which never registers it.
+                            engine.registry.get("propose_plan")
                         if previous is not new_mode:
                             manager.audit_autonomy_change(
                                 session_id, "mode", previous.value, new_mode.value

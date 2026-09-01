@@ -81,7 +81,10 @@ def _files(context: AgentContext) -> list:
     file_kwargs = (
         {"roots": context.roots} if context.roots else {"root": ws, "allow_write": True}
     )
-    replaced = {"search_files", "read_file", "read_file_lines"}
+    # Knowledge-work personas only need one editor, not three overlapping ones: keep
+    # `replace_in_file` and drop aisuite's `apply_patch` / `apply_unified_diff` too (Code
+    # keeps all three — see `_code_files` above).
+    replaced = {"search_files", "read_file", "read_file_lines", "apply_patch", "apply_unified_diff"}
     files = [
         t
         for t in ai.toolkits.files(**file_kwargs)

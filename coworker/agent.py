@@ -226,6 +226,45 @@ def _skill_dirs(workspace: Optional[Path]) -> list[Path]:
     return dirs
 
 
+# One clause per tool that ToolRegistry.hold_back() can hide, keyed by the name(s) that
+# have to have actually been held back for the clause to be true. A pair sharing one
+# clause (the two shell-task helpers, the two memory revision tools) only prints when
+# BOTH names were held back — which is always, since they're only ever registered
+# together — so the sentence never claims a tool exists that this session doesn't have.
+_HOLD_BACK_HINTS: list[tuple[tuple[str, ...], str]] = [
+    (("request_directory",), "request_directory(reason) — ask the user to grant another folder"),
+    (("send_file",), "send_file — deliver a workspace file into a connected chat"),
+    (("save_skill",), "save_skill — propose saving a reusable skill"),
+    (
+        ("shell_task_output", "shell_task_kill"),
+        "shell_task_output(task_id) / shell_task_kill(task_id) — read or stop a "
+        "background shell task",
+    ),
+    (
+        ("memory_update", "memory_forget"),
+        "memory_update / memory_forget — revise or retire a saved memory",
+    ),
+    (("memory_read",), "memory_read — search saved memories"),
+]
+
+
+def _hold_back_hint(held_back: list[str]) -> str:
+    """One line reminding the model that a held-back tool still answers to its name —
+    the whole risk hold_back() takes on. Built ONLY from what `held_back` actually
+    contains (never a fixed string), so a session missing a capability (no memory store,
+    no messaging, the lead role) doesn't get told a tool exists that it doesn't. Returns
+    "" when nothing was held back, or when the only thing held back was `propose_plan` —
+    that one is named by `_PLAN_MODE_CONTEXT` instead, on the turns it actually matters."""
+    held = set(held_back)
+    entries = [text for names, text in _HOLD_BACK_HINTS if held.issuperset(names)]
+    if not entries:
+        return ""
+    return (
+        "Some tools are registered but not listed to save context; call them directly "
+        "by name when needed: " + "; ".join(entries) + "."
+    )
+
+
 def build_engine(
     *,
     agent: Agent,
@@ -561,6 +600,40 @@ def build_engine(
 
         registry.register(propose_work_items_tool())
         registry.register(propose_team_tool())
+
+    # Third pass on prompt budget (2026-09-01): a handful of tools are registered above
+    # like everything else, then immediately pulled back behind ToolRegistry.hold_back()
+    # — out of schemas() until the model names one directly, at which point get() puts it
+    # right back (same one-silent-load contract defer() already gives connector sets).
+    # These are exactly the tools a normal turn never opens with: granting another
+    # folder, delivering a file into chat, proposing a skill, polling/killing a
+    # background shell task, revising or searching saved memories. hold_back() skips
+    # names this session never registered in the first place (no messaging ⇒ no
+    # send_file, no memory_store ⇒ no memory_*), so the call is safe to make unconditionally.
+    # propose_plan is the one name gated by mode rather than by registration: a session
+    # that STARTS in Mode.PLAN needs it on the very first turn, so it's left alone there;
+    # everywhere else it's held back too (a mode flip INTO plan mid-session is handled by
+    # the server/TUI /mode paths calling registry.get("propose_plan") to materialize it —
+    # see coworker/server/app.py and coworker/tui/app.py). The lead role never registers
+    # propose_plan at all (line 554 above), so it's simply absent from `held_back` too —
+    # hold_back skipping an unregistered name is the same no-op that already protects
+    # that gate.
+    hold_back_names = [
+        "request_directory",
+        "save_skill",
+        "send_file",
+        "shell_task_output",
+        "shell_task_kill",
+        "memory_update",
+        "memory_forget",
+        "memory_read",
+    ]
+    if mode is not Mode.PLAN:
+        hold_back_names.append("propose_plan")
+    held_back = registry.hold_back(hold_back_names)
+    hold_back_hint = _hold_back_hint(held_back)
+    if hold_back_hint:
+        instructions = f"{instructions}\n\n{hold_back_hint}"
 
     # Per-turn ephemeral context, appended to the latest user message since mid-thread system
     # messages aren't reliable across providers. Three producers: the plan-mode reminder (mode can

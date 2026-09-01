@@ -11,6 +11,12 @@ OPE-51 upgrades: options may be rich objects ({label, description, recommended, 
 of plain strings, and `questions` groups up to 4 questions into ONE call (rendered as a stepper —
 one agent round-trip instead of several). Plain-string options and the singular `question` form
 stay valid: old sessions and simple asks render exactly as before.
+
+The schema advertised to the model only offers the grouped `questions` form now (a single question
+is just a one-item array — Claude Code's own AskUserQuestion works the same way); it roughly halved
+the schema's token cost. The singular top-level `question`/`options`/`allow_text`/`multi`/`header`
+args are still accepted at runtime — `ask_user()`'s signature, `question_item_fields`, and
+`answer_result` are unchanged — so old transcripts and direct callers keep working.
 """
 
 from __future__ import annotations
@@ -44,53 +50,27 @@ _OPTION_SCHEMA = {
 
 # Explicit schema (same pattern as todo.py): the string-or-object option union and the nested
 # `questions` array can't be auto-generated from the signature reliably.
+#
+# Only the grouped form is advertised (a single question is just a one-item array) — matching
+# Claude Code's own AskUserQuestion, and keeping this, the biggest tool schema, off a second copy
+# of the option/question fields. `ask_user()` itself still accepts the old singular top-level
+# args at runtime; see the module docstring.
 _ASK_SCHEMA = {
     "type": "function",
     "function": {
         "name": "ask_user",
         "description": (
-            "Ask the user one or more questions and wait for their answer. Use for decisions or "
-            "information only the user can provide. Do not use it to ask permission for a "
-            "specific action you are about to take — propose the action instead; the approval "
-            "flow shows the user exactly what would run and does the asking. Group related "
-            f"questions (up to {MAX_GROUPED_QUESTIONS}) into one call via `questions` instead "
-            "of asking serially."
+            "Ask the user one or more questions and wait for their answer — for decisions/info "
+            "only the user can give, never to request permission for an action (propose it "
+            f"instead). A single question is a one-item `questions` array; group up to "
+            f"{MAX_GROUPED_QUESTIONS} instead of asking serially."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "question": {
-                    "type": "string",
-                    "description": "The full question, in plain language (single-question form).",
-                },
-                "options": {
-                    "type": "array",
-                    "items": _OPTION_SCHEMA,
-                    "description": (
-                        "Optional quick-reply choices: plain strings, or objects with `label` "
-                        "(required — this is the answer value), `description` (why/when to pick "
-                        "it), `recommended` (green tag; list that option first), and `preview` "
-                        "(monospace text — code, config, a mockup — shown in a side pane)."
-                    ),
-                },
-                "allow_text": {
-                    "type": "boolean",
-                    "description": (
-                        "Keep a free-text answer available even when options exist (default true; "
-                        "the \"Other / type your own\" escape). Set false only when the options "
-                        "are exhaustive."
-                    ),
-                },
-                "multi": {
-                    "type": "boolean",
-                    "description": "Allow the user to pick more than one option.",
-                },
-                "header": {
-                    "type": "string",
-                    "description": "Short (≤ ~12 char) chip label for the card, e.g. \"Region\".",
-                },
                 "questions": {
                     "type": "array",
+                    "minItems": 1,
                     "maxItems": MAX_GROUPED_QUESTIONS,
                     "items": {
                         "type": "object",
@@ -98,25 +78,28 @@ _ASK_SCHEMA = {
                             "question": {"type": "string"},
                             "header": {
                                 "type": "string",
+                                "description": "Short (≤ ~12 char) chip label, e.g. \"Region\".",
+                            },
+                            "options": {
+                                "type": "array",
+                                "items": _OPTION_SCHEMA,
                                 "description": (
-                                    "Short (≤ ~12 char) label — names this step in the stepper "
-                                    "chips and keys its answer in the result."
+                                    "Quick-reply choices: strings, or {label (required), "
+                                    "description, recommended (bool), preview (side-pane text)}."
                                 ),
                             },
-                            "options": {"type": "array", "items": _OPTION_SCHEMA},
-                            "allow_text": {"type": "boolean"},
-                            "multi": {"type": "boolean"},
+                            "allow_text": {
+                                "type": "boolean",
+                                "description": "Free-text escape alongside options (default true).",
+                            },
+                            "multi": {"type": "boolean", "description": "Allow picking >1 option."},
                         },
                         "required": ["question"],
                     },
-                    "description": (
-                        f"Grouped form: up to {MAX_GROUPED_QUESTIONS} questions asked in ONE "
-                        "round-trip, rendered as a stepper. When set, the singular "
-                        "question/options fields are ignored."
-                    ),
+                    "description": f"1-{MAX_GROUPED_QUESTIONS} questions, one call.",
                 },
             },
-            "required": [],
+            "required": ["questions"],
         },
     },
 }

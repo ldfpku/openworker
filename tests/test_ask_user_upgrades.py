@@ -25,20 +25,32 @@ from test_durable_resume import ScriptedProvider, _run_until_pending, _text, _to
 # -- schema -------------------------------------------------------------------
 
 
-def test_schema_advertises_rich_options_and_grouped_questions():
+def test_schema_advertises_only_the_grouped_questions_form():
     fn = ask_user_tool().__coworker_schema__["function"]
     assert fn["name"] == "ask_user"
     props = fn["parameters"]["properties"]
-    # options: string-or-object union, object requires `label`
-    variants = props["options"]["items"]["anyOf"]
+    # Only `questions` is advertised — no singular question/options/allow_text/multi/header
+    # left over at the top level (a single question is just a one-item `questions` array).
+    assert set(props) == {"questions"}
+    assert fn["parameters"]["required"] == ["questions"]
+    # grouped: capped, each entry requires `question`
+    grouped = props["questions"]
+    assert grouped["minItems"] == 1
+    assert grouped["maxItems"] == MAX_GROUPED_QUESTIONS
+    item_props = grouped["items"]["properties"]
+    assert grouped["items"]["required"] == ["question"]
+    assert set(item_props) == {"question", "header", "options", "allow_text", "multi"}
+    # options (nested under each question now): string-or-object union, object requires `label`
+    variants = item_props["options"]["items"]["anyOf"]
     assert {"type": "string"} in variants
     obj = next(v for v in variants if v.get("type") == "object")
     assert obj["required"] == ["label"]
     assert set(obj["properties"]) == {"label", "description", "recommended", "preview"}
-    # grouped: capped, each entry requires `question`
-    grouped = props["questions"]
-    assert grouped["maxItems"] == MAX_GROUPED_QUESTIONS
-    assert grouped["items"]["required"] == ["question"]
+
+
+def test_schema_size_guardrail():
+    # The biggest tool schema in the registry — keep it lean. json.dumps ≈ token count.
+    assert len(json.dumps(ask_user_tool().__coworker_schema__)) < 1400
 
 
 # -- normalization helpers ----------------------------------------------------
@@ -76,6 +88,26 @@ def test_question_item_fields_rich_options_canonicalized():
     assert fields["options"] == [
         {"label": "staging", "description": "", "recommended": True, "preview": ""}
     ]
+
+
+def test_question_item_fields_singleton_group_matches_legacy_singular_form():
+    # Since the schema now only ever advertises `questions`, the model sends a one-item array
+    # even for a lone question. Its title/options must land the same as the old singular form
+    # (`question`/`options` at the top level) — the two are equivalent, not a stepper of 1.
+    grouped = question_item_fields(
+        {"questions": [{"question": "Env?", "options": ["staging", "prod"]}]}
+    )
+    singular = question_item_fields({"question": "Env?", "options": ["staging", "prod"]})
+    assert grouped["title"] == singular["title"] == "Env?"
+    # `normalize_questions` canonicalizes every option (grouped path always does, even a
+    # singleton group); the singular path leaves plain strings untouched. Different shape, same
+    # answer values — compare by label, which is what surfaces actually render/answer with.
+    assert [o["label"] for o in grouped["options"]] == singular["options"] == ["staging", "prod"]
+    assert grouped["allow_text"] == singular["allow_text"]
+    assert grouped["header"] == singular["header"] == ""
+    # The only real difference: the grouped item also carries the full `questions` list (length
+    # 1), which is what tells surfaces whether to key the answer as {"answer"} or {"answers"}.
+    assert len(grouped["questions"]) == 1 and singular["questions"] == []
 
 
 def test_question_item_fields_grouped_surfaces_first_question():
@@ -166,6 +198,20 @@ def test_grouped_questions_get_no_buttons(tmp_path):
     )
     item = store.add_question("s1", **fields)
     assert buttons_for(item) == []  # one button row can't answer 2+ questions
+
+
+def test_singleton_question_group_still_gets_buttons(tmp_path):
+    # The schema now only advertises `questions`, so a lone question also arrives as a
+    # one-item array — it must keep getting channel buttons, same as the old singular form
+    # (only 2+ questions fall back to plain text; see the test above).
+    store = InboxStore(tmp_path / "inbox.json")
+    fields = question_item_fields(
+        {"questions": [{"question": "Env?", "options": ["staging", "prod"]}]}
+    )
+    item = store.add_question("s1", **fields)
+    btns = buttons_for(item)
+    assert [b.label for b in btns] == ["staging", "prod"]
+    assert decode(btns[0].value) == (item.id, "staging")
 
 
 # -- full stack: grouped call → Inbox item → JSON resolution → {answers} ------

@@ -49,9 +49,11 @@ def buttons_for(item) -> list[Button]:
             Button("Approve", encode(item.id, "allow")),
             Button("Deny", encode(item.id, "deny")),
         ]
-    if item.kind == KIND_QUESTION and getattr(item, "questions", None):
+    if item.kind == KIND_QUESTION and len(getattr(item, "questions", None) or []) > 1:
         # Grouped questions (OPE-51): one button row can't answer 2+ questions — send plain text
-        # with the open-the-app hint instead.
+        # with the open-the-app hint instead. A ONE-item group (the schema now always sends
+        # `questions`, even for a lone question) falls through to the plain-options branch below —
+        # `question_item_fields` already surfaced that single question's options as item.options.
         return []
     if item.kind == KIND_QUESTION and getattr(item, "options", None):
         # One button per option; the resolution IS the chosen option's label (what the agent

@@ -230,7 +230,10 @@ function QuestionCard({
 }) {
   const { t } = useTranslation();
   const specs = specsFor(item);
-  const grouped = (item.questions?.length ?? 0) > 0;
+  // The schema now only advertises the grouped `questions` form, so a lone question also
+  // arrives as a one-item array — render it identically to the old singular form (no stepper
+  // chrome, plain-answer resolution), and reserve the stepper for 2+ questions.
+  const grouped = specs.length > 1;
   const [step, setStep] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const spec = specs[Math.min(step, specs.length - 1)];

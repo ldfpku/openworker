@@ -64,6 +64,31 @@ class ToolRegistry:
         for name in names:
             self._deferred.setdefault(name, loader)
 
+    def hold_back(self, names: list[str]) -> list[str]:
+        """The back half of on-demand loading for a tool that's already REGISTERED, not
+        one built lazily from scratch: `defer()` supplies a loader for a name that never
+        existed yet (a connector set, a scheduling toolset); `hold_back` takes a live
+        ToolSpec out of `_tools` and re-files it under `_deferred` behind a loader that
+        just puts the SAME spec back — registration is unaffected, only when it re-enters
+        schemas() moves later, to whenever the model names it. Names not currently
+        registered are skipped (not an error): a persona that never registered a given
+        tool — no messaging ⇒ no `send_file`, the lead role ⇒ no `propose_plan` — ends up
+        in exactly the same place either way. Returns the names actually moved, so a
+        caller can build user-facing text from what really happened instead of the
+        requested list."""
+        moved: list[str] = []
+        for name in names:
+            spec = self._tools.pop(name, None)
+            if spec is None:
+                continue
+
+            def _reinstate(spec: ToolSpec = spec) -> None:
+                self._tools[spec.name] = spec
+
+            self._deferred[name] = _reinstate
+            moved.append(name)
+        return moved
+
     def names(self) -> list[str]:
         return list(self._tools)
 

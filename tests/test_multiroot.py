@@ -408,7 +408,9 @@ def test_gated_session_registers_request_directory(tmp_path):
     repo = _repo(tmp_path)
     engine = mgr.get_engine("sessGated4", agent="code", workspace=str(repo))
     assert engine is not None
-    assert "request_directory" in engine.registry.names()
+    # Prompt-budget round 3: registered but held back out of schemas() until called by
+    # name (coworker.agent.build_engine's hold_back list) — check via get(), not names().
+    assert engine.registry.get("request_directory") is not None
 
 
 def test_gated_session_save_and_rebuild_keeps_roots_stable(tmp_path):

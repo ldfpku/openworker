@@ -228,6 +228,10 @@ class CoworkerApp(App):
             self.mode = Mode(arg)
             if self.engine:
                 self.engine.permissions.mode = self.mode
+                if self.mode is Mode.PLAN:
+                    # Materialize the held-back propose_plan now so the next turn's
+                    # schema has it ready (see coworker/agent.py build_engine).
+                    self.engine.registry.get("propose_plan")
             self._write(f"mode → {arg}")
         elif name == "/model" and arg:
             self.model = arg
