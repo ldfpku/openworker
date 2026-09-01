@@ -8,6 +8,7 @@
 import type { ConversationMessage } from "./api";
 import i18n from "./i18n";
 import type { Attachment, Item } from "./types";
+import { modeNoticeBody, modeOnText, reviewerPausedText } from "./modeNotice";
 
 // i18n.t() returns undefined before init() (bare unit tests call this mapper without
 // initLocale(); the app always inits in main.tsx). Mirror react-i18next's graceful
@@ -120,12 +121,28 @@ export function itemsFromMessages(messages: ConversationMessage[]): Item[] {
                     { kind: "notice", tone: "info", text: m.text || "" }
                   : m.kind === "reviewer_paused"
                     ? // §8.4 breaker: auto-approve paused itself for the rest of the turn.
-                      { kind: "notice", tone: "info", text: m.text || "Auto-approve paused for the rest of this turn." }
+                      // The literal fallback covers records with a missing text field only;
+                      // it won't match reviewerPausedText's pattern and renders as-is.
+                      {
+                        kind: "notice",
+                        tone: "info",
+                        text: reviewerPausedText(
+                          m.text || "Auto-approve paused for the rest of this turn."
+                        ),
+                      }
                     : m.kind === "mode_notice"
-                      ? // The once-per-session Auto-Approve explainer, in place forever.
-                        { kind: "notice", tone: "info", title: (m as any).title || "Auto-approve is on.", text: m.text || "" }
+                      ? // The once-per-session Auto-Approve explainer, in place forever. Server-
+                        // authored English, persisted verbatim — localized at display time (same
+                        // reasoning as the session-title sentinel: the generator can't change
+                        // without leaving every already-persisted notice stuck in English).
+                        {
+                          kind: "notice",
+                          tone: "info",
+                          title: modeOnText((m as any).title || "Auto-approve is on."),
+                          text: modeNoticeBody(m.text || ""),
+                        }
                       : m.kind === "mode_switch"
-                        ? { kind: "notice", tone: "info", text: m.text || "" }
+                        ? { kind: "notice", tone: "info", text: modeOnText(m.text || "") }
                   : {
                       kind: "notice",
                       tone: "warn",

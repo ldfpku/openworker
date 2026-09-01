@@ -51,6 +51,8 @@ import type {
 } from "./types";
 import { fullPersonaName, isProjectScoped } from "./personaScope";
 import { baseName } from "./paths";
+import { sessionDisplayTitle } from "./sessionTitle";
+import { modeNoticeBody, modeOnText, reviewerPausedText } from "./modeNotice";
 import { itemsFromMessages } from "./itemsFromMessages";
 import { addTurnUsage, emptyUsage, formatTokens, usageFromMessages } from "./usage";
 import { streamMode } from "./streamGate";
@@ -927,10 +929,15 @@ export function App() {
           );
           // §8.4 breaker: the reviewer paused itself for the rest of the turn — say so
           // where the user is looking (persisted server-side for reloads) and on the
-          // composer's mode chip.
+          // composer's mode chip. Server-authored English (coworker/engine.py) — localized
+          // here the same way the persisted-history replay does (modeNotice.ts), so the
+          // live notice and a post-reload replay of the same event read the same.
           if (d.reviewer_paused) {
             setReviewerPaused(true);
-            setItems((p) => [...p, { kind: "notice", tone: "info", text: String(d.reviewer_paused) }]);
+            setItems((p) => [
+              ...p,
+              { kind: "notice", tone: "info", text: reviewerPausedText(String(d.reviewer_paused)) },
+            ]);
           }
           // Refresh the right rail when something it shows may have changed: browser state, or a
           // file write that should appear under Artifacts immediately (not only after the turn).
@@ -957,10 +964,19 @@ export function App() {
           break;
         case "mode_notice":
           // Server-authored + persisted (owner ruling 2026-08-24): the Auto-Approve
-          // explainer once per session ever, one-line markers for later switches.
+          // explainer once per session ever, one-line markers for later switches. Both
+          // shapes are server-authored English (coworker/permissions.py) — localized at
+          // display time, same mapping the persisted-history replay uses (modeNotice.ts).
           setItems((p) => [
             ...p,
-            { kind: "notice", tone: "info", ...(d.title ? { title: d.title } : {}), text: d.text || "" },
+            d.title
+              ? {
+                  kind: "notice",
+                  tone: "info",
+                  title: modeOnText(String(d.title)),
+                  text: modeNoticeBody(String(d.text || "")),
+                }
+              : { kind: "notice", tone: "info", text: modeOnText(String(d.text || "")) },
           ]);
           break;
         case "model_changed":
@@ -1636,7 +1652,7 @@ export function App() {
     subtitleParts.push(tempWorkspace ? t("root.temporary_space") : baseName(workspace));
   const showSaveAsProject = hasHistory && tempWorkspace && isProjectScoped(personaOf(agent));
   const activeInfo = sessions.find((s) => s.session_id === sessionId);
-  const activeTitle = activeInfo?.title || t("sidebar.new_session");
+  const activeTitle = activeInfo ? sessionDisplayTitle(activeInfo) : t("sidebar.new_session");
 
   const desktop = isTauri();
   // Dev-only: `?overlay=1` simulates the desktop overlay layout in the browser (adds the

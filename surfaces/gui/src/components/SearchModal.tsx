@@ -6,6 +6,7 @@ import type { SessionInfo } from "../types";
 import { isProjectScoped, shortPersonaName } from "../personaScope";
 import { Icon } from "./Icon";
 import { baseName } from "../paths";
+import { sessionDisplayTitle } from "../sessionTitle";
 
 // Command-palette search (Codex-style): clicking Search opens this overlay over the whole app
 // rather than filtering the sidebar in place (which made the grouped list collapse). It searches
@@ -102,7 +103,7 @@ export function SearchModal({
         onClick={() => choose(s)}
       >
         <span className="min-w-0 flex-1 truncate text-[13px] text-ink">
-          {s.title || s.session_id}
+          {sessionDisplayTitle(s)}
         </span>
         <span className="text-[12px] text-faint shrink-0">{tagFor(s)}</span>
         {idx < 9 && (

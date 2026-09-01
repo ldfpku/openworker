@@ -11,6 +11,7 @@
   },
   "sidebar": {
     "new_session": "New session",
+    "untitled_session": "New session",
     "new_project": "New project",
     "collapse": "Collapse sidebar",
     "dock": "Dock sidebar",
@@ -121,7 +122,8 @@
       "auto": "Bypass approvals",
       "auto_desc": "Run everything without asking — approvals off",
       "auto_approve": "Auto-approve",
-      "auto_approve_desc": "Let your session model classify actions and handle approvals, prompting you for anything it's unsure about"
+      "auto_approve_desc": "Let your session model classify actions and handle approvals, prompting you for anything it's unsure about",
+      "plan": "Plan"
     },
     "voice": {
       "stop_transcribe": "Stop recording and transcribe",
@@ -419,7 +421,10 @@
       "error": "Error: ",
       "context_compacted": "Context compacted",
       "input_rejected": "That message was rejected.",
-      "unknown": "unknown"
+      "unknown": "unknown",
+      "mode_on": "{{label}} is on.",
+      "auto_approve_explainer": "Auto-approve uses a model to let routine actions through without asking; anything it isn't sure about still comes to you. It cuts interruptions but still carries some risk i.e. a command it allows still reaches anything you can. These are model judgments, and not guarantees.",
+      "reviewer_paused": "Auto-approve is paused for the rest of this turn — the reviewer blocked {{n}} actions in a row, so approvals now come to you."
     },
     "jump_to_latest": "Jump to latest",
     "waiting_for_agent": "Waiting for agent...",

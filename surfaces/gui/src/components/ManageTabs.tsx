@@ -23,6 +23,7 @@ import {
   type ProviderInfo,
 } from "../api";
 import type { SessionInfo } from "../types";
+import { sessionDisplayTitle, sessionTitleText } from "../sessionTitle";
 import { CloudSignInInline, CloudStatusPending } from "./connectors/CloudSignIn";
 import { ModelChecklist } from "./ModelChecklist";
 import { ProviderCards, ProviderForm, useProviderSetup } from "../providers/ProviderSetup";
@@ -316,7 +317,7 @@ export function DmRouteBlock({ c }: { c: Connector }) {
         <option value="">{t("Automatic — the first DM opens a session")}</option>
         {real.map((s) => (
           <option key={s.session_id} value={s.session_id}>
-            {s.title || s.session_id}
+            {sessionDisplayTitle(s)}
           </option>
         ))}
       </select>
@@ -425,7 +426,7 @@ export function ListeningSessionsBlock({ c }: { c: Connector }) {
           {mine.map((s) => (
             <div className="flex items-center gap-2 text-[13px]" key={s.session_id + s.channel}>
               <span className="min-w-0 truncate" title={s.session_id}>
-                {s.session_title || s.session_id}
+                {sessionTitleText(s.session_title, s.session_id)}
                 {s.agent ? <span className="text-faint"> · {s.agent}</span> : null}
               </span>
               <span className="text-muted shrink-0" title={s.channel}>

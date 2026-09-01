@@ -1,7 +1,8 @@
 // The `_display` sidecar on a persisted tool message (privacy-filter hidden
 // counts) must surface on the replayed tool item — and only there; the
 // agent-visible content string carries no trace.
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import i18n from "./i18n";
 import { itemsFromMessages } from "./itemsFromMessages";
 
 describe("itemsFromMessages _display sidecar", () => {
@@ -145,6 +146,98 @@ describe("itemsFromMessages mcp failure", () => {
       kind: "notice",
       tone: "info",
       text: "“notes” already has project memory (3 entries) — bind it by name or start a session there to use it.",
+    });
+  });
+});
+
+describe("itemsFromMessages mode switch/notice localization", () => {
+  // coworker/permissions.py persists these markers in English forever (old session rows
+  // can't be rewritten); the GUI translates them at display time (modeNotice.ts) using the
+  // same words the Composer's mode picker already shows for each mode.
+  afterEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  it("renders persisted mode_switch/mode_notice markers unchanged under English (no regression)", () => {
+    expect(
+      itemsFromMessages([{ role: "notice", kind: "mode_switch", text: "Bypass approvals is on." }] as any)[0],
+    ).toEqual({ kind: "notice", tone: "info", text: "Bypass approvals is on." });
+
+    const notice = itemsFromMessages([
+      {
+        role: "notice",
+        kind: "mode_notice",
+        title: "Auto-approve is on.",
+        text:
+          "Auto-approve uses a model to let routine actions through without asking; anything " +
+          "it isn't sure about still comes to you. It cuts interruptions but still carries " +
+          "some risk i.e. a command it allows still reaches anything you can. These are model " +
+          "judgments, and not guarantees.",
+      },
+    ] as any)[0] as any;
+    expect(notice.title).toBe("Auto-approve is on.");
+    expect(notice.text).toMatch(/^Auto-approve uses a model/);
+  });
+
+  it("localizes a mode_switch marker under zh, for every label MODE_LABELS produces", async () => {
+    await i18n.changeLanguage("zh");
+    const cases: Array<[string, string]> = [
+      ["Discuss is on.", "已开启：讨论"],
+      ["Plan is on.", "已开启：计划"],
+      ["Ask for approval is on.", "已开启：请求允许"],
+      ["Bypass approvals is on.", "已开启：绕过审批"],
+      ["Auto-approve is on.", "已开启：自动审批"],
+    ];
+    for (const [text, expected] of cases) {
+      const items = itemsFromMessages([{ role: "notice", kind: "mode_switch", text }] as any);
+      expect(items[0], text).toEqual({ kind: "notice", tone: "info", text: expected });
+    }
+  });
+
+  it("never rewrites a mode_switch text that isn't one of the five known labels", async () => {
+    await i18n.changeLanguage("zh");
+    const items = itemsFromMessages([
+      { role: "notice", kind: "mode_switch", text: "Something else is on." },
+    ] as any);
+    expect(items[0]).toEqual({ kind: "notice", tone: "info", text: "Something else is on." });
+  });
+
+  it("localizes the once-per-session mode_notice explainer's title and body under zh", async () => {
+    await i18n.changeLanguage("zh");
+    const items = itemsFromMessages([
+      {
+        role: "notice",
+        kind: "mode_notice",
+        title: "Auto-approve is on.",
+        text:
+          "Auto-approve uses a model to let routine actions through without asking; anything " +
+          "it isn't sure about still comes to you. It cuts interruptions but still carries " +
+          "some risk i.e. a command it allows still reaches anything you can. These are model " +
+          "judgments, and not guarantees.",
+      },
+    ] as any);
+    const notice = items[0] as any;
+    expect(notice.title).toBe("已开启：自动审批");
+    expect(notice.text).toBe(
+      "自动审批会用模型来放行常规操作，无需逐一询问；拿不准的操作仍会交由你处理。这样能减少打断，但仍有风险——被放行的指令依然能触达你能触达的任何东西。这些只是模型的判断，并非保证。",
+    );
+  });
+
+  it("localizes the reviewer_paused breaker notice under zh, carrying the count through", async () => {
+    await i18n.changeLanguage("zh");
+    const items = itemsFromMessages([
+      {
+        role: "notice",
+        kind: "reviewer_paused",
+        text:
+          "Auto-approve is paused for the rest of this turn — the reviewer blocked 5 actions " +
+          "in a row, so approvals now come to you.",
+      },
+    ] as any);
+    expect(items[0]).toEqual({
+      kind: "notice",
+      tone: "info",
+      text: "自动审批已为本轮对话暂停——审查器连续拦截了 5 次操作，之后的批准将改为询问你。",
     });
   });
 });

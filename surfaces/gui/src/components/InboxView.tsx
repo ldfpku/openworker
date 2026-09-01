@@ -17,6 +17,7 @@ import { InboxItemCard } from "./InboxItemCard";
 import { InboxConfigure } from "./InboxConfigure";
 import { PanelHead } from "./IntegrationsView";
 import { shortPersonaName } from "../personaScope";
+import { sessionTitleText } from "../sessionTitle";
 
 const ICON_FOR: Record<string, "diamond" | "chat" | "code"> = {
   cowork: "diamond",
@@ -118,7 +119,7 @@ export function InboxView({
   const sessionChip = (it: InboxItem) => {
     const exists = it.session_exists !== false;
     const p = personas?.find((x) => x.id === it.session_agent);
-    const label = it.session_title || it.session_id;
+    const label = sessionTitleText(it.session_title, it.session_id);
     const icon = (p && ICON_FOR[p.icon]) || "diamond";
     const cls = `ico-${p?.icon || "cowork"}`;
     return (

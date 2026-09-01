@@ -18,6 +18,7 @@ import { AddConnectionModal } from "./AddConnectionModal";
 import type { DetailProps } from "./ConnectorsSection";
 import { ToolsDisclosure } from "./ToolsDisclosure";
 import { FOOT, GRP, GRP_H, PILL_ACCENT, PILL_LINE, ROW, TAG_WARN, XBTN } from "./ui";
+import { sessionTitleText } from "../../sessionTitle";
 
 // The GitHub detail page (github-relay-spec §8), the Slack page's shape: one
 // group per App INSTALLATION (the allow-list scope) — People (sender logins
@@ -321,7 +322,7 @@ function ListeningRows({ subs, onChanged }: { subs: Subscription[]; onChanged: (
         {subs.map((s) => (
           <span key={s.session_id + s.channel} className="flex items-center gap-2 text-[13px]">
             <span className="font-medium truncate" title={s.session_id}>
-              {s.session_title || s.session_id}
+              {sessionTitleText(s.session_title, s.session_id)}
             </span>
             <span className="text-faint">←</span>
             <span className="text-muted truncate" title={s.channel}>

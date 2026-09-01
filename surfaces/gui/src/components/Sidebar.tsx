@@ -28,6 +28,7 @@ import {
 } from "../api";
 import type { SessionInfo } from "../types";
 import { isProjectScoped, shortPersonaName } from "../personaScope";
+import { rawSessionTitle, sessionDisplayTitle } from "../sessionTitle";
 import { ConnectorIcon } from "../connectors/ConnectorIcon";
 import { Icon, type IconName } from "./Icon";
 import { personaGlyph } from "./personaIcon";
@@ -455,7 +456,7 @@ export function Sidebar(props: Props) {
   // the menu offers Rename · Pin/Unpin · Archive/Unarchive · Delete, with the two-step delete
   // confirm kept inside it. Shared by BOTH row styles, so the chronological cardRow offers the
   // same actions as the persona accordion's sessionRow (owner ask 2026-07-09).
-  const rowActions = (s: SessionInfo, title: string) => {
+  const rowActions = (s: SessionInfo, rawTitle: string) => {
     const menuOpen = rowMenu?.id === s.session_id;
     const item = (testid: string, icon: IconName, label: string, onClick: () => void) => (
       <button
@@ -502,7 +503,7 @@ export function Sidebar(props: Props) {
             >
               {item("row-menu-rename", "pencil", t("sidebar.rename"), () => {
                 setEditingId(s.session_id);
-                setEditValue(title);
+                setEditValue(rawTitle);
               })}
               {item("row-menu-pin", "pin", s.pinned ? t("sidebar.unpin") : t("sidebar.pin"), () =>
                 props.onTogglePin(s.session_id, !s.pinned),
@@ -546,12 +547,13 @@ export function Sidebar(props: Props) {
   // A compact session row (mock §141 grouped/recent rows): one-line title + right-side indicators,
   // with the ⋮ actions kebab revealed on hover. Used in accordion bodies + grouped cards.
   const sessionRow = (s: SessionInfo, opts: { showTime?: boolean } = {}) => {
-    const title = s.title || s.session_id;
+    const rawTitle = rawSessionTitle(s);
+    const title = sessionDisplayTitle(s);
     const editing = editingId === s.session_id;
     const active = s.session_id === props.activeSession;
     const commitRename = () => {
       const next = editValue.trim();
-      if (next && next !== title) props.onRenameSession(s.session_id, next);
+      if (next && next !== rawTitle) props.onRenameSession(s.session_id, next);
       setEditingId(null);
     };
     return (
@@ -607,7 +609,7 @@ export function Sidebar(props: Props) {
               <LiveDot state={s.liveness} />
               <AttnBadge n={s.attention || 0} />
             </span>
-            {rowActions(s, title)}
+            {rowActions(s, rawTitle)}
           </>
         )}
       </div>
@@ -620,11 +622,12 @@ export function Sidebar(props: Props) {
   // they return, surface the persona on hover (e.g. in the row tooltip) — not as a subtitle.
   const cardRow = (s: SessionInfo) => {
     const active = s.session_id === props.activeSession;
-    const title = s.title || s.session_id;
+    const rawTitle = rawSessionTitle(s);
+    const title = sessionDisplayTitle(s);
     const editing = editingId === s.session_id;
     const commitRename = () => {
       const next = editValue.trim();
-      if (next && next !== title) props.onRenameSession(s.session_id, next);
+      if (next && next !== rawTitle) props.onRenameSession(s.session_id, next);
       setEditingId(null);
     };
     return (
@@ -679,7 +682,7 @@ export function Sidebar(props: Props) {
               <LiveDot state={s.liveness} />
               <AttnBadge n={s.attention || 0} />
             </span>
-            {rowActions(s, title)}
+            {rowActions(s, rawTitle)}
           </>
         )}
       </div>

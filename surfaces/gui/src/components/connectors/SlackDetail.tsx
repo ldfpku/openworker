@@ -24,6 +24,7 @@ import type { DetailProps } from "./ConnectorsSection";
 import { SlackHowItWorks } from "./SlackHowItWorks";
 import { ToolsDisclosure } from "./ToolsDisclosure";
 import { FOOT, GRP, GRP_H, PILL_ACCENT, PILL_LINE, ROW, TAG_WARN, XBTN } from "./ui";
+import { sessionTitleText } from "../../sessionTitle";
 
 // The Slack detail page (UX-DECISIONS §21): one group per connected workspace —
 // People (allow-list) · Waiting (parked senders) · Listening (session ↔ channel) ·
@@ -612,7 +613,7 @@ function ListeningRows({ subs, onChanged }: { subs: Subscription[]; onChanged: (
         {subs.map((s) => (
           <span key={s.session_id + s.channel} className="flex items-center gap-2 text-[13px]">
             <span className="font-medium truncate" title={s.session_id}>
-              {s.session_title || s.session_id}
+              {sessionTitleText(s.session_title, s.session_id)}
             </span>
             <span className="text-faint">←</span>
             <span className="text-muted truncate" title={s.channel}>

@@ -20,6 +20,7 @@ import {
 import type { SessionInfo } from "../types";
 import { ChannelPicker } from "./SubscriptionsChip";
 import { Icon } from "./Icon";
+import { sessionDisplayTitle, sessionTitleText } from "../sessionTitle";
 
 // Inbox ▸ Configure (UX-DECISIONS §28): the former Connectors ▸ "Messaging routing" page,
 // relocated whole — where inbox items go out (mirror channel), how inbound messages reach
@@ -199,7 +200,7 @@ function DmRouteCard() {
           <option value="">{t("inbox.dm_no_session")}</option>
           {real.map((s) => (
             <option key={s.session_id} value={s.session_id}>
-              {s.title || s.session_id}
+              {sessionDisplayTitle(s)}
             </option>
           ))}
         </select>
@@ -264,8 +265,8 @@ function SubscriptionsCard() {
           <tbody>
             {subs.map((s, i) => (
               <tr className="border-t border-line" key={i}>
-                <td className="px-4 py-2.5 truncate max-w-[12rem]" title={s.session_title}>
-                  {s.session_title}
+                <td className="px-4 py-2.5 truncate max-w-[12rem]" title={sessionTitleText(s.session_title)}>
+                  {sessionTitleText(s.session_title)}
                 </td>
                 <td className="px-4 py-2.5">
                   <span className="inline-flex items-center gap-1.5" title={s.channel}>
@@ -315,7 +316,7 @@ function SubscriptionsCard() {
           <option value="">{t("inbox.choose_session")}</option>
           {real.map((s) => (
             <option key={s.session_id} value={s.session_id}>
-              {s.title || s.session_id}
+              {sessionDisplayTitle(s)}
             </option>
           ))}
         </select>

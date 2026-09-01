@@ -11,6 +11,7 @@
   },
   "sidebar": {
     "new_session": "新建会话",
+    "untitled_session": "新会话",
     "new_project": "新建项目",
     "collapse": "收起侧边栏",
     "dock": "停靠侧边栏",
@@ -119,7 +120,8 @@
       "auto": "绕过审批",
       "auto_desc": "无需询问，全部执行 —— 审批已关闭",
       "auto_approve": "自动审批",
-      "auto_approve_desc": "由会话模型对操作分类并处理审批，拿不准的仍会询问你"
+      "auto_approve_desc": "由会话模型对操作分类并处理审批，拿不准的仍会询问你",
+      "plan": "计划"
     },
     "voice": {
       "stop_transcribe": "停止录音并转写",
@@ -411,7 +413,10 @@
       "error": "错误：",
       "context_compacted": "已压缩上下文",
       "input_rejected": "该消息已被拒绝。",
-      "unknown": "未知"
+      "unknown": "未知",
+      "mode_on": "已开启：{{label}}",
+      "auto_approve_explainer": "自动审批会用模型来放行常规操作，无需逐一询问；拿不准的操作仍会交由你处理。这样能减少打断，但仍有风险——被放行的指令依然能触达你能触达的任何东西。这些只是模型的判断，并非保证。",
+      "reviewer_paused": "自动审批已为本轮对话暂停——审查器连续拦截了 {{n}} 次操作，之后的批准将改为询问你。"
     },
     "jump_to_latest": "跳转到最新",
     "waiting_for_agent": "正在等待代理…",
