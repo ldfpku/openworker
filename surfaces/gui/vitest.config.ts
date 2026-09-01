@@ -5,6 +5,9 @@ import react from "@vitejs/plugin-react";
 // untouched). Reused by later frontend phases — add new `*.test.tsx` files under src/.
 export default defineConfig({
   plugins: [react()],
+  // vite.config.ts injects this from tauri.conf.json; tests get a fixed stand-in so the
+  // version row renders deterministically instead of depending on the current release number.
+  define: { __APP_VERSION__: JSON.stringify("9.9.9") },
   test: {
     environment: "jsdom",
     include: ["src/**/*.test.{ts,tsx}"],

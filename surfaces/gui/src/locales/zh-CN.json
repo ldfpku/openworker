@@ -1602,6 +1602,7 @@
   "Verifies teammates' work against acceptance criteria": "按验收标准独立验证队友的成果",
   "Verify the local voice model before testing it.": "请先校验本地语音模型，再进行测试。",
   "Verifying…": "验证中…",
+  "Version {{version}}": "版本 {{version}}",
   "Vertex AI (Google Cloud)": "Vertex AI (Google Cloud)",
   "Vertex API key": "Vertex API key",
   "View": "查看",

@@ -1,5 +1,10 @@
 import { isComposing } from "../ime";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+// Injected by vite from tauri.conf.json (see vite.config.ts). Same guarded-global pattern as
+// api.ts's __COWORKER_DEV_TOKEN__; the typeof check keeps non-vite consumers (vitest without
+// the define, any future SSR pass) from throwing on an undeclared identifier.
+declare const __APP_VERSION__: string;
+const APP_VERSION = typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : "";
 import { getI18n, useTranslation } from "react-i18next";
 import {
   announceCloudChanged,
@@ -1235,6 +1240,22 @@ export function Sidebar(props: Props) {
                       await cloudLogout().catch(() => {});
                       announceCloudChanged();
                     })}
+                  </>
+                )}
+                {/* Which build am I running? Deliberately here and not in the sidebar's brand
+                    lockup: that row is permanent chrome, and this is a number you want twice a
+                    year — after an update, or when someone asks you during support. The account
+                    menu is where 设置 / 活动 / 使用帮助 already live, so it is the "about this
+                    app" drawer. Selectable so it can be copied into a bug report. */}
+                {APP_VERSION && (
+                  <>
+                    <div className="h-px bg-line my-1 mx-2" />
+                    <div
+                      className="px-2.5 py-1.5 text-[11.5px] text-faint select-text"
+                      data-testid="app-version"
+                    >
+                      {t("Version {{version}}", { version: APP_VERSION })}
+                    </div>
                   </>
                 )}
               </div>

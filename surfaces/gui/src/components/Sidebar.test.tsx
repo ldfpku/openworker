@@ -216,3 +216,25 @@ describe("New session button", () => {
     expect(baseProps.onNewSession).toHaveBeenCalledWith("cowork");
   });
 });
+
+describe("App version in the account menu", () => {
+  // Placement is deliberate: the version lives in the account menu (the "about this app"
+  // drawer alongside Settings / Activity / Help), NOT in the sidebar's brand lockup, which is
+  // permanent chrome. vitest.config.ts pins __APP_VERSION__ to 9.9.9 so this is stable.
+  it("is hidden until the account menu opens, then shows the build vite injected", async () => {
+    stubFetch([
+      { match: "/v1/personas", method: "GET", json: PERSONAS },
+      { match: "/v1/settings", method: "GET", json: { nav_layout: "flat" } },
+    ]);
+    render(<Sidebar {...baseProps} />);
+    await screen.findByText("incident watch");
+
+    expect(screen.queryByTestId("app-version")).toBeNull();
+    fireEvent.click(screen.getByTestId("account-row"));
+
+    const row = await screen.findByTestId("app-version");
+    expect(row.textContent).toBe("Version 9.9.9");
+    // Copyable for bug reports — a menu that sets user-select:none would defeat that.
+    expect(row.className).toContain("select-text");
+  });
+});
