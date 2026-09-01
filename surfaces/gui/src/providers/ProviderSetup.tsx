@@ -417,6 +417,9 @@ export function ProviderCards({
   gridClass?: string;
   lastUsed?: boolean;
 }) {
+  // Titles pass through t(): brand names have no word-table entry and render as-is;
+  // the generic "Custom endpoint" (and nothing else today) picks up its translation.
+  const { t } = useTranslation();
   const card =
     "flex items-center gap-2.5 rounded-xl border border-line bg-panel px-3 py-2.5 text-left hover:border-lineStrong transition-colors";
   return (
@@ -428,9 +431,9 @@ export function ProviderCards({
           data-testid={`${tp}-provider-${p.name}`}
           onClick={() => ps.openProvider(p.name)}
         >
-          <ProviderMark name={p.name} title={p.title} />
+          <ProviderMark name={p.name} title={t(p.title)} />
           <span className="min-w-0 flex-1">
-            <span className="block text-[13px] font-semibold leading-tight truncate">{p.title}</span>
+            <span className="block text-[13px] font-semibold leading-tight truncate">{t(p.title)}</span>
             {ps.statusFor(p, { lastUsed })}
           </span>
           <span className="text-faint text-[14px]">›</span>
@@ -561,9 +564,9 @@ export function ProviderForm({
         {t("provider.all_providers")}
       </button>
       <div className="flex items-center gap-3 mt-3 mb-1">
-        <ProviderMark name={info?.name || ""} title={info?.title || ""} size={36} />
+        <ProviderMark name={info?.name || ""} title={info?.title ? t(info.title) : ""} size={36} />
         <span className="min-w-0">
-          <span className="block text-[14px] font-semibold leading-tight">{info?.title}</span>
+          <span className="block text-[14px] font-semibold leading-tight">{info?.title ? t(info.title) : null}</span>
           {info ? ps.statusFor(info) : null}
         </span>
       </div>
