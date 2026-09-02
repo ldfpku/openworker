@@ -22,6 +22,8 @@ const IMPORTANT_KEYS = [
   "composer.pdf_too_big",
   "composer.pdf_too_many_pages",
   "composer.pdf_unreadable",
+  "composer.attach_skipped",
+  "composer.folder_drop_unsupported",
   "composer.listening_sr",
 ] as const;
 
@@ -39,6 +41,7 @@ const values: Record<string, Record<string, string | number>> = {
   "composer.pdf_too_big": { name: "report.pdf", mb: "12.5", limit: 10 },
   "composer.pdf_too_many_pages": { name: "report.pdf", pages: 24, limit: 20 },
   "composer.pdf_unreadable": { name: "report.pdf", error: "invalid PDF" },
+  "composer.attach_skipped": { names: "LICENSE, notes" },
   "composer.listening_sr": { time: "0:12" },
 };
 

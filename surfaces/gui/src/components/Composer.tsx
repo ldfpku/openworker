@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import { isComposing } from "../ime";
 import { getI18n, useTranslation } from "react-i18next";
 import type { Attachment, SessionUsage } from "../types";
-import { isPdfFile, readFile } from "../attach";
+import { isPdfFile, readFile, splitDataTransfer } from "../attach";
 import { ProjectBindMenu } from "./ProjectBindMenu";
 import { getSettings, inspectPdf, sessionSkills, type SessionSkillRow } from "../api";
 import { formatTokens, totalTokens } from "../usage";
@@ -343,9 +343,12 @@ export function Composer(props: Props) {
         /* offline settings fetch — fall back to defaults */
       }
     }
+    // One figure for both PDF byte gates — this pre-check and readFile()'s cap below. If they
+    // drift apart, a PDF under the user's limit gets eaten by the generic "skipped" notice.
+    const pdfMaxBytes = maxMb * 1024 * 1024;
     const accepted: File[] = [];
     for (const file of list) {
-      if (isPdfFile(file) && file.size > maxMb * 1024 * 1024) {
+      if (isPdfFile(file) && file.size > pdfMaxBytes) {
         showAttachNotice(
           t("composer.pdf_too_big", { name: file.name, mb: (file.size / 1024 / 1024).toFixed(1), limit: maxMb }),
         );
@@ -353,7 +356,14 @@ export function Composer(props: Props) {
       }
       accepted.push(file);
     }
-    const read = (await Promise.all(accepted.map(readFile))).filter(Boolean) as Attachment[];
+    const results = await Promise.all(
+      accepted.map((f) => readFile(f, isPdfFile(f) ? { maxBytes: pdfMaxBytes } : {})),
+    );
+    // readFile() nulls out unsupported types, oversized files, and read errors (a folder
+    // that slipped past the drop-time split lands here too) — name them, don't eat them.
+    const skipped = accepted.filter((_, i) => !results[i]).map((f) => f.name || "?");
+    if (skipped.length) showAttachNotice(t("composer.attach_skipped", { names: skipped.join(", ") }));
+    const read = results.filter(Boolean) as Attachment[];
     const next: Attachment[] = [];
     for (const a of read) {
       if (a.kind === "pdf" && a.data_url) {
@@ -559,7 +569,11 @@ export function Composer(props: Props) {
         onDrop={(e) => {
           e.preventDefault();
           setDragging(false);
-          if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
+          // Folders can't ride HTML5 drops (no absolute path reaches the webview), so a
+          // whole-folder drag must say so instead of silently attaching nothing.
+          const { files, folders } = splitDataTransfer(e.dataTransfer);
+          if (folders) showAttachNotice(t("composer.folder_drop_unsupported"));
+          if (files.length) addFiles(files);
         }}
       >
         {/* "/" force-run popup — in-flow above the textarea; rows are the session's
