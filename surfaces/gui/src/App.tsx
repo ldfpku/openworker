@@ -52,7 +52,7 @@ import type {
 import { fullPersonaName, isProjectScoped } from "./personaScope";
 import { baseName } from "./paths";
 import { sessionDisplayTitle } from "./sessionTitle";
-import { modelSwitchText, modeNoticeBody, modeOnText, reviewerPausedText } from "./modeNotice";
+import { compactionText, modelSwitchText, modeNoticeBody, modeOnText, reviewerPausedText } from "./modeNotice";
 import { itemsFromMessages } from "./itemsFromMessages";
 import { hasConversation } from "./draft";
 import { addTurnUsage, emptyUsage, formatTokens, usageFromMessages } from "./usage";
@@ -1011,7 +1011,7 @@ export function App() {
         case "compacted":
           // Auto-compaction marker (OPE-27): outbound-only — the transcript stays intact,
           // this divider just shows where the model's memory was summarized.
-          setItems((p) => [...p, { kind: "notice", tone: "info", text: d.text || t("app.notice.context_compacted") }]);
+          setItems((p) => [...p, { kind: "notice", tone: "info", text: compactionText(d.text || "") || t("app.notice.context_compacted") }]);
           break;
         case "interrupted":
           flushPartialStream();

@@ -1245,40 +1245,26 @@ def relay_headers_from(fields: dict[str, Any]) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"} if token.startswith(RELAY_TOKEN_PREFIX) else {}
 
 
-def verify_provider_key(
+def _catalog_request(
     name: str,
     *,
-    api_key: Optional[str] = None,
-    base_url: Optional[str] = None,
-    fields: Optional[dict[str, Any]] = None,
-    timeout: float = 10.0,
-) -> dict[str, Any]:
-    """Validate a provider's credentials with one cheap call — usually list models.
-
-    Ark's Responses-compatible data plane does not document a `/models` probe, so its Test button
-    sends a non-persisted one-token Responses request instead. Callers pass the key directly so a
-    user can Test before saving. Never raises; returns {ok, error?}. Multi-field cloud providers
-    (Bedrock, Vertex) take their whole form via `fields`; everyone else uses api_key/base_url.
+    key: str,
+    base_url: Optional[str],
+    fields: Optional[dict[str, Any]],
+    timeout: float,
+) -> tuple[Any, Optional[str]]:
+    """One GET against a provider's model-list endpoint — the shared wire logic behind
+    both `verify_provider_key` (the Test button) and `list_provider_models` (the catalog
+    fetch). Covers the four GET-based shapes (anthropic / gemini via the relay / ollama /
+    generic OpenAI-compatible `/models`); ark's POST Responses probe and the multi-field
+    cloud providers (bedrock/vertex/aigw) stay inline in `verify_provider_key`, since
+    neither has a model-list API to share here. Returns `(response, None)` on a completed
+    HTTP round trip (any status code) or `(None, error)` on a network failure — never
+    raises.
     """
     import httpx
 
     d = _BY_NAME.get(name) or _BY_NAME["openai"]
-    key = (api_key or "").strip()
-    if d.auth == "oauth":
-        # OAuth providers verify from their stored tokens (needs the SecretStore),
-        # which only the manager holds — see SessionManager.verify_provider.
-        return {"ok": False, "error": f"{d.title} verifies via its sign-in, not a key."}
-    if name == "bedrock":
-        return _verify_bedrock(fields or {}, timeout)
-    if name == "vertex":
-        return _verify_vertex(fields or {}, timeout)
-    if name == "aigw":
-        return _verify_aigw(fields or {}, timeout)
-    if name == "custom" and not (base_url or "").strip():
-        # No vendor default to fall back to (unlike the `_compat` cards below) — without
-        # this guard an empty URL would fall all the way through the generic branch to its
-        # "https://api.openai.com/v1" fallback and Test a completely different service.
-        return {"ok": False, "error": "Enter the endpoint URL first."}
     try:
         if name == "anthropic":
             resp = httpx.get(
@@ -1301,22 +1287,6 @@ def verify_provider_key(
         elif name == "ollama":
             base = _normalize_ollama_url(base_url)
             resp = httpx.get(base.rstrip("/") + "/models", timeout=timeout)
-        elif name in ("ark", "ark-agent-plan-cn"):
-            default_base = next(
-                (f.default for f in d.fields if f.key == "base_url" and f.default), ""
-            )
-            base = (base_url or "").strip().rstrip("/") or default_base.rstrip("/")
-            resp = httpx.post(
-                base + "/responses",
-                headers={"Authorization": f"Bearer {key}"},
-                json={
-                    "model": d.recommended_model,
-                    "input": "Reply with OK.",
-                    "max_output_tokens": 1,
-                    "store": False,
-                },
-                timeout=timeout,
-            )
         else:  # openai + any OpenAI-compatible endpoint (Azure, OpenRouter, vendors, vLLM…)
             default_base = next(
                 (f.default for f in d.fields if f.key == "base_url" and f.default), ""
@@ -1332,13 +1302,14 @@ def verify_provider_key(
                 timeout=timeout,
             )
     except Exception as exc:  # DNS/connection/timeout — never let it bubble to a 500
-        return {
-            "ok": False,
-            "error": f"Couldn't reach {d.title} ({exc.__class__.__name__}).",
-        }
+        return None, f"Couldn't reach {d.title} ({exc.__class__.__name__})."
+    return resp, None
 
-    if resp.status_code < 300:
-        return {"ok": True}
+
+def _map_probe_failure(name: str, d: ProviderDescriptor, resp: Any) -> dict[str, Any]:
+    """Status-code (and, for Gemini, response-body) → user-facing error text for a failed
+    (`status_code >= 300`) model-list/probe response. Shared by `verify_provider_key` and
+    `list_provider_models`."""
     if name == "gemini":
         # The relay's refusals arrive as a Google-shaped JSON envelope whose `message` was
         # written for exactly this moment (not signed in / login revoked / over quota) —
@@ -1359,3 +1330,129 @@ def verify_provider_key(
             "error": "Reached the server, but no OpenAI-compatible /v1 API there.",
         }
     return {"ok": False, "error": f"{d.title} returned HTTP {resp.status_code}."}
+
+
+def verify_provider_key(
+    name: str,
+    *,
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    fields: Optional[dict[str, Any]] = None,
+    timeout: float = 10.0,
+) -> dict[str, Any]:
+    """Validate a provider's credentials with one cheap call — usually list models.
+
+    Ark's Responses-compatible data plane does not document a `/models` probe, so its Test button
+    sends a non-persisted one-token Responses request instead. Callers pass the key directly so a
+    user can Test before saving. Never raises; returns {ok, error?}. Multi-field cloud providers
+    (Bedrock, Vertex) take their whole form via `fields`; everyone else uses api_key/base_url.
+    """
+    d = _BY_NAME.get(name) or _BY_NAME["openai"]
+    key = (api_key or "").strip()
+    if d.auth == "oauth":
+        # OAuth providers verify from their stored tokens (needs the SecretStore),
+        # which only the manager holds — see SessionManager.verify_provider.
+        return {"ok": False, "error": f"{d.title} verifies via its sign-in, not a key."}
+    if name == "bedrock":
+        return _verify_bedrock(fields or {}, timeout)
+    if name == "vertex":
+        return _verify_vertex(fields or {}, timeout)
+    if name == "aigw":
+        return _verify_aigw(fields or {}, timeout)
+    if name == "custom" and not (base_url or "").strip():
+        # No vendor default to fall back to (unlike the `_compat` cards below) — without
+        # this guard an empty URL would fall all the way through the generic branch to its
+        # "https://api.openai.com/v1" fallback and Test a completely different service.
+        return {"ok": False, "error": "Enter the endpoint URL first."}
+    if name in ("ark", "ark-agent-plan-cn"):
+        # Ark's Responses-compatible data plane has no read-only /models probe; a
+        # non-persisted one-token completion exercises the credentials instead. POST, so
+        # it stays inline rather than in the shared GET helper.
+        import httpx
+
+        default_base = next(
+            (f.default for f in d.fields if f.key == "base_url" and f.default), ""
+        )
+        base = (base_url or "").strip().rstrip("/") or default_base.rstrip("/")
+        try:
+            resp = httpx.post(
+                base + "/responses",
+                headers={"Authorization": f"Bearer {key}"},
+                json={
+                    "model": d.recommended_model,
+                    "input": "Reply with OK.",
+                    "max_output_tokens": 1,
+                    "store": False,
+                },
+                timeout=timeout,
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": f"Couldn't reach {d.title} ({exc.__class__.__name__}).",
+            }
+    else:
+        resp, err = _catalog_request(
+            name, key=key, base_url=base_url, fields=fields, timeout=timeout
+        )
+        if err:
+            return {"ok": False, "error": err}
+
+    if resp.status_code < 300:
+        return {"ok": True}
+    return _map_probe_failure(name, d, resp)
+
+
+def list_provider_models(
+    name: str,
+    *,
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    fields: Optional[dict[str, Any]] = None,
+    timeout: float = 10.0,
+    provider_title: str = "",
+) -> dict[str, Any]:
+    """Fetch and parse a provider's live model catalog (Settings ▸ Models' background
+    refresh, and `verify_provider`'s Test-button-doubles-as-a-catalog-pull path). Never
+    raises; returns `{"ok": True, "models": [...]}` or `{"ok": False, "error": ...}`.
+
+    An HTTP round trip that completed with a 2xx status but couldn't be turned into any
+    models (non-JSON body, or a JSON body with nothing chat-shaped in it) also carries
+    `"http_ok": True` — callers that only care whether the credentials themselves are good
+    (not whether a catalog came back) can treat that as a pass.
+    """
+    from .catalog import parse_catalog, supports_catalog
+
+    d = _BY_NAME.get(name) or _BY_NAME["openai"]
+    if d.auth == "oauth" or not supports_catalog(name):
+        return {
+            "ok": False,
+            "error": f"{d.title} has no model list API.",
+            "unsupported": True,
+        }
+    key = (api_key or "").strip()
+    if name == "custom" and not (base_url or "").strip():
+        return {"ok": False, "error": "Enter the endpoint URL first."}
+    resp, err = _catalog_request(
+        name, key=key, base_url=base_url, fields=fields, timeout=timeout
+    )
+    if err:
+        return {"ok": False, "error": err}
+    if resp.status_code >= 300:
+        return _map_probe_failure(name, d, resp)
+    try:
+        payload = resp.json()
+    except (ValueError, AttributeError):
+        return {
+            "ok": False,
+            "error": f"{d.title} returned a non-JSON model list.",
+            "http_ok": True,
+        }
+    models = parse_catalog(name, payload, provider_title=provider_title or d.title)
+    if not models:
+        return {
+            "ok": False,
+            "error": f"{d.title} returned no models.",
+            "http_ok": True,
+        }
+    return {"ok": True, "models": [m.to_dict() for m in models]}

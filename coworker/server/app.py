@@ -2024,6 +2024,11 @@ def create_app(manager: SessionManager) -> FastAPI:
             manager.verify_provider, name, (body or {}).get("fields")
         )
 
+    @app.post("/v1/providers/{name}/models/refresh")
+    async def providers_models_refresh(name: str) -> dict[str, Any]:
+        # Settings ▸ Models "Refresh" button — same off-event-loop treatment as verify.
+        return await asyncio.to_thread(manager.refresh_model_catalog, name)
+
     @app.post("/v1/providers/openai-codex/signin")
     async def codex_signin() -> dict[str, Any]:
         # Opens the system browser and waits on the loopback callback — that can

@@ -1217,6 +1217,48 @@ def test_mcp_connect_route_flags_authorizing_immediately(tmp_path, monkeypatch):
     assert not res["ok"] and "sales-db" not in mgr._mcp_authorizing
 
 
+# -- live model-catalog refresh route --------------------------------------------
+
+
+def test_providers_models_refresh_route(tmp_path, monkeypatch):
+    """Settings ▸ Models' "Refresh" button: a stubbed successful pull round-trips through
+    the route into the manager's cache-status shape."""
+    monkeypatch.setattr(
+        SessionManager,
+        "_fetch_model_catalog",
+        lambda self, name, fields=None: {
+            "ok": True,
+            "models": [
+                {"id": "glm-5.2", "label": "GLM-5.2 · Z AI", "context_window": 128000}
+            ],
+        },
+    )
+    client = _client(tmp_path, [])
+    # refresh_model_catalog refuses an unconfigured provider with no fields of its own
+    # (nothing to fetch with) — configure the key first, same as a real Settings flow.
+    assert client.post(
+        "/v1/providers", json={"name": "zai", "fields": {"api_key": "zk"}}
+    ).json()["ok"]
+    res = client.post("/v1/providers/zai/models/refresh").json()
+    assert res["ok"] is True and res["provider"] == "zai"
+    assert res["catalog"]["live"] is True and res["catalog"]["count"] == 1
+    assert "glm-5.2" in res["suggested_models"]
+
+
+def test_providers_models_refresh_route_unknown_provider(tmp_path):
+    client = _client(tmp_path, [])
+    res = client.post("/v1/providers/nope/models/refresh").json()
+    assert res == {"ok": False, "error": "unknown provider: nope"}
+
+
+def test_providers_models_refresh_route_unsupported_provider(tmp_path):
+    """Ark has no model-list API (its Test button uses a one-token Responses probe
+    instead) — the refresh route must say so rather than pretending a pull happened."""
+    client = _client(tmp_path, [])
+    res = client.post("/v1/providers/ark/models/refresh").json()
+    assert res["ok"] is False and res["unsupported"] is True
+
+
 def test_ws_ready_reports_live_turn(tmp_path):
     # A reconnect can land mid-turn (sidebar revisit, relaunch, dropped socket). `ready`
     # must carry server truth on the running turn or the GUI loses Stop + the waiting row

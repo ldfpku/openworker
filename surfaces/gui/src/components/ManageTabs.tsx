@@ -10,6 +10,7 @@ import {
   getSessions,
   getSettings,
   getSubscriptions,
+  refreshProviderModels,
   removeModel,
   resolveUnauthorized,
   unsubscribeChannel,
@@ -136,6 +137,12 @@ export function ModelsTab() {
             curated={settings.models}
             defaultModel={settings.model}
             labels={settings.model_labels}
+            catalog={info?.catalog}
+            onRefresh={async () => {
+              await refreshProviderModels(ps.sel!);
+              await ps.refreshProviders();
+              refreshSettings();
+            }}
             onChanged={(next) => setSettings((s) => (s ? { ...s, models: next.models, model: next.model } : s))}
           />
         </div>

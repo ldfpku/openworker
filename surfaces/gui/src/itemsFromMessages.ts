@@ -8,7 +8,7 @@
 import type { ConversationMessage } from "./api";
 import i18n from "./i18n";
 import type { Attachment, Item } from "./types";
-import { modelSwitchText, modeNoticeBody, modeOnText, reviewerPausedText } from "./modeNotice";
+import { compactionText, modelSwitchText, modeNoticeBody, modeOnText, reviewerPausedText } from "./modeNotice";
 
 // i18n.t() returns undefined before init() (bare unit tests call this mapper without
 // initLocale(); the app always inits in main.tsx). Mirror react-i18next's graceful
@@ -109,7 +109,7 @@ export function itemsFromMessages(messages: ConversationMessage[]): Item[] {
               { kind: "notice", tone: "info", text: m.text ? modelSwitchText(m.text) : t("Model switched"), bookkeeping: true }
             : m.kind === "compacted"
               ? // The subtle "compacted here" divider (OPE-27) — the transcript itself is intact.
-                { kind: "notice", tone: "info", text: m.text || t("Context compacted") }
+                { kind: "notice", tone: "info", text: compactionText(m.text || "") || t("Context compacted") }
               : m.kind === "mcp_error"
                 ? // A configured MCP server failed to start for this session — informational,
                   // NOT retriable (retry re-runs the model turn, which can't fix a dead server).

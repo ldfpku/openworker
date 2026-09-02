@@ -19,15 +19,20 @@ interface Props {
   align?: "left" | "right";
   // Extra classes appended to the trigger pill (e.g. "chip" for a bordered composer-head chip).
   className?: string;
+  // Mount already open — the composer passes this when the user clicked the "Loading models…"
+  // placeholder before the list arrived, so the click they already made is honoured instead
+  // of silently dropped (owner-hit 2026-09-03: "first click does nothing, second opens").
+  defaultOpen?: boolean;
 }
 
-export function Dropdown({ prefix, value, options, onChange, align = "left", className }: Props) {
-  const [open, setOpen] = useState(false);
+export function Dropdown({ prefix, value, options, onChange, align = "left", className, defaultOpen }: Props) {
+  const [open, setOpen] = useState(!!defaultOpen);
   const current = options.find((o) => o.value === value);
   const label = (prefix ? `${prefix}: ` : "") + (current?.label || value);
   return (
     <div className="dd">
       <button
+        type="button"
         className={"pill" + (className ? " " + className : "")}
         onClick={() => setOpen((v) => !v)}
         title={label}

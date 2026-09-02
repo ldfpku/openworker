@@ -15,6 +15,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import threading
 import time
 import uuid
 from dataclasses import replace
@@ -80,9 +81,11 @@ from ..providers import (
     ProviderRouter,
     descriptor_configured,
     get_descriptor,
+    list_provider_models,
     provider_descriptors,
     verify_provider_key,
 )
+from ..providers.catalog import CATALOG_PROVIDERS, supports_catalog
 from ..secrets import SecretStore, state_dir
 from ..sessions import SessionRecord
 from ..teams import Actor as TeamActor
@@ -179,6 +182,20 @@ def _stable_error(error: str) -> str:
 
 
 class SessionManager:
+    # Live model-catalog cache (`_model_catalog`, prefs key "model_catalog"): how long a
+    # successful fetch stands before it's considered stale enough to re-pull (models
+    # rotate slowly), and how long a FAILED fetch stands before retrying (an outage or a
+    # bad key shouldn't be hammered every settings load, but should recover reasonably
+    # fast once fixed).
+    MODEL_CATALOG_TTL = 6 * 3600.0
+    MODEL_CATALOG_RETRY = 600.0
+    MODEL_CATALOG_TIMEOUT = 10.0
+    # Shared across every SessionManager instance (there's normally exactly one process):
+    # prefs.json is a single file, so concurrent writers (the note-provider-use throttle,
+    # a catalog background thread, a foreground settings save) need one lock, not one per
+    # instance.
+    _prefs_lock = threading.Lock()
+
     def __init__(
         self,
         *,
@@ -270,6 +287,22 @@ class SessionManager:
         self._prefs = self._load_prefs()
         if self._prefs.get("default_model"):
             self.model = self._prefs["default_model"]
+        # Live model-catalog cache (per provider: fetched_at / models / error), persisted
+        # under prefs["model_catalog"] so a restart doesn't lose an already-pulled list.
+        # Malformed entries (wrong type, or a provider that no longer supports a catalog)
+        # are dropped rather than carried forward.
+        self._catalog_lock = threading.Lock()
+        self._catalog_inflight: set[str] = set()
+        raw_catalog = self._prefs.get("model_catalog")
+        self._model_catalog: dict[str, dict[str, Any]] = (
+            {
+                name: entry
+                for name, entry in raw_catalog.items()
+                if name in CATALOG_PROVIDERS and isinstance(entry, dict)
+            }
+            if isinstance(raw_catalog, dict)
+            else {}
+        )
         # Seed the PDF-fallback module global from prefs so engines see the user's
         # choice from the first turn (set_pdf_settings keeps it in sync after).
         from ..pdf_support import set_fallback_mode
@@ -3131,6 +3164,238 @@ class SessionManager:
                 engine.permissions.session_allow_tools.discard("web_search")
         return {"ok": True, "provider": provider}
 
+    # -- live model catalog (per-provider model-list cache) ----------------------
+    # Persisted under prefs["model_catalog"] (see __init__), keyed by provider name:
+    # {"fetched_at": iso8601, "models": [CatalogModel.to_dict(), ...], "error": str|None}.
+    # A provider with no entry has simply never been fetched (fresh install, or a
+    # provider that doesn't support a catalog at all).
+    def _catalog_entry(self, name: str) -> dict[str, Any]:
+        return dict(getattr(self, "_model_catalog", {}).get(name) or {})
+
+    def _catalog_models(self, name: str) -> list[dict[str, Any]]:
+        """Cached catalog rows for `name` (empty if never fetched, unsupported, or the
+        manager predates the catalog feature — `getattr` guards bare test doubles built
+        with `object.__new__`, e.g. test_aigw_gate's `_bare_manager`)."""
+        models = getattr(self, "_model_catalog", {}).get(name, {}).get("models")
+        return models if isinstance(models, list) else []
+
+    def _catalog_is_stale(self, name: str) -> bool:
+        """No entry yet → stale. An entry with live models is fresh for MODEL_CATALOG_TTL;
+        an entry that only ever recorded a failure (no models) retries sooner, on
+        MODEL_CATALOG_RETRY, so a fixed key or a recovered outage is noticed quickly."""
+        entry = getattr(self, "_model_catalog", {}).get(name)
+        if not entry:
+            return True
+        fetched_at = entry.get("fetched_at")
+        try:
+            from datetime import datetime, timezone
+
+            age = (
+                datetime.now(timezone.utc) - datetime.fromisoformat(fetched_at)
+            ).total_seconds()
+        except (TypeError, ValueError):
+            return True
+        ttl = self.MODEL_CATALOG_TTL if entry.get("models") else self.MODEL_CATALOG_RETRY
+        return age > ttl
+
+    def _catalog_status(self, name: str) -> dict[str, Any]:
+        """Settings-pane-facing summary of a provider's catalog state."""
+        entry = getattr(self, "_model_catalog", {}).get(name) or {}
+        models = entry.get("models") if isinstance(entry.get("models"), list) else []
+        return {
+            "supported": supports_catalog(name),
+            "fetched_at": entry.get("fetched_at"),
+            "error": entry.get("error"),
+            "live": bool(models),
+            "count": len(models),
+        }
+
+    def _probe_credentials(
+        self, name: str, fields: Optional[dict[str, Any]] = None
+    ) -> tuple[str, dict[str, Any], Optional[str]]:
+        """Merge explicit form `fields` → the stored profile → env (same precedence
+        `verify_provider` always used), plus the relay/oauth-token injection real calls
+        need. Returns `(api_key, merged_fields, error)` — `error` is a user-facing string
+        when a required field is missing, else None. Shared by `verify_provider` and the
+        catalog fetch path (`_fetch_model_catalog`), which need the exact same credentials
+        a live call would use.
+        """
+        d = get_descriptor(name)
+        if d is None:
+            return "", {}, f"unknown provider: {name}"
+        fields = fields or {}
+        profile = self.secrets.get(f"provider:{name}") or {}
+        merged: dict[str, Any] = {}
+        for f in d.fields:
+            val = fields.get(f.key) or profile.get(f.key) or ""
+            if isinstance(val, str):
+                val = val.strip()
+            if val:
+                merged[f.key] = val
+        api_key = merged.get("api_key", "")
+        if not api_key and d.env_key:
+            api_key = os.environ.get(d.env_key, "").strip()
+        has_key_field = any(f.key == "api_key" for f in d.fields)
+        if d.needs_key and has_key_field and not api_key:
+            return api_key, merged, "Enter an API key to test."
+        if d.needs_key and not has_key_field:
+            # Multi-field cloud providers (Bedrock): required fields must be present;
+            # actual credentials may be ambient (~/.aws, ADC) and are checked by the call.
+            missing = [f.label for f in d.fields if f.required and not merged.get(f.key)]
+            if missing:
+                return api_key, merged, "missing: " + ", ".join(missing)
+        elif d.needs_key and has_key_field:
+            # A keyed provider can still declare its OWN extra required field the wire
+            # call never touches (custom's display_name — nothing sends it to the
+            # endpoint). Without this, a passing Test auto-saves via set_provider, which
+            # silently no-ops on that same missing field (its own "missing:" check) while
+            # the GUI still flashes green — Test would lie about having saved anything.
+            # base_url is excluded: verify_provider_key/list_provider_models own that
+            # guard, with a message aimed at "why did my URL-less Test fail" rather than a
+            # generic list.
+            other_required = [
+                f.label
+                for f in d.fields
+                if f.required
+                and f.key not in ("api_key", "base_url")
+                and not merged.get(f.key)
+            ]
+            if other_required:
+                return api_key, merged, "missing: " + ", ".join(other_required)
+        if name == "gemini":
+            # Not a descriptor field (nothing types it into a form), so the merge loop above
+            # never picks it up — but the relay refuses an unauthenticated probe, so a live
+            # call would fail for a correctly configured colleague without it.
+            from ..providers.gemini_provider import resolve_relay_token
+
+            merged["relay_token"] = resolve_relay_token(self.secrets) or ""
+        if name == "aigw":
+            # Same reason as the relay above: the OAuth session is not a form field, and
+            # a live call has to use the credential a real call would use — otherwise a
+            # colleague who signed in (and typed nothing) gets told to sign in.
+            from .. import aigw_auth
+
+            merged["oauth_token"] = aigw_auth.access_token(self.secrets) or ""
+        return api_key, merged, None
+
+    def _catalog_provider_title(self, d: ProviderDescriptor, merged: dict[str, Any]) -> str:
+        """The custom endpoint has no vendor title — its own display_name IS the title
+        (guaranteed present by the time `_probe_credentials` returns without an error,
+        since it's a required field checked there)."""
+        if d.name == "custom":
+            return str(merged.get("display_name") or d.title)
+        return d.title
+
+    def _fetch_model_catalog(
+        self, name: str, fields: Optional[dict[str, Any]] = None
+    ) -> dict[str, Any]:
+        """The one network entry point for a provider's model catalog. Resolves
+        credentials the same way a live call would (`_probe_credentials`), then asks the
+        registry to fetch + parse. Never raises."""
+        d = get_descriptor(name)
+        if d is None:
+            return {"ok": False, "error": f"unknown provider: {name}"}
+        if not supports_catalog(name):
+            return {
+                "ok": False,
+                "error": f"{d.title} has no model list API.",
+                "unsupported": True,
+            }
+        api_key, merged, error = self._probe_credentials(name, fields)
+        if error:
+            return {"ok": False, "error": error}
+        return list_provider_models(
+            name,
+            api_key=api_key,
+            base_url=merged.get("base_url"),
+            fields=merged,
+            timeout=self.MODEL_CATALOG_TIMEOUT,
+            provider_title=self._catalog_provider_title(d, merged),
+        )
+
+    def _store_model_catalog(self, name: str, result: dict[str, Any]) -> None:
+        """Persist a fetch outcome: success replaces the cached models outright; a failure
+        keeps whatever models were already cached (an outage shouldn't empty a picker that
+        was working a minute ago) and just records the error; "unsupported" (a provider
+        that lost catalog support, or never had it) drops the entry entirely."""
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc).isoformat()
+        with self._catalog_lock:
+            if result.get("unsupported"):
+                self._model_catalog.pop(name, None)
+            elif result.get("ok"):
+                self._model_catalog[name] = {
+                    "fetched_at": now,
+                    "models": result.get("models") or [],
+                    "error": None,
+                }
+            else:
+                entry = dict(self._model_catalog.get(name) or {})
+                entry["models"] = entry.get("models") or []
+                entry["error"] = result.get("error")
+                entry["fetched_at"] = now
+                self._model_catalog[name] = entry
+            self._prefs["model_catalog"] = dict(self._model_catalog)
+        try:
+            self._save_prefs()
+        except OSError:
+            logger.debug("model catalog: failed to persist prefs", exc_info=True)
+
+    def refresh_model_catalog(
+        self, name: str, fields: Optional[dict[str, Any]] = None
+    ) -> dict[str, Any]:
+        """Synchronous fetch + persist, for the "refresh now" route and `set_provider`'s
+        auto-add. Returns enough for the GUI to update in place without a second round trip."""
+        d = get_descriptor(name)
+        if d is None:
+            return {"ok": False, "error": f"unknown provider: {name}"}
+        if not supports_catalog(name):
+            return {
+                "ok": False,
+                "error": f"{d.title} has no model list API.",
+                "unsupported": True,
+                "provider": name,
+            }
+        if not fields and not self._provider_configured(name):
+            return {"ok": False, "error": "not configured"}
+        result = self._fetch_model_catalog(name, fields)
+        self._store_model_catalog(name, result)
+        out: dict[str, Any] = {
+            "ok": bool(result.get("ok")),
+            "provider": name,
+            "catalog": self._catalog_status(name),
+            "suggested_models": self._suggested_models(name),
+        }
+        if not result.get("ok") and result.get("error"):
+            out["error"] = result["error"]
+        return out
+
+    def _kick_catalog_refresh(self, name: str) -> None:
+        """Start one daemon-thread catalog fetch for `name`; concurrent calls (another
+        settings-load racing in) no-op via `_catalog_inflight`. Never raises, never
+        blocks the caller — `get_providers` calls this inline on every fetch."""
+        if not self._provider_configured(name) or not supports_catalog(name):
+            return
+        with self._catalog_lock:
+            if name in self._catalog_inflight:
+                return
+            self._catalog_inflight.add(name)
+
+        def work() -> None:
+            try:
+                result = self._fetch_model_catalog(name)
+                self._store_model_catalog(name, result)
+            except Exception:  # noqa: BLE001 - best-effort background refresh
+                logger.debug("model catalog refresh failed for %s", name, exc_info=True)
+            finally:
+                with self._catalog_lock:
+                    self._catalog_inflight.discard(name)
+
+        threading.Thread(
+            target=work, name=f"catalog-refresh-{name}", daemon=True
+        ).start()
+
     # -- model providers (OpenAI, Ollama, …) ------------------------------------
     def get_providers(self) -> list[dict[str, Any]]:
         """Descriptor + per-provider status for the Settings UI. Never returns secret values;
@@ -3140,6 +3405,8 @@ class SessionManager:
         for d in provider_descriptors():
             profile = self.secrets.get(f"provider:{d.name}") or {}
             configured = descriptor_configured(d, profile)
+            if configured and supports_catalog(d.name) and self._catalog_is_stale(d.name):
+                self._kick_catalog_refresh(d.name)
             values = {
                 f.key: profile.get(f.key)
                 for f in d.fields
@@ -3150,6 +3417,7 @@ class SessionManager:
                 "configured": configured,
                 "values": values,
                 "suggested_models": self._suggested_models(d.name),
+                "catalog": self._catalog_status(d.name),
                 # Key hygiene for the Settings pane: when the key was saved (date, stamped
                 # by set_provider) and when the provider last served a completion (epoch,
                 # stamped by the router's on_use hook). Absent for env-only config.
@@ -3251,17 +3519,24 @@ class SessionManager:
 
     def _suggested_models(self, name: str) -> list[str]:
         """Bare model-name suggestions for the 'add model' form (datalist), per provider.
-        Ollama → live `/api/tags` (best-effort); everyone else → the curated matrix,
-        topped up with the compat-vendor extras the matrix doesn't vouch for."""
+        Ollama → live `/api/tags` (best-effort); a catalog-supported provider with a live
+        pull → curated matrix ids confirmed still live, topped up with everything else the
+        catalog listed; everyone else → the curated matrix, topped up with the
+        compat-vendor extras the matrix doesn't vouch for."""
         if name == "ollama":
             return [m.split(":", 1)[-1] for m in self._ollama_models()]
         from ..providers.matrix import models_for_provider
 
-        out = list(
-            dict.fromkeys(
-                [*models_for_provider(name), *self.COMPAT_MODELS.get(name, [])]
+        live = [m["id"] for m in self._catalog_models(name)]
+        if live:
+            known = [m for m in models_for_provider(name) if m in live]
+            out = list(dict.fromkeys([*known, *live]))
+        else:
+            out = list(
+                dict.fromkeys(
+                    [*models_for_provider(name), *self.COMPAT_MODELS.get(name, [])]
+                )
             )
-        )
         if name == "aigw":
             # Mirror the picker filter (`_curated_models`): a gate-blocked model must
             # not resurface as an "add model" suggestion either.
@@ -3300,20 +3575,37 @@ class SessionManager:
             profile["key_set_at"] = date.today().isoformat()
         self.secrets.put(f"provider:{name}", profile)
         self._refresh_provider(name)
+        # Freshly-configured credentials are exactly when a catalog pull is most worth
+        # doing synchronously: the very next thing this call decides (whether the
+        # recommended model is actually available) benefits from knowing the REAL list
+        # rather than the static matrix.
+        pulled: Optional[dict[str, Any]] = None
+        if supports_catalog(name):
+            pulled = self.refresh_model_catalog(name)
         # Convenience: if the provider recommends a model and it's actually available, add it to
         # the curated list so it shows up in the composer right after configuring the provider.
         rec = d.recommended_model
         added: Optional[str] = None
-        if rec and rec in self._suggested_models(name):
-            # OpenAI models stay bare (the router's default); others carry their prefix.
-            added = rec if name == "openai" else f"{name}:{rec}"
-            self.add_model(added)
+        if rec:
+            if pulled is not None and pulled.get("ok"):
+                rec_available = rec in {m["id"] for m in self._catalog_models(name)}
+            else:
+                rec_available = rec in self._suggested_models(name)
+            if rec_available:
+                # OpenAI models stay bare (the router's default); others carry their prefix.
+                added = rec if name == "openai" else f"{name}:{rec}"
+                self.add_model(added)
         # First working provider wins the default: if the current default model belongs to a
         # provider with no usable config (the fresh-install gpt-5.6-sol case), switch the default to
         # this provider's model. A default that already works is never stolen.
         if added and not self._provider_configured(self._model_provider(self.model)):
             self.set_default_model(added)
-        return {"ok": True, "provider": name, "recommended_model": rec}
+        return {
+            "ok": True,
+            "provider": name,
+            "recommended_model": rec,
+            "catalog": self._catalog_status(name),
+        }
 
     def remove_provider(self, name: str) -> dict[str, Any]:
         """Forget a provider's stored config (Settings ▸ Models "Remove key"). The whole
@@ -3383,9 +3675,15 @@ class SessionManager:
     ) -> dict[str, Any]:
         """Test a provider's credentials with a live read-only call, WITHOUT persisting them, so
         onboarding can offer a "Test" button. Falls back to stored/env values when the form left
-        a field blank (e.g. testing an already-configured provider)."""
-        import os
+        a field blank (e.g. testing an already-configured provider).
 
+        For a catalog-supported provider, Test doubles as a catalog pull: the same call
+        that validates the key also fetches (and, on success, caches) its live model list
+        — no separate round trip once the provider is already saved. A non-JSON or empty
+        response with a 2xx status still counts as a passing Test (the credentials ARE
+        good; there's just no catalog to show for it) — see `list_provider_models`'s
+        `http_ok` marker.
+        """
         d = get_descriptor(name)
         if d is None:
             return {"ok": False, "error": f"unknown provider: {name}"}
@@ -3394,56 +3692,25 @@ class SessionManager:
             from ..providers import codex_auth
 
             return codex_auth.verify(self.secrets)
-        fields = fields or {}
-        profile = self.secrets.get(f"provider:{name}") or {}
-        merged = {}
-        for f in d.fields:
-            val = fields.get(f.key) or profile.get(f.key) or ""
-            if isinstance(val, str):
-                val = val.strip()
-            if val:
-                merged[f.key] = val
-        api_key = merged.get("api_key", "")
-        if not api_key and d.env_key:
-            api_key = os.environ.get(d.env_key, "").strip()
-        has_key_field = any(f.key == "api_key" for f in d.fields)
-        if d.needs_key and has_key_field and not api_key:
-            return {"ok": False, "error": "Enter an API key to test."}
-        if d.needs_key and not has_key_field:
-            # Multi-field cloud providers (Bedrock): required fields must be present;
-            # actual credentials may be ambient (~/.aws, env) and are checked by the call.
-            missing = [f.label for f in d.fields if f.required and not merged.get(f.key)]
-            if missing:
-                return {"ok": False, "error": "missing: " + ", ".join(missing)}
-        elif d.needs_key and has_key_field:
-            # A keyed provider can still declare its OWN extra required field the wire
-            # call never touches (custom's display_name — nothing sends it to the
-            # endpoint). Without this, a passing Test auto-saves via set_provider, which
-            # silently no-ops on that same missing field (its own "missing:" check) while
-            # the GUI still flashes green — Test would lie about having saved anything.
-            # base_url is excluded: verify_provider_key below owns that guard, with a
-            # message aimed at "why did my URL-less Test fail" rather than a generic list.
-            other_required = [
-                f.label
-                for f in d.fields
-                if f.required and f.key not in ("api_key", "base_url") and not merged.get(f.key)
-            ]
-            if other_required:
-                return {"ok": False, "error": "missing: " + ", ".join(other_required)}
-        if name == "gemini":
-            # Not a descriptor field (nothing types it into a form), so the merge loop above
-            # never picks it up — but the relay refuses an unauthenticated probe, so Test
-            # would fail for a correctly configured colleague without it.
-            from ..providers.gemini_provider import resolve_relay_token
-
-            merged["relay_token"] = resolve_relay_token(self.secrets) or ""
-        if name == "aigw":
-            # Same reason as the relay above: the OAuth session is not a form field, and
-            # Test has to use the credential a real call would use — otherwise a colleague
-            # who signed in (and typed nothing) gets told to sign in.
-            from .. import aigw_auth
-
-            merged["oauth_token"] = aigw_auth.access_token(self.secrets) or ""
+        api_key, merged, error = self._probe_credentials(name, fields)
+        if error:
+            return {"ok": False, "error": error}
+        if supports_catalog(name):
+            listed = list_provider_models(
+                name,
+                api_key=api_key,
+                base_url=merged.get("base_url", ""),
+                fields=merged,
+                timeout=self.MODEL_CATALOG_TIMEOUT,
+                provider_title=self._catalog_provider_title(d, merged),
+            )
+            if not listed.get("unsupported"):
+                if listed.get("ok"):
+                    self._store_model_catalog(name, listed)
+                    return {"ok": True}
+                if listed.get("http_ok"):
+                    return {"ok": True}
+                return {"ok": False, "error": listed.get("error", "")}
         return verify_provider_key(
             name, api_key=api_key, base_url=merged.get("base_url", ""), fields=merged
         )
@@ -3473,9 +3740,11 @@ class SessionManager:
             return {}
 
     def _save_prefs(self) -> None:
-        self._prefs_path().write_text(
-            json.dumps(self._prefs, indent=2), encoding="utf-8"
-        )
+        with self._prefs_lock:
+            path = self._prefs_path()
+            tmp = path.parent / (path.name + ".tmp")
+            tmp.write_text(json.dumps(self._prefs, indent=2), encoding="utf-8")
+            os.replace(tmp, path)
 
     # -- direct-message routing -------------------------------------------------
     # PER CONNECTOR, with a shared fallback. One global slot meant WeChat, Slack and
@@ -3624,15 +3893,36 @@ class SessionManager:
         except Exception:
             return []
 
-    def _curated_models(self) -> list[str]:
-        """The models offered in the composer's selector: every curated-matrix model
-        (`get_settings` culls the ones whose provider has no key) plus custom ids the user
-        added, minus matrix models they removed. Deliberately NO built-in seed list — a
-        fresh install offers nothing until a provider key exists, and then exactly that
-        provider's matrix models appear. The active default is always kept selectable.
-        """
+    def _matrix_ids_in_effect(self) -> list[str]:
+        """Curated-matrix ids, minus the ones a live catalog pull says no longer exist on
+        that provider. A matrix row only gets second-guessed when its provider actually
+        supports a catalog AND a live pull for it has landed (`_catalog_models` non-empty)
+        — no catalog yet (fresh install, offline, provider not catalog-supported) means
+        every matrix row for it is trusted as-is, same as before this feature existed."""
         from ..providers.matrix import MATRIX
 
+        out: list[str] = []
+        for mid in MATRIX:
+            prov = self._model_provider(mid)
+            if prov in CATALOG_PROVIDERS:
+                live = self._catalog_models(prov)
+                if live:
+                    bare = mid.split(":", 1)[1] if ":" in mid else mid
+                    live_ids = {m["id"] for m in live}
+                    if bare not in live_ids:
+                        continue
+            out.append(mid)
+        return out
+
+    def _curated_models(self) -> list[str]:
+        """The models offered in the composer's selector: every curated-matrix model that's
+        still live (`_matrix_ids_in_effect`; `get_settings` culls the ones whose provider
+        has no key) plus custom ids the user added, minus matrix models they removed.
+        Deliberately NO built-in seed list — a fresh install offers nothing until a
+        provider key exists, and then exactly that provider's matrix models appear. The
+        active default is always kept selectable.
+        """
+        effective = self._matrix_ids_in_effect()
         user = self._prefs.get("models")
         user = user if isinstance(user, list) else []
         hidden = set(self._prefs.get("hidden_models") or [])
@@ -3640,15 +3930,17 @@ class SessionManager:
         # (server-side 403 backs this up; hiding just spares the failed attempt). The
         # active default stays selectable below, matching the hidden_models behaviour.
         blocked = {f"aigw:{m}" for m in self._aigw_blocked()}
-        models = [m for m in [*MATRIX, *user] if m not in hidden and m not in blocked]
+        models = [
+            m for m in [*effective, *user] if m not in hidden and m not in blocked
+        ]
         return list(dict.fromkeys([self.model, *models]))
 
     def add_model(self, model: str) -> dict[str, Any]:
         """Add a model id (e.g. `gpt-4o`, `ollama:qwen2.5-coder:32b`) to the picker.
         Custom ids persist in prefs; a previously removed matrix model is just unhidden
-        (storing it too would shadow future matrix updates)."""
-        from ..providers.matrix import MATRIX
-
+        (storing it too would shadow future matrix updates). A matrix id the live catalog
+        has since dropped is no longer considered "in the matrix" here either — typing it
+        back in stores it as a custom id, same as any other unlisted model."""
         model = (model or "").strip()
         if not model:
             return {"ok": False, "error": "empty model"}
@@ -3659,27 +3951,44 @@ class SessionManager:
             self._prefs.pop("hidden_models", None)
         models = self._prefs.get("models")
         models = models if isinstance(models, list) else []
-        if model not in models and model not in MATRIX:
+        if model not in models and model not in self._matrix_ids_in_effect():
             models.append(model)
         self._prefs["models"] = models
         self._save_prefs()
         return {"ok": True, **self.get_settings()}
 
     def remove_model(self, model: str) -> dict[str, Any]:
-        """Remove a model id from the picker. Custom ids are dropped; matrix models are
-        hidden by id (the matrix is derived, not stored, so a bare drop would resurrect
-        them on the next read)."""
-        from ..providers.matrix import MATRIX
-
+        """Remove a model id from the picker. Custom ids are dropped; matrix models
+        (still-effective ones) are hidden by id (the matrix is derived, not stored, so a
+        bare drop would resurrect them on the next read)."""
         models = self._prefs.get("models")
         models = models if isinstance(models, list) else []
         self._prefs["models"] = [m for m in models if m != model]
-        if model in MATRIX:
+        if model in self._matrix_ids_in_effect():
             hidden = self._prefs.get("hidden_models") or []
             if model not in hidden:
                 self._prefs["hidden_models"] = [*hidden, model]
         self._save_prefs()
         return {"ok": True, **self.get_settings()}
+
+    def _catalog_metadata(self) -> tuple[dict[str, str], dict[str, int]]:
+        """Full-id → (label, context_window) maps built from every CONFIGURED catalog
+        provider's live pull — the counterpart to matrix.py's `model_labels`/
+        `model_context_windows` for models the static matrix doesn't carry. An
+        unconfigured provider's cached catalog (stale credentials, or one that was since
+        removed) is excluded so a grayed-out provider's models don't get labels either."""
+        labels: dict[str, str] = {}
+        windows: dict[str, int] = {}
+        for name in CATALOG_PROVIDERS:
+            if not self._provider_configured(name):
+                continue
+            for m in self._catalog_models(name):
+                full_id = m["id"] if name == "openai" else f"{name}:{m['id']}"
+                labels[full_id] = m["label"]
+                context_window = m.get("context_window")
+                if isinstance(context_window, int) and context_window:
+                    windows[full_id] = context_window
+        return labels, windows
 
     def get_settings(self) -> dict[str, Any]:
         """Model-access + UI status. Never returns the key; `source` says where it comes from."""
@@ -3703,16 +4012,22 @@ class SessionManager:
             selectable.insert(0, self.model)
         from ..providers.matrix import model_context_windows, model_labels
 
+        catalog_labels, catalog_windows = self._catalog_metadata()
+
         return {
             "provider": "openai",
             "model": self.model,
             "models": selectable,
             # Curated-matrix display names ({full id → "GLM-5.2 · via Together"}) so every
             # picker shows human labels; custom models absent here render their raw id.
-            "model_labels": model_labels(),
-            # {full id → context window in tokens}, verified matrix entries only —
-            # drives the composer's context-fill meter (absent id → meter hides).
-            "model_context_windows": model_context_windows(),
+            # Live-catalog labels fill in ids the static matrix doesn't carry (any
+            # configured catalog provider's non-curated models); the matrix always wins on
+            # overlap — it's the vetted, owner-reviewed name.
+            "model_labels": {**catalog_labels, **model_labels()},
+            # {full id → context window in tokens}, verified matrix entries only, topped up
+            # by live-catalog windows for everything else — drives the composer's
+            # context-fill meter (absent id → meter hides).
+            "model_context_windows": {**catalog_windows, **model_context_windows()},
             "has_key": env_key or stored,
             # Provider-agnostic "can this default model actually run?" — true when the default
             # model's provider is configured (any provider, not just OpenAI). Drives the GUI's

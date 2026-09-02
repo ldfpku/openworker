@@ -1980,6 +1980,15 @@ export interface ProviderField {
   show_when?: Record<string, string> | null; // render only while these fields hold these values
 }
 
+// Live model-catalog status for a provider (absent on old servers — treat as "no catalog info").
+export interface ProviderCatalog {
+  supported: boolean; // false = this provider has no list-models API (ark, bedrock, vertex, aigw, openai-codex, ollama)
+  fetched_at: string | null; // ISO timestamp of the last successful fetch, if any
+  error: string | null; // last fetch error, if any
+  live: boolean; // true = suggested_models came from the provider's real-time catalog
+  count: number; // number of models in the catalog
+}
+
 export interface ProviderInfo {
   name: string;
   title: string;
@@ -1998,6 +2007,7 @@ export interface ProviderInfo {
   account?: string | null; // signed-in account label (email or id)
   authorizing?: boolean;
   last_error?: string | null;
+  catalog?: ProviderCatalog; // absent on old servers that predate the live-catalog feature
 }
 
 // -- ChatGPT-subscription provider sign-in (OAuth; tokens never reach the GUI) ------
@@ -2059,6 +2069,16 @@ export async function verifyProvider(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, fields }),
+  });
+  return res.json();
+}
+
+/** Re-fetch a provider's live model catalog (Configure Models "Refresh" click). */
+export async function refreshProviderModels(
+  name: string,
+): Promise<{ ok: boolean; provider?: string; catalog?: ProviderCatalog; suggested_models?: string[]; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/providers/${encodeURIComponent(name)}/models/refresh`, {
+    method: "POST",
   });
   return res.json();
 }

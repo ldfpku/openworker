@@ -75,3 +75,56 @@ export function modelSwitchText(raw: string): string {
   const base = i18n.t("app.notice.model_switched_to", { label: match[1] });
   return match[2] ? base + i18n.t("app.notice.model_switched_no_vision") : base;
 }
+
+// coworker/engine.py `_compact_if_needed` (§ context compaction), two return values persisted
+// verbatim as a `{"role":"notice","kind":"compacted","text":…}` marker and replayed as-is on
+// reload — same reasoning as everything above: the generator can't be changed without leaving
+// every already-persisted notice stuck in English, so this only translates at display time.
+//   engine.py:712  "Context compacted — earlier turns were summarized"        (state built OK)
+//   engine.py:718  "Context trimmed — oldest turns dropped (summary unavailable)"  (fallback)
+const COMPACTED_SUMMARIZED = "Context compacted — earlier turns were summarized";
+const COMPACTED_TRIMMED = "Context trimmed — oldest turns dropped (summary unavailable)";
+
+/** The compaction/trim divider notice: localized on an exact match of one of the two known
+ *  engine outcomes, unchanged otherwise (including the empty string — callers fall back to
+ *  their own default for that). */
+export function compactionText(raw: string): string {
+  if (raw === COMPACTED_SUMMARIZED) return i18n.t("app.notice.context_compacted_summarized");
+  if (raw === COMPACTED_TRIMMED) return i18n.t("app.notice.context_trimmed");
+  return raw;
+}
+
+// coworker/engine.py `_compact_if_needed` (engine.py:684-696): when the summarizer can't
+// condense a session's history, the engine asks the user how to proceed via `question_asker`
+// (ask_user). This prompt is live-only — never persisted — but its *answer value* is compared
+// literally server-side (engine.py:701, `answer.get("answer") != "Retry"`), so unlike the
+// notices above we must NOT rewrite the string that travels back to the server: only the
+// question, header, and option *display* text are translated here; callers must still send the
+// raw English option value (e.g. "Retry") back to the engine.
+const COMPACTION_QUESTION =
+  "Context compaction failed — the summarizer couldn't condense this session's history. How " +
+  "should I proceed?";
+const COMPACTION_HEADER = "Compaction";
+const COMPACTION_OPTION_KEYS: Record<string, string> = {
+  Retry: "app.notice.compaction_retry",
+  "Trim oldest 10%": "app.notice.compaction_trim",
+};
+
+/** The compaction-failed question body: localized on an exact match, unchanged otherwise. */
+export function compactionQuestionText(raw: string): string {
+  return raw === COMPACTION_QUESTION ? i18n.t("app.notice.compaction_failed_question") : raw;
+}
+
+/** The compaction-failed question's header chip ("Compaction"): localized on an exact match,
+ *  unchanged otherwise. */
+export function compactionHeaderText(raw: string): string {
+  return raw === COMPACTION_HEADER ? i18n.t("app.notice.compaction_header") : raw;
+}
+
+/** One of the compaction-failed question's options ("Retry" / "Trim oldest 10%"): localized
+ *  *for display only* on an exact match, unchanged otherwise. The raw value passed in here must
+ *  still be what's sent back to the server — never the return value of this function. */
+export function compactionOptionLabel(raw: string): string {
+  const key = COMPACTION_OPTION_KEYS[raw];
+  return key ? i18n.t(key) : raw;
+}

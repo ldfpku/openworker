@@ -11,7 +11,24 @@ from __future__ import annotations
 import pytest
 import pytest_asyncio
 
+from coworker.server.manager import SessionManager
 from coworker.testing.fake_slack import FakeSlack
+
+
+@pytest.fixture(autouse=True)
+def _no_live_model_catalog(monkeypatch):
+    """The live model-catalog feature (providers/catalog.py, manager._fetch_model_catalog)
+    fetches a provider's real model list over the network. Without this, every test that
+    configures a catalog-supported provider (set_provider, get_providers' background kick,
+    verify_provider's catalog-pull-on-Test) would reach out to the real vendor API — so
+    EVERY test gets an offline stub, same reasoning as `_isolated_state_dir` below. Tests
+    that specifically exercise catalog fetching (tests/test_model_catalog.py) override this
+    per-test with their own monkeypatch of `list_provider_models`/`httpx`."""
+    monkeypatch.setattr(
+        SessionManager,
+        "_fetch_model_catalog",
+        lambda self, name, fields=None: {"ok": False, "error": "offline (test)"},
+    )
 
 
 @pytest.fixture(autouse=True)

@@ -4,6 +4,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { ModelChecklist } from "./ModelChecklist";
+import type { ProviderCatalog } from "../api";
 
 vi.mock("../api", () => ({
   addModel: vi.fn(async (id: string) => ({ ok: true, models: [id], model: id })),
@@ -68,5 +69,67 @@ describe("ModelChecklist add-model family dropdown", () => {
     expect(screen.queryByTestId("mlist-family")).toBeNull();
     addTyped("z-ai/glm-5.2");
     expect(addModel).toHaveBeenCalledWith("openrouter:z-ai/glm-5.2");
+  });
+});
+
+describe("ModelChecklist live catalog status", () => {
+  it("hides the add-model row and shows a refresh button + status line when live", () => {
+    const catalog: ProviderCatalog = { supported: true, live: true, fetched_at: "2026-09-03T05:00:00Z", error: null, count: 1 };
+    render(
+      <ModelChecklist
+        provider="openai"
+        knownProviders={KNOWN}
+        suggested={["gpt-5.5"]}
+        curated={[]}
+        defaultModel=""
+        catalog={catalog}
+        onRefresh={async () => {}}
+        onChanged={() => {}}
+      />,
+    );
+    expect(screen.queryByPlaceholderText("Add another model…")).toBeNull();
+    expect(screen.getByText("Refresh")).toBeTruthy();
+    expect(screen.getByText(/Model list from the provider's API/)).toBeTruthy();
+  });
+
+  it("keeps the add-model row and shows the error text when the fetch failed and isn't live", () => {
+    const catalog: ProviderCatalog = { supported: true, live: false, fetched_at: null, error: "timeout", count: 0 };
+    render(
+      <ModelChecklist
+        provider="openai"
+        knownProviders={KNOWN}
+        suggested={["gpt-5.5"]}
+        curated={[]}
+        defaultModel=""
+        catalog={catalog}
+        onRefresh={async () => {}}
+        onChanged={() => {}}
+      />,
+    );
+    expect(screen.getByPlaceholderText("Add another model…")).toBeTruthy();
+    expect(screen.getByText(/Couldn't fetch the model list \(timeout\)/)).toBeTruthy();
+  });
+
+  it("filters the rows by id/label once there are more than 12 and the catalog is live", () => {
+    const suggested = Array.from({ length: 13 }, (_, i) => `model-${i}`);
+    const catalog: ProviderCatalog = { supported: true, live: true, fetched_at: "2026-09-03T05:00:00Z", error: null, count: 13 };
+    render(
+      <ModelChecklist
+        provider="openai"
+        knownProviders={KNOWN}
+        suggested={suggested}
+        curated={[]}
+        defaultModel=""
+        catalog={catalog}
+        onRefresh={async () => {}}
+        onChanged={() => {}}
+      />,
+    );
+    expect(screen.getAllByRole("checkbox")).toHaveLength(13);
+    fireEvent.change(screen.getByPlaceholderText("Filter models…"), {
+      target: { value: "model-1" },
+    });
+    // model-1, model-10..model-12 match the "model-1" substring.
+    expect(screen.getAllByRole("checkbox")).toHaveLength(4);
   });
 });

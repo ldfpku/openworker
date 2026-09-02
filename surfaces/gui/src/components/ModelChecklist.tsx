@@ -1,8 +1,9 @@
 import { isComposing } from "../ime";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { addModel, getSettings, removeModel, setDefaultModel } from "../api";
+import { addModel, getSettings, removeModel, setDefaultModel, type ProviderCatalog } from "../api";
 import { isFreeModel } from "../providers/logos";
+import { formatRelative } from "../relTime";
 
 // Cloud-account providers dispatch by a family segment baked into the model id
 // (`bedrock:claude/…`, `vertex:openweight/…`). The add-model row shows a dropdown so
@@ -31,6 +32,8 @@ export function ModelChecklist({
   curated,
   defaultModel,
   labels,
+  catalog,
+  onRefresh,
   onChanged,
 }: {
   provider: string; // decides the id prefix; OpenAI models stay bare
@@ -39,10 +42,14 @@ export function ModelChecklist({
   curated: string[]; // the full curated list (all providers, full ids)
   defaultModel: string;
   labels?: Record<string, string>; // curated display names (full id → label); raw id when absent
+  catalog?: ProviderCatalog; // live model-catalog status; absent on old servers
+  onRefresh?: () => Promise<void>; // re-fetch this provider's live catalog
   onChanged: (next: { models: string[]; model: string }) => void;
 }) {
   const { t } = useTranslation();
   const [draft, setDraft] = useState("");
+  const [filter, setFilter] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
   const families = MODEL_FAMILIES[provider];
   const [family, setFamily] = useState(families?.[0]?.value || "");
 
@@ -58,10 +65,28 @@ export function ModelChecklist({
     ...curated.filter((id) => provOf(id) === provider),
   ].filter((id, i, a) => a.indexOf(id) === i);
 
+  // Once the list comes live from the provider's real API, a text filter beats scrolling
+  // through it — but only once it's long enough to need one.
+  const showFilter = !!catalog?.live && rows.length > 12;
+  const needle = filter.trim().toLowerCase();
+  const visibleRows =
+    showFilter && needle
+      ? rows.filter((id) => id.toLowerCase().includes(needle) || (labels?.[id] || "").toLowerCase().includes(needle))
+      : rows;
+
   const checked = (id: string) => curated.includes(id);
   const refresh = async () => {
     const s = await getSettings();
     onChanged({ models: s.models, model: s.model });
+  };
+  const doRefresh = async () => {
+    if (!onRefresh || refreshing) return;
+    setRefreshing(true);
+    try {
+      await onRefresh();
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   const tick = async (id: string, on: boolean) => {
@@ -89,7 +114,47 @@ export function ModelChecklist({
 
   return (
     <div className="mlist">
-      {rows.map((id) => {
+      {catalog?.live && (
+        <div className="text-[12px] text-muted mb-1.5 flex items-center gap-2">
+          <span>
+            {t("models.catalog_live", { when: formatRelative(catalog.fetched_at, t, { style: "short" }) })}
+          </span>
+          <button
+            className="text-[12px] px-2 py-0.5 rounded-md border border-line bg-paper hover:border-lineStrong shrink-0 disabled:opacity-50"
+            onClick={doRefresh}
+            disabled={refreshing}
+          >
+            {refreshing ? t("models.catalog_refreshing") : t("models.catalog_refresh")}
+          </button>
+        </div>
+      )}
+      {catalog && !catalog.live && catalog.error && (
+        <div className="text-[12px] text-muted mb-1.5 flex items-center gap-2">
+          <span>{t("models.catalog_error", { error: catalog.error })}</span>
+          <button
+            className="text-[12px] px-2 py-0.5 rounded-md border border-line bg-paper hover:border-lineStrong shrink-0 disabled:opacity-50"
+            onClick={doRefresh}
+            disabled={refreshing}
+          >
+            {refreshing ? t("models.catalog_refreshing") : t("models.catalog_retry")}
+          </button>
+        </div>
+      )}
+      {catalog && !catalog.supported && (
+        <div className="text-[12px] text-muted mb-1.5">{t("models.catalog_unsupported")}</div>
+      )}
+      {showFilter && (
+        <input
+          className="w-full bg-paper border border-lineStrong rounded-lg px-2.5 py-1.5 text-[13px] outline-none focus:border-accent mb-1.5"
+          placeholder={t("models.filter_placeholder")}
+          value={filter}
+          spellCheck={false}
+          autoComplete="off"
+          onChange={(e) => setFilter(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && !isComposing(e) && e.preventDefault()}
+        />
+      )}
+      {visibleRows.map((id) => {
         const isDefault = id === defaultModel;
         return (
           <div className={"mlist-row" + (checked(id) ? "" : " off")} key={id}>
@@ -123,33 +188,35 @@ export function ModelChecklist({
           </div>
         );
       })}
-      <div className="mlist-add">
-        {families && (
-          <select
-            value={family}
-            onChange={(e) => setFamily(e.target.value)}
-            aria-label={t("Model family")}
-            data-testid="mlist-family"
-          >
-            {families.map((f) => (
-              <option key={f.value} value={f.value}>
-                {t(f.label)}
-              </option>
-            ))}
-          </select>
-        )}
-        <input
-          placeholder={t("models.add_placeholder")}
-          value={draft}
-          spellCheck={false}
-          autoComplete="off"
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && !isComposing(e) && add()}
-        />
-        <button className="btn-primary sm" onClick={add} disabled={!draft.trim()}>
-          {t("models.add_btn")}
-        </button>
-      </div>
+      {!catalog?.live && (
+        <div className="mlist-add">
+          {families && (
+            <select
+              value={family}
+              onChange={(e) => setFamily(e.target.value)}
+              aria-label={t("Model family")}
+              data-testid="mlist-family"
+            >
+              {families.map((f) => (
+                <option key={f.value} value={f.value}>
+                  {t(f.label)}
+                </option>
+              ))}
+            </select>
+          )}
+          <input
+            placeholder={t("models.add_placeholder")}
+            value={draft}
+            spellCheck={false}
+            autoComplete="off"
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && !isComposing(e) && add()}
+          />
+          <button className="btn-primary sm" onClick={add} disabled={!draft.trim()}>
+            {t("models.add_btn")}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

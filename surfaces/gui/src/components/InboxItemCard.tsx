@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import type { InboxItem } from "../api";
 import type { QuestionOption } from "../types";
 import { humanizeApprovalTitle } from "../humanize";
+import { compactionHeaderText, compactionOptionLabel, compactionQuestionText } from "../modeNotice";
 import {
   approvalActionLabels,
   PreviewBlock,
@@ -139,7 +140,7 @@ function QuestionBlock({ spec, onAnswer }: { spec: QSpec; onAnswer: (a: string) 
               }
             >
               {multi && on && <span className="text-accent text-[11px] leading-none">✓</span>}
-              <span className="min-w-0 truncate">{o.label}</span>
+              <span className="min-w-0 truncate">{compactionOptionLabel(o.label)}</span>
               {o.recommended && recommendedTag}
             </span>
             {o.description && (
@@ -179,7 +180,7 @@ function QuestionBlock({ spec, onAnswer }: { spec: QSpec; onAnswer: (a: string) 
                   onClick={() => pick(o)}
                 >
                   {multi && on && <span className="text-accent text-[11px] leading-none">✓</span>}
-                  {o.label}
+                  {compactionOptionLabel(o.label)}
                 </button>
               );
             })}
@@ -268,8 +269,11 @@ function QuestionCard({
           </button>
         )}
         <span className={grouped ? "text-accent" : undefined}>
-          {spec.header ||
-            (grouped ? t("inbox.question_n", { n: step + 1 }) : t("inbox.question_label"))}
+          {spec.header
+            ? compactionHeaderText(spec.header)
+            : grouped
+              ? t("inbox.question_n", { n: step + 1 })
+              : t("inbox.question_label")}
         </span>
         {grouped && (
           <>
@@ -278,13 +282,19 @@ function QuestionCard({
             {next && (
               <>
                 <span>·</span>
-                <span>{(next.header || t("inbox.question_n", { n: step + 2 })) + " ›"}</span>
+                <span>
+                  {(next.header
+                    ? compactionHeaderText(next.header)
+                    : t("inbox.question_n", { n: step + 2 })) + " ›"}
+                </span>
               </>
             )}
           </>
         )}
       </div>
-      <div className="text-[14px] font-semibold mt-0.5 leading-snug">{spec.question}</div>
+      <div className="text-[14px] font-semibold mt-0.5 leading-snug">
+        {compactionQuestionText(spec.question)}
+      </div>
       {item.body ? (
         <div className="text-[13px] text-muted mt-1 whitespace-pre-wrap">{item.body}</div>
       ) : null}

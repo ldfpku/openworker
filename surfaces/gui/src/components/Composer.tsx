@@ -544,6 +544,15 @@ export function Composer(props: Props) {
   };
 
   const modelsLoaded = !!(props.models && props.models.length);
+  // A click on the "Loading models…" placeholder is a real intent to open the picker: remember
+  // it and mount the Dropdown already open once the list lands. On a cold packaged-app boot
+  // the list can trail the UI reveal by a beat, and the placeholder looked exactly like the
+  // live chip — so the first click "did nothing" and only the second opened (owner-hit
+  // 2026-09-03). Cleared once consumed so a later remount doesn't reopen on its own.
+  const [openOnLoad, setOpenOnLoad] = useState(false);
+  useEffect(() => {
+    if (modelsLoaded && openOnLoad) setOpenOnLoad(false);
+  }, [modelsLoaded, openOnLoad]);
   const modelOptions: Option[] = Array.from(
     new Set([props.model, ...(props.models || [])]),
   ).map((m) => ({
@@ -806,14 +815,26 @@ export function Composer(props: Props) {
                   <span className="model-warn-ico" aria-hidden>⚠</span>
                 </button>
               ) : modelsLoaded ? (
-                <Dropdown value={props.model} options={modelOptions} onChange={props.onModelChange} align="right" />
+                <Dropdown
+                  value={props.model}
+                  options={modelOptions}
+                  onChange={props.onModelChange}
+                  align="right"
+                  defaultOpen={openOnLoad}
+                />
               ) : (
+                // Not `disabled`: a disabled button swallows the click, and the user who
+                // clicked here wanted the picker — keep the click and open on arrival. The
+                // spinner is what tells it apart from the live chip (the text alone didn't).
                 <button
-                  className="pill chip text-faint cursor-default"
-                  disabled
+                  type="button"
+                  className="pill chip text-faint cursor-progress"
+                  aria-busy="true"
                   data-testid="models-loading"
                   title={t("composer.model.loading_title")}
+                  onClick={() => setOpenOnLoad(true)}
                 >
+                  <span className="spinner mr-1" aria-hidden="true" />
                   <span className="pill-label">{t("composer.model.loading")}</span>
                 </button>
               )}
