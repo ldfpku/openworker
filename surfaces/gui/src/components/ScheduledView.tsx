@@ -313,6 +313,10 @@ function TaskDetail({
   // False when the stored schedule says more than the simple form can (agent-written
   // cron, once-tasks) — saving would rewrite it, so the edit form must say so.
   const [cronMatched, setCronMatched] = useState(true);
+  // Only a schedule the user actually touched gets written back. An unmatched cron
+  // (agent-written, once-task) must survive a title/instructions-only edit untouched —
+  // otherwise fixing a typo silently turns "every 1st at 9" into "daily at 9".
+  const [schedTouched, setSchedTouched] = useState(false);
   const [saving, setSaving] = useState(false);
 
   // The seen mark AS OF opening — the "new" pills compare against this frozen value
@@ -357,6 +361,7 @@ function TaskDetail({
     setTime(t);
     setFreq(f);
     setCronMatched(matched);
+    setSchedTouched(false);
     setEditing(true);
   };
   const saveEdit = async () => {
@@ -365,7 +370,7 @@ function TaskDetail({
       await updateAutomation(id, {
         title: title.trim(),
         instructions: instructions.trim(),
-        cron: toCron(time, freq),
+        ...(cronMatched || schedTouched ? { cron: toCron(time, freq) } : {}),
       });
       await refresh();
       setEditing(false);
@@ -427,11 +432,26 @@ function TaskDetail({
             <div className="tmpl-sched sched-edit-sched">
               <label className="tmpl-field">
                 <span>{t("automations.at")}</span>
-                <input type="time" className="tmpl-input tmpl-time" value={time} onChange={(e) => setTime(e.target.value)} />
+                <input
+                  type="time"
+                  className="tmpl-input tmpl-time"
+                  value={time}
+                  onChange={(e) => {
+                    setTime(e.target.value);
+                    setSchedTouched(true);
+                  }}
+                />
               </label>
               <label className="tmpl-field">
                 <span>{t("automations.repeat")}</span>
-                <select className="tmpl-input tmpl-select" value={freq} onChange={(e) => setFreq(e.target.value)}>
+                <select
+                  className="tmpl-input tmpl-select"
+                  value={freq}
+                  onChange={(e) => {
+                    setFreq(e.target.value);
+                    setSchedTouched(true);
+                  }}
+                >
                   {FREQ_OPTIONS.map((o) => (
                     <option key={o.key} value={o.key}>{t(o.labelKey)}</option>
                   ))}

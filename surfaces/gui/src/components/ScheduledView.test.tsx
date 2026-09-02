@@ -85,4 +85,25 @@ describe("TaskDetail schedule editing", () => {
     expect(select.value).toBe("daily");
     expect(screen.getByTestId("cron-rewrite-warning").textContent).toContain("*/10 * * * *");
   });
+
+  it("leaves an unexpressible cron alone when only the text was edited", async () => {
+    await openEditor("*/10 * * * *");
+
+    fireEvent.click(screen.getByText("Save"));
+    const calls = vi.mocked(updateAutomation).mock.calls;
+    const body = calls[calls.length - 1][1] as Record<string, unknown>;
+    expect(body).toMatchObject({ title: "Spare-parts stock alert" });
+    expect(body).not.toHaveProperty("cron");
+  });
+
+  it("rewrites an unexpressible cron once the user picks a repeat", async () => {
+    const select = await openEditor("*/10 * * * *");
+
+    fireEvent.change(select, { target: { value: "fri" } });
+    fireEvent.click(screen.getByText("Save"));
+    expect(vi.mocked(updateAutomation)).toHaveBeenLastCalledWith(
+      "t1",
+      expect.objectContaining({ cron: "0 9 * * 5" }),
+    );
+  });
 });

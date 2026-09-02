@@ -477,7 +477,7 @@
     "consent_suffix": "without asking each time. Anything else still asks first.",
     "create_btn": "Create automation",
     "creating": "Creating…",
-    "cron_rewrite_warning": "The current schedule ({{schedule}}) says more than these options can express — saving will replace it with the simple schedule above.",
+    "cron_rewrite_warning": "The current schedule ({{schedule}}) says more than these options can express. It stays as is unless you change the time or repeat above — then saving replaces it with that simple schedule.",
     "day_aria": "Day",
     "delete": "Delete",
     "delete_aria": "Delete {{title}}",

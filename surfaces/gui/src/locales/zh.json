@@ -469,7 +469,7 @@
     "consent_suffix": "而无需每次询问。其他操作仍会先询问。",
     "create_btn": "创建自动化",
     "creating": "创建中…",
-    "cron_rewrite_warning": "当前计划（{{schedule}}）超出这里的选项能表达的范围——保存后将改写为上面选择的简单计划。",
+    "cron_rewrite_warning": "当前计划（{{schedule}}）超出这里的选项能表达的范围。不动上面的时间和重复，保存后原样保留；改了再保存，就会改写为所选的简单计划。",
     "day_aria": "星期",
     "delete": "删除",
     "delete_aria": "删除 {{title}}",
