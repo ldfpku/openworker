@@ -75,4 +75,29 @@ describe("readFile", () => {
     const out = await readFile(notes);
     expect(out).toMatchObject({ kind: "text", name: "notes.md", text: "hello" });
   });
+
+  // The byte cap is whatever the caller hands in — the composer passes the user's PDF limit
+  // from Settings → Token savings — so a PDF that cleared that setting can't be eaten here
+  // by a second, hard-coded number. Sizes are faked: readFile() only compares `size`, and
+  // allocating tens of megabytes per test buys nothing.
+  const pdfOfSize = (bytes: number) => {
+    const pdf = new File(["%PDF-1.4"], "big.pdf", { type: "application/pdf" });
+    Object.defineProperty(pdf, "size", { value: bytes });
+    return pdf;
+  };
+
+  it("keeps the built-in 10 MB cap when no limit is passed", async () => {
+    await expect(readFile(pdfOfSize(10 * 1024 * 1024 + 1))).resolves.toBeNull();
+  });
+
+  it("honors a caller-supplied cap above the built-in one", async () => {
+    const out = await readFile(pdfOfSize(15 * 1024 * 1024), { maxBytes: 20 * 1024 * 1024 });
+    expect(out).toMatchObject({ kind: "pdf", name: "big.pdf", mime: "application/pdf" });
+    expect(out?.data_url).toMatch(/^data:application\/pdf;base64,/);
+  });
+
+  it("honors a caller-supplied cap below the built-in one", async () => {
+    const notes = new File(["hello"], "notes.md", { type: "text/markdown" });
+    await expect(readFile(notes, { maxBytes: 4 })).resolves.toBeNull();
+  });
 });

@@ -343,9 +343,12 @@ export function Composer(props: Props) {
         /* offline settings fetch — fall back to defaults */
       }
     }
+    // One figure for both PDF byte gates — this pre-check and readFile()'s cap below. If they
+    // drift apart, a PDF under the user's limit gets eaten by the generic "skipped" notice.
+    const pdfMaxBytes = maxMb * 1024 * 1024;
     const accepted: File[] = [];
     for (const file of list) {
-      if (isPdfFile(file) && file.size > maxMb * 1024 * 1024) {
+      if (isPdfFile(file) && file.size > pdfMaxBytes) {
         showAttachNotice(
           t("composer.pdf_too_big", { name: file.name, mb: (file.size / 1024 / 1024).toFixed(1), limit: maxMb }),
         );
@@ -353,7 +356,9 @@ export function Composer(props: Props) {
       }
       accepted.push(file);
     }
-    const results = await Promise.all(accepted.map(readFile));
+    const results = await Promise.all(
+      accepted.map((f) => readFile(f, isPdfFile(f) ? { maxBytes: pdfMaxBytes } : {})),
+    );
     // readFile() nulls out unsupported types, oversized files, and read errors (a folder
     // that slipped past the drop-time split lands here too) — name them, don't eat them.
     const skipped = accepted.filter((_, i) => !results[i]).map((f) => f.name || "?");

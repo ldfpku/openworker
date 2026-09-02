@@ -74,3 +74,49 @@ describe("Composer / drag-and-drop attach", () => {
     expect(screen.queryByTestId("attach-notice")).toBeNull();
   });
 });
+
+// Settings → Token savings owns the PDF size limit. A PDF under that limit must attach even
+// when it is over the reader's own 10 MB default — otherwise the "skipped … up to 10 MB"
+// notice contradicts the limit the user just set. Sizes are faked (the composer and the
+// reader only compare `size`), and inspect-pdf answers with a small page count so the byte
+// gates are the only thing under test.
+describe("Composer / PDF size limit from settings", () => {
+  function stubFetchWithPdfLimit(mb: number) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request) => {
+        const path = String(url);
+        const body = path.endsWith("/v1/settings")
+          ? { pdf_max_mb: mb, pdf_max_pages: 20 }
+          : path.endsWith("/v1/attachments/inspect-pdf")
+            ? { ok: true, pages: 3, bytes: 1 }
+            : {};
+        return { ok: true, json: async () => body } as Response;
+      }),
+    );
+  }
+
+  const pdfOfMb = (mb: number) => {
+    const pdf = new File(["%PDF-1.4"], "deck.pdf", { type: "application/pdf" });
+    Object.defineProperty(pdf, "size", { value: mb * 1024 * 1024 });
+    return pdf;
+  };
+
+  it("attaches a PDF between 10 MB and the user's higher limit instead of skipping it", async () => {
+    stubFetchWithPdfLimit(20);
+    render(<Composer {...props()} />);
+    drop([fileItem(pdfOfMb(15), { isDirectory: false })]);
+    await waitFor(() => expect(screen.getByText("deck.pdf")).toBeTruthy());
+    expect(screen.queryByTestId("attach-notice")).toBeNull();
+  });
+
+  it("rejects a PDF over the user's limit with the limit-specific notice", async () => {
+    stubFetchWithPdfLimit(20);
+    render(<Composer {...props()} />);
+    drop([fileItem(pdfOfMb(25), { isDirectory: false })]);
+    const notice = await screen.findByTestId("attach-notice");
+    expect(notice.textContent).toContain("deck.pdf");
+    expect(notice.textContent).toContain("20 MB limit");
+    expect(screen.queryByText("deck.pdf")).toBeNull(); // no chip — the exact-name match is the chip
+  });
+});

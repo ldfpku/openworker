@@ -1,6 +1,6 @@
 import type { Attachment } from "./types";
 
-const MAX_BYTES = 10 * 1024 * 1024; // skip files larger than ~10MB
+const MAX_BYTES = 10 * 1024 * 1024; // skip files larger than ~10MB unless the caller sets its own cap
 const TEXT_RE =
   /\.(txt|md|markdown|csv|tsv|json|ya?ml|log|ini|toml|py|js|ts|tsx|jsx|rs|go|java|c|h|cpp|sh|html?|css|sql|xml)$/i;
 
@@ -42,11 +42,15 @@ export function splitDataTransfer(dt: DataTransfer): { files: File[]; folders: n
   return { files, folders };
 }
 
-export function readFile(file: File): Promise<Attachment | null> {
+// `maxBytes` replaces the built-in cap for this one file. The composer passes the user's PDF
+// limit (Settings → Token savings) so this gate and its own pre-check are the same number —
+// a PDF that cleared the setting must not be dropped here as "oversized".
+export function readFile(file: File, opts: { maxBytes?: number } = {}): Promise<Attachment | null> {
+  const maxBytes = opts.maxBytes ?? MAX_BYTES;
   const isImage = file.type.startsWith("image/");
   const isPdf = isPdfFile(file);
   const isText = !isPdf && (file.type.startsWith("text/") || TEXT_RE.test(file.name));
-  if ((!isImage && !isPdf && !isText) || file.size > MAX_BYTES) return Promise.resolve(null);
+  if ((!isImage && !isPdf && !isText) || file.size > maxBytes) return Promise.resolve(null);
   return new Promise((resolve) => {
     const reader = new FileReader();
     reader.onerror = () => resolve(null);
