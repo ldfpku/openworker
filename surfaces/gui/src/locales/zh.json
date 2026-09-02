@@ -7,7 +7,8 @@
     "dismiss": "忽略",
     "remove": "移除",
     "send": "发送",
-    "stop": "停止"
+    "stop": "停止",
+    "retry": "重试"
   },
   "sidebar": {
     "new_session": "新建会话",
@@ -157,7 +158,8 @@
     "bind_memory": "项目记忆",
     "bind_board": "看板",
     "reviewer_paused_tip": "本回合暂停 —— 审查器连续拦截了多个操作，将改为向你请求批准",
-    "paused": "已暂停"
+    "paused": "已暂停",
+    "skills_load_failed": "技能列表加载失败。"
   },
   "transcript": {
     "copy_message": "复制消息",
@@ -269,7 +271,8 @@
     "table_truncated": "显示前 {{max}} 行，共 {{total}} 行。",
     "board_chip_blocked_other": "{{count}} 个受阻",
     "board_chip_review_other": "{{count}} 个待审核",
-    "board_chip_active_other": "{{count}} 项活跃"
+    "board_chip_active_other": "{{count}} 项活跃",
+    "artifacts_load_failed": "文件列表加载失败。"
   },
   "settings": {
     "tab": {
@@ -384,7 +387,8 @@
     "personas_desc": "协作代理是为某个角色或任务专门配置的智能体，自带完成该角色所需的工具和技能。启用一个协作代理之后，开始新会话时就能选到它。",
     "composer_section": "输入框",
     "context_bar_title": "显示上下文窗口指示条",
-    "context_bar_desc": "一个小指示条，显示模型上下文窗口的占用程度。关闭后将改为以数字形式显示。"
+    "context_bar_desc": "一个小指示条，显示模型上下文窗口的占用程度。关闭后将改为以数字形式显示。",
+    "trust_load_failed": "无法加载工作区信任设置。"
   },
   "cloud": {
     "check_browser": "请查看浏览器…",
@@ -687,7 +691,8 @@
     "cancel": "取消",
     "choose_location": "选择位置",
     "channel_add_error": "无法添加该频道。",
-    "summary_folder_count_other": "{{count}} 个文件夹"
+    "summary_folder_count_other": "{{count}} 个文件夹",
+    "connectors_load_failed": "连接器状态加载失败。"
   },
   "root": {
     "temporary_space": "临时文件夹",
@@ -785,7 +790,8 @@
     "fallback_tool": "工具",
     "fallback_event": "事件",
     "session": "会话",
-    "resource": "资源：{{value}}"
+    "resource": "资源：{{value}}",
+    "load_failed": "审计事件加载失败。"
   },
   "plan": {
     "proposed": "代理提出了一个计划",
@@ -1204,7 +1210,9 @@
     "tool_asks_approval": "{{name}} · {{kind}} · 需审批",
     "tools_exposed": "向 OpenWorker 开放的工具",
     "unknown": "未知",
-    "validating": "验证中…"
+    "validating": "验证中…",
+    "subscriptions_load_failed": "频道订阅加载失败。",
+    "listening_title_uncounted": "正在监听 {{title}} 频道的会话"
   },
   "models": {
     "add_btn": "添加",
@@ -1553,7 +1561,8 @@
     "confirm_delete": "确认删除",
     "enabled_aria": "{{name}} 已启用",
     "on": "开",
-    "excluded_automatically": "已自动排除：{{items}}"
+    "excluded_automatically": "已自动排除：{{items}}",
+    "load_failed": "技能列表加载失败。"
   },
   "memory": {
     "section_sub": "你的协作代理可以在会话之间记住关于你的有用信息。他们知道的所有内容都列在这里。",
@@ -1575,7 +1584,8 @@
     "save": "保存",
     "rules_saved": "已保存——对新会话生效。已打开的会话仍沿用其开始时的指令。",
     "fix_tip": "修正此条",
-    "delete_tip": "删除此条记忆"
+    "delete_tip": "删除此条记忆",
+    "load_failed": "记忆加载失败。"
   },
   "setup": {
     "import_coworker": "导入协作代理…",

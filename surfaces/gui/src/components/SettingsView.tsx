@@ -520,11 +520,19 @@ function AppearanceSection() {
 function TrustedWorkspacesCard() {
   const { t } = useTranslation();
   const [workspaces, setWorkspaces] = useState<WorkspaceCommandTrust[] | null>(null);
+  // A fetch failure has security semantics here (unlike a plain loading state) — it must
+  // never collapse into the same rendering as "no workspaces are trusted", so it gets its
+  // own flag rather than being coerced into an empty list.
+  const [loadFailed, setLoadFailed] = useState(false);
 
-  const refresh = () =>
+  const refresh = () => {
+    setLoadFailed(false);
     getTrustedWorkspaces()
       .then(setWorkspaces)
-      .catch(() => setWorkspaces([]));
+      // Keep the last good list on a failed refresh (e.g. after a revoke); a never-loaded
+      // card shows the retry copy instead.
+      .catch(() => setLoadFailed(true));
+  };
 
   useEffect(() => {
     refresh();
@@ -542,7 +550,18 @@ function TrustedWorkspacesCard() {
       <div className={FIELD_HELP}>
         {t("settings.trusted_workspaces_help")}
       </div>
-      {workspaces === null ? (
+      {loadFailed && workspaces === null ? (
+        <div className="text-[12px] text-muted mt-3">
+          <div>{t("settings.trust_load_failed")}</div>
+          <button
+            className={BTN_BORDERED + " mt-2"}
+            onClick={refresh}
+            data-testid="trusted-workspaces-retry"
+          >
+            {t("common.retry")}
+          </button>
+        </div>
+      ) : workspaces === null ? (
         <div className="text-[12px] text-muted mt-3">{t("settings.trust_loading")}</div>
       ) : workspaces.length === 0 ? (
         <div className="text-[12px] text-muted mt-3">{t("settings.trust_empty")}</div>

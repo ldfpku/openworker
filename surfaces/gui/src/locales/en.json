@@ -7,7 +7,8 @@
     "dismiss": "Dismiss",
     "remove": "Remove",
     "send": "Send",
-    "stop": "Stop"
+    "stop": "Stop",
+    "retry": "Retry"
   },
   "sidebar": {
     "new_session": "New session",
@@ -159,7 +160,8 @@
     "bind_memory": "Project memory",
     "bind_board": "Board",
     "reviewer_paused_tip": "paused for this turn — the reviewer blocked several actions in a row, approvals come to you",
-    "paused": "paused"
+    "paused": "paused",
+    "skills_load_failed": "Could not load skills."
   },
   "transcript": {
     "copy_message": "Copy message",
@@ -276,7 +278,8 @@
     "board_chip_review_one": "{{count}} review",
     "board_chip_review_other": "{{count}} review",
     "board_chip_active_one": "{{count}} active",
-    "board_chip_active_other": "{{count}} active"
+    "board_chip_active_other": "{{count}} active",
+    "artifacts_load_failed": "Could not load files."
   },
   "settings": {
     "tab": {
@@ -392,7 +395,8 @@
     "personas_desc": "Coworkers are agents specialized for a particular role or task. They come equipped with the tools and skills to be successful in that role. Enabling a coworker lets you pick it when starting a conversation.",
     "composer_section": "Composer",
     "context_bar_title": "Show the context window bar",
-    "context_bar_desc": "A small meter showing how full the model’s context window is. Turn it off to show the same thing as a number instead."
+    "context_bar_desc": "A small meter showing how full the model’s context window is. Turn it off to show the same thing as a number instead.",
+    "trust_load_failed": "Could not load trusted workspaces."
   },
   "cloud": {
     "check_browser": "Check your browser…",
@@ -698,7 +702,8 @@
     "choose_location": "Choose location",
     "channel_add_error": "Couldn't add that channel.",
     "summary_folder_count_one": "{{count}} folder",
-    "summary_folder_count_other": "{{count}} folders"
+    "summary_folder_count_other": "{{count}} folders",
+    "connectors_load_failed": "Could not load connector status."
   },
   "root": {
     "temporary_space": "Temporary folder",
@@ -796,7 +801,8 @@
     "fallback_tool": "tool",
     "fallback_event": "event",
     "session": "session",
-    "resource": "resource: {{value}}"
+    "resource": "resource: {{value}}",
+    "load_failed": "Could not load audit events."
   },
   "plan": {
     "proposed": "The agent proposed a plan",
@@ -1220,7 +1226,9 @@
     "tool_asks_approval": "{{name}} · {{kind}} · asks approval",
     "tools_exposed": "Tools exposed to OpenWorker",
     "unknown": "unknown",
-    "validating": "Validating…"
+    "validating": "Validating…",
+    "subscriptions_load_failed": "Could not load subscriptions.",
+    "listening_title_uncounted": "Sessions listening to {{title}} channels"
   },
   "models": {
     "add_btn": "Add",
@@ -1584,7 +1592,8 @@
     "confirm_delete": "Confirm delete",
     "enabled_aria": "{{name}} enabled",
     "on": "On",
-    "excluded_automatically": "Excluded automatically: {{items}}"
+    "excluded_automatically": "Excluded automatically: {{items}}",
+    "load_failed": "Could not load skills."
   },
   "memory": {
     "section_sub": "Your coworkers can remember useful things about you between conversations. Everything they know is listed here.",
@@ -1606,7 +1615,8 @@
     "save": "Save",
     "rules_saved": "Saved — applies to new conversations. Ones you already have open keep the instructions they started with.",
     "fix_tip": "Fix this",
-    "delete_tip": "Delete this memory"
+    "delete_tip": "Delete this memory",
+    "load_failed": "Could not load memory."
   },
   "setup": {
     "import_coworker": "Import coworker…",

@@ -136,6 +136,11 @@ export function RightRail({
     setOpen((prev) => ({ ...prev, board: true }));
   }, [openBoardKey]);
   const [artifacts, setArtifacts] = useState<ArtifactInfo[]>([]);
+  // Tracks whether a load has ever SUCCEEDED, separately from the current list — a failed
+  // refresh (periodic/on-event) must not clobber already-loaded data, so the failure render
+  // below only fires when nothing has ever loaded successfully.
+  const [artifactsLoaded, setArtifactsLoaded] = useState(false);
+  const [artifactsLoadFailed, setArtifactsLoadFailed] = useState(false);
   // UX-037 Files: the session's roots (workspace/scratch/grants) — the entry points of
   // the file explorer.
   const [rootDirs, setRootDirs] = useState<RootInfo[]>([]);
@@ -143,7 +148,16 @@ export function RightRail({
   const [selected, setSelected] = useState<ArtifactInfo | null>(null);
   const [content, setContent] = useState<ArtifactContent | null>(null);
 
-  const refreshArtifacts = () => getArtifacts(sessionId).then(setArtifacts).catch(() => setArtifacts([]));
+  const refreshArtifacts = () =>
+    getArtifacts(sessionId)
+      .then((list) => {
+        setArtifacts(list);
+        setArtifactsLoaded(true);
+        setArtifactsLoadFailed(false);
+      })
+      // Keep showing the last good list on a failed refresh — only flag the failure;
+      // `artifacts` (and `artifactsLoaded`) are left untouched.
+      .catch(() => setArtifactsLoadFailed(true));
 
   useEffect(() => {
     if (!active) return;
@@ -225,6 +239,8 @@ export function RightRail({
       getArtifacts(sessionId)
         .then((list) => {
           setArtifacts(list);
+          setArtifactsLoaded(true);
+          setArtifactsLoadFailed(false);
           setSelected(match(list, path) ?? minimal(path));
         })
         .catch(() => setSelected(minimal(path)));
@@ -352,7 +368,16 @@ export function RightRail({
               </>
             }
           >
-            {artifacts.length === 0 ? (
+            {artifacts.length === 0 && artifactsLoadFailed && !artifactsLoaded ? (
+              // Never successfully loaded and the fetch failed — a retryable failure state,
+              // distinct from a genuine resolved-empty list ("No previewable files yet.").
+              <div className="rail-muted">
+                <div>{t("rail.artifacts_load_failed")}</div>
+                <button className="btn sm mt-2" data-testid="artifacts-retry" onClick={() => refreshArtifacts()}>
+                  {t("common.retry")}
+                </button>
+              </div>
+            ) : artifacts.length === 0 ? (
               <div className="rail-muted">{t("rail.artifacts_empty")}</div>
             ) : (
               <div className="artifact-list">

@@ -263,6 +263,31 @@ describe("SkillsTab", () => {
   });
 });
 
+describe("SkillsTab — load failure vs genuine empty", () => {
+  it("shows a retryable failure (not the empty-state copy) when the initial fetch rejects, and recovers", async () => {
+    let call = 0;
+    const fn = vi.fn(async (url: string) => {
+      if (url.includes("/v1/skills")) {
+        call++;
+        if (call === 1) throw new Error("network down");
+        return { ok: true, json: async () => LIST } as Response;
+      }
+      return { ok: true, json: async () => ({}) } as Response;
+    });
+    vi.stubGlobal("fetch", fn);
+
+    render(<SkillsTab />);
+
+    expect(await screen.findByText("Could not load skills.")).toBeTruthy();
+    expect(screen.queryByText(/No skills yet/)).toBeNull();
+
+    fireEvent.click(screen.getByTestId("skills-retry"));
+    expect(await screen.findByText("weekly-report")).toBeTruthy();
+    expect(screen.queryByTestId("skills-retry")).toBeNull();
+    expect(screen.queryByText("Could not load skills.")).toBeNull();
+  });
+});
+
 describe("SkillsTab — rich-skill disclosure (§6)", () => {
   it("shows a file count only when a skill bundles resources", async () => {
     stubFetch([

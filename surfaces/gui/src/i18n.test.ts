@@ -25,6 +25,19 @@ const IMPORTANT_KEYS = [
   "composer.attach_skipped",
   "composer.folder_drop_unsupported",
   "composer.listening_sr",
+  // Load-failure copy (fetch rejected ≠ genuinely empty) + the shared Retry label; each
+  // section that can fail to load has its own key, and the listening header drops its
+  // count while the subscription list is unknown.
+  "common.retry",
+  "audit.load_failed",
+  "access.connectors_load_failed",
+  "rail.artifacts_load_failed",
+  "memory.load_failed",
+  "skills.load_failed",
+  "composer.skills_load_failed",
+  "manage.subscriptions_load_failed",
+  "manage.listening_title_uncounted",
+  "settings.trust_load_failed",
 ] as const;
 
 const values: Record<string, Record<string, string | number>> = {
@@ -43,6 +56,7 @@ const values: Record<string, Record<string, string | number>> = {
   "composer.pdf_unreadable": { name: "report.pdf", error: "invalid PDF" },
   "composer.attach_skipped": { names: "LICENSE, notes" },
   "composer.listening_sr": { time: "0:12" },
+  "manage.listening_title_uncounted": { title: "Slack" },
 };
 
 function flatten(tree: LocaleTree, prefix = "", result: Record<string, string> = {}) {

@@ -16,6 +16,9 @@ export function AuditView() {
   const [sessionFilter, setSessionFilter] = useState("");
   const [connectorFilter, setConnectorFilter] = useState("");
   const [toolFilter, setToolFilter] = useState("");
+  // A failed fetch is not the same as "no events" — keep it distinct so the user gets
+  // a retry instead of a silent (and misleading) empty state.
+  const [loadFailed, setLoadFailed] = useState(false);
 
   const refresh = () =>
     getAudit({
@@ -24,8 +27,11 @@ export function AuditView() {
       connector: connectorFilter.trim() || undefined,
       tool: toolFilter.trim() || undefined,
     })
-      .then(setEvents)
-      .catch(() => setEvents([]));
+      .then((evs) => {
+        setEvents(evs);
+        setLoadFailed(false);
+      })
+      .catch(() => setLoadFailed(true));
 
   useEffect(() => {
     refresh();
@@ -49,7 +55,14 @@ export function AuditView() {
             </button>
           </div>
 
-          {events.length === 0 ? (
+          {loadFailed ? (
+            <div className={CARD + " p-4 text-[13px] text-muted"}>
+              <div>{t("audit.load_failed")}</div>
+              <button className={BTN_ACCENT + " mt-3"} onClick={refresh} data-testid="audit-retry">
+                {t("common.retry")}
+              </button>
+            </div>
+          ) : events.length === 0 ? (
             <div className={CARD + " p-4 text-[13px] text-muted"}>{t("audit.no_events")}</div>
           ) : (
             <div className="space-y-2">

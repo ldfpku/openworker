@@ -30,13 +30,25 @@ export function MemorySection() {
   const { t } = useTranslation();
   const [settings, setSettings] = useState<MemorySettings | null>(null);
   const [entries, setEntries] = useState<MemoryEntry[] | null>(null);
+  // A failed getMemory() is not the backend's "nothing remembered yet" verdict — flag it
+  // separately so the empty-state copy doesn't render over a real fetch failure.
+  const [loadFailed, setLoadFailed] = useState(false);
   // State-change copy (§5.3): shown under the toggle / list after an action.
   const [toggleMsg, setToggleMsg] = useState<string | null>(null);
   const [listMsg, setListMsg] = useState<string | null>(null);
 
   const refresh = () => {
     getMemorySettings().then(setSettings).catch(() => setSettings(null));
-    getMemory().then(setEntries).catch(() => setEntries([]));
+    getMemory()
+      .then((e) => {
+        setLoadFailed(false);
+        setEntries(e);
+      })
+      .catch(() => {
+        setLoadFailed(true);
+        // Keep whatever was already on screen; only a never-loaded list falls back to [].
+        setEntries((prev) => prev ?? []);
+      });
   };
   useEffect(refresh, []);
   // Stay current while the screen is open: a save/edit landing in a conversation, or
@@ -110,7 +122,14 @@ export function MemorySection() {
             {listMsg}
           </div>
         )}
-        {entries.length === 0 ? (
+        {loadFailed && entries.length === 0 ? (
+          <div className="text-[12px] text-muted mt-3">
+            <div>{t("memory.load_failed")}</div>
+            <button className={BTN_ACCENT + " mt-2"} onClick={refresh} data-testid="memory-retry">
+              {t("common.retry")}
+            </button>
+          </div>
+        ) : entries.length === 0 ? (
           !listMsg && (
             <div className="text-[12px] text-muted mt-3" data-testid="memory-empty">
               {t("memory.empty")}

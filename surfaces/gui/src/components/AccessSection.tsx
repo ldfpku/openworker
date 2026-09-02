@@ -74,6 +74,9 @@ export function AccessSection({
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [conns, setConns] = useState<SessionConnections | null>(null);
+  // A failed getSessionConnections() is not "no connectors enabled" — keep that distinct
+  // so Sources offers a retry instead of reading as an empty session.
+  const [connsFailed, setConnsFailed] = useState(false);
   const [byName, setByName] = useState<ConnectorMap>({});
   const { roots, busy: rootsBusy, error: rootsError, addRoot, toggleAccess, removeRoot } =
     useRoots(sessionId, open ? 1 : 0);
@@ -83,8 +86,13 @@ export function AccessSection({
     // personaId hint: a brand-new session has no server-side record yet, so without it the
     // view would resolve to the DEFAULT persona's defaults/recommends.
     getSessionConnections(sessionId, personaId)
-      .then(setConns)
-      .catch(() => setConns(null));
+      .then((r) => {
+        setConns(r);
+        setConnsFailed(false);
+      })
+      // Keep the last good snapshot on a failed reload (the header summary stays honest);
+      // only the Sources list switches to the retry copy.
+      .catch(() => setConnsFailed(true));
   }, [sessionId, personaId]);
   useEffect(() => {
     reload();
@@ -290,10 +298,25 @@ export function AccessSection({
               {/* Sources — each toggle is a per-session override (mute for THIS session only). */}
               <div>
                 <div className={`${SEC_H} mb-1.5`}>{t("access.sources")}</div>
-                {connected.length === 0 && (
+                {connsFailed && connected.length === 0 ? (
+                  // Never loaded and the fetch failed — retryable, distinct from a session
+                  // that genuinely has no connectors. A failed RELOAD keeps the last list.
                   <div className="text-[12px] text-faint py-0.5">
-                    {t("access.no_connectors")}
+                    <div>{t("access.connectors_load_failed")}</div>
+                    <button
+                      className={BTN_ACCENT + " mt-1.5"}
+                      onClick={reload}
+                      data-testid="connectors-retry"
+                    >
+                      {t("common.retry")}
+                    </button>
                   </div>
+                ) : (
+                  connected.length === 0 && (
+                    <div className="text-[12px] text-faint py-0.5">
+                      {t("access.no_connectors")}
+                    </div>
+                  )
                 )}
                 <div className="space-y-1">
                   {connected.map((c) => (

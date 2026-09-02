@@ -128,6 +128,49 @@ describe("Composer / skills popup", () => {
   });
 });
 
+describe("Composer / skills popup — load failure", () => {
+  function stubFetchWithSkillsFailure(fail: () => boolean, skills: typeof MENU.skills) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.includes("/skills")) {
+          if (fail()) throw new Error("network error");
+          return { ok: true, json: async () => ({ skills }) } as Response;
+        }
+        return { ok: true, json: async () => ({}) } as Response;
+      }),
+    );
+  }
+
+  it("shows a failure message (not 'No matching skills.') when the fetch is rejected", async () => {
+    stubFetchWithSkillsFailure(() => true, MENU.skills);
+    render(<Composer {...props()} />);
+    fireEvent.change(box(), { target: { value: "/" } });
+    expect(await screen.findByText("Could not load skills.")).toBeTruthy();
+    expect(screen.queryByText("No matching skills.")).toBeNull();
+  });
+
+  it("a genuinely empty menu still shows 'No matching skills.'", async () => {
+    stubFetchWithSkillsFailure(() => false, []);
+    render(<Composer {...props()} />);
+    fireEvent.change(box(), { target: { value: "/" } });
+    expect(await screen.findByText("No matching skills.")).toBeTruthy();
+  });
+
+  it("retry re-fetches and recovers after a failure", async () => {
+    let fail = true;
+    stubFetchWithSkillsFailure(() => fail, MENU.skills);
+    render(<Composer {...props()} />);
+    fireEvent.change(box(), { target: { value: "/" } });
+    expect(await screen.findByText("Could not load skills.")).toBeTruthy();
+
+    fail = false;
+    fireEvent.click(screen.getByTestId("composer-skills-retry"));
+    expect(await screen.findByText("/weekly-report")).toBeTruthy();
+    expect(screen.queryByText("Could not load skills.")).toBeNull();
+  });
+});
+
 describe("Composer — the doorway prefill (SKILLS-SPEC §5.2)", () => {
   it("a prefill arriving together with a session switch survives the draft clear", async () => {
     stubFetch();

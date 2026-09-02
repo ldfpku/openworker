@@ -407,7 +407,17 @@ export function UnauthorizedBlock({
 export function ListeningSessionsBlock({ c }: { c: Connector }) {
   const { t } = useTranslation();
   const [subs, setSubs] = useState<Subscription[] | null>(null);
-  const load = () => getSubscriptions().then(setSubs).catch(() => setSubs([]));
+  // Distinguishes "loaded, genuinely empty" from "fetch failed" — a failure must not
+  // read as a confident zero (count hidden below) and gets a retry instead of
+  // the empty-state copy.
+  const [loadFailed, setLoadFailed] = useState(false);
+  const load = () => {
+    setLoadFailed(false);
+    getSubscriptions()
+      .then(setSubs)
+      // Keep already-loaded rows on a failed refresh; only a never-loaded list stays empty.
+      .catch(() => setLoadFailed(true));
+  };
   useEffect(() => {
     load();
   }, [c.name]);
@@ -416,8 +426,19 @@ export function ListeningSessionsBlock({ c }: { c: Connector }) {
   const mine = (subs ?? []).filter((s) => platformOf(s.channel) === c.name);
   return (
     <div className="border-t border-line px-3.5 py-3" data-testid={`listening-${c.name}`}>
-      <div className={SEC_H + " mb-2"}>{t("manage.listening_title", { title: c.title, n: mine.length })}</div>
-      {mine.length === 0 ? (
+      <div className={SEC_H + " mb-2"}>
+        {loadFailed
+          ? t("manage.listening_title_uncounted", { title: c.title })
+          : t("manage.listening_title", { title: c.title, n: mine.length })}
+      </div>
+      {loadFailed && mine.length === 0 ? (
+        <div className="text-[12px] text-faint flex items-center gap-2.5">
+          {t("manage.subscriptions_load_failed")}
+          <button className={BTN_BORDERED} onClick={load} data-testid="subscriptions-retry">
+            {t("common.retry")}
+          </button>
+        </div>
+      ) : mine.length === 0 ? (
         <div className="text-[12px] text-faint">
           {t("manage.listening_empty")}
         </div>

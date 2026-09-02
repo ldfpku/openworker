@@ -148,6 +148,9 @@ export function Composer(props: Props) {
   // rides the user_message as its own field. Editing the prefix away un-picks the skill.
   const [pendingSkill, setPendingSkill] = useState<SessionSkillRow | null>(null);
   const [slashSkills, setSlashSkills] = useState<SessionSkillRow[] | null>(null);
+  // A failed fetch is distinct from both null (loading) and [] (genuinely no skills) — it
+  // gets its own failure copy instead of the misleading "No matching skills.".
+  const [slashSkillsFailed, setSlashSkillsFailed] = useState(false);
   const [slashIndex, setSlashIndex] = useState(0);
   const prefixIntact =
     pendingSkill !== null &&
@@ -162,18 +165,22 @@ export function Composer(props: Props) {
   const slashMatches = (slashSkills ?? []).filter((s) =>
     s.name.toLowerCase().includes(slashQuery ?? ""),
   );
+  const fetchSlashSkills = () => {
+    if (!props.sessionId) return;
+    setSlashSkillsFailed(false);
+    sessionSkills(props.sessionId, props.workspace)
+      .then((all) => setSlashSkills(all.filter((s) => s.enabled)))
+      .catch(() => setSlashSkillsFailed(true));
+  };
   useEffect(() => {
     // Fetch on each popup open (fresh menu); drop when closed.
     if (slashQuery === null) {
       setSlashSkills(null);
+      setSlashSkillsFailed(false);
       setSlashIndex(0);
       return;
     }
-    if (slashSkills === null && props.sessionId) {
-      sessionSkills(props.sessionId, props.workspace)
-        .then((all) => setSlashSkills(all.filter((s) => s.enabled)))
-        .catch(() => setSlashSkills([]));
-    }
+    if (slashSkills === null && !slashSkillsFailed && props.sessionId) fetchSlashSkills();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slashQuery === null]);
   const pickSkill = (s: SessionSkillRow) => {
@@ -585,7 +592,19 @@ export function Composer(props: Props) {
             effective menu only (muted/disabled skills never appear). */}
         {slashQuery !== null && (
           <div className="px-2 pt-2" data-testid="skill-popup" role="listbox" aria-label={t("Skills")}>
-            {slashSkills === null ? (
+            {slashSkillsFailed ? (
+              <div className="px-2 py-1.5 flex items-center gap-2 text-[12px] text-faint">
+                <span className="flex-1">{t("composer.skills_load_failed")}</span>
+                <button
+                  type="button"
+                  className="text-accent font-medium shrink-0"
+                  data-testid="composer-skills-retry"
+                  onClick={fetchSlashSkills}
+                >
+                  {t("common.retry")}
+                </button>
+              </div>
+            ) : slashSkills === null ? (
               <div className="px-2 py-1.5 text-[12px] text-faint">{t("Loading skills…")}</div>
             ) : slashMatches.length === 0 ? (
               <div className="px-2 py-1.5 text-[12px] text-faint">{t("No matching skills.")}</div>

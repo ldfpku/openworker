@@ -79,6 +79,10 @@ export function SkillsTab({
 }) {
   const { t } = useTranslation();
   const [rows, setRows] = useState<SkillRow[]>([]);
+  // A rejected fetch must not read as "genuinely no skills" — track it separately so the
+  // empty-state copy only shows for an actual empty list, and a failure gets its own
+  // retryable message instead.
+  const [loadFailed, setLoadFailed] = useState(false);
   const [editor, setEditor] = useState<Editor | null>(null);
   const [upload, setUpload] = useState<SkillUploadPreview | null>(null);
   const [addOpen, setAddOpen] = useState(false);
@@ -100,7 +104,13 @@ export function SkillsTab({
   const OFF_NOTE = t("skills.off_note");
   const DELETE_NOTE = t("skills.delete_note");
 
-  const refresh = () => listSkills().then(setRows);
+  const refresh = () => {
+    setLoadFailed(false);
+    listSkills()
+      .then(setRows)
+      // Keep already-loaded rows on a failed refresh; only a never-loaded list stays empty.
+      .catch(() => setLoadFailed(true));
+  };
   useEffect(() => {
     refresh();
   }, []);
@@ -385,7 +395,14 @@ export function SkillsTab({
       ) : null}
 
       <div className={`${CARD} divide-y divide-line`}>
-        {rows.length === 0 && !editor ? (
+        {loadFailed && rows.length === 0 && !editor ? (
+          <div className="p-5 text-[13px] text-muted">
+            <div>{t("skills.load_failed")}</div>
+            <button className={BTN_BORDERED + " mt-2"} onClick={refresh} data-testid="skills-retry">
+              {t("common.retry")}
+            </button>
+          </div>
+        ) : rows.length === 0 && !editor ? (
           <div className="p-5 text-[13px] text-muted">
             <Trans i18nKey="skills.empty" components={{ b: <b /> }} />
           </div>
