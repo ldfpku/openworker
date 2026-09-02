@@ -66,6 +66,20 @@ describe("Composer / drag-and-drop attach", () => {
     expect(notice.textContent).toContain("report.docx");
   });
 
+  it("keeps both complaints when a folder and an unsupported file land in one drop", async () => {
+    stubFetch();
+    render(<Composer {...props()} />);
+    drop([
+      fileItem(new File([], "docs", { type: "" }), { isDirectory: true }),
+      fileItem(new File(["binary"], "report.docx", { type: "application/msword" }), {
+        isDirectory: false,
+      }),
+    ]);
+    const notice = await screen.findByTestId("attach-notice");
+    await waitFor(() => expect(notice.textContent).toContain("report.docx"));
+    expect(notice.textContent).toMatch(/folders can't be dropped/i);
+  });
+
   it("attaches a plain text file with no notice", async () => {
     stubFetch();
     render(<Composer {...props()} />);

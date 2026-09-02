@@ -330,8 +330,13 @@ export function Composer(props: Props) {
   // Attach-time PDF thresholds (Settings → Token savings): a PDF over the user's page or
   // size limit is REJECTED with a visible notice — never attached, never silently dropped.
   // The rationale is token cost: a big PDF re-rides every turn of the conversation.
-  const addFiles = async (files: FileList | File[]) => {
+  // Everything one add has to say is collected and shown as ONE notice at the end:
+  // showAttachNotice() replaces, so per-file calls would leave only the last complaint
+  // standing (a folder notice vanished behind the skip notice of the file dropped with it).
+  const addFiles = async (files: FileList | File[], opts: { folders?: number } = {}) => {
     const list = Array.from(files);
+    const notices: string[] = [];
+    if (opts.folders) notices.push(t("composer.folder_drop_unsupported"));
     let maxPages = 20;
     let maxMb = 10;
     if (list.some(isPdfFile)) {
@@ -349,7 +354,7 @@ export function Composer(props: Props) {
     const accepted: File[] = [];
     for (const file of list) {
       if (isPdfFile(file) && file.size > pdfMaxBytes) {
-        showAttachNotice(
+        notices.push(
           t("composer.pdf_too_big", { name: file.name, mb: (file.size / 1024 / 1024).toFixed(1), limit: maxMb }),
         );
         continue;
@@ -362,26 +367,27 @@ export function Composer(props: Props) {
     // readFile() nulls out unsupported types, oversized files, and read errors (a folder
     // that slipped past the drop-time split lands here too) — name them, don't eat them.
     const skipped = accepted.filter((_, i) => !results[i]).map((f) => f.name || "?");
-    if (skipped.length) showAttachNotice(t("composer.attach_skipped", { names: skipped.join(", ") }));
+    if (skipped.length) notices.push(t("composer.attach_skipped", { names: skipped.join(", ") }));
     const read = results.filter(Boolean) as Attachment[];
     const next: Attachment[] = [];
     for (const a of read) {
       if (a.kind === "pdf" && a.data_url) {
         const info = await inspectPdf(a.data_url).catch(() => null);
         if (info?.ok && (info.pages ?? 0) > maxPages) {
-          showAttachNotice(
+          notices.push(
             t("composer.pdf_too_many_pages", { name: a.name, pages: info.pages, limit: maxPages }),
           );
           continue;
         }
         if (info && !info.ok) {
-          showAttachNotice(t("composer.pdf_unreadable", { name: a.name, error: info.error || t("composer.pdf_could_not_read") }));
+          notices.push(t("composer.pdf_unreadable", { name: a.name, error: info.error || t("composer.pdf_could_not_read") }));
           continue;
         }
       }
       next.push(a);
     }
     if (next.length) setAttachments((a) => mergeAttachments(a, next));
+    if (notices.length) showAttachNotice(notices.join("\n"));
   };
 
   // The "+" menu offers typed shortcuts; each just narrows the OS picker's filter.
@@ -536,7 +542,7 @@ export function Composer(props: Props) {
           data-testid="attach-notice"
           className="max-w-3xl mx-auto mb-1.5 flex items-center gap-2 rounded-lg border border-warnInk/30 bg-warnSoft px-3 py-1.5 text-[13px] text-warnInk"
         >
-          <span className="flex-1">{attachNotice}</span>
+          <span className="flex-1 whitespace-pre-line">{attachNotice}</span>
           <button
             className="shrink-0 opacity-60 hover:opacity-100"
             onClick={() => setAttachNotice(null)}
@@ -572,8 +578,7 @@ export function Composer(props: Props) {
           // Folders can't ride HTML5 drops (no absolute path reaches the webview), so a
           // whole-folder drag must say so instead of silently attaching nothing.
           const { files, folders } = splitDataTransfer(e.dataTransfer);
-          if (folders) showAttachNotice(t("composer.folder_drop_unsupported"));
-          if (files.length) addFiles(files);
+          if (files.length || folders) addFiles(files, { folders });
         }}
       >
         {/* "/" force-run popup — in-flow above the textarea; rows are the session's
