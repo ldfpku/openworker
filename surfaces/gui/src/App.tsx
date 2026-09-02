@@ -54,6 +54,7 @@ import { baseName } from "./paths";
 import { sessionDisplayTitle } from "./sessionTitle";
 import { modelSwitchText, modeNoticeBody, modeOnText, reviewerPausedText } from "./modeNotice";
 import { itemsFromMessages } from "./itemsFromMessages";
+import { hasConversation } from "./draft";
 import { addTurnUsage, emptyUsage, formatTokens, usageFromMessages } from "./usage";
 import { streamMode } from "./streamGate";
 import { InboxItemCard } from "./components/InboxItemCard";
@@ -62,7 +63,7 @@ import { Icon } from "./components/Icon";
 import { Sidebar } from "./components/Sidebar";
 import { GuidedTour, TOUR_DONE_KEY } from "./components/GuidedTour";
 import { ThinkingBlock, Transcript } from "./components/Transcript";
-import { Composer } from "./components/Composer";
+import { Composer, type ComposerDraft } from "./components/Composer";
 import { Markdown } from "./components/Markdown";
 import { SearchModal } from "./components/SearchModal";
 import { SessionIntro } from "./components/SessionIntro";
@@ -201,7 +202,8 @@ export function App() {
     skill?: string;
   } | null>(null);
   // Bumped to force a socket rebuild on the SAME session id (Save as project… moves the
-  // folder server-side; the engine rebinds on reconnect).
+  // folder server-side; the engine rebinds on reconnect) — and the setup row's
+  // coworker/folder picks, which re-target the draft on its existing id.
   const [connectNonce, setConnectNonce] = useState(0);
   const [showGate, setShowGate] = useState(false);
   const [workspaceTrustRequest, setWorkspaceTrustRequest] =
@@ -231,13 +233,6 @@ export function App() {
   const [streaming, setStreamingState] = useState("");
   // Ref mirror of `streaming`: the WS handler closure is built once per socket and can't read
   // fresh state — the interrupted/error flush below needs the live buffer at event time.
-  // Mode markers in the transcript: which session has already seen the full Auto-approve
-  // explanation, and what mode the transcript last recorded (so a switch can be told apart
-  // Which session the current `mode` value is CONFIRMED for. On a session switch, `mode`
-  // still holds the previous session's value until the server's `ready` event delivers the
-  // real one — announcing anything in that window posts the old session's banner into the
-  // new transcript (seen 2026-08-22: a fresh Ask-for-approval session opened with the
-  // Auto-approve banner, then a stray "Ask for approval is on." marker when `ready` landed).
   const streamingRef = useRef("");
   const setStreaming = (value: string | ((s: string) => string)) => {
     streamingRef.current = typeof value === "function" ? value(streamingRef.current) : value;
@@ -453,6 +448,10 @@ export function App() {
   // Auto-Approve metering (§1.7): live reviewer counts for the composer badge. Polled with
   // the session inbox; null until the first fetch (badge hidden).
   const [composerPrefill, setComposerPrefill] = useState<{ text: string; attachments?: Attachment[]; nonce: number }>();
+  // Settings/Inbox/Library are other `surface`s and unmount the composer, whose draft is local
+  // state. The unsent draft is kept here instead, keyed by session, and restored on remount
+  // (owner ask 2026-09-02).
+  const composerDraftRef = useRef<({ key: string } & ComposerDraft) | null>(null);
 
   // Persona metadata drives workspace behavior by FAMILY, not by hardcoded id (so a DevOps/SecOps
   // code-family persona gates a folder like Code, and a knowledge persona starts orphan like Cowork).
@@ -975,15 +974,18 @@ export function App() {
                   tone: "info",
                   title: modeOnText(String(d.title)),
                   text: modeNoticeBody(String(d.text || "")),
+                  bookkeeping: true,
                 }
-              : { kind: "notice", tone: "info", text: modeOnText(String(d.text || "")) },
+              : { kind: "notice", tone: "info", text: modeOnText(String(d.text || "")), bookkeeping: true },
           ]);
           break;
         case "model_changed":
           // Mid-session switch (server-applied): update the header fact and drop the
           // persisted marker into the live transcript (replay renders it from history).
+          // Bookkeeping, same as a mode marker: a model picked before the first message
+          // is a SETTING and must not end the draft phase (owner ask 2026-09-02).
           if (d.model) setModel(d.model);
-          setItems((p) => [...p, { kind: "notice", tone: "info", text: d.text ? modelSwitchText(String(d.text)) : t("app.notice.model_switched") }]);
+          setItems((p) => [...p, { kind: "notice", tone: "info", text: d.text ? modelSwitchText(String(d.text)) : t("app.notice.model_switched"), bookkeeping: true }]);
           break;
         case "memory_saved":
           // §5.1 save notice — inline in the transcript, where the user is already
@@ -1285,6 +1287,21 @@ export function App() {
   const startNewSession = (forAgent?: string) => {
     const target = forAgent || agent;
     setSurface("session"); // return to the conversation view if we were on a sub-view
+    // An unsaved draft IS the new session: "New session" on it just returns to it — the
+    // typed text, the model/mode and the folder pick all stay, and a different coworker
+    // re-targets it exactly like the setup row does (owner ask 2026-09-02). This is also
+    // the only way back from Settings, since a draft has no sidebar row to click. A session
+    // with a turn, a Recents row or a live run gets a fresh id as before.
+    const unsavedDraft =
+      !hasConversation(items) &&
+      !running &&
+      !streaming &&
+      !sessionId.startsWith("__") &&
+      !sessions.some((s) => s.session_id === sessionId);
+    if (unsavedDraft) {
+      if (target !== agent) pickCoworker(target);
+      return;
+    }
     setItems([]);
     setUsage(emptyUsage());
     setStreaming("");
@@ -1316,8 +1333,10 @@ export function App() {
   };
   // UX-029: re-target the DRAFT session (no messages yet) to another coworker. Unlike
   // switchAgent this never resumes that coworker's last conversation — the user is
-  // composing a new one. A fresh id keeps knowledge families' per-conversation scratch
-  // dirs clean and re-triggers the connection effect.
+  // composing a new one. The draft keeps its id: the server re-targets the same
+  // conversation (`retarget_draft`), so the typed draft, the model/mode picks and any
+  // shared folder survive the switch (owner ask 2026-09-02). The nonce bump is harmless
+  // here — a coworker change already re-runs the connect effect via `agent`.
   const pickCoworker = (id: string) => {
     if (id === agent) return;
     setAgent(id);
@@ -1330,16 +1349,18 @@ export function App() {
     }
     setTempWorkspace(false);
     setShowGate(false);
-    setSessionId(newId());
+    setConnectNonce((n) => n + 1);
   };
   // UX-029: the setup row's folder chip — bind the draft to a folder before the first
-  // message. A fresh id re-triggers the connection effect with the folder attached.
+  // message. Same id, re-targeted server-side (`retarget_draft`), so the typed draft and
+  // the model/mode picks survive the pick (owner ask 2026-09-02). The nonce is what
+  // re-runs the connect effect here: `workspace` is deliberately not one of its deps.
   const pickDraftFolder = (path: string, b?: string | null) => {
     setWorkspace(path);
     setBranch(b ?? null);
     setDraftFolderPicked(true);
     setTempWorkspace(false);
-    setSessionId(newId());
+    setConnectNonce((n) => n + 1);
     getRecentWorkspaces().then(setProjects).catch(() => {});
   };
   // UX-029 send-time dialog resolutions: bind the folder, park the stashed message for
@@ -1353,14 +1374,13 @@ export function App() {
     setBranch(b ?? null);
     setTempWorkspace(false);
     pendingPromptRef.current = { ...gate, model };
-    setSessionId(newId());
+    setConnectNonce((n) => n + 1);
     getRecentWorkspaces().then(setProjects).catch(() => {});
   };
   const startTempAndSend = async () => {
     const gate = sendGate;
     if (!gate) return;
-    const sid = newId();
-    const res = await createTempWorkspace(sid, true);
+    const res = await createTempWorkspace(sessionId, true);
     if (!res.ok || !res.path) {
       setSendGate(null);
       setItems((p) => [
@@ -1379,7 +1399,7 @@ export function App() {
       model,
       notice: res.git ? t("app.temp_folder_created_git") : t("app.temp_folder_created"),
     };
-    setSessionId(sid);
+    setConnectNonce((n) => n + 1);
   };
   const cancelSendGate = () => {
     const gate = sendGate;
@@ -1627,7 +1647,10 @@ export function App() {
 
   // `running` too: a mid-turn reconnect may land before any item is rebuilt — a live
   // session must show the transcript (waiting row, Stop), never the intro hero.
-  const idle = items.length === 0 && !streaming && !running;
+  // Mode bookkeeping (the Auto-approve banner, the one-line markers) is a SETTING, not
+  // activity: a transcript holding only that is still a draft (owner ask 2026-09-02).
+  const started = hasConversation(items);
+  const idle = !started && !streaming && !running;
   const pendingApproval = [...items].reverse().find((i) => i.kind === "approval" && !i.resolved);
   const pendingDirReq = [...items].reverse().find((i) => i.kind === "dirreq" && !i.resolved);
   const pendingToolReq = [...items].reverse().find((i) => i.kind === "toolreq" && !i.resolved);
@@ -1638,7 +1661,8 @@ export function App() {
   // Facts subtitle (§22): the session's FIXED facts, not controls — model (+ the
   // workspace folder for project-scoped sessions). Renders only once the session has history;
   // until then the model is still choosable in the composer, so there's no locked fact to state.
-  const hasHistory = items.length > 0;
+  // A draft carrying only mode bookkeeping has locked nothing in yet — same rule as `idle`.
+  const hasHistory = started;
   // Curated labels read "Claude Opus 4.8 · Anthropic" — the provider suffix is dropdown context,
   // noise in a facts line. Fall back to the raw id without its provider prefix.
   const modelDisplay =
@@ -2044,7 +2068,8 @@ export function App() {
             )}
             <div className="main-scroll" ref={scrollRef} onScroll={handleScroll}>
               {idle ? (
-                agent === "cowork" ? (
+                <>
+                {agent === "cowork" ? (
                   <SessionIntro
                     sessionId={sessionId}
                     onOpenSessionSettings={openAccess}
@@ -2068,7 +2093,21 @@ export function App() {
                       </div>
                     )}
                   </div>
-                )
+                )}
+                {/* Bookkeeping still has to be READABLE. A draft renders the hero, not the
+                    transcript, so the Auto-approve explainer (a safety notice the user
+                    just opted into) would otherwise be stored and never shown until the
+                    first message pushed it, out of order, above it. Everything here is
+                    bookkeeping by construction — a single non-bookkeeping item makes
+                    `started` true and this branch never renders. */}
+                {items.length > 0 && (
+                  <Transcript
+                    items={items}
+                    onApprove={approve}
+                    onOpenConnectors={() => setSurface("integrations")}
+                  />
+                )}
+                </>
               ) : (
                 <>
                   <Transcript
@@ -2199,6 +2238,10 @@ export function App() {
               unattended={unattended}
               onUnattendedChange={agent !== "chat" ? toggleUnattended : undefined}
               prefill={composerPrefill}
+              draft={composerDraftRef.current?.key === sessionId ? composerDraftRef.current : undefined}
+              onDraftChange={(d) => {
+                composerDraftRef.current = { key: sessionId, ...d };
+              }}
               resetKey={sessionId}
               usage={usage}
               contextWindow={modelContextWindows[model]}

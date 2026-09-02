@@ -2568,7 +2568,11 @@ def create_app(manager: SessionManager) -> FastAPI:
             notice = engine.switch_model(model)
             if notice is None:  # same model, or first bind on a fresh session
                 return
-            manager.persist_session(session_id)
+            # Same rule as a mode change (owner ask 2026-09-02): picking a model is a
+            # SETTING, not activity. `switch_model` speaks once the transcript holds any
+            # non-system message, so a draft carrying only the Auto-approve banner used to
+            # earn a Recents row here, stamped now — and boot would resume that ghost.
+            _persist_bookkeeping()
             await manager.broadcast_session(
                 session_id,
                 {"type": "model_changed", "data": {"model": model, "text": notice}},
@@ -2599,6 +2603,11 @@ def create_app(manager: SessionManager) -> FastAPI:
                 pass  # client already gone — nothing left to tell
 
         try:
+            # A never-used draft reconnecting with another coworker/folder keeps its id
+            # (owner ask 2026-09-02) — this drops its cached engine so the rebuild below
+            # targets the new pick. It must run BEFORE prepare_mcp_tools, which returns []
+            # while an engine is cached.
+            manager.retarget_draft(session_id, workspace=workspace, agent=agent)
             mcp_tools = await manager.prepare_mcp_tools(
                 session_id, workspace=workspace, agent=agent
             )
@@ -2667,6 +2676,18 @@ def create_app(manager: SessionManager) -> FastAPI:
             return
         await ws.send_json({"type": "ready", "data": ready_data})
 
+        def _persist_bookkeeping() -> None:
+            # A mode banner/marker on a session with a user turn is persisted in place
+            # (touch=False: bookkeeping never reorders Recents). On a DRAFT it is a
+            # setting, not activity: keep it in the cached engine and let the first turn's
+            # checkpoint write the row — unless an early record already exists (a shared
+            # folder wrote one), which is updated in place.
+            if (
+                not SessionManager.is_draft(engine.messages)
+                or manager.session_store.load(session_id) is not None
+            ):
+                manager.save(session_id, engine, touch=False)
+
         # Checkpoint events: persist mid-turn so a crash/quit can't eat the conversation.
         # turn_start = the user message just landed (a brand-new session gets its row here,
         # not at connect — empty never-used sessions shouldn't appear in Recents);
@@ -2719,7 +2740,7 @@ def create_app(manager: SessionManager) -> FastAPI:
             engine._append_notice(
                 "mode_notice", AUTO_APPROVE_NOTICE, title="Auto-approve is on."
             )
-            manager.save(session_id, engine, touch=False)  # migration ≠ activity
+            _persist_bookkeeping()  # migration ≠ activity, and a draft keeps no row
             await ws.send_json(
                 {
                     "type": "mode_notice",
@@ -2874,6 +2895,10 @@ def create_app(manager: SessionManager) -> FastAPI:
                                     "title": "Auto-approve is on.",
                                     "text": AUTO_APPROVE_NOTICE,
                                 }
+                            elif SessionManager.is_draft(engine.messages):
+                                # A draft's mode is a setting, not history (owner ask
+                                # 2026-09-02): no marker in the transcript, no row.
+                                notice_data = None
                             else:
                                 label = MODE_LABELS.get(
                                     new_mode.value, new_mode.value
@@ -2886,11 +2911,12 @@ def create_app(manager: SessionManager) -> FastAPI:
                             # not activity (owner ruling 2026-08-24): the transcript
                             # records it, Recents doesn't reorder. The next real turn's
                             # checkpoint save bumps recency as usual.
-                            manager.save(session_id, engine, touch=False)
-                            await manager.broadcast_session(
-                                session_id,
-                                {"type": "mode_notice", "data": notice_data},
-                            )
+                            _persist_bookkeeping()
+                            if notice_data is not None:
+                                await manager.broadcast_session(
+                                    session_id,
+                                    {"type": "mode_notice", "data": notice_data},
+                                )
                 elif kind == "set_model":
                     model = message.get("model")
                     if model is not None and not isinstance(model, str):

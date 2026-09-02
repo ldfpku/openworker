@@ -104,7 +104,9 @@ export function itemsFromMessages(messages: ConversationMessage[]): Item[] {
         m.kind === "interrupted"
           ? { kind: "notice", tone: "warn", text: t("Interrupted.") }
           : m.kind === "model_switch"
-            ? { kind: "notice", tone: "info", text: m.text ? modelSwitchText(m.text) : t("Model switched") }
+            ? // Bookkeeping (matches the live `model_changed` handler): a model picked
+              // before the first message is a setting, and must not end the draft phase.
+              { kind: "notice", tone: "info", text: m.text ? modelSwitchText(m.text) : t("Model switched"), bookkeeping: true }
             : m.kind === "compacted"
               ? // The subtle "compacted here" divider (OPE-27) — the transcript itself is intact.
                 { kind: "notice", tone: "info", text: m.text || t("Context compacted") }
@@ -135,14 +137,17 @@ export function itemsFromMessages(messages: ConversationMessage[]): Item[] {
                         // authored English, persisted verbatim — localized at display time (same
                         // reasoning as the session-title sentinel: the generator can't change
                         // without leaving every already-persisted notice stuck in English).
+                        // `bookkeeping` must match the live WS handler's (App.tsx `mode_notice`),
+                        // or a resumed draft would read as a started conversation.
                         {
                           kind: "notice",
                           tone: "info",
                           title: modeOnText((m as any).title || "Auto-approve is on."),
                           text: modeNoticeBody(m.text || ""),
+                          bookkeeping: true,
                         }
                       : m.kind === "mode_switch"
-                        ? { kind: "notice", tone: "info", text: modeOnText(m.text || "") }
+                        ? { kind: "notice", tone: "info", text: modeOnText(m.text || ""), bookkeeping: true }
                   : {
                       kind: "notice",
                       tone: "warn",

@@ -1237,6 +1237,8 @@ def test_ws_ready_reports_live_turn(tmp_path):
 def test_set_mode_persists_notice_once_then_markers(tmp_path):
     # Owner ruling 2026-08-24: the Auto-Approve explainer is server-authored and persisted
     # ONCE per session; later switches persist one-line markers. Restarts re-show nothing.
+    # Owner ask 2026-09-02: on a DRAFT the banner still shows, but nothing reaches Recents
+    # and the one-line markers only start once the conversation has (a user turn).
     manager = SessionManager(workspace=tmp_path, provider=ScriptedProvider([_text("hi")]))
     client = TestClient(create_app(manager))
     with client.websocket_connect("/ws/session/modes1") as ws:
@@ -1246,6 +1248,9 @@ def test_set_mode_persists_notice_once_then_markers(tmp_path):
         assert ev["type"] == "mode_notice"
         assert ev["data"]["title"] == "Auto-approve is on."
         assert "uses a model" in ev["data"]["text"]
+        assert manager.session_store.load("modes1") is None  # a draft gets no row
+        ws.send_json({"type": "user_message", "text": "hello"})
+        assert "turn_done" in _drain(ws)
         ws.send_json({"type": "set_mode", "mode": "interactive"})
         assert ws.receive_json()["data"] == {"text": "Ask for approval is on."}
         # Re-entering auto-approve: marker, never the banner again.
@@ -1271,12 +1276,257 @@ def test_connect_banners_a_session_already_in_auto_approve(tmp_path):
         assert ws.receive_json()["type"] == "ready"
         ev = ws.receive_json()
         assert ev["type"] == "mode_notice" and ev["data"]["title"] == "Auto-approve is on."
-    # A reconnect stays quiet: the banner is persisted (asserted below), not re-announced —
-    # a set_mode echo of the SAME mode also stays silent (previous is new_mode).
+    # The banner alone is a setting, not activity: a never-used session stays out of
+    # Recents (owner ask 2026-09-02) — the notice lives in the session's engine.
+    assert manager.session_store.load("modes2") is None
+    # A reconnect stays quiet: the banner is already in the transcript, not re-announced —
+    # a set_mode echo of the SAME mode also stays silent (previous is new_mode). The
+    # one-line marker needs a real turn first: on a draft the mode is just a setting.
     with client.websocket_connect("/ws/session/modes2") as ws:
         assert ws.receive_json()["type"] == "ready"
+        ws.send_json({"type": "user_message", "text": "hello"})
+        assert "turn_done" in _drain(ws)
         ws.send_json({"type": "set_mode", "mode": "interactive"})
         assert ws.receive_json()["data"] == {"text": "Ask for approval is on."}
     engine = manager._engines["modes2"]
     kinds = [m.get("kind") for m in engine.messages if m.get("role") == "notice"]
     assert kinds.count("mode_notice") == 1
+
+
+def test_set_mode_on_a_draft_is_a_setting_not_history(tmp_path):
+    # Owner ask 2026-09-02: a new session is ONE draft. Choosing a mode on it is a setting,
+    # not history — no transcript marker, no Recents row; the first real turn writes the
+    # single row that session ever gets, already carrying the chosen mode.
+    from coworker.permissions import Mode
+
+    manager = SessionManager(workspace=tmp_path, provider=ScriptedProvider([_text("hi")]))
+    client = TestClient(create_app(manager))
+    with client.websocket_connect("/ws/session/draft1") as ws:
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_json({"type": "set_mode", "mode": "discuss"})
+        ws.send_json({"type": "user_message", "text": "hello"})
+        # The next frame is the turn itself — no mode_notice was ever broadcast.
+        first = ws.receive_json()
+        assert first["type"] == "turn_start"
+        while ws.receive_json()["type"] != "turn_done":
+            pass
+
+    engine = manager._engines["draft1"]
+    assert engine.permissions.mode is Mode.DISCUSS
+    record = manager.session_store.load("draft1")
+    assert record is not None and record.mode == "discuss"
+    assert not any(m.get("kind") == "mode_switch" for m in engine.messages)
+    assert [s["session_id"] for s in manager.list_sessions()].count("draft1") == 1
+
+
+def test_draft_reconnect_retargets_the_same_session_id(tmp_path):
+    # Owner ask 2026-09-02: picking another coworker/folder on a never-used session
+    # re-targets THAT session instead of minting a new id — so the typed draft, the model
+    # and the mode survive the pick.
+    from urllib.parse import quote
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    manager = SessionManager(
+        workspace=None, data_dir=tmp_path, provider=ScriptedProvider([_text("hi")])
+    )
+    client = TestClient(create_app(manager))
+    with client.websocket_connect("/ws/session/d1?agent=cowork") as ws:
+        assert ws.receive_json()["data"]["agent"] == "cowork"
+        ws.send_json({"type": "set_model", "model": "other-model"})
+        ws.send_json({"type": "set_mode", "mode": "discuss"})
+    assert manager._engines["d1"].model == "other-model"  # both frames landed
+
+    with client.websocket_connect(
+        f"/ws/session/d1?agent=code&workspace={quote(str(proj))}"
+    ) as ws:
+        ready = ws.receive_json()
+        assert ready["type"] == "ready"
+        assert ready["data"]["agent"] == "code"
+        assert ready["data"]["model"] == "other-model"
+        assert ready["data"]["mode"] == "discuss"
+        assert ready["data"]["workspace"] == str(proj.resolve())
+    assert manager.session_store.load("d1") is None  # still a draft: no Recents row
+    rebuilt = manager._engines["d1"]
+    assert rebuilt.agent_name == "code"
+
+    # Same target again: nothing differs, so the engine is reused, not rebuilt.
+    with client.websocket_connect(
+        f"/ws/session/d1?agent=code&workspace={quote(str(proj))}"
+    ) as ws:
+        assert ws.receive_json()["type"] == "ready"
+    assert manager._engines["d1"] is rebuilt
+
+
+def test_started_session_reconnect_keeps_its_record(tmp_path):
+    # The re-target is for DRAFTS only: once a session has a user turn its record wins,
+    # exactly as before — a stale query string can never repoint a real conversation.
+    from urllib.parse import quote
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    manager = SessionManager(
+        workspace=None, data_dir=tmp_path, provider=ScriptedProvider([_text("hi")])
+    )
+    client = TestClient(create_app(manager))
+    with client.websocket_connect("/ws/session/d2?agent=cowork") as ws:
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_json({"type": "user_message", "text": "hello"})
+        assert "turn_done" in _drain(ws)
+    started = manager._engines["d2"]
+
+    with client.websocket_connect(
+        f"/ws/session/d2?agent=code&workspace={quote(str(proj))}"
+    ) as ws:
+        assert ws.receive_json()["data"]["agent"] == "cowork"
+    assert manager._engines["d2"] is started
+
+
+def test_draft_retarget_keeps_shared_folder_and_early_record(tmp_path):
+    # A shared folder writes a row before the first turn. Re-targeting the draft updates
+    # THAT row in place (one session, one row) and carries the shared folder across.
+    from urllib.parse import quote
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    manager = SessionManager(
+        workspace=None, data_dir=tmp_path, provider=ScriptedProvider([_text("hi")])
+    )
+    client = TestClient(create_app(manager))
+    assert client.post(
+        "/v1/sessions/d3/roots", json={"path": str(shared), "writable": True}
+    ).json()["ok"]
+    assert manager.session_store.load("d3") is not None
+    with client.websocket_connect("/ws/session/d3?agent=cowork") as ws:
+        assert ws.receive_json()["data"]["agent"] == "cowork"
+
+    with client.websocket_connect(
+        f"/ws/session/d3?agent=code&workspace={quote(str(proj))}"
+    ) as ws:
+        assert ws.receive_json()["data"]["agent"] == "code"
+    assert str(shared.resolve()) in [r["path"] for r in manager.get_roots("d3")]
+    record = manager.session_store.load("d3")
+    assert record is not None and record.agent == "code"
+    assert [s["session_id"] for s in manager.list_sessions()].count("d3") == 1
+
+
+def test_draft_retarget_rewrites_the_persisted_transcript(tmp_path):
+    # The store appends BY COUNT, and a re-target swaps one system prompt for another —
+    # same count. Without an explicit truncate the row said "code" while the stored
+    # transcript still opened with the COWORK prompt, so every restart rebuilt the
+    # session with the wrong persona's instructions (and the old folder's env block).
+    from urllib.parse import quote
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    manager = SessionManager(
+        workspace=None, data_dir=tmp_path, provider=ScriptedProvider([_text("hi")])
+    )
+    client = TestClient(create_app(manager))
+    assert client.post(
+        "/v1/sessions/d4/roots", json={"path": str(shared), "writable": True}
+    ).json()["ok"]
+    with client.websocket_connect("/ws/session/d4?agent=cowork") as ws:
+        assert ws.receive_json()["data"]["agent"] == "cowork"
+        # A mode pick on a draft that already HAS a record persists its bookkeeping —
+        # the stored log now holds the cowork prompt at exactly the count a re-target
+        # would leave it at.
+        ws.send_json({"type": "set_mode", "mode": "auto-approve"})
+        assert ws.receive_json()["type"] == "mode_notice"
+    assert manager.session_store.load("d4").messages  # the draft's log is on disk
+
+    with client.websocket_connect(
+        f"/ws/session/d4?agent=code&workspace={quote(str(proj))}"
+    ) as ws:
+        assert ws.receive_json()["data"]["agent"] == "code"
+    record, engine = manager.session_store.load("d4"), manager._engines["d4"]
+    assert record is not None and record.agent == "code"
+    assert len(record.messages) == len(engine.messages)
+    assert record.messages[0].get("role") == "system"
+    # What a restart would rebuild from IS what the re-targeted session is running.
+    assert record.messages[0]["content"] == engine.messages[0]["content"]
+
+
+def test_draft_with_only_a_record_still_honours_the_reconnect_picks(tmp_path):
+    # The pick must win with NO cached engine too: sharing a folder before the first
+    # connect writes a record (and a restart drops every engine), and get_engine's record
+    # branch would otherwise hard-override the setup row's coworker and folder.
+    from urllib.parse import quote
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    manager = SessionManager(
+        workspace=None, data_dir=tmp_path, provider=ScriptedProvider([_text("hi")])
+    )
+    client = TestClient(create_app(manager))
+    assert client.post(
+        "/v1/sessions/d5/roots", json={"path": str(shared), "writable": True}
+    ).json()["ok"]
+    assert manager.session_store.load("d5").agent == "cowork"
+    assert "d5" not in manager._engines  # nothing was ever built for this id
+
+    with client.websocket_connect(
+        f"/ws/session/d5?agent=code&workspace={quote(str(proj))}"
+    ) as ws:
+        ready = ws.receive_json()
+        assert ready["data"]["agent"] == "code"
+        assert ready["data"]["workspace"] == str(proj.resolve())
+    assert manager._engines["d5"].agent_name == "code"
+    assert str(shared.resolve()) in [r["path"] for r in manager.get_roots("d5")]
+    assert manager.session_store.load("d5").agent == "code"
+
+
+def test_a_failed_rebuild_keeps_the_draft_picks(tmp_path):
+    # The carry is the user's model/mode picks. A re-target whose rebuild BAILS — a
+    # folder-gated coworker pointed at a folder that has since vanished — must not cost
+    # them: the picks survive for the next connect that does succeed.
+    manager = SessionManager(
+        workspace=None, data_dir=tmp_path, provider=ScriptedProvider([_text("hi")])
+    )
+    engine = manager.get_engine("q1", agent="cowork")
+    assert engine is not None
+    engine.switch_model("picked-model")
+
+    gone = str(tmp_path / "gone")
+    assert manager.retarget_draft("q1", workspace=gone, agent="code") is True
+    assert manager.get_engine("q1", workspace=gone, agent="code") is None
+    assert "q1" not in manager._engines  # the old engine is gone, as intended
+
+    recovered = manager.get_engine("q1", agent="cowork")
+    assert recovered is not None and recovered.model == "picked-model"
+
+
+def test_set_model_on_a_draft_is_a_setting_not_history(tmp_path):
+    # The model half of the same rule (owner ask 2026-09-02). switch_model used to speak as
+    # soon as the transcript held ANY non-system message, so a draft carrying only the
+    # Auto-approve banner earned a "Model switched" marker AND a Recents row stamped now —
+    # which boot then resumed. Notices are bookkeeping: the pick is still the first bind.
+    from coworker.permissions import Mode
+
+    manager = SessionManager(
+        workspace=tmp_path,
+        provider=ScriptedProvider([_text("hi")]),
+        mode=Mode("auto-approve"),
+    )
+    client = TestClient(create_app(manager))
+    with client.websocket_connect("/ws/session/dm1") as ws:
+        assert ws.receive_json()["type"] == "ready"
+        assert ws.receive_json()["type"] == "mode_notice"  # the banner is a notice, not history
+        ws.send_json({"type": "set_model", "model": "other-model"})
+        # Silent: the next frame is the turn the user starts, not a model_changed marker.
+        ws.send_json({"type": "user_message", "text": "hello"})
+        assert ws.receive_json()["type"] == "turn_start"
+        _drain(ws)
+    engine = manager._engines["dm1"]
+    assert engine.model == "other-model"
+    kinds = [m.get("kind") for m in engine.messages if m.get("role") == "notice"]
+    assert "model_switch" not in kinds
+    record = manager.session_store.load("dm1")
+    assert record is not None and record.model == "other-model"  # persisted by the turn
+    assert [s["session_id"] for s in manager.list_sessions()].count("dm1") == 1

@@ -336,7 +336,9 @@ class TurnEngine:
         when nothing changed (same model, or first bind on a fresh session)."""
         if not model or model == self.model:
             return None
-        had_history = any(m.get("role") != "system" for m in self.messages)
+        # Notices (mode banner, MCP failures) are bookkeeping, not history: a model picked on
+        # a draft is still its first bind — no marker, nothing to persist (owner ask 2026-09-02).
+        had_history = any(m.get("role") not in ("system", "notice") for m in self.messages)
         self.model = model
         # The reviewer judges with the session's own model (§1.5: "if it's trusted to
         # drive the agent, it's strong enough to review it"). Bound once at session build,

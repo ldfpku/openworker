@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import time
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Optional
 
@@ -212,6 +213,9 @@ class SessionManager:
         if self.default_workspace:
             self.session_store.touch_workspace(self.default_workspace)
         self._engines: dict[str, TurnEngine] = {}
+        # Drafts re-targeted by a reconnect (retarget_draft): the picks the dropped engine
+        # carried, handed to the next get_engine so the rebuild keeps them.
+        self._draft_carry: dict[str, dict[str, Any]] = {}
         # Sessions whose workspace was promoted mid-turn (workspace-scratch-design.md §5):
         # evicted from the engine cache at the next mark_idle so the following turn
         # rebuilds fully anchored on the new workspace.
@@ -559,10 +563,107 @@ class SessionManager:
         return self.default_workspace
 
     # -- engines ----------------------------------------------------------------
+    @staticmethod
+    def is_draft(messages: Optional[list[dict[str, Any]]]) -> bool:
+        """A session nobody has spoken in yet — no `user` turn in the transcript. Mode
+        banners/markers and MCP notices are bookkeeping, not conversation."""
+        return not any(m.get("role") == "user" for m in (messages or []))
+
+    def retarget_draft(
+        self, session_id: str, *, workspace: Optional[str] = None, agent: str = "code"
+    ) -> bool:
+        """A never-used draft reconnecting with another coworker/folder keeps its id
+        (owner ask 2026-09-02): the cached engine is dropped so the next `get_engine`
+        rebuilds for the new target, carrying the user's model/mode picks, setup-time
+        notices and shared folders. Sessions with a user turn are never re-targeted —
+        their record wins, as before.
+
+        Call this BEFORE `prepare_mcp_tools`, which returns [] whenever an engine is
+        cached — the rebuilt engine must get its MCP tools."""
+        if self.is_running(session_id):
+            return False
+        engine = self._engines.get(session_id)
+        record = None
+        if engine is not None:
+            if not self.is_draft(engine.messages):
+                return False
+            current_agent = getattr(engine, "agent_name", "code")
+            executor = getattr(engine, "executor", None)
+            current = (
+                self._resolved_or_not(Path(str(executor.cwd)))
+                if executor is not None
+                else None
+            )
+        else:
+            # No cached engine but an early record: sharing a folder before the first
+            # connect writes one (add_root), and a restart drops every engine. That
+            # record would otherwise override the reconnect's picks in get_engine, so a
+            # draft is re-targeted from it too (owner ask 2026-09-02).
+            record = self.session_store.load(session_id)
+            if record is None or not self.is_draft(record.messages):
+                return False
+            current_agent = record.agent or "code"
+            current = (
+                self._resolved_or_not(Path(record.workspace))
+                if record.workspace
+                else None
+            )
+        agent_name = agent or "code"
+        differs = agent_name != current_agent
+        ws = self.resolve_workspace(workspace)
+        if not ws or not Path(ws).is_dir():
+            # No usable folder in the query: the target is the per-session scratch dir,
+            # unless the persona demands a real folder (then there is no target at all).
+            desired = (
+                None
+                if get_agent(agent_name).requires_folder
+                else (self.scratch_base() / session_id)
+            )
+        else:
+            desired = Path(ws)
+        desired = self._resolved_or_not(desired)
+        # Path equality, never string equality: Windows paths are case-insensitive.
+        if desired != current:
+            differs = True
+        if not differs:
+            return False
+        # setup-time bookkeeping only (mode banner, MCP notices) — minus the old
+        # persona's system prompt; build_engine inserts the new one.
+        if engine is not None:
+            self._draft_carry[session_id] = {
+                "model": engine.model,
+                "mode": engine.permissions.mode,
+                "messages": [m for m in engine.messages if m.get("role") != "system"],
+                "extra_roots": self._extra_roots_of(engine, session_id),
+            }
+            self._engines.pop(session_id, None)
+        else:
+            self._draft_carry[session_id] = {
+                "model": record.model,
+                "mode": Mode(record.mode),
+                "messages": [m for m in record.messages if m.get("role") != "system"],
+                "extra_roots": record.extra_roots or [],
+            }
+        return True
+
+    @staticmethod
+    def _resolved_or_not(path: Optional[Path]) -> Optional[Path]:
+        """`path.resolve()`, tolerating an OSError (leave it unresolved)."""
+        if path is None:
+            return None
+        try:
+            return path.resolve()
+        except OSError:
+            return path
+
     def engine_workspace(
         self, session_id: str, *, workspace: Optional[str] = None, agent: str = "code"
     ) -> Optional[str]:
         """The workspace `get_engine` would bind — for prepping MCP tools beforehand."""
+        if session_id in self._draft_carry:
+            # Re-targeting a draft: the reconnect's folder wins over an early record
+            # (a shared folder writes one before the first turn) — same as get_engine.
+            return self.resolve_workspace(workspace)
         record = self.session_store.load(session_id)
         if record:
             return record.workspace or None
@@ -601,17 +702,32 @@ class SessionManager:
                 engine.items_approver = items_approver
             return engine
 
+        # A draft this reconnect re-targeted (retarget_draft dropped its engine): its
+        # picks ride along into the rebuild. READ, not popped — a build that bails (a
+        # gated persona whose folder vanished, or a raising build_engine) must not cost
+        # the user their model/mode picks; the carry is dropped once the engine is cached.
+        carry = self._draft_carry.get(session_id)
+
         record = self.session_store.load(session_id)
         is_new_session = record is None
-        agent_name = (record.agent if record else agent) or "code"
-        ag = get_agent(agent_name)
-
-        if record:
+        if carry is not None:
+            # Re-targeted draft: the reconnect's coworker/folder win over any early
+            # record (add_root writes one before the first turn); the user's picks carry over.
+            agent_name = agent or "code"
+            ws = self.resolve_workspace(workspace)
+            model, mode, messages = carry["model"], carry["mode"], carry["messages"]
+            extra_roots = carry["extra_roots"]
+        elif record:
+            agent_name = record.agent or "code"
             ws = record.workspace or None
             model, mode, messages = record.model, Mode(record.mode), record.messages
+            extra_roots = record.extra_roots or []
         else:
+            agent_name = agent or "code"
             ws = self.resolve_workspace(workspace)
             model, mode, messages = self.model, self.mode, None
+            extra_roots = []
+        ag = get_agent(agent_name)
 
         if not ws or not Path(ws).is_dir():
             # Sessions without a folder start "orphan": auto-provision a per-conversation
@@ -634,9 +750,7 @@ class SessionManager:
         roots = None
         if ws:
             extra = [
-                r
-                for r in ((record.extra_roots if record else []) or [])
-                if Path(str(r.get("path", ""))).is_dir()
+                r for r in extra_roots if Path(str(r.get("path", ""))).is_dir()
             ]
             if self.is_temp_workspace(ws):
                 roots = [{"path": ws, "writable": True, "label": "scratch"}, *extra]
@@ -738,7 +852,17 @@ class SessionManager:
             engine.compaction_state = CompactionState.from_dict(record.compaction)
         engine.compaction_settings = self.compaction_settings
         self._engines[session_id] = engine
-        if is_new_session:
+        self._draft_carry.pop(session_id, None)  # consumed: the rebuild succeeded
+        if carry is not None and record is not None:
+            # Persist the re-target onto the early record (a shared folder wrote one);
+            # touch=False keeps its place in Recents — a setup pick is not activity.
+            # Truncate the stored log first: SessionStore.save appends BY COUNT, and a
+            # re-target never changes the count (one system prompt swapped for another),
+            # so without this the file would keep the OLD persona's system prompt and a
+            # restart would rebuild the session with the wrong instructions forever.
+            self.session_store.save(replace(record, messages=[]), touch=False)
+            self.save(session_id, engine, touch=False)
+        if is_new_session and carry is None:
             self._emit_session_created(session_id, agent_name)
         return engine
 
@@ -5911,6 +6035,9 @@ class SessionManager:
         if session_id.startswith("__"):
             return {"ok": False, "error": "internal sessions cannot be deleted here"}
         engine = self._engines.pop(session_id, None)
+        # A pending re-target belongs to the session being deleted — never to whatever
+        # gets built under this id next.
+        self._draft_carry.pop(session_id, None)
         if engine is not None:
             try:
                 # (was engine.interrupt() — a method that never existed; the AttributeError

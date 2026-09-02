@@ -1095,7 +1095,9 @@ export async function mockApi(page: import("@playwright/test").Page) {
         send("turn_done");
       } else if (msg.type === "set_mode") {
         // Mirrors the server: full explainer the FIRST time a session enters
-        // Auto-Approve, a one-line marker for every later change.
+        // Auto-Approve, a one-line marker for every later change — but on a DRAFT (no user
+        // turn yet) the mode is a setting, not history, so no marker is written at all
+        // (owner ask 2026-09-02).
         const anyWs = ws as any;
         if (msg.mode === "auto-approve" && !anyWs.__modeNoticeShown) {
           anyWs.__modeNoticeShown = true;
@@ -1107,7 +1109,7 @@ export async function mockApi(page: import("@playwright/test").Page) {
               "still carries some risk i.e. a command it allows still reaches anything you " +
               "can. These are model judgments, and not guarantees.",
           });
-        } else {
+        } else if (hadTurn) {
           const labels: Record<string, string> = {
             discuss: "Discuss",
             interactive: "Ask for approval",
@@ -1118,7 +1120,9 @@ export async function mockApi(page: import("@playwright/test").Page) {
         }
       } else if (msg.type === "set_model") {
         // Mid-session switch: the server applies it and broadcasts the persisted marker.
-        // Like the real server, the FIRST bind (fresh session) is silent.
+        // Like the real server, the FIRST bind (fresh session) is silent — notices such as
+        // the Auto-approve banner are bookkeeping, not history, so a draft never gets a
+        // marker (owner ask 2026-09-02).
         if (hadTurn)
           send("model_changed", {
             model: msg.model,

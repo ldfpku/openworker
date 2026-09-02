@@ -79,6 +79,14 @@ const mergeAttachments = (cur: Attachment[], add: Attachment[]): Attachment[] =>
   return [...cur, ...add.filter((a) => !seen.has(attKey(a)))].slice(0, 8);
 };
 
+// The unsent draft, lifted so it survives a surface switch (Settings/Inbox/Library unmount
+// the composer). Reported on every change and handed back on the next mount.
+export type ComposerDraft = {
+  text: string;
+  attachments: Attachment[];
+  skill: SessionSkillRow | null;
+};
+
 interface Props {
   mode: string;
   model: string;
@@ -122,6 +130,11 @@ interface Props {
   prefill?: { text: string; attachments?: Attachment[]; nonce: number };
   // Changes when the active conversation changes; clears any unsent draft.
   resetKey?: string;
+  // The draft this composer mounts with (restored after a surface switch unmounted it) and
+  // the report back to the owner on every change. A restored draft belongs to THIS
+  // conversation, so a mount never clears — only a later resetKey change does.
+  draft?: ComposerDraft;
+  onDraftChange?: (d: ComposerDraft) => void;
   // Surface-specific hint shown in the empty textarea.
   placeholder?: string;
   // Per-session token usage (OPE-42) — absent/empty hides the usage chip entirely
@@ -139,14 +152,16 @@ interface Props {
 
 export function Composer(props: Props) {
   const { t } = useTranslation();
-  const [text, setText] = useState("");
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [text, setText] = useState(() => props.draft?.text ?? "");
+  const [attachments, setAttachments] = useState<Attachment[]>(() => props.draft?.attachments ?? []);
   // "/" force-run (SKILLS-SPEC §4.1 #3). The popup derives from the draft: it is open while
   // the text is a bare "/query" (no whitespace yet) and no skill is picked. Selecting a row
   // inserts "/name " INLINE in the box (Claude-Code style — the slash text IS the state);
   // the user keeps typing after it, and on send the prefix is stripped while the skill name
   // rides the user_message as its own field. Editing the prefix away un-picks the skill.
-  const [pendingSkill, setPendingSkill] = useState<SessionSkillRow | null>(null);
+  const [pendingSkill, setPendingSkill] = useState<SessionSkillRow | null>(
+    () => props.draft?.skill ?? null,
+  );
   const [slashSkills, setSlashSkills] = useState<SessionSkillRow[] | null>(null);
   // A failed fetch is distinct from both null (loading) and [] (genuinely no skills) — it
   // gets its own failure copy instead of the misleading "No matching skills.".
@@ -246,7 +261,9 @@ export function Composer(props: Props) {
   // order — clear first, then the prefill lands on the fresh session. Cleared at most once per
   // resetKey (same ref guard as the prefill's nonce): StrictMode replays the whole effect list,
   // and an unguarded second clear would wipe the prefill, whose own guard stops it reapplying.
-  const clearedFor = useRef<string | undefined>(undefined);
+  // Seeded with the CURRENT resetKey so a mount never clears: a restored draft (§ surface
+  // switch) belongs to this very conversation — only a LATER resetKey change wipes it.
+  const clearedFor = useRef<string | undefined>(props.resetKey);
   useEffect(() => {
     if (clearedFor.current === props.resetKey) return;
     clearedFor.current = props.resetKey;
@@ -256,10 +273,24 @@ export function Composer(props: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.resetKey]);
 
+  // Report the unsent draft up so it survives an unmount (Settings and friends are other
+  // surfaces). Through a ref: the handler identity changes every render, and the draft is
+  // what should drive this, not the callback.
+  const onDraftChangeRef = useRef(props.onDraftChange);
+  onDraftChangeRef.current = props.onDraftChange;
+  useEffect(() => {
+    onDraftChangeRef.current?.({ text, attachments, skill: pendingSkill });
+  }, [text, attachments, pendingSkill]);
+
   // Apply a prefill (text + attachments) pushed from outside, then focus the composer. Applied at
   // most once per nonce (a ref guards against StrictMode/re-render double-fires), and attachments
   // are de-duplicated so the same file never lands twice.
-  const appliedNonce = useRef<number>(-1);
+  // Seeded from the prefill this mount ALREADY carries whenever it also restores a draft: a
+  // remount (the Settings round-trip) must not re-apply a prefill the previous instance already
+  // consumed and the user has since edited over. With no draft to restore there is nothing to
+  // protect and a mount-time prefill still lands — that's the Skills/Library doorway, which
+  // starts a new session and prefills it in the same render.
+  const appliedNonce = useRef<number>(props.draft ? (props.prefill?.nonce ?? -1) : -1);
   useEffect(() => {
     const p = props.prefill;
     if (!p || p.nonce === appliedNonce.current) return;

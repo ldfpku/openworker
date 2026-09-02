@@ -43,6 +43,13 @@ test("mode notices: full explainer once, one-line markers after", async ({ page 
     await page.getByTestId("mode-menu").getByText(label, { exact: false }).first().click();
   };
 
+  // A DRAFT's mode is a setting, not history (owner ask 2026-09-02) — markers only start
+  // once the conversation has: send a turn first.
+  const box = page.getByPlaceholder(/Ask the coworker/);
+  await box.fill("hello there");
+  await box.press("Enter");
+  await expect(page.getByText(/Echo: hello there/)).toBeVisible();
+
   // First entry into Auto-approve: the full (new, shorter) explainer.
   await pickMode("Auto-approve");
   await expect(page.getByText("Auto-approve is on.")).toBeVisible();

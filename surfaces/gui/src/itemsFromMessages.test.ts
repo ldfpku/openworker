@@ -80,6 +80,7 @@ describe("itemsFromMessages model switch", () => {
       kind: "notice",
       tone: "info",
       text: "Model switched to Kimi K2.6 · Moonshot",
+      bookkeeping: true,
     });
   });
 });
@@ -161,7 +162,7 @@ describe("itemsFromMessages mode switch/notice localization", () => {
   it("renders persisted mode_switch/mode_notice markers unchanged under English (no regression)", () => {
     expect(
       itemsFromMessages([{ role: "notice", kind: "mode_switch", text: "Bypass approvals is on." }] as any)[0],
-    ).toEqual({ kind: "notice", tone: "info", text: "Bypass approvals is on." });
+    ).toEqual({ kind: "notice", tone: "info", text: "Bypass approvals is on.", bookkeeping: true });
 
     const notice = itemsFromMessages([
       {
@@ -190,7 +191,7 @@ describe("itemsFromMessages mode switch/notice localization", () => {
     ];
     for (const [text, expected] of cases) {
       const items = itemsFromMessages([{ role: "notice", kind: "mode_switch", text }] as any);
-      expect(items[0], text).toEqual({ kind: "notice", tone: "info", text: expected });
+      expect(items[0], text).toEqual({ kind: "notice", tone: "info", text: expected, bookkeeping: true });
     }
   });
 
@@ -199,7 +200,12 @@ describe("itemsFromMessages mode switch/notice localization", () => {
     const items = itemsFromMessages([
       { role: "notice", kind: "mode_switch", text: "Something else is on." },
     ] as any);
-    expect(items[0]).toEqual({ kind: "notice", tone: "info", text: "Something else is on." });
+    expect(items[0]).toEqual({
+      kind: "notice",
+      tone: "info",
+      text: "Something else is on.",
+      bookkeeping: true,
+    });
   });
 
   it("localizes the once-per-session mode_notice explainer's title and body under zh", async () => {
@@ -247,7 +253,12 @@ describe("itemsFromMessages mode switch/notice localization", () => {
       itemsFromMessages([
         { role: "notice", kind: "model_switch", text: "Model switched to Kimi K2.6 · Moonshot" },
       ] as any)[0],
-    ).toEqual({ kind: "notice", tone: "info", text: "模型已切换为 Kimi K2.6 · Moonshot" });
+    ).toEqual({
+      kind: "notice",
+      tone: "info",
+      text: "模型已切换为 Kimi K2.6 · Moonshot",
+      bookkeeping: true,
+    });
     // The no-vision suffix travels with the same marker (engine.py appends it when the new
     // model can't read images already in history).
     expect(
@@ -262,6 +273,7 @@ describe("itemsFromMessages mode switch/notice localization", () => {
       kind: "notice",
       tone: "info",
       text: "模型已切换为 glm-5.2——此前的图片该模型无法读取",
+      bookkeeping: true,
     });
   });
 
@@ -271,6 +283,11 @@ describe("itemsFromMessages mode switch/notice localization", () => {
       itemsFromMessages([
         { role: "notice", kind: "model_switch", text: "Model swapped for something" },
       ] as any)[0],
-    ).toEqual({ kind: "notice", tone: "info", text: "Model swapped for something" });
+    ).toEqual({
+      kind: "notice",
+      tone: "info",
+      text: "Model swapped for something",
+      bookkeeping: true,
+    });
   });
 });

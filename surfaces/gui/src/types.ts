@@ -226,6 +226,9 @@ export type Item =
       // quiet line with the detail behind a disclosure and an Open-Connectors action.
       server?: string;
       detail?: string;
+      // Mode banner/marker — records a SETTING, not conversation activity; a transcript
+      // holding only bookkeeping is still a draft.
+      bookkeeping?: boolean;
     }
   // MEMORY-SPEC §5.1: the save notice, inline in the conversation where the user is
   // already looking (a corner toast vanished before it could be read or undone —
