@@ -8,6 +8,9 @@ installed → enabled → surfaced, plus a default — is persisted to a small J
 A session is born from exactly one persona (recorded as ``SessionRecord.agent``); resolving an
 id always returns its Agent even if the persona was later disabled, so live sessions keep
 working. Disable/surface only affect what the *new-session* picker offers.
+
+The registry is shared across FastAPI's sync-route threadpool; a re-entrant lock
+(see ``__init__``) serializes every read/write of its maps.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ import json
 import logging
 import os
 import shutil
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
@@ -95,6 +99,15 @@ class PersonaRegistry:
         state_path: Optional[str | Path] = None,
         installed_dir: Optional[str | Path] = None,
     ) -> None:
+        # /v1/agents and /v1/personas are sync routes, so FastAPI serves them from a
+        # threadpool while an install route (or the expert library's install path in
+        # coworker/library/api.py) may be inserting into self._entries — unguarded,
+        # CPython kills the concurrent iteration with "dictionary changed size during
+        # iteration" (and save()'s json.dumps can die the same way). One re-entrant
+        # lock serializes every read/write of the registry maps; the slow install
+        # work (git clone, zip extract) stays outside it. Same fix as
+        # LibraryPack._lock in coworker/library/pack.py.
+        self._lock = threading.RLock()
         self.state_path = Path(state_path) if state_path else None
         # Managed area where installed personas are *snapshotted* (copied) at install time, so a
         # persona's definition is stable and self-contained — independent of the user's source dir.
@@ -250,19 +263,20 @@ class PersonaRegistry:
     def save(self) -> None:
         if not self.state_path:
             return
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(
-            json.dumps(
-                {
-                    "enabled": self._enabled,
-                    "surfaced": self._surfaced,
-                    "installed_meta": self._installed_meta,
-                    "default": self._default,
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
+        with self._lock:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            self.state_path.write_text(
+                json.dumps(
+                    {
+                        "enabled": self._enabled,
+                        "surfaced": self._surfaced,
+                        "installed_meta": self._installed_meta,
+                        "default": self._default,
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
 
     # -- queries ----------------------------------------------------------------
     def _visible(self, e: PersonaEntry) -> bool:
@@ -271,15 +285,18 @@ class PersonaRegistry:
         return e.ships or include_unshipped() or self._enabled.get(e.id) is True
 
     def ids(self) -> list[str]:
-        return list(self._entries)
+        with self._lock:
+            return list(self._entries)
 
     def get(self, persona_id: str) -> Optional[PersonaEntry]:
-        return self._entries.get(persona_id)
+        with self._lock:
+            return self._entries.get(persona_id)
 
     def media_dir(self, persona_id: str) -> Optional[Path]:
         """The persona bundle's media/ folder (screenshots for the detail page), if any.
         Only manifest-backed personas have one — it sits beside their manifest.md."""
-        entry = self._entries.get(persona_id)
+        with self._lock:
+            entry = self._entries.get(persona_id)
         if entry is None or entry.manifest is None or not entry.manifest.source:
             return None
         d = Path(entry.manifest.source).parent / "media"
@@ -291,7 +308,8 @@ class PersonaRegistry:
         installed via install_from_dir/zip/git). Callers use ``source`` to tell where a
         persona came from — e.g. gating an action to personas installed from a specific
         trusted staging area."""
-        return dict(self._installed_meta.get(persona_id, {}))
+        with self._lock:
+            return dict(self._installed_meta.get(persona_id, {}))
 
     def is_enabled(self, persona_id: str) -> bool:
         # Explicit state (either way) always wins. Absent a user choice, the entry's
@@ -299,129 +317,145 @@ class PersonaRegistry:
         # (UX-029, supersedes the 2026-07-09 Coworker-only default that fit the old hidden
         # ▾ menu) — except ones registered default-off (Code). Installed third-party
         # personas stay disabled until the user consents from the risk screen.
-        if persona_id in self._enabled:
-            return bool(self._enabled[persona_id])
-        entry = self._entries.get(persona_id)
-        if entry is not None and entry.builtin:
-            return entry.default_enabled
-        return persona_id == self._default or persona_id == DEFAULT_PERSONA_ID
+        with self._lock:
+            if persona_id in self._enabled:
+                return bool(self._enabled[persona_id])
+            entry = self._entries.get(persona_id)
+            if entry is not None and entry.builtin:
+                return entry.default_enabled
+            return persona_id == self._default or persona_id == DEFAULT_PERSONA_ID
 
     def is_surfaced(self, persona_id: str) -> bool:
         # User choice wins; otherwise the persona's default (Chat defaults hidden).
-        if persona_id in self._surfaced:
-            return self._surfaced[persona_id]
-        entry = self._entries.get(persona_id)
-        return entry.default_surfaced if entry else True
+        with self._lock:
+            if persona_id in self._surfaced:
+                return self._surfaced[persona_id]
+            entry = self._entries.get(persona_id)
+            return entry.default_surfaced if entry else True
 
     def default_id(self) -> str:
         # The configured default if it's enabled, else cowork if present, else any enabled one.
-        if self._default in self._entries and self.is_enabled(self._default):
-            return self._default
-        if DEFAULT_PERSONA_ID in self._entries and self.is_enabled(DEFAULT_PERSONA_ID):
+        with self._lock:
+            if self._default in self._entries and self.is_enabled(self._default):
+                return self._default
+            if DEFAULT_PERSONA_ID in self._entries and self.is_enabled(
+                DEFAULT_PERSONA_ID
+            ):
+                return DEFAULT_PERSONA_ID
+            for pid in self._entries:
+                if self.is_enabled(pid):
+                    return pid
             return DEFAULT_PERSONA_ID
-        for pid in self._entries:
-            if self.is_enabled(pid):
-                return pid
-        return DEFAULT_PERSONA_ID
 
     def agent(self, persona_id: Optional[str]) -> Agent:
         """Resolve a persona id to its Agent. Unknown ids fall back to the default persona;
         a known-but-disabled id still resolves (live sessions keep working)."""
-        entry = self._entries.get(persona_id or "")
-        if entry is None:
-            entry = self._entries.get(self.default_id())
+        with self._lock:
+            entry = self._entries.get(persona_id or "")
+            if entry is None:
+                entry = self._entries.get(self.default_id())
         if entry is None:
             raise KeyError(f"no persona to resolve for {persona_id!r}")
         return entry.agent()
 
     def sidebar(self) -> list[dict]:
         """Session surfaces for the new-session picker: enabled AND surfaced, in order."""
-        out = []
-        for e in self._entries.values():
-            if self._visible(e) and self.is_enabled(e.id) and self.is_surfaced(e.id):
-                out.append(
-                    {
-                        "name": e.id,
-                        "title": e.name,
-                        "requires_folder": e.requires_folder,
-                        "icon": e.icon,
-                        "tagline": e.tagline,
-                        "default": e.id == self.default_id(),
-                    }
-                )
-        return out
+        with self._lock:
+            default = self.default_id()
+            out = []
+            for e in self._entries.values():
+                if self._visible(e) and self.is_enabled(e.id) and self.is_surfaced(e.id):
+                    out.append(
+                        {
+                            "name": e.id,
+                            "title": e.name,
+                            "requires_folder": e.requires_folder,
+                            "icon": e.icon,
+                            "tagline": e.tagline,
+                            "default": e.id == default,
+                        }
+                    )
+            return out
 
     def list_all(self) -> list[dict]:
         """Every installed persona + its lifecycle state — for the Personas settings panel."""
-        return [
-            {
-                "id": e.id,
-                "name": e.name,
-                "icon": e.icon,
-                "tagline": e.tagline,
-                "requires_folder": e.requires_folder,
-                "builtin": e.builtin,
-                "tools": e.tools,
-                "enabled": self.is_enabled(e.id),
-                "surfaced": self.is_surfaced(e.id),
-                "default": e.id == self.default_id(),
-                "ships": e.ships,
-                "group": e.group,
-                "version": e.manifest.version if e.manifest else "",
-                "installed_at": self._installed_meta.get(e.id, {}).get("installed_at", ""),
-            }
-            for e in self._entries.values()
-            if self._visible(e)
-        ]
+        with self._lock:
+            default = self.default_id()
+            return [
+                {
+                    "id": e.id,
+                    "name": e.name,
+                    "icon": e.icon,
+                    "tagline": e.tagline,
+                    "requires_folder": e.requires_folder,
+                    "builtin": e.builtin,
+                    "tools": e.tools,
+                    "enabled": self.is_enabled(e.id),
+                    "surfaced": self.is_surfaced(e.id),
+                    "default": e.id == default,
+                    "ships": e.ships,
+                    "group": e.group,
+                    "version": e.manifest.version if e.manifest else "",
+                    "installed_at": self._installed_meta.get(e.id, {}).get(
+                        "installed_at", ""
+                    ),
+                }
+                for e in self._entries.values()
+                if self._visible(e)
+            ]
 
     # -- mutations --------------------------------------------------------------
     def set_enabled(self, persona_id: str, enabled: bool) -> None:
-        if persona_id not in self._entries:
-            raise KeyError(persona_id)
-        self._enabled[persona_id] = bool(enabled)
-        if enabled:
-            # Enabling implies surfacing (installs land unsurfaced, and "enabled but
-            # invisible in the picker" is never what a user just asked for). They can
-            # still untick "In picker" afterwards to hide it.
-            self._surfaced[persona_id] = True
-        self.save()
+        with self._lock:
+            if persona_id not in self._entries:
+                raise KeyError(persona_id)
+            self._enabled[persona_id] = bool(enabled)
+            if enabled:
+                # Enabling implies surfacing (installs land unsurfaced, and "enabled but
+                # invisible in the picker" is never what a user just asked for). They can
+                # still untick "In picker" afterwards to hide it.
+                self._surfaced[persona_id] = True
+            self.save()
 
     def set_surfaced(self, persona_id: str, surfaced: bool) -> None:
-        if persona_id not in self._entries:
-            raise KeyError(persona_id)
-        self._surfaced[persona_id] = bool(surfaced)
-        self.save()
+        with self._lock:
+            if persona_id not in self._entries:
+                raise KeyError(persona_id)
+            self._surfaced[persona_id] = bool(surfaced)
+            self.save()
 
     def set_default(self, persona_id: str) -> None:
-        if persona_id not in self._entries:
-            raise KeyError(persona_id)
-        self._default = persona_id
-        self._enabled[persona_id] = True  # a default must be enabled
-        self.save()
+        with self._lock:
+            if persona_id not in self._entries:
+                raise KeyError(persona_id)
+            self._default = persona_id
+            self._enabled[persona_id] = True  # a default must be enabled
+            self.save()
 
     def uninstall(self, persona_id: str) -> None:
         """Remove an installed persona: registry entry, lifecycle state, and its snapshot
         dir. Built-ins can't be uninstalled (disable them instead). Live sessions born
         from it resolve to the default persona afterwards (same as any unknown id)."""
-        entry = self._entries.get(persona_id)
-        if entry is None:
-            raise KeyError(persona_id)
-        if entry.builtin:
-            raise ValueError(f"{persona_id} is built-in and cannot be deleted")
-        del self._entries[persona_id]
-        self._enabled.pop(persona_id, None)
-        self._surfaced.pop(persona_id, None)
-        # Install provenance goes with it. Left behind it is an orphan row naming a
-        # persona that no longer exists, and a later re-install of the same id would
-        # read back the OLD source and version as if nothing had happened.
-        self._installed_meta.pop(persona_id, None)
-        if self._default == persona_id:
-            self._default = DEFAULT_PERSONA_ID
-        if self.installed_dir is not None:
-            snap = self.installed_dir / persona_id
-            if snap.is_dir():
-                shutil.rmtree(snap)
-        self.save()
+        with self._lock:
+            entry = self._entries.get(persona_id)
+            if entry is None:
+                raise KeyError(persona_id)
+            if entry.builtin:
+                raise ValueError(f"{persona_id} is built-in and cannot be deleted")
+            del self._entries[persona_id]
+            self._enabled.pop(persona_id, None)
+            self._surfaced.pop(persona_id, None)
+            # Install provenance goes with it. Left behind it is an orphan row naming a
+            # persona that no longer exists, and a later re-install of the same id would
+            # read back the OLD source and version as if nothing had happened.
+            self._installed_meta.pop(persona_id, None)
+            if self._default == persona_id:
+                self._default = DEFAULT_PERSONA_ID
+            if self.installed_dir is not None:
+                snap = self.installed_dir / persona_id
+                if snap.is_dir():
+                    shutil.rmtree(snap)
+            self.save()
 
     # -- install (third-party personas) -----------------------------------------
     def install_from_dir(self, directory: str | Path) -> list[dict]:
@@ -441,29 +475,34 @@ class PersonaRegistry:
         if not mds:
             raise FileNotFoundError(f"no persona manifests (*.md) in {d}")
 
-        summaries: list[dict] = []
-        for md in mds:
-            m = load_manifest_file(md, builtin=False)  # validate before snapshotting
-            replaces = self._replaces_of(m)
-            snapshot = self._snapshot(md, m.id)
-            installed = load_manifest_file(snapshot, builtin=False) if snapshot else m
-            self._register_manifest(installed, builtin=False)
-            # Consent rules (sharing v1): a fresh install always lands disabled pending
-            # consent. An UPDATE keeps the user's enabled state — unless its capability
-            # set GREW, which is a new decision, never a silent upgrade.
-            if replaces is None or replaces.get("capabilities_grew"):
-                self._enabled[m.id] = False
-                self._surfaced[m.id] = False
-            self._installed_meta[m.id] = {
-                "version": installed.version,
-                "source": str(md),
-                "installed_at": self._now_stamp(),
-            }
-            summary = consent_summary(installed)
-            summary["replaces"] = replaces
-            summaries.append(summary)
-        self.save()
-        return summaries
+        # The slow acquisition (git clone / zip extract) happened before this call;
+        # from here on the lock makes the install atomic w.r.t. concurrent readers.
+        with self._lock:
+            summaries: list[dict] = []
+            for md in mds:
+                m = load_manifest_file(md, builtin=False)  # validate before snapshotting
+                replaces = self._replaces_of(m)
+                snapshot = self._snapshot(md, m.id)
+                installed = (
+                    load_manifest_file(snapshot, builtin=False) if snapshot else m
+                )
+                self._register_manifest(installed, builtin=False)
+                # Consent rules (sharing v1): a fresh install always lands disabled pending
+                # consent. An UPDATE keeps the user's enabled state — unless its capability
+                # set GREW, which is a new decision, never a silent upgrade.
+                if replaces is None or replaces.get("capabilities_grew"):
+                    self._enabled[m.id] = False
+                    self._surfaced[m.id] = False
+                self._installed_meta[m.id] = {
+                    "version": installed.version,
+                    "source": str(md),
+                    "installed_at": self._now_stamp(),
+                }
+                summary = consent_summary(installed)
+                summary["replaces"] = replaces
+                summaries.append(summary)
+            self.save()
+            return summaries
 
     @staticmethod
     def _now_stamp() -> str:
@@ -493,7 +532,8 @@ class PersonaRegistry:
         installer at it and the round trip is lossless."""
         import zipfile
 
-        entry = self._entries.get(persona_id)
+        with self._lock:
+            entry = self._entries.get(persona_id)
         if entry is None or entry.manifest is None or not entry.manifest.source:
             return {"ok": False, "error": "this coworker has no shareable bundle"}
         src_md = Path(entry.manifest.source)
@@ -583,15 +623,17 @@ class PersonaRegistry:
 
 # -- module singleton (used by agents.get_agent / list_agents) ------------------
 _singleton: Optional[PersonaRegistry] = None
+_singleton_lock = threading.Lock()
 
 
 def get_registry() -> PersonaRegistry:
     global _singleton
-    if _singleton is None:
-        from ..secrets import state_dir
+    with _singleton_lock:
+        if _singleton is None:
+            from ..secrets import state_dir
 
-        _singleton = PersonaRegistry(state_path=state_dir() / "personas.json")
-    return _singleton
+            _singleton = PersonaRegistry(state_path=state_dir() / "personas.json")
+        return _singleton
 
 
 def set_registry(registry: PersonaRegistry) -> None:

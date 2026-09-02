@@ -251,3 +251,64 @@ def test_a_broken_builtin_manifest_still_raises(tmp_path):
     (builtin / "nope.md").write_text("no frontmatter here", encoding="utf-8")
     with pytest.raises(ManifestError):
         PersonaRegistry(builtin_dir=builtin, state_path=tmp_path / "personas.json")
+
+
+def test_concurrent_install_and_reads_never_break_iteration(tmp_path, monkeypatch):
+    """/v1/agents and /v1/personas run as sync routes in FastAPI's threadpool, so
+    sidebar()/list_all() iterate the entry dict while an install route (or the expert
+    library's install_from_dir in coworker/library/api.py) inserts new keys into it —
+    unguarded, CPython kills the iteration with RuntimeError ("dictionary changed size
+    during iteration"). Same Barrier pattern as
+    test_library_api.test_concurrent_first_load_returns_data_to_every_thread."""
+    import threading
+    import time
+
+    reg = _reg(tmp_path)
+
+    # Widen each iteration step the way a busy threadpool does, so an unlocked
+    # registry would reliably interleave an insert into a running read loop.
+    real_is_surfaced = PersonaRegistry.is_surfaced
+
+    def slow_is_surfaced(self, persona_id):
+        time.sleep(0.001)
+        return real_is_surfaced(self, persona_id)
+
+    monkeypatch.setattr(PersonaRegistry, "is_surfaced", slow_is_surfaced)
+
+    errors: list[Exception] = []
+    barrier = threading.Barrier(5)
+
+    def read_loop():
+        barrier.wait()
+        try:
+            for _ in range(15):
+                reg.sidebar()
+                reg.list_all()
+        except Exception as e:
+            errors.append(e)
+
+    def install_loop(worker: int):
+        barrier.wait()
+        try:
+            for r in range(4):
+                pid = f"race-{worker}-{r}"
+                d = tmp_path / f"incoming-{pid}"
+                d.mkdir()
+                (d / f"{pid}.md").write_text(
+                    f"---\nid: {pid}\nname: {pid}\n---\nprompt for {pid}\n",
+                    encoding="utf-8",
+                )
+                reg.install_from_dir(d)
+        except Exception as e:
+            errors.append(e)
+
+    threads = [threading.Thread(target=read_loop) for _ in range(3)] + [
+        threading.Thread(target=install_loop, args=(w,)) for w in (0, 1)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    assert {f"race-{w}-{r}" for w in (0, 1) for r in range(4)} <= set(reg.ids())
