@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -23,6 +24,15 @@ from coworker.server.manager import SessionManager
 def _write_json(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def _crash_cmd(message: str, code: int) -> tuple[str, list[str]]:
+    """A cross-platform stand-in for the `/bin/sh -c "echo … >&2; exit N"` one-liners
+    below: writes `message` to stderr then exits with `code`. `/bin/sh` doesn't exist
+    on Windows, so tests that need a stdio server which crashes with a known stderr
+    tail spawn this instead (`sys.executable` is a real executable on every platform)."""
+    script = f"import sys; sys.stderr.write({message!r}); sys.exit({code})"
+    return sys.executable, ["-c", script]
 
 
 def _fake_tool(name, schema=None, description="desc"):
@@ -265,11 +275,12 @@ async def test_stdio_startup_crash_captures_stderr_tail(tmp_path, monkeypatch):
     from coworker.mcp.client import MCPManager
 
     mgr = MCPManager()
+    command, args = _crash_cmd("usage: doomed --flag", 7)
     server = MCPServerDef(
         name="doomed",
         transport="stdio",
-        command="/bin/sh",
-        args=["-c", "echo 'usage: doomed --flag' >&2; exit 7"],
+        command=command,
+        args=args,
     )
     with pytest.raises(Exception):
         await mgr.ensure(server)
@@ -284,13 +295,14 @@ async def test_prepare_records_failure_status_and_session_notice(
     """A crashing global server surfaces: last_error + status=error + one-shot
     session failure drain — instead of the pre-drill silent skip."""
     monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    command, args = _crash_cmd("boom: bad args", 2)
     _write_json(
         tmp_path / "state" / "mcp.json",
         {
             "mcpServers": {
                 "sales-db": {
-                    "command": "/bin/sh",
-                    "args": ["-c", "echo 'boom: bad args' >&2; exit 2"],
+                    "command": command,
+                    "args": args,
                     "enabled": True,
                 }
             }
@@ -322,13 +334,14 @@ async def test_connect_mcp_failure_includes_stderr_tail(tmp_path, monkeypatch):
     """The Test button's connect path reports the same stderr evidence as the
     session path — a crashing stdio server yields error + status=error."""
     monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    command, args = _crash_cmd("usage: doomed --flag", 7)
     _write_json(
         tmp_path / "state" / "mcp.json",
         {
             "mcpServers": {
                 "doomed": {
-                    "command": "/bin/sh",
-                    "args": ["-c", "echo 'usage: doomed --flag' >&2; exit 7"],
+                    "command": command,
+                    "args": args,
                     "enabled": True,
                 }
             }

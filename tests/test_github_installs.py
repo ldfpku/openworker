@@ -215,7 +215,16 @@ def _slack_frame():
 async def test_one_hub_fans_out_to_both_adapters(monkeypatch):
     """THE step-3 invariant: slack + github share one relay socket; frames land
     on their own adapter by provider tag."""
-    monkeypatch.setenv("SLACK_API_URL", "http://127.0.0.1:9/")
+    # Name/channel resolution is best-effort; unstubbed lookups must fail instantly,
+    # never reach slack.com. Pointing SLACK_API_URL at a dead loopback port used to
+    # be the trick, but a refused loopback connection is OS-dependent — on Windows
+    # it can take ~2s (not the near-instant RST Linux gives), which alone blew the
+    # wait_dispatched(2) budget below. Patch the lookup itself so "instantly" holds
+    # on every platform.
+    async def _no_lookup(self, team_id, method, params):
+        return None
+
+    monkeypatch.setattr(SlackRelayAdapter, "_slack_get", _no_lookup)
     hub = RelayHub(
         "wss://relay.test/ws",
         lambda: "jwt",

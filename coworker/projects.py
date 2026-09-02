@@ -72,10 +72,19 @@ def project_label(key: str, *, home: Optional[str] = None) -> dict[str, Any]:
     full = key
     h = home or str(Path.home())
     shown = key
-    if shown == h:
-        shown = "~"
-    elif shown.startswith(h + "/"):
-        shown = "~" + shown[len(h):]
+    # Compare via Path, not raw string prefixing: on Windows `key`/`h` are
+    # backslash-separated (and may differ in drive-letter case), so a literal
+    # ``shown.startswith(h + "/")`` never matches there. The collapsed label
+    # itself always uses "/" — that's the display convention on every platform.
+    try:
+        key_path = Path(key)
+        home_path = Path(h)
+        if key_path == home_path:
+            shown = "~"
+        else:
+            shown = "~/" + key_path.relative_to(home_path).as_posix()
+    except ValueError:
+        pass  # key isn't under home — leave shown as the original key
     return {
         "kind": "git" if is_git else "folder",
         "label": p.name if is_git else shown,

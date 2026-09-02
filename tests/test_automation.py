@@ -6,6 +6,7 @@ operate on a real SQLite store; execution policy (catch-up, overlap) is exercise
 
 from __future__ import annotations
 
+import os
 import asyncio
 import time
 from datetime import datetime, timezone
@@ -88,25 +89,43 @@ def test_compute_next_run_once_in_past_is_none():
     assert compute_next_run(t) is None
 
 
-def test_compute_next_run_once_local_is_dst_aware(monkeypatch):
+def test_compute_next_run_once_local_is_dst_aware():
     """A one-time 'local' task set while EDT is in effect but firing on a winter EST date must
     fire at the requested wall-clock, not an hour off. Binding the naive datetime to the
-    offset in effect at compute time (the old bug) misfired by the DST delta."""
-    import time as _time
+    offset in effect at compute time (the old bug) misfired by the DST delta.
 
-    monkeypatch.setenv("TZ", "America/New_York")
-    _time.tzset()
-    try:
-        # Compute "now" during summer (EDT, -04:00); the task fires on a winter date (EST).
-        summer_now = datetime(2026, 7, 1, 12, 0).timestamp()
-        t = _task(schedule=Schedule(kind="once", fire_at="2026-12-25T08:00:00"))
-        nxt = compute_next_run(t, after=summer_now)
-        fires_local = datetime.fromtimestamp(nxt)
-        assert (fires_local.hour, fires_local.minute) == (8, 0)
-        assert fires_local.date() == datetime(2026, 12, 25, 8, 0).date()
-    finally:
-        monkeypatch.delenv("TZ", raising=False)
-        _time.tzset()
+    The local zone is a process-wide C-runtime setting, so the check runs in a child
+    interpreter with TZ fixed in its environment: POSIX takes the IANA name, the Windows CRT
+    only understands the `EST5EDT` form (and has no `time.tzset` to re-read TZ in-process)."""
+    import json
+    import subprocess
+    import sys
+
+    script = "\n".join(
+        [
+            "import json",
+            "from datetime import datetime",
+            "from coworker.automation import Schedule, ScheduledTask, compute_next_run",
+            "summer_now = datetime(2026, 7, 1, 12, 0).timestamp()",
+            "t = ScheduledTask(title='Daily brief', instructions='x', workspace='/tmp/cw-auto', "
+            "schedule=Schedule(kind='once', fire_at='2026-12-25T08:00:00'))",
+            "nxt = compute_next_run(t, after=summer_now)",
+            "fires = datetime.fromtimestamp(nxt)",
+            "print(json.dumps([fires.year, fires.month, fires.day, fires.hour, fires.minute]))",
+        ]
+    )
+    env = {**os.environ, "TZ": "EST5EDT" if sys.platform == "win32" else "America/New_York"}
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        timeout=60,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout.strip().splitlines()[-1]) == [2026, 12, 25, 8, 0]
 
 
 # -- store ---------------------------------------------------------------------

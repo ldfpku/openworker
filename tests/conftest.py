@@ -47,6 +47,23 @@ def _isolated_state_dir(tmp_path, monkeypatch):
 @pytest_asyncio.fixture
 async def fake_slack(monkeypatch):
     """A running FakeSlack control object; `SLACK_API_URL` is set to it for the test's duration."""
+    # slack_sdk's Socket Mode client (coworker/connectors/adapters.py's SlackAdapter, via
+    # slack_bolt's AsyncSocketModeHandler) reads HTTP_PROXY/HTTPS_PROXY unconditionally —
+    # unlike aiohttp/httpx it does NOT consult NO_PROXY (see
+    # slack_sdk.proxy_env_variable_loader.load_http_proxy_from_env). On a dev machine with a
+    # system/VPN proxy set (common; not present in CI), that routes the websocket handshake
+    # to the fake's loopback port through the real proxy, which can't reach it — the
+    # handshake then fails or hangs until the test's own timeout. Clear proxy env vars for
+    # the fixture's duration so the fake is reachable regardless of the host's proxy config.
+    for var in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ):
+        monkeypatch.delenv(var, raising=False)
     fake = FakeSlack()
     await fake.start()
     monkeypatch.setenv("SLACK_API_URL", fake.api_url)

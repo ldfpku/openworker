@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+import sys
 
 import pytest
 
@@ -16,6 +17,15 @@ from coworker import toolchain
 
 
 def _make_exe(path, body: str = "#!/bin/sh\necho hi\n"):
+    """Create a fake CLI binary at `path` and return the actual path used.
+
+    On Windows this is never `path` verbatim: `shutil.which` (and our own
+    `_KNOWN_DIRS` scan) only match names ending in a PATHEXT suffix, so a real
+    Windows install of one of these tools is always `name.exe`, never bare
+    `name`. Callers must use the returned path, not the one they passed in.
+    """
+    if sys.platform == "win32" and not path.suffix:
+        path = path.with_name(path.name + ".exe")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body)
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
@@ -158,5 +168,9 @@ def test_install_writes_a_verified_binary(tmp_path, monkeypatch):
     assert toolchain.resolve("osv-scanner") == path
     # And linked under the stable bin dir, so a shell with that dir on PATH picks the
     # tool up by name the moment the install finishes — no respawn, no full paths.
-    linked = toolchain.bin_dir() / "osv-scanner"
+    # The link keeps the host's real executable suffix (".exe" on Windows) — that's
+    # what makes a bare `osv-scanner` invocation resolvable from a shell with this
+    # dir on PATH, same as toolchain.resolve()'s own PATH/PATHEXT lookup.
+    exe_name = "osv-scanner" + (".exe" if sys.platform == "win32" else "")
+    linked = toolchain.bin_dir() / exe_name
     assert linked.exists() and open(linked, "rb").read() == payload

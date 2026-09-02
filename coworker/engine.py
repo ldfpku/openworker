@@ -1711,11 +1711,16 @@ class TurnEngine:
                     "your report which checks were degraded."
                 ),
             }
-        elif _toolchain.describe(name) is None:
+        elif name not in _toolchain.MANAGED:
             # Not in the pinned catalog: no card at all (owner-hit 2026-08-20 — agents
             # routed ordinary brew/pip installs through the install card, which could
             # only fail after approval). The agent has a shell with its own approval
             # flow; steer it there instead of at the user.
+            #
+            # NOTE: this is catalog membership, not `describe(name) is None` — a tool can
+            # be a pinned catalog member with no build for THIS platform (e.g. gitleaks on
+            # Windows today). That still deserves a card, just one whose `installable` is
+            # False; only a name outside the catalog entirely skips the card.
             catalog = ", ".join(sorted(_toolchain.MANAGED))
             result = {
                 "installed": False,

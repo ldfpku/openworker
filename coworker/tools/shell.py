@@ -188,7 +188,14 @@ class LocalExecutor(Executor):
         managed_bin = str(toolchain.bin_dir())
         if managed_bin not in path.split(os.pathsep):
             self._env["PATH"] = f"{path}{os.pathsep}{managed_bin}" if path else managed_bin
-        self._spawn()
+        # The shell starts on the first `run()`, not here: every session engine builds an
+        # executor, and most sessions never run a command — an eager spawn left one idle
+        # PowerShell per open session, and on Windows a process whose cwd is the
+        # workspace pins that directory (it can't be renamed or moved while the engine
+        # lives; owner-hit 2026-09-03 via test_workspace_command_trust_controls_live_engine).
+        self._proc: Optional[subprocess.Popen[str]] = None
+        self._queue: "queue.Queue[Optional[str]]" = queue.Queue()
+        self._reader: Optional[threading.Thread] = None
 
     def _spawn(self) -> None:
         """Start (or restart) the shell process and its reader. Reused for self-healing:
@@ -246,9 +253,10 @@ class LocalExecutor(Executor):
             self._queue.put(None)  # EOF sentinel
 
     def run(self, command: str, timeout: Optional[float] = None) -> dict[str, Any]:
-        if self._proc.poll() is not None:
-            # Shell exited (e.g. hard-closed after a prior command's timeout). Respawn so
-            # the session self-heals rather than wedging every future command.
+        if self._proc is None or self._proc.poll() is not None:
+            # First command, or the shell exited (e.g. hard-closed after a prior command's
+            # timeout). (Re)spawn so the session self-heals rather than wedging every
+            # future command.
             self._spawn()
         if self._proc.stdin is None:
             return self._result(
@@ -421,6 +429,8 @@ class LocalExecutor(Executor):
     def _interrupt(self) -> None:
         # Interrupt the running command, not the shell itself, so the session survives; the
         # queued trailer then emits the marker and the stream resyncs.
+        if self._proc is None:
+            return  # nothing has run yet — no shell to interrupt
         if self._is_windows:
             # Ctrl-Break to the child's process group (best-effort). If the marker never
             # resyncs, run()'s grace timeout hard-closes the shell.
@@ -447,6 +457,8 @@ class LocalExecutor(Executor):
         self._interrupt()
 
     def close(self) -> None:
+        if self._proc is None:
+            return  # never spawned — nothing to reap
         if self._is_windows:
             # Kill the whole tree — a timed-out command may have spawned children that
             # `terminate()` (the shell only) would orphan. Then reap so `poll()` reliably

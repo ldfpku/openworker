@@ -239,6 +239,7 @@ def test_unencodable_command_fails_loudly_instead_of_running_corrupted(tmp_path)
 
     ex = LocalExecutor(cwd=tmp_path)
     try:
+        ex._spawn()  # the shell is lazy (first run() starts it); swap its stdin in first
         ex._proc.stdin = _FakeStdin()
         out = ex.run('echo "done ✅"')
         assert "gbk" in out["error"]

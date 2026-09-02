@@ -168,6 +168,24 @@ def _managed_path(tool: ManagedTool) -> Path:
     return managed_dir() / tool.name / tool.version / exe
 
 
+def _candidate_names(name: str) -> list[str]:
+    """Filenames to try for `name` in a directory we scan by hand (not via
+    `shutil.which`, which already does this internally on Windows).
+
+    On Windows a bare `name` almost never IS the file on disk — a Cargo/Go/etc.
+    install drops `name.exe` (or `.bat`/`.cmd`) — so `_KNOWN_DIRS` has to try the
+    same PATHEXT-style suffixes `shutil.which` tries on PATH, or every one of
+    those dirs silently loses its tools on Windows. Elsewhere this is a no-op."""
+    if sys.platform != "win32":
+        return [name]
+    pathext = [ext for ext in os.environ.get("PATHEXT", "").split(os.pathsep) if ext]
+    if not pathext:
+        pathext = [".COM", ".EXE", ".BAT", ".CMD"]
+    if any(name.lower().endswith(ext.lower()) for ext in pathext):
+        return [name]
+    return [name] + [name + ext for ext in pathext]
+
+
 def resolve(name: str) -> Optional[str]:
     """Absolute path to `name`, or None. PATH first (the user's choice wins), then the
     dirs a GUI launch can't see, then anything we installed ourselves."""
@@ -176,9 +194,11 @@ def resolve(name: str) -> Optional[str]:
         return str(Path(found).resolve())
 
     for raw in _KNOWN_DIRS:
-        candidate = Path(raw).expanduser() / name
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate.resolve())
+        base = Path(raw).expanduser()
+        for candidate_name in _candidate_names(name):
+            candidate = base / candidate_name
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate.resolve())
 
     tool = MANAGED.get(name)
     if tool:

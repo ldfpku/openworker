@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -522,7 +525,18 @@ def test_standalone_server_token_file_is_user_only(tmp_path, monkeypatch):
         assert path == tmp_path / "coworker-state" / "sidecar-9876.token"
         assert path.read_text().strip() == os.environ["COWORKER_API_TOKEN"]
         assert len(path.read_text().strip()) == 64
-        assert (path.stat().st_mode & 0o777) == 0o600
+        if sys.platform == "win32":
+            # Windows has no POSIX mode bits (chmod only toggles read-only): the writer
+            # restricts the ACL instead — inheritance stripped, current user alone.
+            out = subprocess.run(
+                ["icacls", str(path)], capture_output=True, text=True
+            ).stdout
+            user = os.environ.get("USERNAME", "")
+            assert user and user in out
+            assert "NT AUTHORITY\SYSTEM" not in out
+            assert "BUILTIN\Administrators" not in out
+        else:
+            assert (path.stat().st_mode & 0o777) == 0o600
     finally:
         path.unlink(missing_ok=True)
         os.environ.pop("COWORKER_API_TOKEN", None)
