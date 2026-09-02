@@ -2,6 +2,12 @@
 .SYNOPSIS
     维护 gemini-relay Worker 的允许名单（Cloudflare KV：邮箱 -> 姓名/部门/角色）。
 
+    ⚠️ 2026-09-02 起名单的唯一事实源是 help.smjtools.com/admin 的 users 表（smj-help-website 仓库
+    src/lib/relay-roster.ts 自动派生 Access 策略 smj-employees 与本 KV 名册）。本脚本只剩：
+      1. 调按人限额（-Add <同一邮箱> -Rpd/-Tpd/-Rpm）——同步器不覆盖已有限额；
+      2. help 站不可用时的应急路径。
+    用它改姓名/部门/角色会被下一次同步按 users 表纠正回来；加人删人请到 /admin 建档/停用。
+
 .DESCRIPTION
     gemini-relay v3 用 Cloudflare Access 的一次性验证码（One-time PIN）登录：同事在浏览器里
     输入自己的邮箱，Cloudflare 发验证码，验证通过后 Worker 才签发中转令牌。名单因此有**两个

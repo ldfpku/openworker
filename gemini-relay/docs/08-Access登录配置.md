@@ -277,6 +277,11 @@ curl -H "authorization: Bearer $env:OPENWORKER_RELAY_TOKEN" https://gemini.smjto
 
 ## 名单变更：两边都要动
 
+> **2026-09-02 起日常不再走本节。** 名单的唯一事实源是 help.smjtools.com/admin 的「用户与角色」：
+> 建档/停用/改邮箱/改资料会自动同步 Access 可复用策略 `smj-employees`（中转登录应用与
+> help、gateway 共用同一条）和这份 KV 名册。本节与 `roster.ps1` 降为应急/离线路径；
+> 用它改的姓名/部门/角色会被下一次同步按 users 表纠正，**只有 rpm/rpd/tpd 限额**同步器不碰。
+
 | 操作 | KV 名单（`roster.ps1`） | Access 策略（控制台） |
 | --- | --- | --- |
 | 加人 | `-Import` 或 `-Add` | 把邮箱加进 Include ▸ Emails |

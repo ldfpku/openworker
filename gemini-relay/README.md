@@ -73,6 +73,8 @@ curl https://gemini.smjtools.com/healthz
 
 ### 4. 登记名单，自己先登录一次
 
+> 2026-09-02 起名单由 help.smjtools.com/admin 的用户表自动派生（Access 策略 + KV 名册一并同步），下面的 CSV/脚本流程只作应急与调额度用。
+
 真实名单在 `gemini-relay\scripts\roster.csv`（四列必填 `email,name,dept,role`，三列选填 `rpm,rpd,tpd` 用来覆盖限额）。这个文件**不进 git**——本仓库是公开 fork，同事的姓名和私人邮箱只留在管理员本机；仓库里只有占位用的 `roster.example.csv`。
 
 ```powershell
