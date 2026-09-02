@@ -18,7 +18,7 @@
 	// `wrangler secret`. Fill both in from docs/08-Access登录配置.md before deploying.
 	"vars": {
 		"ACCESS_TEAM_DOMAIN": "https://smj-cf.cloudflareaccess.com",
-		"ACCESS_AUD": "46c7ae85aae2daa62ccef2155c22382e5a3acee74cd2ae2e24a992c2b00393a4",
+		"ACCESS_AUD": "32a3246d550042d19452c271cafa75f5d98fbd2ffe114a19232795105daf2e36",
 		// House default ceilings, per person per window (worker/src/quota.ts). A roster entry
 		// may override any of them; -1 disables a ceiling, 0 suspends the person entirely.
 		// These are the numbers everyone gets unless roster.csv says otherwise, so they are
