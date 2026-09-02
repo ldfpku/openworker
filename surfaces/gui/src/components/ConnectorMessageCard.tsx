@@ -15,25 +15,10 @@
 
 import { useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
+import { formatRelative } from "../relTime";
 import type { MessageSource } from "../api";
 import { ConnectorBadge, hexToRgba, NEUTRAL } from "../connectors/ConnectorIcon";
 import { resolveConnector } from "../connectors/registry";
-
-/** Coarse relative time from epoch seconds: "just now" / "5m ago" / "2h ago" / "3d ago" / a date. */
-function relativeTime(tsSeconds: number, t: (key: string, opts?: any) => string): string {
-  if (!tsSeconds || !isFinite(tsSeconds)) return "";
-  const then = tsSeconds * 1000;
-  const diff = Date.now() - then;
-  if (diff < 0) return t("inbox.rel_just_now");
-  if (diff < 45_000) return t("inbox.rel_just_now");
-  const mins = Math.round(diff / 60_000);
-  if (mins < 60) return t("inbox.rel_minutes_ago", { count: mins });
-  const hrs = Math.round(diff / 3_600_000);
-  if (hrs < 24) return t("inbox.rel_hours_ago", { count: hrs });
-  const days = Math.round(diff / 86_400_000);
-  if (days < 7) return t("inbox.rel_days_ago", { count: days });
-  return new Date(then).toLocaleDateString();
-}
 
 /** Absolute clock time (for the time element's title), e.g. "2:14 PM". */
 function clockTime(tsSeconds: number): string {
@@ -91,7 +76,7 @@ export function ConnectorMessageCard({
           </>
         )}
         <time className="ml-auto text-[11px] text-faint whitespace-nowrap" title={clockTime(source.ts)}>
-          {relativeTime(source.ts, t)}
+          {formatRelative(source.ts, t, { style: "short" })}
         </time>
       </header>
       <div className="px-3.5 py-2.5 text-[14px] leading-relaxed whitespace-pre-wrap">{source.text}</div>

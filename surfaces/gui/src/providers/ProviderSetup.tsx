@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import type { TFunction } from "i18next";
+import { formatRelative } from "../relTime";
 import {
   codexAuthStatus,
   codexSignin,
@@ -73,19 +73,6 @@ export function ProviderMark({ name, title, size = 32 }: { name: string; title: 
       )}
     </span>
   );
-}
-
-/** "2h ago"-style label for a provider's last completion (null when never used).
- *  Pass a translation function to localize; omit for the legacy English fallback. */
-export function relTime(epoch?: number | null, t?: TFunction): string | null {
-  if (!epoch) return null;
-  const secs = Math.max(0, Math.floor(Date.now() / 1000 - epoch));
-  if (secs < 90) return t ? t("provider.just_now") : "just now";
-  const mins = Math.floor(secs / 60);
-  if (mins < 60) return t ? t("provider.minutes_ago", { count: mins }) : `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 48) return t ? t("provider.hours_ago", { count: hrs }) : `${hrs}h ago`;
-  return t ? t("provider.days_ago", { count: Math.floor(hrs / 24) }) : `${Math.floor(hrs / 24)}d ago`;
 }
 
 export interface ProviderSetupState {
@@ -247,7 +234,7 @@ export function useProviderSetup(opts?: { onSaved?: () => void }): ProviderSetup
       return <span className="block text-[12px] text-faint truncate">{t("provider.sign_in_with_plan")}</span>;
     }
     if (p.configured && p.needs_key) {
-      const used = o?.lastUsed ? relTime(p.last_used_at, t) : null;
+      const used = o?.lastUsed ? formatRelative(p.last_used_at, t, { style: "short" }) : "";
       return (
         <span className="block text-[12px] text-ok font-medium truncate">
           {t("provider.connected_ok")}{used ? <span className="text-muted font-normal">{t("provider.used_suffix", { time: used })}</span> : ""}

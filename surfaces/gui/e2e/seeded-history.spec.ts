@@ -44,7 +44,7 @@ test("a reopened session replays rich history: tools, filters, reasoning, notice
 
   // The turn's tools fold into a collapsed step group; the filter count rides the summary.
   const group = page.locator(".stepgroup").first();
-  await expect(group).toContainText("2 steps");
+  await expect(group).toContainText("Used 2 tools");
   await expect(page.getByTestId("stepgroup-hidden")).toContainText("3 hidden");
 
   // Expanding reveals the replayed rows with their results wired by tool_call_id.

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { getI18n, useTranslation } from "react-i18next";
 import type { ApprovalDecision, Item } from "../types";
 import { shortArgs } from "./ApprovalCard";
@@ -7,6 +7,23 @@ import { Markdown } from "./Markdown";
 import { BoardWakeCard } from "./BoardWakeCard";
 import { ConnectorMessageCard } from "./ConnectorMessageCard";
 import { Icon } from "./Icon";
+import { CopyButton } from "./CopyButton";
+import { formatRelative } from "../relTime";
+import { summarizeTurn, stepIcon, formatElapsed } from "../turnSummary";
+
+// Re-renders its owner every `intervalMs` while `active` (default true) — the shared clock for
+// both the assistant bubble footer's relative time (one Transcript-level tick) and a running
+// step's elapsed counter (one per running StepRow, `active` gates the interval so finished rows
+// don't tick). Always call unconditionally (Rules of Hooks); `active` just toggles the interval.
+function useTicker(intervalMs: number, active = true): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const id = window.setInterval(() => setNow(Date.now()), intervalMs);
+    return () => window.clearInterval(id);
+  }, [intervalMs, active]);
+  return now;
+}
 
 // Long user pastes swallow the transcript (owner ask 2026-07-30): clamp past a generous
 // threshold with a more…/less… toggle. Normal typed messages never see the control; the
@@ -36,20 +53,7 @@ function ClampedUserText({ text }: { text: string }) {
 // so revealing it on group-hover never shifts the layout. `ts` is unix seconds — canonical
 // messages carry it, pre-stamp history doesn't, so the time simply omits itself when absent.
 function BubbleMeta({ text, ts, align }: { text: string; ts?: number; align: "left" | "right" }) {
-  const { t } = useTranslation();
-  const [copied, setCopied] = useState(false);
   const when = typeof ts === "number" ? new Date(ts * 1000) : null;
-  const copy = () => {
-    // "Copied" only after the write actually lands — WebKit can reject outside a
-    // trusted gesture, and claiming success on a silent no-op would gaslight the user.
-    navigator.clipboard
-      ?.writeText(text)
-      .then(() => {
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1200);
-      })
-      .catch(() => {});
-  };
   return (
     <div className="relative h-0 select-none">
       <div
@@ -58,20 +62,31 @@ function BubbleMeta({ text, ts, align }: { text: string; ts?: number; align: "le
           (align === "right" ? "right-0" : "left-0")
         }
       >
-        <button
-          className="flex items-center cursor-pointer hover:text-muted"
-          data-testid="bubble-copy"
-          title={t("transcript.copy_message")}
-          onClick={copy}
-        >
-          {copied ? t("transcript.copied") : <Icon name="copy" size={11} />}
-        </button>
+        <CopyButton text={text} size={11} testId="bubble-copy" />
         {when && (
           <span data-testid="bubble-ts" title={when.toLocaleString()}>
             {when.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
           </span>
         )}
       </div>
+    </div>
+  );
+}
+
+// The final-answer bubble's persistent action bar (replaces the hover-only BubbleMeta for
+// assistant bubbles — reference screenshot 2's bottom row): copy + relative time, always
+// visible. `now` rides one Transcript-level ticker (30s) rather than a per-bubble timer.
+function BubbleFoot({ text, ts, now }: { text: string; ts?: number; now: number }) {
+  const { t } = useTranslation();
+  const when = typeof ts === "number" ? new Date(ts * 1000) : null;
+  return (
+    <div className="flex items-center gap-2 mt-1.5 text-[11px] leading-none text-faint">
+      <CopyButton text={text} size={12} testId="bubble-copy" />
+      {when && (
+        <span data-testid="bubble-ts" title={when.toLocaleString()}>
+          {formatRelative(ts, t, { now })}
+        </span>
+      )}
     </div>
   );
 }
@@ -239,11 +254,15 @@ function StepRow({
   const [raw, setRaw] = useState(false);
   const running = tool.status === "…";
   const failed = tool.status !== "ok" && !running;
+  const hasStart = running && typeof tool.startedAt === "number";
+  // Only ticks while this row is actually running with a known start — a finished row's
+  // ticker never starts, so it costs nothing once the step settles.
+  const elapsedNow = useTicker(1000, hasStart);
   return (
     <div>
-      <div className="group flex items-baseline gap-2 px-2 py-0.5 rounded-lg hover:bg-paper" data-testid="turn-step">
-        <span className={"w-3.5 text-center text-[11px] shrink-0 " + (failed ? "text-danger" : running ? "text-accent" : "text-ok")}>
-          {running ? <span className="spinner" data-testid="step-running" /> : "●"}
+      <div className="step-line group flex items-baseline gap-2 px-2 py-0.5 rounded-lg hover:bg-paper" data-testid="turn-step">
+        <span className={"step-ico w-4 h-4 flex items-center justify-center shrink-0 " + (failed ? "text-danger" : running ? "text-accent" : "text-muted")}>
+          {running ? <span className="spinner" data-testid="step-running" /> : <Icon name={stepIcon(tool.name)} size={15} />}
         </span>
         <LineText
           line={
@@ -255,9 +274,14 @@ function StepRow({
                   obj: String(tool.args?.name ?? ""),
                   post: t("transcript.step.tried_skill_post"),
                 }
-              : humanizeTool(tool.name, tool.args)
+              : humanizeTool(tool.name, tool.args, { running })
           }
         />
+        {hasStart && (
+          <span className="tabular-nums text-[11px] text-faint shrink-0" data-testid="step-elapsed">
+            {formatElapsed(elapsedNow - (tool.startedAt as number))}
+          </span>
+        )}
         {approval && approvalChip(approval.resolved)}
         {!approval && originChip(tool.approvalOrigin, tool.approvalNote, tool.approvalGrant)}
         {!!tool.standingRule && (
@@ -339,20 +363,24 @@ function TurnGroup({
   onAllowAnyway?: (name: string, args: any) => void;
 }) {
   const { t } = useTranslation();
-  // Turns start COLLAPSED, running or not (owner call 2026-07-14) — the header's live
-  // line is the pulse; expanding is opt-in.
   const rows = buildRows(items);
   const tools = items.filter((it): it is ToolItem => it.kind === "tool");
   const running = live || tools.some((t) => t.status === "…");
+  // Running → expanded automatically; the turn ending flips `running` false and, absent a
+  // manual toggle, the group re-collapses on its own (owner reversal of the 2026-07-14 "running
+  // also collapsed" call). Once the user clicks the disclosure, their choice sticks regardless
+  // of `running`.
   const [userToggle, setUserToggle] = useState<boolean | null>(null);
-  const open = userToggle ?? false;
+  const open = userToggle ?? running;
   const lastNarr = [...items].reverse().find((it): it is AssistantItem => it.kind === "assistant");
   const liveLine = streamingText || lastNarr?.text || "";
 
   const nSteps = rows.filter((r) => r.type !== "narr").length;
   const declined = items.filter((it) => it.kind === "approval" && it.resolved === "deny").length;
   const hiddenTotal = tools.reduce((n, t) => n + (t.hidden || 0), 0);
-  const stepsLabel = t("transcript.turn.steps_label", { count: nSteps });
+  const summaryText = summarizeTurn(tools, nSteps)
+    .map((seg) => t(`transcript.turn.${seg.key}`, seg.count != null ? { count: seg.count } : undefined))
+    .join(" · ");
 
   return (
     <details className="stepgroup" open={open}>
@@ -365,7 +393,8 @@ function TurnGroup({
       >
         <span className={"chev inline-block transition-transform" + (open ? " rotate-90" : "")}>›</span>
         <span>
-          <span>{running ? t("transcript.turn.running", { label: stepsLabel }) : stepsLabel}</span>
+          {running && <span className="spinner mr-1.5" aria-hidden="true" />}
+          <span>{summaryText}</span>
           {declined > 0 && (
             <>
               {" · "}
@@ -390,15 +419,17 @@ function TurnGroup({
         )}
       </summary>
       {open && (
-        <div className="ml-1.5 mt-1 pl-2 border-l-2 border-line flex flex-col gap-0.5">
+        <div className="ml-1.5 mt-1 step-rail flex flex-col gap-0.5">
           {rows.map((row, i) =>
             row.type === "narr" ? (
               <div className="turn-narr px-2 py-1 text-[13px] text-muted max-w-[60ch]" key={i} data-testid="turn-narration">
                 <Markdown text={row.text} />
               </div>
             ) : row.type === "ask" ? (
-              <div className="flex items-baseline gap-2 px-2 py-0.5" key={i} data-testid="turn-ask">
-                <span className={"w-3.5 text-center text-[11px] shrink-0 " + (row.approval.resolved === "deny" ? "text-danger" : "text-ok")}>●</span>
+              <div className="step-line flex items-baseline gap-2 px-2 py-0.5" key={i} data-testid="turn-ask">
+                <span className={"step-ico w-4 h-4 flex items-center justify-center shrink-0 " + (row.approval.resolved === "deny" ? "text-danger" : "text-muted")}>
+                  <Icon name={stepIcon(row.approval.name)} size={15} />
+                </span>
                 <LineText line={humanizeAsk(row.approval.name, row.approval.args)} />
                 {approvalChip(row.approval.resolved)}
               </div>
@@ -502,6 +533,9 @@ function McpNotice({
 
 export function Transcript({ items, running, streamingText, onRetry, onOpenConnectors, onUndoMemory, onAllowAnyway }: Props) {
   const { t } = useTranslation();
+  // One shared clock for every assistant bubble's relative-time footer — a 30s tick is plenty
+  // fresh and beats each bubble opening its own timer.
+  const now = useTicker(30_000);
   // §33 grouping: a turn = the maximal run of assistant/tool/resolved-approval items between
   // breakers (user, connector, notices, plan/dir requests…). Trailing assistant texts are the
   // ANSWER and render as bubbles after the group; interior assistant texts are narration and
@@ -598,7 +632,7 @@ export function Transcript({ items, running, streamingText, onRetry, onOpenConne
                 <div className="who">{t("transcript.who_assistant")}</div>
                 {item.reasoning && <ThinkingBlock text={item.reasoning} />}
                 <Markdown text={item.text} />
-                <BubbleMeta text={item.text} ts={item.ts} align="left" />
+                <BubbleFoot text={item.text} ts={item.ts} now={now} />
               </div>
             );
           case "dirreq":

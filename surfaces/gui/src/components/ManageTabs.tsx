@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { getI18n, useTranslation } from "react-i18next";
+import { useTranslation } from "react-i18next";
 import {
   allowUser,
   connectConnector,
@@ -27,19 +27,7 @@ import { sessionDisplayTitle, sessionTitleText } from "../sessionTitle";
 import { CloudSignInInline, CloudStatusPending } from "./connectors/CloudSignIn";
 import { ModelChecklist } from "./ModelChecklist";
 import { ProviderCards, ProviderForm, useProviderSetup } from "../providers/ProviderSetup";
-
-// "2h ago"-style label for the providers' Last-used line (null when never used).
-const relTime = (epoch?: number | null): string | null => {
-  if (!epoch) return null;
-  const t = getI18n().getFixedT(null, "translation");
-  const secs = Math.max(0, Math.floor(Date.now() / 1000 - epoch));
-  if (secs < 90) return t("manage.reltime_just_now");
-  const mins = Math.floor(secs / 60);
-  if (mins < 60) return t("manage.reltime_min", { n: mins });
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 48) return t("manage.reltime_hour", { n: hrs });
-  return t("manage.reltime_day", { n: Math.floor(hrs / 24) });
-};
+import { formatRelative } from "../relTime";
 
 // Shared tab bodies for the Settings and Integrations pages (the old top-tab ManageModal was retired
 // when Settings/Activity became full-page surfaces): ModelsTab → Settings ▸ Models; ConnectorsTab →
@@ -365,7 +353,7 @@ export function UnauthorizedBlock({
             <div className="flex items-center gap-2 text-[12px] text-muted">
               <span className="font-medium text-ink">{m.user_name || m.user_id}</span>
               <span>{t("manage.parked_in", { chat: m.chat_name || m.chat_id })}</span>
-              <span className="ml-auto shrink-0">{relTime(m.ts) || ""}</span>
+              <span className="ml-auto shrink-0">{formatRelative(m.ts, t, { style: "short" })}</span>
             </div>
             <div className="text-[13px] mt-1 break-words">{m.text}</div>
             <div className="flex items-center gap-1.5 mt-2">

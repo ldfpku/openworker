@@ -68,3 +68,33 @@ describe("Markdown artifact links", () => {
     window.removeEventListener(OPEN_APP_TARGET_EVENT, listener);
   });
 });
+
+// Fenced code blocks get a head bar (language tag + copy button); inline `code` never does.
+describe("Markdown code blocks", () => {
+  it("shows the fence's language as the head-bar label", () => {
+    render(<Markdown text={"```ts\nconst x = 1;\n```"} />);
+    expect(screen.getByText("ts")).toBeTruthy();
+    expect(document.querySelector(".codeblock")).toBeTruthy();
+  });
+
+  it("copies the block's raw text, not the head bar's", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    render(<Markdown text={"```js\nconsole.log('hi');\n```"} />);
+    fireEvent.click(screen.getByTestId("codeblock-copy"));
+    expect(writeText).toHaveBeenCalledWith("console.log('hi');\n");
+  });
+
+  it("a fence with no language shows no label but still offers copy", () => {
+    render(<Markdown text={"```\nplain text\n```"} />);
+    expect(screen.queryByText("ts")).toBeNull();
+    expect(screen.getByTestId("codeblock-copy")).toBeTruthy();
+  });
+
+  it("inline code is never wrapped in a codeblock", () => {
+    render(<Markdown text="see `inline` code" />);
+    expect(document.querySelector(".codeblock")).toBeNull();
+    expect(screen.queryByTestId("codeblock-copy")).toBeNull();
+    expect(screen.getByText("inline").tagName).toBe("CODE");
+  });
+});

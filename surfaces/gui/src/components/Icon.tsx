@@ -43,7 +43,9 @@ export type IconName =
   | "mic"
   | "stop"
   | "warning"
-  | "x";
+  | "x"
+  | "terminal"
+  | "globe";
 
 export function Icon({
   name,
@@ -371,6 +373,24 @@ export function Icon({
           <path d="M10 11v6M14 11v6" />
           <path d="M6.5 7l.9 12c.1.9.8 1.5 1.7 1.5h7.8c.9 0 1.6-.6 1.7-1.5l.9-12" />
           <path d="M9.2 7V4.9c0-.5.4-.9.9-.9h3.8c.5 0 .9.4.9.9V7" />
+        </svg>
+      );
+    case "terminal":
+      // Shell window: rounded frame, ">" prompt chevron + a caret bar (run_shell's timeline glyph).
+      return (
+        <svg {...s}>
+          <rect x="3" y="4.5" width="18" height="15" rx="2.2" />
+          <path d="M7.2 9.6l3.2 2.4-3.2 2.4" />
+          <path d="M12.5 15h4.3" />
+        </svg>
+      );
+    case "globe":
+      // Sphere + meridian + equator (web_fetch's timeline glyph).
+      return (
+        <svg {...s}>
+          <circle cx="12" cy="12" r="8.3" />
+          <path d="M3.7 12h16.6" />
+          <path d="M12 3.7c2.5 2.3 3.9 5.2 3.9 8.3s-1.4 6-3.9 8.3c-2.5-2.3-3.9-5.2-3.9-8.3s1.4-6 3.9-8.3z" />
         </svg>
       );
   }

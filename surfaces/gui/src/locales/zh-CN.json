@@ -1223,6 +1223,7 @@
   "Run setup again": "重新运行初始设置",
   "Run shell commands in a persistent session.": "在持久会话中运行 shell 命令。",
   "Run the test suite and summarize any failures.": "运行测试套件并总结所有失败项。",
+  "Running ": "正在运行 ",
   "Running {{steps}}…": "正在运行 {{steps}}…",
   "Runs": "运行记录",
   "Runs models inside your own AWS account. Claude uses Anthropic's native Bedrock path; every other model goes through the Converse API.": "在你自己的 AWS 账户中运行模型。Claude 使用 Anthropic 原生的 Bedrock 通道；其余模型均通过 Converse API 调用。",

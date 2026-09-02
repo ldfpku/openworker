@@ -391,10 +391,17 @@ body {
   font-family: var(--mono); font-size: var(--fs-mono);
   background: var(--paper); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px;
 }
-.md pre {
-  margin: 4px 0 14px; padding: 12px 14px; overflow-x: auto;
+/* fenced code blocks: a head bar (language tag + copy) over the code, one rounded frame */
+.md .codeblock {
+  margin: 4px 0 14px; overflow: hidden;
   background: var(--paper); border: 1px solid var(--line); border-radius: 12px;
 }
+.md .codeblock-head {
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+  font-size: 12px; color: var(--faint); background: var(--paper); border-bottom: 1px solid var(--line);
+}
+.md .codeblock-lang { font-family: var(--mono); text-transform: lowercase; }
+.md pre { margin: 0; padding: 12px 14px; overflow-x: auto; background: none; border: none; border-radius: 0; }
 .md pre code { background: none; border: none; padding: 0; font-size: var(--fs-mono); line-height: 1.55; }
 
 /* blockquote */
@@ -1485,10 +1492,29 @@ html[data-theme="dark"] :not(.connector-badge) > .connector-icon[data-dark-mark]
   border: 2px solid var(--accent); border-right-color: transparent;
   animation: spin 0.8s linear infinite; vertical-align: middle;
 }
+/* running timeline: a rail through the step icons, expanded-only. Each row draws its own
+   segment (top:0 to bottom:100%) so the line is continuous through narration rows too — the
+   first row only draws its bottom half (nothing above the first icon) and the last row only
+   its top half (nothing below the last), so the rail starts/ends exactly at the end icons
+   instead of overshooting past them. */
+.step-rail > * { position: relative; }
+.step-rail > *::before {
+  content: ""; position: absolute; left: 15px; top: 0; bottom: 0; width: 2px;
+  background: var(--line-strong);
+}
+.step-rail > *:first-child::before { top: 50%; }
+.step-rail > *:last-child::before { bottom: 50%; }
+/* the icon box sits ON the rail and masks it (the reference's line breaks at each glyph);
+   it repaints in the row's hover wash so the mask never shows as a mismatched square. */
+.step-ico { position: relative; z-index: 1; background: var(--canvas); border-radius: 4px; }
+.step-line:hover .step-ico { background: var(--paper); }
 /* narration markdown stays quiet: the .md defaults (15px, ink) must not win here */
 .turn-narr .md { font-size: 13px; color: var(--muted); line-height: 1.5; }
 .turn-narr p { margin: 0 0 4px; }
 .turn-narr p:last-child { margin-bottom: 0; }
+/* narration shares the step rows' icon-column width, so its text lines up with their text
+   instead of starting under the rail/icons. */
+.step-rail .turn-narr { padding-left: 32px; }
 
 /* §34 (UX-016): [Title](artifact:path) renders as a chip that opens the artifact viewer */
 .art-chip {

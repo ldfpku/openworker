@@ -35,13 +35,17 @@ function messageTarget(target: string): { platform: string; tail: string } {
   return { platform: names[platform] || platform, tail };
 }
 
-export function humanizeTool(name: string, args: any): HumanLine {
+export function humanizeTool(name: string, args: any, opts?: { running?: boolean }): HumanLine {
   const a = args && typeof args === "object" ? args : {};
   switch (name) {
     case "run_shell": {
       const cmd = trunc(String(a.command ?? ""), 60);
       const desc = typeof a.description === "string" && a.description.trim() ? a.description.trim() : "";
-      const pre = a.run_in_background ? t("Started in the background: ") : t("Ran ");
+      const pre = a.run_in_background
+        ? t("Started in the background: ")
+        : opts?.running
+          ? t("Running ")
+          : t("Ran ");
       return {
         pre,
         obj: cmd,

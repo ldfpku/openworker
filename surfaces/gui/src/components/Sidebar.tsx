@@ -5,7 +5,8 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 // the define, any future SSR pass) from throwing on an undeclared identifier.
 declare const __APP_VERSION__: string;
 const APP_VERSION = typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : "";
-import { getI18n, useTranslation } from "react-i18next";
+import { useTranslation } from "react-i18next";
+import { formatRelative } from "../relTime";
 import {
   announceCloudChanged,
   AUTOMATIONS_CHANGED,
@@ -165,27 +166,6 @@ interface Props {
   onCollapse?: () => void;
   onPeekLeave?: () => void;
 }
-
-// Compact age for project session rows: "now" / "5m" / "6h" / "3d" / "2w" / "4mo" / "2y".
-const compactAge = (iso?: string | null): string => {
-  if (!iso) return "";
-  const then = Date.parse(iso);
-  if (Number.isNaN(then)) return "";
-  const tt = getI18n().getFixedT(null, "translation");
-  const secs = Math.max(0, Math.floor((Date.now() - then) / 1000));
-  if (secs < 60) return tt("sidebar.age_now");
-  const mins = Math.floor(secs / 60);
-  if (mins < 60) return tt("sidebar.age_m", { n: mins });
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return tt("sidebar.age_h", { n: hrs });
-  const days = Math.floor(hrs / 24);
-  if (days < 7) return tt("sidebar.age_d", { n: days });
-  const weeks = Math.floor(days / 7);
-  if (days < 30) return tt("sidebar.age_w", { n: weeks });
-  const months = Math.floor(days / 30);
-  if (days < 365) return tt("sidebar.age_mo", { n: months });
-  return tt("sidebar.age_y", { n: Math.floor(days / 365) });
-};
 
 // Sessions shown per group before "Show more" comes from Settings (sessions_peek, default 5).
 
@@ -602,8 +582,10 @@ export function Sidebar(props: Props) {
                 (rowMenu?.id === s.session_id ? " hidden" : "")
               }
             >
-              {opts.showTime && compactAge(s.updated_at) && (
-                <span className="text-[11px] text-faint tabular-nums">{compactAge(s.updated_at)}</span>
+              {opts.showTime && formatRelative(s.updated_at, t, { style: "compact" }) && (
+                <span className="text-[11px] text-faint tabular-nums">
+                  {formatRelative(s.updated_at, t, { style: "compact" })}
+                </span>
               )}
               <OriginIcon s={s} />
               <LiveDot state={s.liveness} />

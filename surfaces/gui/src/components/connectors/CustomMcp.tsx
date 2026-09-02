@@ -10,7 +10,7 @@ import {
   signoutMcp,
   type McpServer,
 } from "../../api";
-import { relTime } from "../../providers/ProviderSetup";
+import { formatRelative } from "../../relTime";
 import { Icon } from "../Icon";
 import { Toggle } from "../Toggle";
 import {
@@ -78,7 +78,7 @@ export function mcpStatusLine(s: McpServer): string {
   // Live servers show it too — the visible receipt that clicking Test did
   // something (it re-round-trips the connection and refreshes the tool count).
   if (s.last_test_at) {
-    const rel = relTime(s.last_test_at);
+    const rel = formatRelative(s.last_test_at, t, { style: "short" });
     if (rel) bits.push(t("mcp.tested_rel", { rel }));
   }
   return bits.join(" · ");

@@ -822,7 +822,7 @@ export function App() {
             setTodo(normalizeTodos(d.arguments.todos ?? d.arguments.items));
           setItems((p) => [
             ...p,
-            { kind: "tool", id: newId(), name: d.name, args: d.arguments, status: "…" },
+            { kind: "tool", id: newId(), name: d.name, args: d.arguments, status: "…", startedAt: Date.now() },
           ]);
           break;
         case "permission_required":

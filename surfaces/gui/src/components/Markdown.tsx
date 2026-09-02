@@ -1,7 +1,9 @@
+import { isValidElement, type ReactNode } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import { useTranslation } from "react-i18next";
 import remarkGfm from "remark-gfm";
 import { Icon } from "./Icon";
+import { CopyButton } from "./CopyButton";
 
 // §34 (UX-016): the agent ends a deliverable turn with plain markdown —
 // [Title](artifact:relative/path) — and the renderer turns it into a chip that opens the
@@ -75,6 +77,36 @@ function ArtifactChip({ path, title }: { path: string; title: string }) {
   );
 }
 
+// react-markdown v10's `pre` renderer hands us the `<code>` element as `children` (not raw
+// text) — the language lives on ITS className ("language-xxx"), and the text has to be
+// reassembled from ITS children (a string, or an array when rehype/remark split it into runs).
+function codeText(node: ReactNode): string {
+  if (typeof node === "string") return node;
+  if (typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(codeText).join("");
+  if (isValidElement(node)) return codeText((node.props as { children?: ReactNode }).children);
+  return "";
+}
+
+// Fenced code blocks get a head bar: the language tag (when the fence named one) + a copy
+// button for the block's raw text. Inline `code` (not wrapped in a `pre`) never hits this —
+// react-markdown only routes block-level code through `pre`.
+function CodeBlock({ node: _n, children, ...props }: any) {
+  const codeEl = Array.isArray(children) ? children[0] : children;
+  const className: string = (isValidElement(codeEl) && (codeEl.props as { className?: string }).className) || "";
+  const lang = /language-(\S+)/.exec(className)?.[1];
+  const text = codeText(codeEl);
+  return (
+    <div className="codeblock">
+      <div className="codeblock-head">
+        {lang && <span className="codeblock-lang">{lang}</span>}
+        <CopyButton text={text} size={12} testId="codeblock-copy" className="ml-auto" />
+      </div>
+      <pre {...props}>{children}</pre>
+    </div>
+  );
+}
+
 // Assistant messages rendered as GitHub-flavored markdown (headings, lists, tables, code,
 // links). Links open externally — never navigate the app shell — except artifact: links,
 // which open the session's artifact viewer.
@@ -91,6 +123,7 @@ export function Markdown({ text }: { text: string }) {
             : defaultUrlTransform(url)
         }
         components={{
+          pre: CodeBlock,
           a: ({ node: _n, href, children, ...props }) => {
             if (href?.startsWith("artifact:")) {
               const title = Array.isArray(children) ? children.join("") : String(children ?? "");

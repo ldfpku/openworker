@@ -36,13 +36,6 @@
     "no_matching": "没有匹配的会话。",
     "awaiting_attention": "{{n}} 项等待你处理",
     "from_slack": "来自 Slack",
-    "age_now": "刚刚",
-    "age_m": "{{n}}分钟前",
-    "age_h": "{{n}}小时前",
-    "age_d": "{{n}}天前",
-    "age_w": "{{n}}周前",
-    "age_mo": "{{n}}个月前",
-    "age_y": "{{n}}年前",
     "rename": "重命名",
     "pin": "置顶",
     "unpin": "取消置顶",
@@ -189,10 +182,14 @@
       "tried_skill_post": "——不可用"
     },
     "turn": {
-      "running": "运行 {{label}}…",
       "declined": "{{count}} 已拒绝",
       "hidden": "{{count}} 已被你的过滤器隐藏",
-      "steps_label": "{{count}} 步"
+      "used_tools": "用了 {{count}} 个工具",
+      "ran_commands": "运行 {{count}} 条命令",
+      "edited_files": "编辑 {{count}} 个文件",
+      "loaded_tools": "已加载工具",
+      "used_skills": "用了 {{count}} 个技能",
+      "saved_memories": "保存 {{count}} 条记忆"
     },
     "dir_declined": "已拒绝文件夹访问权限",
     "dir_granted": "已授予文件夹访问权限",
@@ -215,6 +212,35 @@
       "undone_forgotten": "好的——已忘记。",
       "undone_restored": "好的——已恢复原样。",
       "undo": "撤销"
+    }
+  },
+  "time": {
+    "long": {
+      "just_now": "刚刚",
+      "minutes_ago": "{{count}} 分钟前",
+      "hours_ago": "{{count}} 小时前",
+      "days_ago": "{{count}} 天前",
+      "weeks_ago": "{{count}} 周前",
+      "months_ago": "{{count}} 个月前",
+      "years_ago": "{{count}} 年前"
+    },
+    "short": {
+      "just_now": "刚刚",
+      "minutes_ago": "{{count}} 分钟前",
+      "hours_ago": "{{count}} 小时前",
+      "days_ago": "{{count}} 天前",
+      "weeks_ago": "{{count}} 周前",
+      "months_ago": "{{count}} 个月前",
+      "years_ago": "{{count}} 年前"
+    },
+    "compact": {
+      "just_now": "刚刚",
+      "minutes_ago": "{{count}}分钟前",
+      "hours_ago": "{{count}}小时前",
+      "days_ago": "{{count}}天前",
+      "weeks_ago": "{{count}}周前",
+      "months_ago": "{{count}}个月前",
+      "years_ago": "{{count}}年前"
     }
   },
   "rail": {
@@ -765,10 +791,6 @@
     "not_subscribed": "未订阅任何频道。",
     "add": "添加",
     "connector_via": "经由 {{label}}",
-    "rel_just_now": "刚刚",
-    "rel_minutes_ago": "{{count}} 分钟前",
-    "rel_hours_ago": "{{count}} 小时前",
-    "rel_days_ago": "{{count}} 天前",
     "routing_update_failed": "无法更新收件箱路由。",
     "routing_clear_failed": "无法清除收件箱路由。",
     "missing_slack_owner": "在将审批路由至此之前，请先在「集成 → Slack」中选择审批负责人。",
@@ -1199,10 +1221,6 @@
     "recent_empty": "暂无。给机器人发送一条消息后，就会显示在这里。",
     "recent_senders": "最近的发送者",
     "reload_now": "立即重新加载",
-    "reltime_day": "{{n}} 天前",
-    "reltime_hour": "{{n}} 小时前",
-    "reltime_just_now": "刚刚",
-    "reltime_min": "{{n}} 分钟前",
     "remove_from_picker": "从选择器中移除",
     "remove_key": "移除密钥…",
     "remove_key_confirm": "要从这台电脑移除 {{title}} 密钥吗？",
@@ -1398,15 +1416,11 @@
     "connected_ok": "✓ 已连接",
     "create_key_at": "在 {{label}} 创建一个",
     "custom_endpoint": "自定义端点",
-    "days_ago": "{{count}} 天前",
     "detect_btn": "检测",
     "detected_pill": "✓ 已检测到",
     "err_couldnt_verify": "无法验证",
     "err_unreachable": "无法访问",
-    "hours_ago": "{{count}} 小时前",
     "install_ollama": "安装 Ollama",
-    "just_now": "刚刚",
-    "minutes_ago": "{{count}} 分钟前",
     "no_key_needed": "无需密钥",
     "no_key_needed_desc": "无需 API key——Ollama 在本机上运行模型。",
     "no_key_yet": "还没有 API key？",

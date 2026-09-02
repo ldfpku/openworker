@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Transcript } from "./Transcript";
 import { humanizeTool } from "../humanize";
 import type { Item } from "../types";
@@ -22,8 +22,8 @@ describe("TurnGroup (Transcript §33)", () => {
   it("groups the whole turn; answer stays outside; narration and humanized steps inside", () => {
     const { container } = render(<Transcript items={TURN} onApprove={vi.fn()} />);
 
-    // Collapsed at rest: "2 steps", NO approval count, and no step/narration content visible.
-    expect(screen.getByText("2 steps")).toBeTruthy();
+    // Collapsed at rest: "Used 2 tools", NO approval count, and no step/narration content visible.
+    expect(screen.getByText("Used 2 tools")).toBeTruthy();
     expect(screen.queryByText(/approval/)).toBeNull();
     expect(screen.queryByTestId("turn-narration")).toBeNull();
     expect(screen.queryByText(/Sent a Slack message/)).toBeNull();
@@ -45,17 +45,60 @@ describe("TurnGroup (Transcript §33)", () => {
     expect(container.textContent).toContain('{"ok": true}');
   });
 
-  it("a running turn is labeled Running but starts COLLAPSED (§33 ref #3)", () => {
+  it("summarizes a turn by tool category, in fixed order", () => {
     const items: Item[] = [
+      { kind: "user", text: "ship it" },
+      { kind: "tool", id: "t1", name: "run_shell", args: { command: "npm test" }, status: "ok" },
+      { kind: "tool", id: "t2", name: "write_file", args: { path: "a.txt" }, status: "ok" },
+      { kind: "tool", id: "t3", name: "read_file", args: { path: "b.txt" }, status: "ok" },
+      { kind: "assistant", text: "Done." },
+    ];
+    render(<Transcript items={items} onApprove={vi.fn()} />);
+    expect(screen.getByText("Used 3 tools · ran 1 command · edited 1 file")).toBeTruthy();
+  });
+
+  // Owner reversal (this pass) of the 2026-07-14 "running also collapses" call: a running
+  // turn now expands itself automatically, and collapses again on its own once it ends —
+  // unless the user clicked the disclosure, in which case their choice sticks either way.
+  it("a running turn starts EXPANDED; it re-collapses once done; a manual toggle sticks", () => {
+    const running: Item[] = [
       { kind: "assistant", text: "Looking at the repo." },
       { kind: "tool", id: "t1", name: "grep", args: { pattern: "TODO" }, status: "…" },
     ];
-    const { container } = render(<Transcript items={items} onApprove={vi.fn()} />);
-    expect(screen.getByText(/Running 1 step…/)).toBeTruthy();
-    expect(screen.queryByTestId("turn-narration")).toBeNull(); // collapsed by default
-    expect(screen.getByTestId("turn-live-line").textContent).toContain("Looking at the repo");
-    fireEvent.click(container.querySelector("summary.stepgroup-head")!);
+    const { container, rerender } = render(<Transcript items={running} onApprove={vi.fn()} />);
+    expect(screen.getByTestId("turn-narration").textContent).toContain("Looking at the repo");
     expect(screen.getByTestId("step-running")).toBeTruthy();
+    expect(screen.queryByTestId("turn-live-line")).toBeNull(); // only shown while collapsed
+
+    const done: Item[] = [
+      { kind: "assistant", text: "Looking at the repo." },
+      { kind: "tool", id: "t1", name: "grep", args: { pattern: "TODO" }, status: "ok" },
+    ];
+    rerender(<Transcript items={done} onApprove={vi.fn()} />);
+    expect(screen.queryByTestId("turn-narration")).toBeNull(); // auto-collapsed, no click
+
+    fireEvent.click(container.querySelector("summary.stepgroup-head")!);
+    expect(screen.getByTestId("turn-narration")).toBeTruthy(); // the manual click sticks
+  });
+
+  it("a running step's elapsed time ticks every second; a replayed step (no startedAt) shows none", () => {
+    vi.useFakeTimers();
+    const started = Date.now();
+    const items: Item[] = [
+      { kind: "tool", id: "t1", name: "run_shell", args: { command: "npm test" }, status: "…", startedAt: started },
+    ];
+    render(<Transcript items={items} onApprove={vi.fn()} />);
+    expect(screen.getByTestId("step-elapsed").textContent).toBe("0s");
+    act(() => vi.advanceTimersByTime(3000));
+    expect(screen.getByTestId("step-elapsed").textContent).toBe("3s");
+    vi.useRealTimers();
+    cleanup();
+
+    const replayed: Item[] = [
+      { kind: "tool", id: "t2", name: "run_shell", args: { command: "npm test" }, status: "…" },
+    ];
+    render(<Transcript items={replayed} onApprove={vi.fn()} />);
+    expect(screen.queryByTestId("step-elapsed")).toBeNull();
   });
 
   it("declined approvals keep their own 'Wanted to' row and surface on the collapsed line", () => {
@@ -90,16 +133,13 @@ describe("live turns (§33 flicker fix)", () => {
     { kind: "assistant", text: "Inspecting the fetched dataset next." },
   ];
 
-  it("while running, trailing assistant text stays INSIDE the group — no answer bubble flash", () => {
+  it("while running, trailing assistant text stays INSIDE the group, expanded automatically — no answer bubble flash", () => {
     const { container } = render(<Transcript items={LIVE} onApprove={vi.fn()} running />);
-    // No assistant bubble anywhere; the group starts COLLAPSED with the narration riding
-    // the header as the live line (§33 ref #3 — expanding is opt-in).
+    // No assistant bubble anywhere; running auto-expands the group, so the narration is
+    // immediately visible as the quiet line inside (owner reversal of "running stays collapsed").
     expect(container.querySelector(".bubble-assistant")).toBeNull();
-    expect(screen.queryByTestId("turn-narration")).toBeNull();
-    expect(screen.getByTestId("turn-live-line").textContent).toContain("Inspecting the fetched dataset");
-    // Expanding shows it as the quiet line inside.
-    fireEvent.click(container.querySelector("summary.stepgroup-head")!);
     expect(screen.getByTestId("turn-narration").textContent).toContain("Inspecting the fetched dataset");
+    expect(screen.queryByTestId("turn-live-line")).toBeNull(); // that line is collapsed-only
     // Once the turn ends (running=false), the same trailing text IS the answer bubble.
     cleanup();
     const done = render(<Transcript items={LIVE} onApprove={vi.fn()} />);
@@ -108,7 +148,7 @@ describe("live turns (§33 flicker fix)", () => {
     );
   });
 
-  it("quiet streamed text rides the collapsed header and the expanded body — never floats", () => {
+  it("quiet streamed text rides the expanded body while running — never floats", () => {
     const { container } = render(
       <Transcript
         items={LIVE}
@@ -117,12 +157,11 @@ describe("live turns (§33 flicker fix)", () => {
         streamingText="The quote endpoint rate-limited, so I'm checking the historical pages."
       />,
     );
-    // Collapsed: the STREAMING text wins the header live line (fresher than the last item).
-    expect(screen.getByTestId("turn-live-line").textContent).toContain("quote endpoint rate-limited");
-    expect(container.querySelector(".bubble-assistant")).toBeNull();
-    // Expanded: it renders as the small quiet line under the steps.
-    fireEvent.click(container.querySelector("summary.stepgroup-head")!);
+    // Running → expanded by default, so the streamed text renders directly as the quiet
+    // live-stream line under the steps; no collapsed header line to fall back on.
     expect(screen.getByTestId("turn-live-stream").textContent).toContain("quote endpoint rate-limited");
+    expect(container.querySelector(".bubble-assistant")).toBeNull();
+    expect(screen.queryByTestId("turn-live-line")).toBeNull();
   });
 
   it("a PENDING approval neither splits the turn nor promotes the narration", () => {
@@ -177,6 +216,21 @@ describe("bubble hover affordances (FB-005)", () => {
     const when = new Date(TS * 1000);
     expect(stamps[0].textContent).toBe(when.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }));
     expect(stamps[0].getAttribute("title")).toBe(when.toLocaleString());
+  });
+
+  // The assistant bubble's persistent footer (replacing hover BubbleMeta) shows RELATIVE
+  // time — "5 minutes ago" — with the full local time still riding the title.
+  it("the assistant bubble's footer shows relative time; the title stays the full local time", () => {
+    const nowMs = (TS + 300) * 1000; // 5 minutes after the message
+    vi.useFakeTimers();
+    vi.setSystemTime(nowMs);
+    render(
+      <Transcript items={[{ kind: "assistant", text: "Posted it.", ts: TS }]} onApprove={vi.fn()} />,
+    );
+    const stamp = screen.getByTestId("bubble-ts");
+    expect(stamp.textContent).toBe("5 minutes ago");
+    expect(stamp.getAttribute("title")).toBe(new Date(TS * 1000).toLocaleString());
+    vi.useRealTimers();
   });
 });
 
