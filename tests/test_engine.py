@@ -477,6 +477,87 @@ def test_tool_results_are_bounded_before_entering_history():
     assert message["role"] == "tool" and message["tool_call_id"] == "c1"
 
 
+def _assistant_call(call_id, name, arguments):
+    return {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {"name": name, "arguments": arguments},
+            }
+        ],
+    }
+
+
+def _read_engine(tmp_path, messages):
+    return TurnEngine(
+        provider=object(),
+        registry=ToolRegistry(),
+        permissions=PermissionEngine(workspace_root=tmp_path),
+        model="x",
+        messages=messages,
+    )
+
+
+def test_repeated_identical_read_keeps_only_the_newest(tmp_path):
+    """Three reads of one file left three full copies, re-sent on every later call."""
+    from coworker.engine import _SUPERSEDE_MIN_CHARS, _TOOL_RESULT_MAX_CHARS
+
+    # Results are clipped to the cap on the way INTO history, so the floor must sit below
+    # it or a read clipped at the cap — the typical big read — could never be superseded.
+    assert _SUPERSEDE_MIN_CHARS < _TOOL_RESULT_MAX_CHARS
+
+    big = "x" * 3_000
+    eng = _read_engine(
+        tmp_path,
+        [
+            {"role": "user", "content": "check it"},
+            _assistant_call("a", "read_file", '{"path": "app.py"}'),
+            {"role": "tool", "tool_call_id": "a", "content": big},
+            _assistant_call("b", "read_file", '{"path": "other.py"}'),
+            {"role": "tool", "tool_call_id": "b", "content": big},
+            _assistant_call("c", "read_file", '{"path": "app.py"}'),
+            {"role": "tool", "tool_call_id": "c", "content": big},
+        ],
+    )
+    out = eng._outbound_messages()
+    sent = {m["tool_call_id"]: m["content"] for m in out if m.get("role") == "tool"}
+    assert sent["a"].startswith("[superseded")  # same args, read again later
+    assert sent["b"] == big  # a different file — untouched
+    assert sent["c"] == big  # the newest copy survives intact
+    # Outbound-only: the canonical history still holds every copy.
+    assert eng.messages[2]["content"] == big
+
+
+def test_supersession_leaves_small_reads_and_shell_alone(tmp_path):
+    """Rewriting history costs one cache miss — only worth it for a big copy, and never
+    for `run_shell`, where two identical commands can straddle the change being checked."""
+    small, big = "y" * 100, "z" * 3_000
+    eng = _read_engine(
+        tmp_path,
+        [
+            {"role": "user", "content": "go"},
+            _assistant_call("a", "read_file", '{"path": "tiny.py"}'),
+            {"role": "tool", "tool_call_id": "a", "content": small},
+            _assistant_call("b", "read_file", '{"path": "tiny.py"}'),
+            {"role": "tool", "tool_call_id": "b", "content": small},
+            _assistant_call("c", "run_shell", '{"command": "pytest -q"}'),
+            {"role": "tool", "tool_call_id": "c", "content": big},
+            _assistant_call("d", "run_shell", '{"command": "pytest -q"}'),
+            {"role": "tool", "tool_call_id": "d", "content": big},
+        ],
+    )
+    sent = {
+        m["tool_call_id"]: m["content"]
+        for m in eng._outbound_messages()
+        if m.get("role") == "tool"
+    }
+    assert sent["a"] == small  # under the size floor: not worth the re-cache
+    assert sent["c"] == big  # the "before" half of a before/after comparison
+
+
 def test_token_gate_stops_a_runaway_turn_and_says_what_it_cost(tmp_path):
     """`max_iterations` counts ROUNDS, so it cannot tell a turn that read four small
     files from one that read four 40k-line logs — it stops both at the same place. The

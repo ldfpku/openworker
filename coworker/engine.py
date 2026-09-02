@@ -2121,6 +2121,13 @@ class TurnEngine:
                     for msg in out
                 ]
 
+        # Repeated identical reads: keep only the newest copy. Runs here — on the
+        # post-compaction view, before the `<system-context>` tail is added — so it
+        # dedupes exactly the verbatim history the provider is about to see. Outbound-only
+        # like everything above. `_supersede_repeated_reads` says how this sits against
+        # `_clip_tool_result` and compaction.
+        out = _supersede_repeated_reads(out)
+
         context = (
             self.context_provider() if self.context_provider is not None else ""
         ) or ""
@@ -2129,6 +2136,88 @@ class TurnEngine:
         block = f"{SYSTEM_CONTEXT_OPEN}\n{context}\n</system-context>"
         out.append({"role": "user", "content": block})
         return out
+
+
+# Read-only tools whose answer is fully determined by their arguments: called twice with
+# byte-identical arguments, the second call can only be a newer copy of the first. `run_shell`
+# is deliberately absent — two identical commands can straddle a change the model is comparing
+# across, and the older output is the half of that comparison. (`list_files` is aisuite's
+# files toolkit; the other three are ours — see catalog.py.)
+_IDEMPOTENT_READS = frozenset({"read_file", "grep", "list_files", "git_log"})
+_SUPERSEDED_NOTE = (
+    "[superseded — this exact read was repeated later in the conversation; "
+    "see the newer result]"
+)
+# Collapsing rewrites history mid-thread, which costs one cache miss to buy a permanently
+# smaller context. Only worth it when the copy being dropped is actually large. Must stay
+# BELOW `_TOOL_RESULT_MAX_CHARS`: every result in history was already clipped to that cap
+# on the way in, so a floor at or above it would mean nothing ever qualifies.
+_SUPERSEDE_MIN_CHARS = 2_000
+
+
+def _supersede_repeated_reads(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep only the newest result of each repeated identical read.
+
+    Reading the same file three times leaves three full copies in the transcript, and every
+    later round-trip pays for all three. Compaction already rules that a stale memory of a
+    file is worse than no memory (`compaction.py`) — but it only fires at the window
+    threshold, so a turn can run a hundred calls before it applies. This applies the same
+    rule every turn. Outbound-only: the canonical history keeps every copy.
+
+    Where it sits against the other two bounds on what a tool result costs:
+
+    - `_clip_tool_result` runs at APPEND time, so every result seen here is already at most
+      `_TOOL_RESULT_MAX_CHARS`. The two are orthogonal — the clip bounds what ONE result may
+      cost, this bounds how many times the SAME result is paid for — and the order is fixed
+      by where each lives: clip first (into history), supersede later (out of it). A read
+      clipped at the cap is the typical customer: four reads of one big file leave four
+      8,000-char copies in history, and this sends one.
+    - Compaction (`_compaction.apply_to_outbound`) has already replaced everything before
+      its boundary with the summary block by the time this runs, so only the verbatim tail
+      is scanned; a read whose twin was summarized away has no older copy to supersede.
+
+    The newest copy wins even when it is an error or the crash-repair stub: the model then
+    sees the note, sees the error, and re-reads — one extra read, never a silently stale file.
+    """
+    calls: dict[str, tuple[str, str]] = {}
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls") or []:
+            fn = tc.get("function") or {}
+            if fn.get("name") in _IDEMPOTENT_READS and tc.get("id"):
+                calls[tc["id"]] = (fn["name"], fn.get("arguments") or "")
+    if not calls:
+        return messages
+    newest: dict[tuple[str, str], str] = {}
+    sizes: dict[str, int] = {}
+    for msg in messages:
+        if msg.get("role") != "tool":
+            continue
+        call_id = msg.get("tool_call_id")
+        key = calls.get(call_id)
+        if key is None or not isinstance(msg.get("content"), str):
+            continue
+        newest[key] = call_id
+        sizes[call_id] = len(msg["content"])
+    stale = {
+        call_id
+        for call_id, key in calls.items()
+        if newest.get(key) not in (None, call_id)
+        and sizes.get(call_id, 0) >= _SUPERSEDE_MIN_CHARS
+    }
+    if not stale:
+        return messages
+    return [
+        (
+            {**msg, "content": _SUPERSEDED_NOTE}
+            if msg.get("role") == "tool" and msg.get("tool_call_id") in stale
+            else msg
+        )
+        for msg in messages
+    ]
 
 
 def _calls_awaiting_output(message: dict[str, Any]) -> list[str]:
