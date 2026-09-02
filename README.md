@@ -67,7 +67,9 @@
 
 两条路都不需要你安装任何额外软件，也不需要你自己的任何 Cloudflare 账号。
 
-另有一张 **NVIDIA (NIM)** 卡：端点已内置，向管理员索要一把 `nvapi-` 开头的 key 粘进去，即可使用英伟达线上的 Kimi K3。
+练手可以走 **AMD Radeon Cloud Token Factory** 的公开免费模型：在「自定义端点」卡填入 `https://developer.amd.com.cn/radeon/api/v1` 和自己注册的 `rc-` 开头的 key，再手填 `DeepSeek-V4-Flash-0731` 即可，额度按天重置，不产生公司账单。
+
+此外还有一张 **NVIDIA (NIM)** 卡：端点已内置，向管理员索要一把 `nvapi-` 开头的 key 粘进去，即可使用英伟达线上的 Kimi K3。
 
 **能用哪些模型**：精选清单里 70 个型号，覆盖 OpenAI、Anthropic、Google Gemini、DeepSeek、Kimi、通义千问、MiniMax、Z.ai (GLM)、xAI Grok、Mistral、火山方舟等，也可以指向本机的 **Ollama** 完全离线跑。清单之外的模型串也能手填，效果自负。
 

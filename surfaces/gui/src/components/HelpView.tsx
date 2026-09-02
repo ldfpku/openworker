@@ -95,7 +95,7 @@ export function HelpView({
               />
               <div className="help-creed">
                 <ol>
-                  <li>{t("Start on a free model — the NVIDIA line or a local one.")}</li>
+                  <li>{t("Start on a free model — the AMD line or a local one.")}</li>
                   <li>{t("Switch to a paid model only when the job needs real thinking.")}</li>
                   <li>{t("Finish a job, then start a new session — old context is re-sent every turn.")}</li>
                 </ol>
