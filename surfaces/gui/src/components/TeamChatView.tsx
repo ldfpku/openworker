@@ -7,7 +7,8 @@ import { isComposing } from "../ime";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getTeamChat, postTeamChat, type TeamChat } from "../api";
-import { Icon } from "./Icon";
+import { IconButton } from "./IconButton";
+import { BTN_ACCENT } from "./buttons";
 
 function mentionify(text: string, members: Set<string>) {
   // Split on @word tokens; wrap known handles in a highlight span.
@@ -75,14 +76,7 @@ export function TeamChatView({ teamId, onClose }: { teamId: string; onClose: () 
     // the sidebar stays interactive; back or Esc returns to the session.
     <div className="chat-view" data-testid="teamchat-view">
       <div className="chat-view-head">
-        <button
-          className="artifact-icon-btn"
-          onClick={onClose}
-          aria-label={t("team.back_to_session")}
-          title={t("rail.back")}
-        >
-          <Icon name="arrowLeft" size={16} />
-        </button>
+        <IconButton icon="arrowLeft" onClick={onClose} label={t("team.back_to_session")} />
         <div className="board-overlay-title">
           <span className="chat-hash">#</span>
           <span>{t("rail.team_chat")}</span>
@@ -127,7 +121,7 @@ export function TeamChatView({ teamId, onClose }: { teamId: string; onClose: () 
               if (e.key === "Enter") send();
             }}
           />
-          <button className="btn primary" data-testid="chat-send" disabled={busy || !draft.trim()} onClick={send}>
+          <button className={BTN_ACCENT} data-testid="chat-send" disabled={busy || !draft.trim()} onClick={send}>
             {t("common.send")}
           </button>
         </div>

@@ -12,7 +12,8 @@ import {
   type MemoryEntry,
   type MemorySettings,
 } from "../api";
-import { Icon } from "./Icon";
+import { BTN_ACCENT } from "./buttons";
+import { IconButton } from "./IconButton";
 import { PanelHead } from "./IntegrationsView";
 import { Toggle } from "./Toggle";
 
@@ -23,8 +24,6 @@ import { Toggle } from "./Toggle";
 const CARD = "rounded-xl2 border border-line bg-panel";
 const FIELD_LABEL = "text-[13px] font-medium text-ink";
 const FIELD_HELP = "text-[12px] text-muted mt-1.5 leading-relaxed";
-const BTN_ACCENT =
-  "text-[13px] px-3 py-2 rounded-lg bg-accent text-white shrink-0 disabled:opacity-40";
 
 export function MemorySection() {
   const { t } = useTranslation();
@@ -246,25 +245,26 @@ function MemoryRow({ entry, onChanged }: { entry: MemoryEntry; onChanged: () => 
   return (
     <div className="py-2.5 flex items-start gap-2.5 group" data-testid={`memory-row-${entry.id}`}>
       <div className="min-w-0 flex-1 text-[13px] leading-relaxed">{entry.content}</div>
-      <button
-        className="text-faint hover:text-ink shrink-0 mt-0.5"
-        title={t("memory.fix_tip")}
+      <IconButton
+        small
+        icon="pencil"
+        size={14}
+        label={t("memory.fix_tip")}
         data-testid={`memory-edit-btn-${entry.id}`}
         onClick={() => {
           setDraft(entry.content);
           setEditing(true);
         }}
-      >
-        <Icon name="pencil" size={14} />
-      </button>
-      <button
-        className="text-faint hover:text-danger shrink-0 mt-0.5"
-        title={t("memory.delete_tip")}
+      />
+      <IconButton
+        small
+        tone="danger"
+        icon="trash"
+        size={14}
+        label={t("memory.delete_tip")}
         data-testid={`memory-delete-${entry.id}`}
         onClick={() => void remove()}
-      >
-        <Icon name="trash" size={14} />
-      </button>
+      />
     </div>
   );
 }

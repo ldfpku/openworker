@@ -6,6 +6,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { Item } from "../types";
 import { Icon } from "./Icon";
+import { BTN_ACCENT, BTN_BORDERED } from "./buttons";
 
 // Past this length, "Done when" clamps to two lines with a per-item expander —
 // a model that writes essay criteria must not occupy two screens of gate card
@@ -69,11 +70,11 @@ export function WorkItemsCard({
       <div className="dirreq-actions">
         <span className="itemsreq-grant">{t("team.items_grant")}</span>
         <span className="spacer" />
-        <button className="btn" onClick={() => onRespond(false)}>
+        <button className={BTN_BORDERED} onClick={() => onRespond(false)}>
           {t("team.not_now")}
         </button>
         <button
-          className="btn primary"
+          className={BTN_ACCENT}
           data-testid="itemsreq-approve"
           onClick={() => onRespond(true)}
         >

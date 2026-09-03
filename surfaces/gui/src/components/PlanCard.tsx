@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import type { Item } from "../types";
 import { Icon } from "./Icon";
 import { Markdown } from "./Markdown";
+import { BTN_ACCENT, BTN_BORDERED } from "./buttons";
 
 type PlanItem = Extract<Item, { kind: "planreq" }>;
 
@@ -43,11 +44,11 @@ export function PlanCard({
               if (e.key === "Enter" && feedback.trim()) onRespond(false, undefined, feedback.trim());
             }}
           />
-          <button className="btn" onClick={() => setRejecting(false)}>
+          <button className={BTN_BORDERED} onClick={() => setRejecting(false)}>
             {t("plan.back")}
           </button>
           <button
-            className="btn primary"
+            className={BTN_ACCENT}
             disabled={!feedback.trim()}
             onClick={() => onRespond(false, undefined, feedback.trim())}
           >
@@ -56,14 +57,14 @@ export function PlanCard({
         </div>
       ) : (
         <div className="dirreq-actions">
-          <button className="btn" onClick={() => setRejecting(true)}>
+          <button className={BTN_BORDERED} onClick={() => setRejecting(true)}>
             {t("plan.request_changes")}
           </button>
           <span className="spacer" />
-          <button className="btn" onClick={() => onRespond(true, "interactive")}>
+          <button className={BTN_BORDERED} onClick={() => onRespond(true, "interactive")}>
             {t("plan.approve_ask")}
           </button>
-          <button className="btn primary" onClick={() => onRespond(true, "auto")}>
+          <button className={BTN_ACCENT} onClick={() => onRespond(true, "auto")}>
             {t("plan.approve_and_run")}
           </button>
         </div>

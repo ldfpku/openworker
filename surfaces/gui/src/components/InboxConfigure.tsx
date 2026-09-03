@@ -19,7 +19,9 @@ import {
 } from "../api";
 import type { SessionInfo } from "../types";
 import { ChannelPicker } from "./SubscriptionsChip";
+import { BTN_ACCENT_SM } from "./buttons";
 import { Icon } from "./Icon";
+import { IconButton } from "./IconButton";
 import { sessionDisplayTitle, sessionTitleText } from "../sessionTitle";
 
 // Inbox ▸ Configure (UX-DECISIONS §28): the former Connectors ▸ "Messaging routing" page,
@@ -29,7 +31,6 @@ import { sessionDisplayTitle, sessionTitleText } from "../sessionTitle";
 // via an inline configurator on the Inbox list.
 const CARD = "rounded-xl2 border border-line bg-panel";
 const SELECT = "px-2.5 py-1.5 rounded-lg border border-line bg-paper text-[13px] text-ink";
-const BTN_ACCENT_SM = "text-[12px] px-2.5 py-1 rounded-md bg-accent text-white disabled:opacity-50";
 
 export function InboxConfigure() {
   const { t } = useTranslation();
@@ -289,13 +290,14 @@ function SubscriptionsCard() {
                 </td>
                 <td className="px-4 py-2.5 text-muted">{s.routing_target || "—"}</td>
                 <td className="px-4 py-2.5 text-right">
-                  <button
-                    className="text-faint hover:text-danger"
-                    title={t("inbox.unsubscribe")}
+                  <IconButton
+                    variant="inline"
+                    icon="x"
+                    size={12}
+                    tone="danger"
+                    label={t("inbox.unsubscribe")}
                     onClick={() => remove(s.session_id, s.channel)}
-                  >
-                    ×
-                  </button>
+                  />
                 </td>
               </tr>
             ))}

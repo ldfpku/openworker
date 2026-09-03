@@ -10,6 +10,8 @@ import {
   type RecentChannel,
 } from "../api";
 import { Icon } from "./Icon";
+import { IconButton } from "./IconButton";
+import { BTN_ACCENT_SM } from "./buttons";
 
 // A workspace roster hit for the typeahead: type a channel NAME, we resolve the
 // id (conversations.list, cached on the desktop) and compose the address.
@@ -309,16 +311,20 @@ export function SubscriptionsChip({
               return (
               <div className="sub-pop-row" key={c}>
                 <span className="sub-pop-chan" title={c}>{nm ? `#${nm}` : c}</span>
-                <button className="sub-pop-x" title={t("inbox.unsubscribe")} onClick={() => remove(c)}>
-                  ×
-                </button>
+                <IconButton
+                  variant="inline"
+                  icon="x"
+                  size={12}
+                  label={t("inbox.unsubscribe")}
+                  onClick={() => remove(c)}
+                />
               </div>
               );
             })
           )}
           <div className="sub-pop-add">
             <ChannelPicker value={draft} onChange={setDraft} recent={recent} onSubmit={add} />
-            <button className="btn-primary sm" disabled={!draft.trim()} onClick={add}>
+            <button className={BTN_ACCENT_SM} disabled={!draft.trim()} onClick={add}>
               {t("inbox.add")}
             </button>
           </div>

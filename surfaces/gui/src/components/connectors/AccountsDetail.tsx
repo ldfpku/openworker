@@ -8,9 +8,11 @@ import {
 } from "../../api";
 import { ConnectorBadge } from "../../connectors/ConnectorIcon";
 import { ConnectSetup } from "../ManageTabs";
+import { IconButton } from "../IconButton";
 import type { DetailProps } from "./ConnectorsSection";
 import { ToolsDisclosure } from "./ToolsDisclosure";
-import { FOOT, GRP, GRP_H, PILL_ACCENT, ROW, TAG_ACCENT, XBTN } from "./ui";
+import { FOOT, GRP, GRP_H, ROW, TAG_ACCENT } from "./ui";
+import { BTN_ACCENT_SM } from "../buttons";
 
 // The generic detail page for multi-account connectors on the accounts layer
 // (Notion, Attio, PostHog, Mixpanel, Amplitude, Apollo, Hunter — batch 2).
@@ -54,7 +56,7 @@ export function AccountsDetail({ c, cloud, slack: _slack, onChanged }: DetailPro
           </div>
         </div>
         <button
-          className={PILL_ACCENT}
+          className={BTN_ACCENT_SM}
           data-testid="add-account-btn"
           onClick={() => (canOneClick ? addManaged() : setShowManual((v) => !v))}
           disabled={busy}
@@ -141,20 +143,21 @@ function Row({
           {t("connector.make_default")}
         </button>
       )}
-      <button
-        className={XBTN}
-        title={t("accounts.disconnect_account_title")}
+      <IconButton
+        variant="inline"
+        icon="x"
+        size={12}
+        tone="danger"
         data-testid={`account-disconnect-${a.account_id}`}
         disabled={busy}
+        label={t("accounts.disconnect_account_title")}
         onClick={async () => {
           setBusy(true);
           await disconnectAccount(connector, a.account_id);
           setBusy(false);
           onChanged();
         }}
-      >
-        ×
-      </button>
+      />
     </div>
   );
 }

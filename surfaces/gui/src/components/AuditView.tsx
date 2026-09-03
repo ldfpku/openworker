@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getAudit, type AuditEvent } from "../api";
+import { BTN_ACCENT } from "./buttons";
 import { PanelHead } from "./IntegrationsView";
 
 // Activity — connector/browser tool history, restructured onto the IntegrationsView page shell
@@ -8,7 +9,6 @@ import { PanelHead } from "./IntegrationsView";
 // filterable, with sanitized arguments.
 const CARD = "rounded-xl2 border border-line bg-panel";
 const INPUT = "px-3 py-1.5 rounded-lg border border-line bg-paper text-[13px] text-ink outline-none focus:border-accent";
-const BTN_ACCENT = "text-[13px] px-3 py-1.5 rounded-lg bg-accent text-white shrink-0";
 
 export function AuditView() {
   const { t } = useTranslation();

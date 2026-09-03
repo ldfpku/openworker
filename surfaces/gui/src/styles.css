@@ -211,18 +211,10 @@ body {
    14px/14px inside the brand row) so peeking the nav puts the pin under the cursor — no travel. */
 .nav-reveal-btn {
   position: fixed;
-  top: 10px; /* center (10+14) aligns with the topbar title in the browser build */
-  left: 14px;
+  top: 9px; /* center (9+15) aligns with the topbar title in the browser build */
+  left: 13px;
   z-index: 58;
-  width: 28px;
-  height: 28px;
-  display: grid;
-  place-items: center;
-  border-radius: 6px;
-  color: var(--faint);
-  background: transparent;
 }
-.nav-reveal-btn:hover { color: var(--ink); background: var(--paper); }
 /* On desktop, both the brand row and the reveal button shift right to clear the traffic lights
    (and down to align with them in their lowered position — see traffic_light_position in lib.rs). */
 /* Desktop overlay: the whole top strip sits lower (center ~30) to line up with the lowered
@@ -258,8 +250,6 @@ body {
 .sub-pop-empty { font-size: 13px; padding: 2px 0 8px; }
 .sub-pop-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0; font-size: 13px; }
 .sub-pop-chan { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sub-pop-x { border: 0; background: none; color: var(--faint); font-size: 16px; line-height: 1; cursor: pointer; padding: 0 4px; }
-.sub-pop-x:hover { color: var(--ink); }
 .sub-pop-add { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
 .sub-pop-add .chan-input { min-width: 0; flex: 1; }
 
@@ -313,11 +303,6 @@ body {
 /* Equal-flex side regions keep the subtitle centered; they double as window-drag surfaces. */
 .main-topbar-side { align-self: stretch; flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 6px; }
 .main-topbar-actions { justify-content: flex-end; }
-.topbar-icon-btn {
-  width: 30px; height: 30px; display: grid; place-items: center;
-  border: 0; border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer;
-}
-.topbar-icon-btn:hover { color: var(--ink); background: var(--paper); }
 .app.tauri-overlay .main-title,
 .app.tauri-overlay .main-drag-fill {
   -webkit-app-region: drag;
@@ -325,8 +310,7 @@ body {
 .app.tauri-overlay button,
 .app.tauri-overlay input,
 .app.tauri-overlay textarea,
-.app.tauri-overlay select,
-.app.tauri-overlay .topbar-icon-btn {
+.app.tauri-overlay select {
   -webkit-app-region: no-drag;
 }
 .main-workspace { position: relative; display: flex; min-height: 0; flex: 1; overflow: hidden; }
@@ -510,11 +494,6 @@ body {
 .approval-row-line { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .approval-row-line .approval-btns { margin-top: 0; flex-wrap: nowrap; }
 .approval-peek { font: inherit; font-size: 12px; color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer; flex: none; }
-/* owner call (UX-018): no solid fills — the primary action is a blue border */
-.approval .btn.approval-primary { border-color: var(--accent); color: var(--accent); font-weight: 600; }
-.approval .btn.approval-primary:hover { background: var(--accent-soft); }
-.approval .btn.quiet-deny { border: 0; background: none; color: var(--faint); }
-.approval .btn.quiet-deny:hover { color: var(--danger); }
 .approval-rest {
   margin-top: 7px; font-family: var(--mono); font-size: 12px; color: var(--faint);
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
@@ -540,12 +519,6 @@ body {
 .approval-btns { display: flex; gap: 8px; margin-top: 13px; flex-wrap: wrap; align-items: center; }
 .approval-btns .spacer { flex: 1; }
 .approval .resolved { margin-top: 10px; font-size: 13px; color: var(--muted); }
-button.btn { font: inherit; font-size: 13px; padding: 7px 12px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--panel); cursor: pointer; }
-button.btn.icon-only { display: inline-flex; align-items: center; justify-content: center; padding: 7px 9px; flex: none; color: var(--muted); }
-button.btn.icon-only:hover { color: var(--ink); }
-button.btn:hover { background: var(--paper); }
-button.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-button.btn.danger { color: var(--accent); }
 
 /* composer — the wrap/card/head/bar layout is supplied by Tailwind utilities on the elements
    (Composer.tsx); only the textarea reset + drag-ring remain in CSS. */
@@ -658,8 +631,6 @@ button.btn.danger { color: var(--accent); }
 .rail-section-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; min-height: 24px; }
 .rail-section-toggle { flex: 1; display: flex; gap: 8px; align-items: center; cursor: pointer; font: inherit; font-size: 13px; font-weight: 600; color: var(--ink); user-select: none; border: 0; background: transparent; padding: 0; text-align: left; }
 .rail-chev { color: var(--faint); flex: none; }
-.rail-mini-btn { width: 24px; height: 24px; display: grid; place-items: center; color: var(--muted); border: 0; border-radius: 7px; background: transparent; cursor: pointer; }
-.rail-mini-btn:hover { color: var(--ink); background: var(--chrome-hover); }
 .rail-section-body { padding-top: 10px; }
 /* Seventeenth pass: a section header's maximum signal — a small count chip, amber only
    when it carries attention states (blocked/review). */
@@ -702,7 +673,6 @@ button.btn.danger { color: var(--accent); }
   border-left: 1.5px solid #fff; border-bottom: 1.5px solid #fff; transform: rotate(-45deg);
 }
 .rail-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.rail-actions .btn { padding: 6px 9px; font-size: 12px; border-radius: 8px; }
 .browser-mini { display: flex; flex-direction: column; gap: 8px; }
 .browser-shot { display: block; width: 100%; max-height: 220px; object-fit: contain; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
 .artifact-list { display: flex; flex-direction: column; gap: 7px; }
@@ -721,12 +691,6 @@ button.btn.danger { color: var(--accent); }
   flex: none; min-height: 58px; padding: 10px 18px; border-bottom: 1px solid var(--line);
   background: var(--glass); backdrop-filter: blur(12px);
 }
-.artifact-icon-btn {
-  width: 30px; height: 30px; display: grid; place-items: center;
-  color: var(--muted);
-  background: transparent; border: 0; border-radius: 8px; padding: 0; cursor: pointer;
-}
-.artifact-icon-btn:hover { background: var(--paper); color: var(--ink); }
 .artifact-heading { flex: 1; min-width: 0; }
 .artifact-title { display: flex; align-items: center; gap: 7px; font-size: 14px; font-weight: 600; color: var(--ink); overflow: hidden; white-space: nowrap; }
 .artifact-title span:last-child { overflow: hidden; text-overflow: ellipsis; }
@@ -817,8 +781,6 @@ button.btn.danger { color: var(--accent); }
 }
 .root-access.rw { color: var(--ok); border-color: var(--ok-line); background: var(--ok-soft); }
 .root-access:disabled { cursor: default; opacity: 0.7; }
-.root-x { font: inherit; font-size: 14px; line-height: 1; color: var(--faint); background: none; border: none; cursor: pointer; padding: 0 4px; flex: none; }
-.root-x:hover { color: var(--ink); }
 .roots-add { padding: 8px 2px 2px; border-top: 1px solid var(--line); margin-top: 6px; }
 .roots-err { color: var(--danger); font-size: 12px; padding: 6px 6px 2px; }
 
@@ -936,8 +898,6 @@ button.btn.danger { color: var(--accent); }
 .toolreq-factrow code + .toolreq-fact::before { content: "· "; color: var(--muted); }
 .toolreq-explain { margin-top: 4px; }
 .toolreq-factrow + .toolreq-explain { margin-top: 5px; }
-/* a disabled Install must LOOK disabled — the whole card exists to not oversell */
-.dirreq-actions .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .dirreq-pathrow { display: flex; gap: 8px; align-items: center; }
 .dirreq-path {
   flex: 1; font: inherit; font-size: 13px; color: var(--ink);
@@ -974,7 +934,6 @@ button.btn.danger { color: var(--accent); }
 .gate-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 18px; }
 .gate-link { font-size: 13px; color: var(--accent); cursor: pointer; }
 .gate-link:hover { text-decoration: underline; }
-.gate-cancel { margin: 0; }
 
 /* Centered sub-tab row inside a manage pane (e.g. API models / Local models). */
 .subtabs { display: flex; justify-content: center; margin: 20px 0 16px; }
@@ -1025,8 +984,6 @@ button.btn.danger { color: var(--accent); }
    (ManageTabs McpTab/McpRow/AddForm). */
 .mcp-error { color: var(--accent); font-size: 13px; margin-top: 6px; }
 
-button.btn-primary { font: inherit; font-size: 13px; padding: 8px 16px; border-radius: 9px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; align-self: flex-start; }
-button.btn-primary:hover { filter: brightness(1.05); }
 button.link { font: inherit; font-size: 13px; background: none; border: none; color: var(--muted); cursor: pointer; padding: 0; }
 button.link:hover { color: var(--ink); }
 button.link.danger:hover { color: var(--accent); }
@@ -1044,8 +1001,6 @@ button.link:disabled { color: var(--faint); cursor: default; }
 .conn-meta { font-size: 12px; color: var(--faint); margin-top: 2px; display: flex; align-items: center; gap: 5px; }
 .conn-meta.ok, .conn-meta .ok { color: var(--ok); }
 .conn-meta.danger, .conn-meta .danger { color: var(--danger); }
-button.btn-primary.sm { padding: 5px 13px; font-size: 13px; }
-button.btn.sm { padding: 5px 13px; font-size: 13px; }
 
 .conn-field { display: flex; flex-direction: column; gap: 4px; }
 .conn-field-label { font-size: 13px; color: var(--ink); }
@@ -1080,17 +1035,8 @@ button.btn.sm { padding: 5px 13px; font-size: 13px; }
 .sched-grant-rule code { font-family: var(--mono); font-size: 12px; color: var(--ink); }
 .sched-grant-target { font-family: var(--mono); font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 /* Quick-delete on a list card: revealed on hover, never steals the row click. */
-.sched-card-del {
-  display: grid; place-items: center; flex: none;
-  width: 26px; height: 26px; border-radius: 7px; border: none;
-  background: transparent; color: var(--faint); cursor: pointer;
-  opacity: 0; transition: opacity 0.12s, color 0.12s, background 0.12s;
-}
-.sched-card:hover .sched-card-del { opacity: 1; }
-.sched-card-del:hover { color: var(--danger); background: var(--paper); }
-/* Detail "Delete" button — danger-tinted line button with the trash glyph. */
-button.btn.sm.danger-btn { display: inline-flex; align-items: center; gap: 5px; color: var(--danger); border-color: var(--line-strong); }
-button.btn.sm.danger-btn:hover { border-color: var(--danger); }
+.icon-btn.sched-card-del { opacity: 0; transition: opacity 0.12s; }
+.sched-card:hover .icon-btn.sched-card-del, .icon-btn.sched-card-del:focus-visible { opacity: 1; }
 .sched-edit-title { font-size: var(--fs-title); font-weight: 600; max-width: 360px; }
 .sched-edit-sched { margin: 12px 0 4px; }
 .sched-edit-instr { min-height: 96px; }
@@ -1294,8 +1240,6 @@ button.btn.sm.danger-btn:hover { border-color: var(--danger); }
   border-top: 1px solid var(--line);
 }
 .ob-foot-right { display: flex; gap: 10px; }
-button.btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
-button.btn.ghost:hover { color: var(--ink); }
 
 /* Welcome value-prop bullets */
 .ob-valueprops { list-style: none; margin: 0 0 18px; padding: 0; display: flex; flex-direction: column; gap: 10px; }
@@ -1344,17 +1288,42 @@ button.btn.ghost:hover { color: var(--ink); }
 .attach-chip .attach-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .attach-chip.img { padding: 0; border: none; background: transparent; }
 .attach-chip.img img { width: 46px; height: 46px; object-fit: cover; border-radius: 9px; border: 1px solid var(--line-strong); display: block; }
-.attach-x {
-  position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; border-radius: 50%;
-  border: none; background: var(--solid); color: var(--on-solid); font-size: 11px; line-height: 1; cursor: pointer;
-  display: grid; place-items: center;
-}
+/* Icon-only button (IconButton.tsx) — the single class for every glyph button: topbar,
+   artifact viewer, list rows, composer. Ghost by default; `.bordered` sits in a row of text buttons. */
 .icon-btn {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 30px; height: 30px; border: none; border-radius: 8px;
+  width: 30px; height: 30px; padding: 0; border: 1px solid transparent; border-radius: 8px;
   background: transparent; color: var(--muted); cursor: pointer; flex: none;
 }
 .icon-btn:hover { color: var(--ink); background: var(--paper); }
+.icon-btn.sm { width: 26px; height: 26px; }
+.icon-btn.xs { width: 20px; height: 20px; border-radius: 5px; color: var(--faint); }
+.icon-btn.bordered { border-color: var(--line-strong); background: var(--panel); }
+.icon-btn.bordered:hover { background: var(--paper); }
+.icon-btn.inline { width: auto; height: auto; padding: 2px; border-radius: 4px; color: var(--faint); }
+.icon-btn.inline:hover { background: transparent; }
+/* The attachment chip's corner "×": an inline IconButton pinned to the chip's top-right. */
+.icon-btn.attach-x {
+  position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; padding: 0; border-radius: 50%;
+  background: var(--solid); color: var(--on-solid);
+}
+.icon-btn.attach-x:hover { background: var(--solid); color: var(--on-solid); opacity: 0.85; }
+/* Inside the sidebar the hover wash is the chrome tone, not paper. */
+.sidebar .icon-btn:hover, .sidebar .icon-btn.active { background: var(--chrome-hover); }
+.icon-btn.active { color: var(--ink); background: var(--paper); }
+.icon-btn.danger:hover { color: var(--danger); }
+.icon-btn.recording { color: var(--danger); background: var(--danger-soft); }
+.icon-btn:disabled { opacity: 0.4; cursor: default; background: transparent; color: var(--muted); }
+
+/* Back link (BackLink.tsx) — the one "‹ parent view" control on drill-in pages. Accent
+   colour + arrow + hover wash so it is noticed; negative margin keeps the text flush left. */
+.back-link {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 10px 5px 7px; margin-left: -7px;
+  border: 0; border-radius: 8px; background: transparent;
+  font: inherit; font-size: 13px; font-weight: 500; color: var(--accent); cursor: pointer;
+}
+.back-link:hover { background: var(--accent-soft); }
 /* in-transcript attachments on a user bubble */
 .bubble-attachments { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
 .msg-img { max-width: 220px; max-height: 220px; border-radius: 10px; border: 1px solid var(--line-strong); display: block; }
@@ -2069,7 +2038,6 @@ html[data-platform="linux"] ::-webkit-scrollbar-thumb:hover { background-color: 
 .sleep-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warn-ink); opacity: 0.7; flex-shrink: 0; animation: sleep-pulse 2.4s ease-in-out infinite; }
 @keyframes sleep-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 0.85; } }
 .sleep-text { flex: 1; }
-.sleep-strip .btn.sm { padding: 4px 10px; font-size: 12px; }
 
 /* UX-038: viewer header — breadcrumb-as-back, ✕ close, one labeled ⋯ menu. */
 .artifact-crumb-link {

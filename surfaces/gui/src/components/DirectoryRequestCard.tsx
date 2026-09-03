@@ -3,6 +3,8 @@ import { useTranslation } from "react-i18next";
 import type { Item } from "../types";
 import { chooseFolder } from "../tauri";
 import { Icon } from "./Icon";
+import { IconButton } from "./IconButton";
+import { BTN_ACCENT, BTN_BORDERED } from "./buttons";
 
 type DirReqItem = Extract<Item, { kind: "dirreq" }>;
 
@@ -47,9 +49,7 @@ export function DirectoryRequestCard({
           value={path}
           onChange={(e) => setPath(e.target.value)}
         />
-        <button className="btn icon-only" onClick={browse} title={t("dirreq.choose_location")} aria-label={t("dirreq.choose_location")}>
-          <Icon name="folder" size={15} />
-        </button>
+        <IconButton variant="bordered" icon="folder" size={15} onClick={browse} label={t("dirreq.choose_location")} />
       </div>
       <div className="dirreq-actions">
         {!item.primary && (
@@ -59,11 +59,11 @@ export function DirectoryRequestCard({
           </label>
         )}
         <span className="spacer" />
-        <button className="btn" onClick={() => onRespond(false)}>
+        <button className={BTN_BORDERED} onClick={() => onRespond(false)}>
           {t("dirreq.decline")}
         </button>
         <button
-          className="btn primary"
+          className={BTN_ACCENT}
           disabled={!path.trim()}
           onClick={() => onRespond(true, path.trim(), item.primary ? true : writable)}
         >

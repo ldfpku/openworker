@@ -13,7 +13,9 @@ import {
   type GalleryPersona,
 } from "../api";
 import { BrandIcon } from "./brandIcons";
-import { Icon } from "./Icon";
+import { BackLink } from "./BackLink";
+import { BTN_ACCENT } from "./buttons";
+import { IconButton } from "./IconButton";
 import { Markdown } from "./Markdown";
 import { PersonaHero } from "./PersonaHero";
 
@@ -28,8 +30,6 @@ import { PersonaHero } from "./PersonaHero";
 // by our own parser; installs land disabled pending consent under Personas.
 
 const CARD = "rounded-xl border border-line bg-panel/60";
-const BTN_ACCENT =
-  "text-[13px] px-3 py-2 rounded-lg bg-accent text-white shrink-0 disabled:opacity-40";
 const CHIP = "text-[11px] px-1.5 py-0.5 rounded border border-line text-muted";
 
 type Source = "all" | "openworker" | "team";
@@ -263,12 +263,9 @@ export function GalleryModal({
   const caps = detail?.capabilities;
   const detailView = detailSlug && (
     <div data-testid="gallery-detail">
-      <button
-        className="text-[13px] text-muted hover:text-ink mb-3"
-        onClick={() => setDetailSlug(null)}
-      >
+      <BackLink className="mb-3" onClick={() => setDetailSlug(null)}>
         {t("gallery.back_to_gallery")}
-      </button>
+      </BackLink>
       {!detail ? (
         <div className="text-[13px] text-muted">{t("gallery.loading")}</div>
       ) : !detail.ok || !card ? (
@@ -386,14 +383,7 @@ export function GalleryModal({
               className="w-[180px] px-3 py-1.5 rounded-lg border border-line bg-paper text-[13px] text-ink outline-none focus:border-accent"
             />
           )}
-          <button
-            className="text-faint hover:text-ink shrink-0"
-            onClick={onClose}
-            aria-label={t("gallery.close_aria")}
-            data-testid="gallery-close"
-          >
-            <Icon name="x" size={16} />
-          </button>
+          <IconButton icon="x" onClick={onClose} label={t("gallery.close_aria")} data-testid="gallery-close" />
         </div>
 
         <div className="overflow-y-auto hairline-scroll p-5">

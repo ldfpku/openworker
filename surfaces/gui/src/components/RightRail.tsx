@@ -19,7 +19,9 @@ import type { SessionInfo, TodoItem } from "../types";
 import { AccessSection } from "./AccessSection";
 import { BoardSection } from "./BoardPanel";
 import { Icon } from "./Icon";
+import { IconButton } from "./IconButton";
 import { Markdown, OPEN_ARTIFACT_EVENT } from "./Markdown";
+import { BTN_BORDERED_SM } from "./buttons";
 
 type Panel = "progress" | "artifacts" | "board" | "journal" | "team" | "files";
 
@@ -290,17 +292,17 @@ export function RightRail({
               open={open.board}
               onToggle={() => setOpen({ ...open, board: !open.board })}
               action={
-                <button
-                  className="rail-mini-btn"
+                <IconButton
+                  small
+                  icon="panelOpen"
+                  size={13}
                   data-testid="board-expand"
                   onClick={(e) => {
                     e.stopPropagation();
                     onExpandBoard?.();
                   }}
-                  title={t("rail.board_expand")}
-                >
-                  <Icon name="panelOpen" size={13} />
-                </button>
+                  label={t("rail.board_expand")}
+                />
               }
             >
               <BoardSection
@@ -356,15 +358,21 @@ export function RightRail({
             action={
               <>
                 {artifacts.length > 0 && (
-                  <button
-                    className="rail-mini-btn"
+                  <IconButton
+                    small
+                    icon="folder"
+                    size={13}
                     onClick={(e) => { e.stopPropagation(); revealArtifact(sessionId, artifacts[0].path, "reveal"); }}
-                    title={t("rail.show_folder")}
-                  >
-                    <Icon name="folder" size={13} />
-                  </button>
+                    label={t("rail.show_folder")}
+                  />
                 )}
-                <button className="rail-mini-btn" onClick={(e) => { e.stopPropagation(); refreshArtifacts(); }} title={t("rail.refresh")}><Icon name="refresh" size={13} /></button>
+                <IconButton
+                  small
+                  icon="refresh"
+                  size={13}
+                  onClick={(e) => { e.stopPropagation(); refreshArtifacts(); }}
+                  label={t("rail.refresh")}
+                />
               </>
             }
           >
@@ -373,7 +381,7 @@ export function RightRail({
               // distinct from a genuine resolved-empty list ("No previewable files yet.").
               <div className="rail-muted">
                 <div>{t("rail.artifacts_load_failed")}</div>
-                <button className="btn sm mt-2" data-testid="artifacts-retry" onClick={() => refreshArtifacts()}>
+                <button className={BTN_BORDERED_SM + " mt-2"} data-testid="artifacts-retry" onClick={() => refreshArtifacts()}>
                   {t("common.retry")}
                 </button>
               </div>
@@ -664,28 +672,23 @@ function ArtifactViewer({
         </div>
         <div className="rail-actions">
           {isHtml && (
-            <button
-              className="artifact-icon-btn"
+            <IconButton
+              icon="refresh"
               onClick={async () => {
                 await onReload();
                 setReloadKey((k) => k + 1);
               }}
-              aria-label={t("rail.reload_preview")}
-              title={t("rail.reload")}
-            >
-              <Icon name="refresh" size={16} />
-            </button>
+              label={t("rail.reload_preview")}
+            />
           )}
           <div className="artifact-menu-wrap" ref={menuRef}>
-            <button
-              className="artifact-icon-btn"
+            <IconButton
+              icon="moreHorizontal"
               data-testid="artifact-more"
-              aria-label={t("rail.more_actions")}
-              title={t("rail.more")}
+              label={t("rail.more_actions")}
+              active={menuOpen}
               onClick={() => setMenuOpen((v) => !v)}
-            >
-              <Icon name="moreHorizontal" size={16} />
-            </button>
+            />
             {menuOpen && (
               <div className="artifact-menu" data-testid="artifact-menu">
                 {copyableText &&
@@ -710,15 +713,7 @@ function ArtifactViewer({
               </div>
             )}
           </div>
-          <button
-            className="artifact-icon-btn"
-            data-testid="artifact-close"
-            onClick={onBack}
-            aria-label={t("rail.close_viewer")}
-            title={t("rail.close")}
-          >
-            <Icon name="x" size={16} />
-          </button>
+          <IconButton icon="x" data-testid="artifact-close" onClick={onBack} label={t("rail.close_viewer")} />
         </div>
       </div>
       <div className="artifact-preview">
@@ -766,7 +761,7 @@ function ArtifactViewer({
           <div className="artifact-open-prompt">
             <Icon name="panelOpen" size={28} />
             <p>{t("rail.office_no_preview", { type: /\.pptx?$/i.test(artifact.name) ? "PowerPoint" : "Word" })}</p>
-            <button className="btn sm" onClick={() => revealArtifact(sessionId, artifact.path, "open")}>
+            <button className={BTN_BORDERED_SM} onClick={() => revealArtifact(sessionId, artifact.path, "open")}>
               {t("rail.open_in_default")}
             </button>
           </div>

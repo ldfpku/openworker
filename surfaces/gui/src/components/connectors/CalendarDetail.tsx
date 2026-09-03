@@ -7,9 +7,11 @@ import {
   type GmailAccount,
 } from "../../api";
 import { ConnectorBadge } from "../../connectors/ConnectorIcon";
+import { IconButton } from "../IconButton";
 import type { DetailProps } from "./ConnectorsSection";
 import { ToolsDisclosure } from "./ToolsDisclosure";
-import { FOOT, GRP, GRP_H, PILL_ACCENT, ROW, TAG_ACCENT, TAG_WARN, XBTN } from "./ui";
+import { FOOT, GRP, GRP_H, ROW, TAG_ACCENT, TAG_WARN } from "./ui";
+import { BTN_ACCENT_SM } from "../buttons";
 
 // The Google Calendar detail page: connected accounts (multi-account, Default
 // badge, per-account disconnect) — Gmail's page minus the privacy filters.
@@ -48,7 +50,7 @@ export function CalendarDetail({ c, cloud, slack: _slack, onChanged }: DetailPro
           </div>
         </div>
         <button
-          className={PILL_ACCENT + (c.managed_paused ? " opacity-50" : "")}
+          className={BTN_ACCENT_SM + (c.managed_paused ? " opacity-50" : "")}
           data-testid="add-account-btn"
           onClick={addAccount}
           disabled={busy || !cloud?.signed_in || c.managed_paused}
@@ -114,20 +116,21 @@ function AccountRow({ a, onChanged }: { a: GmailAccount; onChanged: () => void }
           {t("connector.make_default")}
         </button>
       )}
-      <button
-        className={XBTN}
-        title={t("calendar.disconnect_account_title")}
+      <IconButton
+        variant="inline"
+        icon="x"
+        size={12}
+        tone="danger"
         data-testid={`gcal-disconnect-${a.email}`}
         disabled={busy}
+        label={t("calendar.disconnect_account_title")}
         onClick={async () => {
           setBusy(true);
           await disconnectGcalAccount(a.email);
           setBusy(false);
           onChanged();
         }}
-      >
-        ×
-      </button>
+      />
     </div>
   );
 }

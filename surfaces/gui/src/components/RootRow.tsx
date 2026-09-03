@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import type { RootInfo } from "../api";
 import { Icon } from "./Icon";
+import { IconButton } from "./IconButton";
 import { baseName } from "../paths";
 
 // One directory row, shared by the composer popover and the session start panel. The primary is the
@@ -54,9 +55,14 @@ export function RootRow({
         {root.writable ? t("root.read_write") : t("root.read_only")}
       </button>
       {!root.primary && (
-        <button className="root-x" onClick={() => onRemove(root.path)} disabled={busy} title={t("common.remove")}>
-          ×
-        </button>
+        <IconButton
+          variant="inline"
+          icon="x"
+          size={12}
+          label={t("common.remove")}
+          onClick={() => onRemove(root.path)}
+          disabled={busy}
+        />
       )}
     </div>
   );

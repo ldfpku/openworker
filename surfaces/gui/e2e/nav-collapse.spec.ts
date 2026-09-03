@@ -40,7 +40,7 @@ test("RECENT header group/filter popover: switch grouping + see coworker filters
   const header = page.getByTestId("recent-header");
   await expect(header).toContainText("Recent");
 
-  await header.getByRole("button", { name: "Group and filter conversations" }).click();
+  await header.getByRole("button", { name: "Group & filter conversations" }).click();
   const menu = page.getByTestId("group-filter-menu");
   await expect(menu).toContainText("Group by");
   await expect(menu).toContainText("Filter by coworker");

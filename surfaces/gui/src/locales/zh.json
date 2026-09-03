@@ -492,7 +492,7 @@
     "allowed_desc": "此自动化可使用的长期允许授权——其他所有操作仍会先询问。",
     "allowed_without_asking": "无需询问的允许项",
     "at": "时间",
-    "back_to_automations": "← 自动化",
+    "back_to_automations": "自动化",
     "bot_member_hint": "接收人需要先给机器人发过一条微信消息，之后才会出现在建议列表中。",
     "cancel": "取消",
     "cloud_brokered": "连接由 OpenWorker Cloud 代理中转——你的 token 始终保存在这台电脑上。",
@@ -870,7 +870,7 @@
     "connected_count": "已连接 · {{count}}",
     "built_in": "内置",
     "loading": "加载中…",
-    "back_to_connectors": "‹ 连接器",
+    "back_to_connectors": "连接器",
     "search": "搜索",
     "available": "可用",
     "nothing_matches": "没有匹配的结果。",
@@ -1126,7 +1126,7 @@
   },
   "gallery": {
     "all_personas": "所有协作代理",
-    "back_to_gallery": "← 画廊",
+    "back_to_gallery": "画廊",
     "can_message": "可使用消息功能",
     "capabilities_desc": "由本应用自己的解析器读取，与安装审批将询问你的内容完全一致。不安装任何可执行代码。",
     "capabilities_title": "它能做什么——已根据其清单核实",
@@ -1425,7 +1425,7 @@
     "consent_recommended_mode": "建议模式：{{mode}}。"
   },
   "provider": {
-    "all_providers": "‹ 全部模型提供商",
+    "all_providers": "全部模型提供商",
     "connected_ok": "✓ 已连接",
     "create_key_at": "在 {{label}} 创建一个",
     "custom_endpoint": "自定义端点",

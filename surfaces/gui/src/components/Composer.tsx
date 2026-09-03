@@ -9,7 +9,9 @@ import { formatTokens, totalTokens } from "../usage";
 import { Dropdown, type Option } from "./Dropdown";
 import { isFreeModel } from "../providers/logos";
 import { Icon } from "./Icon";
+import { IconButton } from "./IconButton";
 import { Toggle } from "./Toggle";
+import { BTN_OUTLINE } from "./buttons";
 import {
   cancelDictation,
   getDictationLevel,
@@ -564,9 +566,6 @@ export function Composer(props: Props) {
       : {}),
   }));
 
-  const iconBtn =
-    "w-7 h-7 grid place-items-center rounded-md text-muted hover:text-ink hover:bg-paper shrink-0";
-
   // The send button is accent only when there's something to send — subtle grey otherwise, so the
   // composer isn't carrying a constant blue dot.
   // A pinned /skill is sendable content on its own (tester catch 2026-07-26: the arrow
@@ -590,13 +589,14 @@ export function Composer(props: Props) {
           className="max-w-3xl mx-auto mb-1.5 flex items-center gap-2 rounded-lg border border-warnInk/30 bg-warnSoft px-3 py-1.5 text-[13px] text-warnInk"
         >
           <span className="flex-1 whitespace-pre-line">{attachNotice}</span>
-          <button
-            className="shrink-0 opacity-60 hover:opacity-100"
+          <IconButton
+            variant="inline"
+            icon="x"
+            size={12}
+            className="opacity-60 hover:opacity-100"
+            label={t("common.dismiss")}
             onClick={() => setAttachNotice(null)}
-            title={t("common.dismiss")}
-          >
-            ✕
-          </button>
+          />
         </div>
       )}
 
@@ -690,14 +690,14 @@ export function Composer(props: Props) {
         <div className="px-2.5 pb-2.5 pt-1 flex items-center gap-1.5">
           {/* + attach menu */}
           <div className="relative">
-            <button
-              className={iconBtn + (attachMenuOpen ? " bg-paper text-ink" : "")}
-              title={t("composer.attach")}
-              aria-label={t("composer.attach")}
+            <IconButton
+              small
+              icon="plus"
+              size={17}
+              label={t("composer.attach")}
+              active={attachMenuOpen}
               onClick={() => setAttachMenuOpen((v) => !v)}
-            >
-              <Icon name="plus" size={17} />
-            </button>
+            />
             {attachMenuOpen && (
               <>
                 <div
@@ -843,33 +843,31 @@ export function Composer(props: Props) {
 
           {/* mic — immediately before send (owner call, DMG #28 walkthrough) */}
           {isTauri() && (
-            <button
+            <IconButton
+              small
+              icon={dictation?.recording ? "stop" : "mic"}
               className={
-                iconBtn +
-                (dictation?.recording ? " bg-red-50 text-red-600 hover:bg-red-100" : "") +
+                (dictation?.recording ? "recording" : "") +
                 (dictationBusy ? " opacity-60" : "") +
                 (!voiceReady && !dictation?.recording ? " opacity-40" : "")
               }
               onClick={() => void toggleDictation()}
               disabled={!!dictationBusy}
-              title={
+              label={
                 (dictationBusy && t(dictationBusy)) ||
                 (dictation?.recording
-                  ? t("composer.voice.stop_transcribe")
+                  ? t("composer.voice.stop_dictation")
                   : voiceReady
-                    ? t("composer.voice.start_dictation")
+                    ? t("composer.voice.start_dictation_btn")
                     : t("composer.voice.configure"))
               }
-              aria-label={dictation?.recording ? t("composer.voice.stop_dictation") : voiceReady ? t("composer.voice.start_dictation_btn") : t("composer.voice.configure")}
               aria-disabled={!voiceReady && !dictation?.recording}
-            >
-              <Icon name={dictation?.recording ? "stop" : "mic"} size={16} />
-            </button>
+            />
           )}
 
           {/* send / stop — a pending gate re-opens Send: the reply resolves it */}
           {props.running && !props.gateOpen ? (
-            <button className="btn danger" onClick={props.onInterrupt}>
+            <button className={BTN_OUTLINE} onClick={props.onInterrupt}>
               {t("composer.stop")}
             </button>
           ) : (
@@ -1189,9 +1187,14 @@ function AttachChip({ a, onRemove }: { a: Attachment; onRemove: () => void }) {
           <span className="attach-name">{a.name}</span>
         </>
       )}
-      <button className="attach-x" onClick={onRemove} title={t("common.remove")}>
-        ✕
-      </button>
+      <IconButton
+        variant="inline"
+        icon="x"
+        size={11}
+        className="attach-x"
+        label={t("common.remove")}
+        onClick={onRemove}
+      />
     </div>
   );
 }

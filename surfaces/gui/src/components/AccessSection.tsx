@@ -33,6 +33,8 @@ import { indexConnectors, labelFor, visualFor, type ConnectorMap } from "../conn
 import { baseName } from "../paths";
 import { useRoots } from "../useRoots";
 import { AddFolderForm } from "./AddFolderForm";
+import { BackLink } from "./BackLink";
+import { BTN_ACCENT_SM, BTN_BORDERED_SM } from "./buttons";
 import { Icon } from "./Icon";
 import { ConnectSetup } from "./ManageTabs";
 import { RootRow } from "./RootRow";
@@ -46,9 +48,6 @@ const platformOf = (channel: string) => (channel.includes(":") ? channel.split("
 const SEC_H = "text-[11px] uppercase tracking-[0.05em] text-faint font-semibold";
 const TAG_CORE =
   "text-[11px] px-1.5 py-0.5 rounded-full bg-warnSoft/70 text-warnInk border border-warnInk/15";
-const BTN_ACCENT = "text-[12px] px-2.5 py-1.5 rounded-lg bg-accent text-white shrink-0";
-const BTN_BORDERED =
-  "text-[12px] px-2.5 py-1.5 rounded-lg border border-line bg-paper hover:border-lineStrong shrink-0";
 
 export function AccessSection({
   sessionId,
@@ -304,7 +303,7 @@ export function AccessSection({
                   <div className="text-[12px] text-faint py-0.5">
                     <div>{t("access.connectors_load_failed")}</div>
                     <button
-                      className={BTN_ACCENT + " mt-1.5"}
+                      className={BTN_ACCENT_SM + " mt-1.5"}
                       onClick={reload}
                       data-testid="connectors-retry"
                     >
@@ -440,7 +439,7 @@ export function AccessSection({
                           </div>
                         </div>
                         <button
-                          className={r.tier === "core" ? BTN_ACCENT : BTN_BORDERED}
+                          className={r.tier === "core" ? BTN_ACCENT_SM : BTN_BORDERED_SM}
                           onClick={() => {
                             // Connect IN CONTEXT when we ship this connector; unknown refs
                             // (no descriptor) still fall back to the global page.
@@ -531,13 +530,9 @@ function ConnectInline({
 
   return (
     <div>
-      <button
-        className="inline-flex items-center gap-1 text-[12px] text-faint hover:text-ink mb-2"
-        onClick={onBack}
-        aria-label={t("access.back_to_sources")}
-      >
-        <Icon name="arrowLeft" size={13} /> {t("access.connect_title", { title: c.title })}
-      </button>
+      <BackLink className="mb-2" onClick={onBack} aria-label={t("access.back_to_sources")}>
+        {t("access.connect_title", { title: c.title })}
+      </BackLink>
       {c.blurb && <p className="text-[12px] text-muted mb-1 leading-relaxed">{t(c.blurb)}</p>}
       <div className="-mx-2">
         <ConnectSetup c={c} cloud={cloud} onConnected={onDone} />
@@ -577,13 +572,9 @@ function ChannelsInline({
   const { t } = useTranslation();
   return (
     <div>
-      <button
-        className="inline-flex items-center gap-1 text-[12px] text-faint hover:text-ink mb-2"
-        onClick={onBack}
-        aria-label={t("access.back_to_sources")}
-      >
-        <Icon name="arrowLeft" size={13} /> {t("access.channels_title", { label })}
-      </button>
+      <BackLink className="mb-2" onClick={onBack} aria-label={t("access.back_to_sources")}>
+        {t("access.channels_title", { label })}
+      </BackLink>
       <div className={`${SEC_H} mb-1.5`}>{t("access.subscribed", { count: channels.length })}</div>
       {channels.length === 0 ? (
         <div className="text-[12px] text-faint py-0.5">
@@ -619,7 +610,7 @@ function ChannelsInline({
       <div className={`${SEC_H} mt-3 mb-1.5`}>{t("access.add_channel")}</div>
       <div className="flex items-center gap-1.5">
         <ChannelPicker value={draft} onChange={onDraft} recent={recent} onSubmit={onAdd} />
-        <button className={BTN_ACCENT} disabled={!draft.trim()} onClick={onAdd}>
+        <button className={BTN_ACCENT_SM} disabled={!draft.trim()} onClick={onAdd}>
           {t("access.add_btn")}
         </button>
       </div>

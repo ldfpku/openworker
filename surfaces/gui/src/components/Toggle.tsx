@@ -7,11 +7,15 @@ export function Toggle({
   onChange,
   disabled,
   title,
+  label,
 }: {
   checked: boolean;
   onChange: (next: boolean) => void;
   disabled?: boolean;
+  /** Tooltip. Defaults to `label` so a bare switch is never mute. */
   title?: string;
+  /** Accessible name — what the switch controls ("weekly-report enabled"). */
+  label?: string;
 }) {
   return (
     <button
@@ -19,8 +23,9 @@ export function Toggle({
       className={"tgl" + (checked ? " on" : "")}
       role="switch"
       aria-checked={checked}
+      aria-label={label}
       disabled={disabled}
-      title={title}
+      title={title ?? label}
       onClick={() => {
         if (!disabled) onChange(!checked);
       }}

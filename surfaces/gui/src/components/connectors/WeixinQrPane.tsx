@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getWeixinQrStatus, weixinQrLogin, type Connector, type WeixinQrStatus } from "../../api";
-import { PILL_LINE, TAG_ACCENT } from "./ui";
+import { TAG_ACCENT } from "./ui";
+import { BTN_BORDERED_SM } from "../buttons";
 
 // QR sign-in pane for the personal-WeChat connector. Fully local (no cloud
 // sign-in gate): the sidecar drives Tencent's iLink QR login and serves the QR
@@ -79,7 +80,7 @@ export function WeixinQrPane({ c, onConnected }: { c: Connector; onConnected: ()
       {failed ? (
         <>
           {error && <div className="text-[12.5px] text-danger text-center">{error}</div>}
-          <button className={PILL_LINE + " w-full !py-2"} data-testid="weixin-qr-retry" onClick={() => void start()}>
+          <button className={BTN_BORDERED_SM + " w-full !py-2"} data-testid="weixin-qr-retry" onClick={() => void start()}>
             {t("Try again")}
           </button>
         </>

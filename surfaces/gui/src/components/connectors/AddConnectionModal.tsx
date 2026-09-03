@@ -10,10 +10,12 @@ import {
   type Connector,
 } from "../../api";
 import { ConnectorBadge } from "../../connectors/ConnectorIcon";
+import { IconButton } from "../IconButton";
 import { ConnectSetup } from "../ManageTabs";
 import { CloudSignInInline, CloudStatusPending } from "./CloudSignIn";
 import { WeixinQrPane } from "./WeixinQrPane";
-import { PILL_ACCENT, PILL_LINE, TAG_ACCENT } from "./ui";
+import { TAG_ACCENT } from "./ui";
+import { BTN_ACCENT_SM, BTN_BORDERED_SM } from "../buttons";
 
 // The ONE place a connection gets added (UX-DECISIONS §21): the detail page's header
 // button (or the list's Connect pill) opens this sheet. Connectors with two connect
@@ -72,9 +74,13 @@ export function AddConnectionModal({
           <div className="flex-1 font-semibold text-[16px] tracking-tight">
             {title || defaultTitle}
           </div>
-          <button className="text-faint hover:text-ink text-[20px] leading-none" onClick={onClose} title={t("modal.close")}>
-            ×
-          </button>
+          <IconButton
+            variant="inline"
+            icon="x"
+            size={16}
+            label={t("modal.close")}
+            onClick={onClose}
+          />
         </div>
 
         {/* One scrolling body under the pinned header — the house capped-modal shape
@@ -182,7 +188,7 @@ function McpOneClick({ c, onConnected }: { c: Connector; onConnected: () => void
         {t("modal.mcp_blurb", { title: c.title })}
       </p>
       <button
-        className={PILL_ACCENT + " w-full !py-2"}
+        className={BTN_ACCENT_SM + " w-full !py-2"}
         data-testid="modal-mcp-one-click"
         onClick={go}
         disabled={waiting}
@@ -216,7 +222,7 @@ function GenericOneClick({ c, cloud }: { c: Connector; cloud: CloudStatus | null
       </p>
       {cloud?.signed_in ? (
         <button
-          className={PILL_ACCENT + " w-full !py-2"}
+          className={BTN_ACCENT_SM + " w-full !py-2"}
           data-testid="modal-generic-one-click"
           onClick={go}
           disabled={waiting}
@@ -252,7 +258,7 @@ function SlackOneClick({ c, cloud }: { c: Connector; cloud: CloudStatus | null }
         {t("modal.slack_blurb")}
       </p>
       {cloud?.signed_in ? (
-        <button className={PILL_ACCENT + " w-full !py-2"} data-testid="modal-add-to-slack" onClick={go} disabled={waiting}>
+        <button className={BTN_ACCENT_SM + " w-full !py-2"} data-testid="modal-add-to-slack" onClick={go} disabled={waiting}>
           {waiting ? t("cloud.check_browser") : t("modal.add_to_slack")}
         </button>
       ) : cloud ? (
@@ -287,7 +293,7 @@ function GithubOneClick({ c, cloud }: { c: Connector; cloud: CloudStatus | null 
         /* One button: the broker is authorize-first — it links an existing installation or
            redirects the same tab on to the install page (the old "Already installed? Link
            it" question and the Configure dead-end are gone). */
-        <button className={PILL_ACCENT + " w-full !py-2"} data-testid="modal-install-github-app" onClick={() => go()} disabled={waiting}>
+        <button className={BTN_ACCENT_SM + " w-full !py-2"} data-testid="modal-install-github-app" onClick={() => go()} disabled={waiting}>
           {waiting ? t("cloud.check_browser") : t("modal.connect_github")}
         </button>
       ) : cloud ? (
@@ -343,7 +349,7 @@ function HubSpotOneClick({ c, cloud }: { c: Connector; cloud: CloudStatus | null
         ))}
       </div>
       {cloud?.signed_in ? (
-        <button className={PILL_ACCENT + " w-full !py-2"} data-testid="modal-connect-hubspot" onClick={go} disabled={waiting}>
+        <button className={BTN_ACCENT_SM + " w-full !py-2"} data-testid="modal-connect-hubspot" onClick={go} disabled={waiting}>
           {waiting ? t("cloud.check_browser") : t("modal.connect_hubspot")}
         </button>
       ) : cloud ? (
@@ -382,7 +388,7 @@ function SlackManual({ onConnected }: { onConnected: () => void }) {
       </ol>
       <input className={INPUT} type="password" placeholder={t("modal.bot_token_placeholder")} value={bot} spellCheck={false} onChange={(e) => setBot(e.target.value)} />
       <input className={INPUT} type="password" placeholder={t("modal.app_token_placeholder")} value={app} spellCheck={false} onChange={(e) => setApp(e.target.value)} />
-      <button className={PILL_LINE + " w-full !py-2"} onClick={submit} disabled={busy || !bot.trim() || !app.trim()}>
+      <button className={BTN_BORDERED_SM + " w-full !py-2"} onClick={submit} disabled={busy || !bot.trim() || !app.trim()}>
         {busy ? t("modal.validating") : t("modal.connect")}
       </button>
       {error && <div className="text-[13px] text-danger">{error}</div>}

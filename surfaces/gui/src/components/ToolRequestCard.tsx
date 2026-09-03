@@ -1,6 +1,7 @@
 import { Trans, useTranslation } from "react-i18next";
 import type { Item } from "../types";
 import { Icon } from "./Icon";
+import { BTN_ACCENT, BTN_BORDERED } from "./buttons";
 
 type ToolReqItem = Extract<Item, { kind: "toolreq" }>;
 
@@ -60,11 +61,11 @@ export function ToolRequestCard({
       )}
       <div className="dirreq-actions">
         <span className="spacer" />
-        <button className="btn" data-testid="toolreq-skip" onClick={() => onRespond(false)}>
+        <button className={BTN_BORDERED} data-testid="toolreq-skip" onClick={() => onRespond(false)}>
           {t("toolreq.skip")}
         </button>
         <button
-          className="btn primary"
+          className={BTN_ACCENT}
           data-testid="toolreq-install"
           disabled={!item.installable}
           onClick={() => onRespond(true)}

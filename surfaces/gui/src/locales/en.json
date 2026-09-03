@@ -510,7 +510,7 @@
     "allowed_desc": "Standing approvals this automation may use — everything else still asks first.",
     "allowed_without_asking": "Allowed without asking",
     "at": "At",
-    "back_to_automations": "← Automations",
+    "back_to_automations": "Automations",
     "bot_member_hint": "The recipient must have messaged the bot on WeChat once — after that they show up in the suggestions.",
     "cancel": "cancel",
     "cloud_brokered": "Connections are brokered by OpenWorker Cloud — your tokens stay on this computer.",
@@ -891,7 +891,7 @@
     "connected_count": "Connected · {{count}}",
     "built_in": "Built in",
     "loading": "Loading…",
-    "back_to_connectors": "‹ Connectors",
+    "back_to_connectors": "Connectors",
     "search": "Search",
     "available": "Available",
     "nothing_matches": "Nothing matches.",
@@ -1152,7 +1152,7 @@
   },
   "gallery": {
     "all_personas": "All coworkers",
-    "back_to_gallery": "← Gallery",
+    "back_to_gallery": "Gallery",
     "can_message": "can use messaging",
     "capabilities_desc": "Read by this app's own parser, so it matches exactly what the install consent will ask you to approve. No executable code is installed.",
     "capabilities_title": "What it can do — verified from its manifest",
@@ -1454,7 +1454,7 @@
     "consent_recommended_mode": "Recommended mode: {{mode}}."
   },
   "provider": {
-    "all_providers": "‹ All providers",
+    "all_providers": "All providers",
     "connected_ok": "✓ Connected",
     "create_key_at": "Create one at {{label}}",
     "custom_endpoint": "Custom endpoint",

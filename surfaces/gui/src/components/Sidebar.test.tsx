@@ -85,7 +85,7 @@ describe("Sidebar group/filter control", () => {
     render(<Sidebar {...baseProps} />);
 
     // personas load drives the surfaces; the RECENT header's group/filter control is always present.
-    const control = await screen.findByLabelText("Group and filter conversations");
+    const control = await screen.findByLabelText("Group & filter conversations");
 
     // Open the popover and choose "Group by → Coworker".
     fireEvent.click(control);

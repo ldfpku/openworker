@@ -4,7 +4,8 @@ import { type CloudStatus, type Connector, type McpServer, type SlackStatus } fr
 import { ConnectorBadge } from "../../connectors/ConnectorIcon";
 import { AddConnectionModal } from "./AddConnectionModal";
 import { AddMcpModal, CustomMcpGroup } from "./CustomMcp";
-import { CHIP_OK, CHIP_OFF, CHIP_WARN, GRP, GRP_H, FOOT, PILL_QUIET, ROW } from "./ui";
+import { CHIP_OK, CHIP_OFF, CHIP_WARN, GRP, GRP_H, FOOT, ROW } from "./ui";
+import { BTN_OUTLINE_SM } from "../buttons";
 
 // The Connectors LIST (UX-DECISIONS §21): connected first in their own inset group —
 // rows navigate to the connector's detail subpage; problems surface as a chip in the
@@ -47,7 +48,7 @@ export function ConnectorsList({
     <div>
       <div className="flex items-center justify-between mb-4">
         <button
-          className={PILL_QUIET}
+          className={BTN_OUTLINE_SM}
           onClick={() => setAddingMcp(true)}
           data-testid="add-custom-server"
         >
@@ -110,7 +111,7 @@ export function ConnectorsList({
               <span className="block text-[12px] text-muted truncate">{c.blurb ? t(c.blurb) : c.blurb}</span>
             </span>
             <span
-              className={PILL_QUIET + " cursor-pointer"}
+              className={BTN_OUTLINE_SM + " cursor-pointer"}
               role="button"
               onClick={(e) => {
                 e.stopPropagation();

@@ -32,6 +32,7 @@ import { isProjectScoped, shortPersonaName } from "../personaScope";
 import { rawSessionTitle, sessionDisplayTitle } from "../sessionTitle";
 import { ConnectorIcon } from "../connectors/ConnectorIcon";
 import { Icon, type IconName } from "./Icon";
+import { IconButton } from "./IconButton";
 import { personaGlyph } from "./personaIcon";
 import { SearchModal } from "./SearchModal";
 import { baseName } from "../paths";
@@ -458,21 +459,21 @@ export function Sidebar(props: Props) {
         className={(menuOpen ? "flex" : "hidden group-hover:flex") + " items-center shrink-0"}
         onClick={(e) => e.stopPropagation()}
       >
-        <button
-          title={t("sidebar.session_actions")}
-          aria-label={t("sidebar.session_actions")}
+        <IconButton
+          icon="moreHorizontal"
+          label={t("sidebar.session_actions")}
+          size={14}
+          tiny
+          active={menuOpen}
           aria-haspopup="menu"
           aria-expanded={menuOpen}
           data-testid="row-menu"
-          className={
-            "w-5 h-5 grid place-items-center rounded hover:bg-chromeHover " +
-            (menuOpen ? "text-ink bg-chromeHover" : "text-faint hover:text-ink")
-          }
+          // Vertical kebab = the horizontal glyph rotated — no extra icon needed. The
+          // hit area is square and symmetric, so rotating the whole button matches
+          // rotating just the glyph.
+          className="rotate-90"
           onClick={(e) => (menuOpen ? closeRowMenu() : openRowMenu(s.session_id, e.currentTarget))}
-        >
-          {/* Vertical kebab = the horizontal glyph rotated — no extra icon needed. */}
-          <Icon name="moreHorizontal" size={14} className="rotate-90" />
-        </button>
+        />
         {menuOpen && (
           <>
             <div className="fixed inset-0 z-40" onClick={closeRowMenu} />
@@ -726,14 +727,14 @@ export function Sidebar(props: Props) {
       <span className="text-[11px] uppercase tracking-[0.07em] text-faint font-semibold">
         {t("sidebar.recent")}
       </span>
-      <button
-        className="w-6 h-6 grid place-items-center rounded-md text-faint hover:text-ink hover:bg-chromeHover -mr-1"
-        title={t("sidebar.group_and_filter_short")}
-        aria-label={t("sidebar.group_and_filter")}
+      <IconButton
+        icon="sliders"
+        label={t("sidebar.group_and_filter_short")}
+        size={14}
+        small
+        className="-mr-1"
         onClick={() => setGroupMenuOpen((v) => !v)}
-      >
-        <Icon name="sliders" size={14} />
-      </button>
+      />
       {groupMenuOpen && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setGroupMenuOpen(false)} />
@@ -884,14 +885,13 @@ export function Sidebar(props: Props) {
               <span className="text-[11px] uppercase tracking-[0.07em] text-faint font-semibold">
                 {t("sidebar.projects")}
               </span>
-              <button
-                className="w-5 h-5 grid place-items-center rounded text-faint hover:text-ink hover:bg-panel"
-                title={t("sidebar.new_project")}
-                aria-label={t("sidebar.new_project")}
+              <IconButton
+                icon="folderPlus"
+                label={t("sidebar.new_project")}
+                size={14}
+                tiny
                 onClick={() => props.onNewProject(browseKey)}
-              >
-                <Icon name="folderPlus" size={14} />
-              </button>
+              />
             </div>
             <div className="space-y-0.5">
               {projectOrder.length === 0 && (
@@ -1015,14 +1015,13 @@ export function Sidebar(props: Props) {
       <div className="brand px-3.5 pt-2.5 pb-2 flex items-center gap-2" data-tauri-drag-region>
         {/* Collapse (dock) / pin the sidebar. ⌘B mirrors this. */}
         {props.onCollapse && (
-          <button
-            className="nav-pin-btn w-7 h-7 grid place-items-center rounded-md text-faint hover:text-ink hover:bg-chromeHover shrink-0"
-            title={props.collapsed ? t("sidebar.dock") + " (⌘B)" : t("sidebar.collapse") + " (⌘B)"}
-            aria-label={props.collapsed ? t("sidebar.dock") : t("sidebar.collapse")}
+          <IconButton
+            icon="sidebar"
+            label={props.collapsed ? t("sidebar.dock") + " (⌘B)" : t("sidebar.collapse") + " (⌘B)"}
+            size={16}
+            className="nav-pin-btn shrink-0"
             onClick={props.onCollapse}
-          >
-            <Icon name="sidebar" size={16} />
-          </button>
+          />
         )}
         <div className="brand-wordmark text-[14px]">OpenWorker<span className="beta-tag">BETA</span></div>
       </div>

@@ -15,7 +15,10 @@ import {
   type SkillUploadPreview,
 } from "../api";
 import { chooseFolder, isTauri } from "../tauri";
+import { BTN_ACCENT, BTN_BORDERED } from "./buttons";
 import { Icon } from "./Icon";
+import { IconButton } from "./IconButton";
+import { Toggle } from "./Toggle";
 
 // Settings ▸ Skills (SKILLS-SPEC §5/§6) — the management home: the LIST is the page; every
 // add-surface appears only when summoned from the single "Add skill" menu (the three doors:
@@ -29,10 +32,6 @@ const CARD = "rounded-xl2 border border-line bg-panel";
 const FIELD_LABEL = "text-[13px] font-medium text-ink";
 const INPUT =
   "w-full min-w-0 px-3 py-2 rounded-lg border border-line bg-paper text-[13px] text-ink outline-none focus:border-accent";
-const BTN_ACCENT =
-  "text-[13px] px-3 py-2 rounded-lg bg-accent text-white shrink-0 disabled:opacity-40";
-const BTN_BORDERED =
-  "text-[13px] px-3 py-2 rounded-lg border border-line bg-paper hover:border-lineStrong shrink-0";
 const BADGE =
   "text-[11px] px-2 py-0.5 rounded-full border border-line bg-paper text-muted shrink-0";
 
@@ -296,13 +295,14 @@ export function SkillsTab({
           <span className="min-w-0">
             <b>{notice.name}</b> {notice.text}
           </span>
-          <button
-            className="ml-auto shrink-0 opacity-60 hover:opacity-100"
-            aria-label={t("common.dismiss")}
+          <IconButton
+            variant="inline"
+            icon="x"
+            size={12}
+            className="ml-auto opacity-60 hover:opacity-100"
+            label={t("common.dismiss")}
             onClick={() => setNotice(null)}
-          >
-            ✕
-          </button>
+          />
         </div>
       ) : null}
 
@@ -432,9 +432,13 @@ export function SkillsTab({
                   it mid-word hid what the skill does (live drive). */}
               <div className="text-[12px] text-muted leading-relaxed">{row.description}</div>
             </div>
-            <button
-              className={BTN_BORDERED}
-              title={t("skills.edit_tip")}
+            {/* Row actions: the shared IconButton (tooltip + accessible name from one `label`)
+                and the shared Toggle, so this row matches the persona page and the rail. */}
+            <IconButton
+              variant="bordered"
+              icon="pencil"
+              size={13}
+              label={t("skills.edit_tip")}
               onClick={() =>
                 setEditor({
                   mode: "edit",
@@ -443,42 +447,44 @@ export function SkillsTab({
                   instructions: row.instructions,
                 })
               }
-            >
-              <Icon name="pencil" size={13} />
-            </button>
-            <button
-              className={BTN_BORDERED}
-              aria-label={t("skills.delete_aria", { name: row.name })}
-              onClick={() => remove(row)}
-              onBlur={() => setArmedDelete(null)}
-            >
-              {armedDelete === row.name ? (
-                t("skills.confirm_delete")
-              ) : (
-                <Icon name="trash" size={13} />
-              )}
-            </button>
-            <label className="inline-flex items-center gap-1.5 text-[12px] text-muted">
-              <input
-                type="checkbox"
-                role="switch"
-                aria-label={t("skills.enabled_aria", { name: row.name })}
-                checked={row.enabled}
-                onChange={(e) => {
-                  const on = e.target.checked;
-                  updateSkill(row.name, { enabled: on }).then((res) => {
-                    if (!fail(res))
-                      setNotice({
-                        name: row.name,
-                        text: on ? CONFIRMATION : OFF_NOTE,
-                        tone: on ? "ok" : "warn",
-                      });
-                    refresh();
-                  });
-                }}
+            />
+            {armedDelete === row.name ? (
+              /* Armed: the same slot turns into a text button so the second click is informed.
+                 autoFocus keeps focus on the slot; blurring away disarms. */
+              <button
+                className={BTN_BORDERED + " text-danger"}
+                autoFocus
+                aria-label={t("skills.delete_aria", { name: row.name })}
+                onClick={() => remove(row)}
+                onBlur={() => setArmedDelete(null)}
+              >
+                {t("skills.confirm_delete")}
+              </button>
+            ) : (
+              <IconButton
+                variant="bordered"
+                tone="danger"
+                icon="trash"
+                size={13}
+                label={t("skills.delete_aria", { name: row.name })}
+                onClick={() => remove(row)}
               />
-              {t("skills.on")}
-            </label>
+            )}
+            <Toggle
+              checked={row.enabled}
+              label={t("skills.enabled_aria", { name: row.name })}
+              onChange={(on) => {
+                updateSkill(row.name, { enabled: on }).then((res) => {
+                  if (!fail(res))
+                    setNotice({
+                      name: row.name,
+                      text: on ? CONFIRMATION : OFF_NOTE,
+                      tone: on ? "ok" : "warn",
+                    });
+                  refresh();
+                });
+              }}
+            />
           </div>
         ))}
       </div>

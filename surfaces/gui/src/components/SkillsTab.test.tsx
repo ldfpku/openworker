@@ -63,8 +63,9 @@ describe("SkillsTab", () => {
     expect(screen.queryByText("global")).toBeNull(); // no scope badges — global-only (§4.7)
     expect(screen.getByText("uploaded")).toBeTruthy(); // provenance badge stays
     const toggles = screen.getAllByRole("switch");
-    expect((toggles[0] as HTMLInputElement).checked).toBe(true);
-    expect((toggles[1] as HTMLInputElement).checked).toBe(false);
+    // The shared Toggle is a button[role=switch]; its state lives in aria-checked.
+    expect(toggles[0].getAttribute("aria-checked")).toBe("true");
+    expect(toggles[1].getAttribute("aria-checked")).toBe("false");
   });
 
   it("blocks Save until name and instructions are filled", async () => {

@@ -10,6 +10,7 @@ import { Icon } from "./Icon";
 import { CopyButton } from "./CopyButton";
 import { formatRelative } from "../relTime";
 import { summarizeTurn, stepIcon, formatElapsed } from "../turnSummary";
+import { BTN_BORDERED } from "./buttons";
 
 // Re-renders its owner every `intervalMs` while `active` (default true) — the shared clock for
 // both the assistant bubble footer's relative time (one Transcript-level tick) and a running
@@ -684,7 +685,7 @@ export function Transcript({ items, running, streamingText, onRetry, onOpenConne
               <div className={"notice " + (item.tone === "warn" ? "warn" : "")} key={bi}>
                 {item.text}
                 {item.retriable && !running && onRetry && block.i === retryAnchor(items) && (
-                  <button className="btn ml-2" data-testid="notice-retry" onClick={onRetry}>
+                  <button className={BTN_BORDERED + " ml-2"} data-testid="notice-retry" onClick={onRetry}>
                     {t("transcript.retry")}
                   </button>
                 )}
@@ -715,7 +716,7 @@ export function Transcript({ items, running, streamingText, onRetry, onOpenConne
                     </span>
                     {onUndoMemory && (
                       <button
-                        className="btn ml-auto shrink-0"
+                        className={BTN_BORDERED + " ml-auto shrink-0"}
                         data-testid="memory-notice-undo"
                         onClick={() => onUndoMemory(item.id, item.previous)}
                       >

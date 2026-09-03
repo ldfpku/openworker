@@ -13,6 +13,8 @@ import {
   type ProviderInfo,
 } from "../api";
 import { openExternal } from "../tauri";
+import { BackLink } from "../components/BackLink";
+import { BTN_BORDERED } from "../components/buttons";
 import { GatewaySignIn } from "./GatewaySignIn";
 import { PROVIDER_LOGOS, providerRank } from "./logos";
 import { RelaySignIn } from "./RelaySignIn";
@@ -532,7 +534,7 @@ export function ProviderForm({
         </div>
         {testable && (
           <button
-            className="px-4 rounded-lg border border-line text-[13px] font-medium text-ink hover:border-lineStrong shrink-0 disabled:opacity-40"
+            className={BTN_BORDERED + " font-medium"}
             onClick={() => ps.runTestAndSave()}
             disabled={ps.verify.state === "testing" || (!ps.secretFilled && !ps.credentialed)}
             data-testid={`${tp}-test`}
@@ -547,9 +549,9 @@ export function ProviderForm({
 
   return (
     <div>
-      <button className="text-[13px] text-muted hover:text-ink" onClick={ps.backToGallery} data-testid={`${tp}-back`}>
+      <BackLink onClick={ps.backToGallery} data-testid={`${tp}-back`}>
         {t("provider.all_providers")}
-      </button>
+      </BackLink>
       <div className="flex items-center gap-3 mt-3 mb-1">
         <ProviderMark name={info?.name || ""} title={info?.title ? t(info.title) : ""} size={36} />
         <span className="min-w-0">

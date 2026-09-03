@@ -25,6 +25,8 @@ import {
 import { chooseFolder } from "../tauri";
 import { ConnectorBadge } from "../connectors/ConnectorIcon";
 import { fullPersonaName } from "../personaScope";
+import { BackLink } from "./BackLink";
+import { BTN_ACCENT_SM, BTN_BORDERED_SM } from "./buttons";
 import { Icon } from "./Icon";
 import { Markdown } from "./Markdown";
 import { Toggle } from "./Toggle";
@@ -34,9 +36,6 @@ const SEC_H = "text-[11px] uppercase tracking-[0.05em] text-faint font-semibold"
 const TAG_CORE =
   "text-[11px] px-1.5 py-0.5 rounded-full bg-warnSoft/70 text-warnInk border border-warnInk/15";
 const TAG_MCP = "text-[11px] px-1.5 py-0.5 rounded border border-line text-faint";
-const BTN_ACCENT = "text-[12px] px-2.5 py-1.5 rounded-lg bg-accent text-white shrink-0";
-const BTN_BORDERED =
-  "text-[12px] px-2.5 py-1.5 rounded-lg border border-line bg-paper hover:border-lineStrong shrink-0 disabled:opacity-40";
 const GRP = "rounded-xl2 border border-line bg-panel divide-y divide-line overflow-hidden";
 const COL_STATUS = "w-[96px] flex justify-end items-center shrink-0";
 const COL_ENABLE = "w-[64px] flex justify-center items-center shrink-0";
@@ -118,12 +117,7 @@ export function PersonaView({
     <div className="h-12 shrink-0 px-5 flex items-center gap-3 border-b border-line bg-paper">
       {onBack && (
         <>
-          <button
-            className="inline-flex items-center gap-1 text-[13px] text-muted hover:text-ink"
-            onClick={onBack}
-          >
-            <Icon name="arrowLeft" size={15} /> {t("persona.back")}
-          </button>
+          <BackLink onClick={onBack}>{t("persona.back")}</BackLink>
           <span className="text-faint">·</span>
         </>
       )}
@@ -281,7 +275,7 @@ export function PersonaView({
                         </span>
                       ) : (
                         <button
-                          className={r.tier === "core" && r.kind !== "mcp" ? BTN_ACCENT : BTN_BORDERED}
+                          className={r.tier === "core" && r.kind !== "mcp" ? BTN_ACCENT_SM : BTN_BORDERED_SM}
                           onClick={onOpenIntegrations}
                         >
                           {r.kind === "mcp" ? t("persona.add") : t("persona.connect")}
@@ -377,7 +371,7 @@ export function PersonaView({
               {t("persona.show_in_picker")}
             </label>
             <button
-              className={BTN_BORDERED}
+              className={BTN_BORDERED_SM}
               disabled={detail.default || !detail.enabled}
               data-testid="persona-make-default"
               onClick={() => patch({ default: true })}
@@ -385,7 +379,7 @@ export function PersonaView({
               {detail.default ? t("persona.default_for_new") : t("persona.make_default")}
             </button>
             {!detail.builtin && (
-              <button className={BTN_BORDERED} data-testid="persona-export" onClick={exportBundle}>
+              <button className={BTN_BORDERED_SM} data-testid="persona-export" onClick={exportBundle}>
                 {t("persona.export")}
               </button>
             )}
@@ -403,7 +397,7 @@ export function PersonaView({
                   >
                     {t("persona.delete")}
                   </button>
-                  <button className={BTN_BORDERED} onClick={() => setConfirmDel(false)}>
+                  <button className={BTN_BORDERED_SM} onClick={() => setConfirmDel(false)}>
                     {t("persona.keep")}
                   </button>
                 </span>

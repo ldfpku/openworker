@@ -11,10 +11,13 @@ import {
   type Automation,
   type AutomationRun,
 } from "../api";
+import { BackLink } from "./BackLink";
 import { Icon } from "./Icon";
 import { PanelHead } from "./IntegrationsView";
 import { AutomationQuickstart } from "./AutomationQuickstart";
 import { FREQ_OPTIONS, fromCron, toCron } from "../schedule";
+import { IconButton } from "./IconButton";
+import { BTN_ACCENT_SM, BTN_BORDERED, BTN_BORDERED_SM, BTN_DANGER_SM } from "./buttons";
 
 // Shared utility strings (the §28 page shell — mirrors IntegrationsView's constants).
 const CARD = "rounded-xl2 border border-line bg-panel";
@@ -139,10 +142,7 @@ export function ScheduledView({ onOpenRun, onRunNow, initialOpenId }: Props) {
         <div className="flex-1 min-w-0">
           <PanelHead title={t("automations.title")} sub={t("automations.sub")} />
         </div>
-        <button
-          className="text-[13px] px-3 py-1.5 rounded-lg border border-lineStrong bg-panel hover:border-accent hover:text-accent shrink-0"
-          onClick={() => setShowForm((v) => !v)}
-        >
+        <button className={BTN_BORDERED} onClick={() => setShowForm((v) => !v)}>
           {t("automations.new_btn")}
         </button>
       </div>
@@ -183,18 +183,19 @@ export function ScheduledView({ onOpenRun, onRunNow, initialOpenId }: Props) {
             >
               <div className="flex items-center justify-between gap-2.5 mb-1">
                 <span className="text-[13px] font-semibold truncate">{task.title}</span>
-                <button
+                <IconButton
+                  small
+                  tone="danger"
+                  icon="trash"
+                  size={14}
                   className="sched-card-del"
-                  title={t("automations.delete_title")}
-                  aria-label={t("automations.delete_aria", { title: task.title })}
+                  label={t("automations.delete_aria", { title: task.title })}
                   onClick={async (e) => {
                     e.stopPropagation();
                     await deleteAutomation(task.id);
                     refresh();
                   }}
-                >
-                  <Icon name="trash" size={14} />
-                </button>
+                />
               </div>
               <div className="flex items-center gap-1.5 text-[12px] text-muted">
                 <Icon name="clock" size={13} className="text-faint shrink-0" />
@@ -268,7 +269,7 @@ function NewAutomationForm({
       </div>
       <div className="tmpl-form-actions">
         <button
-          className="btn-primary sm"
+          className={BTN_ACCENT_SM}
           disabled={!valid || busy}
           onClick={() =>
             onCreate({
@@ -390,9 +391,9 @@ function TaskDetail({
 
   return (
     <Shell>
-      <button className="text-[13px] text-muted hover:text-ink mb-3" onClick={onBack}>
+      <BackLink className="mb-3" onClick={onBack}>
         {t("automations.back_to_automations")}
-      </button>
+      </BackLink>
       <div className="sched-detail">
         <div className="sched-detail-head">
           {editing ? (
@@ -408,18 +409,18 @@ function TaskDetail({
           <div className="sched-actions">
             {editing ? (
               <>
-                <button className="btn-primary sm" disabled={saving || !title.trim() || !instructions.trim()} onClick={saveEdit}>
+                <button className={BTN_ACCENT_SM} disabled={saving || !title.trim() || !instructions.trim()} onClick={saveEdit}>
                   {saving ? t("automations.saving") : t("automations.save")}
                 </button>
                 <button className="link" onClick={() => setEditing(false)}>{t("automations.cancel")}</button>
               </>
             ) : (
               <>
-                <button className="btn-primary sm" onClick={() => onRunNow(id, task.title)}>
+                <button className={BTN_ACCENT_SM} onClick={() => onRunNow(id, task.title)}>
                   {t("automations.run_now")}
                 </button>
-                <button className="btn sm" onClick={startEdit}>{t("automations.edit")}</button>
-                <button className="btn sm danger-btn" onClick={remove}>
+                <button className={BTN_BORDERED_SM} onClick={startEdit}>{t("automations.edit")}</button>
+                <button className={BTN_DANGER_SM + " inline-flex items-center gap-1.5"} onClick={remove}>
                   <Icon name="trash" size={14} /> {t("automations.delete")}
                 </button>
               </>

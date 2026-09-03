@@ -3,7 +3,8 @@ import { useTranslation } from "react-i18next";
 import { type CloudStatus, type Connector } from "../../api";
 import { ConnectorBadge } from "../../connectors/ConnectorIcon";
 import { AddConnectionModal } from "./AddConnectionModal";
-import { FOOT, GRP, GRP_H, PILL_ACCENT, ROW, TAG_QUIET } from "./ui";
+import { FOOT, GRP, GRP_H, ROW, TAG_QUIET } from "./ui";
+import { BTN_ACCENT_SM } from "../buttons";
 
 // Pre-connect detail page (UX-DECISIONS §38): what a connector is for and what
 // access it gets, BEFORE any credentials exist. About paragraph, honest Access
@@ -34,7 +35,7 @@ export function AvailableDetail({
           <div className="text-[13px] text-muted">{c.blurb ? t(c.blurb) : c.blurb}</div>
         </div>
         <button
-          className={PILL_ACCENT}
+          className={BTN_ACCENT_SM}
           data-testid="available-connect"
           onClick={() => setConnecting(true)}
         >

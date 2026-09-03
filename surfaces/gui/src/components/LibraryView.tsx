@@ -26,18 +26,14 @@ import {
   type PersonaConsent,
 } from "../api";
 import { RISK_PHRASE } from "./PersonasTab";
-import { Icon } from "./Icon";
+import { BTN_ACCENT, BTN_BORDERED_SM, BTN_OUTLINE_SM } from "./buttons";
+import { IconButton } from "./IconButton";
 
 const CARD = "rounded-xl border border-line bg-panel/60";
 const CARD_SELECTED = "rounded-xl border border-accent bg-panel/60";
-const BTN_ACCENT =
-  "text-[12.5px] px-3 py-2 rounded-lg bg-accent text-white shrink-0 disabled:opacity-40";
-const BTN_BORDERED =
-  "text-[12px] px-2.5 py-1.5 rounded-lg border border-line bg-paper hover:border-lineStrong shrink-0 disabled:opacity-40";
 const CHIP = "text-[10.5px] px-1.5 py-0.5 rounded border border-line text-muted shrink-0";
-const PILL = "text-[11.5px] px-2.5 py-1 rounded-full border shrink-0";
-const PILL_ON = PILL + " border-accent text-accent bg-accentSoft";
-const PILL_OFF = PILL + " border-line text-muted hover:border-lineStrong";
+const PILL_ON = BTN_OUTLINE_SM + " bg-accentSoft";
+const PILL_OFF = BTN_BORDERED_SM;
 
 // Expert-team multi-select (LIBRARY-SPEC P3): a pick-6 cap on how many experts one
 // "build a team" pass can install teammate variants for in one go.
@@ -553,13 +549,13 @@ export function LibraryView({
             {teamSelected.map((m) => (
               <span key={teamKey(m)} className={CHIP + " flex items-center gap-1"}>
                 {m.name}
-                <button
+                <IconButton
+                  variant="inline"
+                  icon="x"
+                  size={12}
+                  label={`${t("Remove")}: ${m.name}`}
                   onClick={() => removeTeamMember(teamKey(m))}
-                  aria-label={`${t("Remove")}: ${m.name}`}
-                  className="text-faint hover:text-ink"
-                >
-                  ×
-                </button>
+                />
               </span>
             ))}
           </div>
@@ -575,7 +571,7 @@ export function LibraryView({
           >
             {t("Build an expert team")}
           </button>
-          <button className={BTN_BORDERED} onClick={cancelTeamMode}>
+          <button className={BTN_BORDERED_SM} onClick={cancelTeamMode}>
             {t("Cancel")}
           </button>
         </div>
@@ -735,11 +731,11 @@ function ExpertCard({
             {startBusy ? t("Installing…") : t("Start session")}
           </button>
         )}
-        <button className={BTN_BORDERED} onClick={(e) => { e.stopPropagation(); onView(); }}>
+        <button className={BTN_BORDERED_SM} onClick={(e) => { e.stopPropagation(); onView(); }}>
           {t("View prompt")}
         </button>
         <button
-          className={BTN_BORDERED}
+          className={BTN_BORDERED_SM}
           onClick={(e) => { e.stopPropagation(); void doCopy(); }}
           disabled={copyState === "busy"}
         >
@@ -783,7 +779,7 @@ function SkillCard({
         {skillDesc(entry)}
       </div>
       <div className="flex items-center justify-between gap-2">
-        <button className={BTN_BORDERED} onClick={onView}>
+        <button className={BTN_BORDERED_SM} onClick={onView}>
           {t("View description")}
         </button>
         {entry.scripts > 0 && <span className={CHIP}>{t("{{count}} scripts", { count: entry.scripts })}</span>}
@@ -835,14 +831,7 @@ function ModalShell({
             <div className="text-[12px] text-muted">{sub}</div>
           </div>
           {headerExtra}
-          <button
-            className="text-faint hover:text-ink shrink-0"
-            onClick={onClose}
-            aria-label={t("Close")}
-            data-testid={`${testId}-close`}
-          >
-            <Icon name="x" size={16} />
-          </button>
+          <IconButton icon="x" onClick={onClose} label={t("Close")} data-testid={`${testId}-close`} />
         </div>
         <div className="p-5 overflow-y-auto hairline-scroll flex-1">{children}</div>
       </div>
@@ -910,7 +899,7 @@ function ExpertDetailModal({
       headerExtra={
         pair && (
           <button
-            className={BTN_BORDERED}
+            className={BTN_BORDERED_SM}
             onClick={() => setCurLib((l) => (l === "zh" ? "en" : "zh"))}
             data-testid="library-lang-toggle"
           >
@@ -934,12 +923,12 @@ function ExpertDetailModal({
               {copyState === "copied" ? t("Copied") : copyState === "error" ? t("Copy failed") : t("Copy")}
             </button>
             {installed ? (
-              <button className={BTN_BORDERED} disabled data-testid="expert-installed-badge">
+              <button className={BTN_BORDERED_SM} disabled data-testid="expert-installed-badge">
                 {t("Installed")}
               </button>
             ) : (
               <button
-                className={BTN_BORDERED}
+                className={BTN_BORDERED_SM}
                 disabled={installBusy}
                 onClick={handleInstall}
                 data-testid="expert-install-as-coworker"
@@ -1050,7 +1039,7 @@ function SkillDetailModal({
           )}
           <div className="mt-4">
             {installed ? (
-              <button className={BTN_BORDERED} disabled data-testid="skill-installed-badge">
+              <button className={BTN_BORDERED_SM} disabled data-testid="skill-installed-badge">
                 {t("Installed")}
               </button>
             ) : installState === "idle" ? (
@@ -1084,7 +1073,7 @@ function SkillDetailModal({
                   >
                     {installState === "busy" ? t("Installing…") : t("Install skill")}
                   </button>
-                  <button className={BTN_BORDERED} onClick={() => setInstallState("idle")}>
+                  <button className={BTN_BORDERED_SM} onClick={() => setInstallState("idle")}>
                     {t("Cancel")}
                   </button>
                 </div>
@@ -1163,7 +1152,7 @@ function ExpertConsentModal({
             <button className={BTN_ACCENT} disabled={busy} onClick={onConfirm} data-testid="library-consent-confirm">
               {busy ? t("Enabling…") : flow.mode === "start" ? t("Enable and start") : t("Enable this coworker")}
             </button>
-            <button className={BTN_BORDERED} onClick={onClose} data-testid="library-consent-cancel">
+            <button className={BTN_BORDERED_SM} onClick={onClose} data-testid="library-consent-cancel">
               {t("Cancel")}
             </button>
           </div>
@@ -1397,7 +1386,7 @@ function ExpertTeamModal({
             >
               {activating ? t("Enabling…") : t("Enable and create team")}
             </button>
-            <button className={BTN_BORDERED} onClick={onClose}>
+            <button className={BTN_BORDERED_SM} onClick={onClose}>
               {t("Cancel")}
             </button>
           </div>

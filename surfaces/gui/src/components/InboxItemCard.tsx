@@ -12,6 +12,7 @@ import {
   scopeNote,
   TitleText,
 } from "./ApprovalCard";
+import { BTN_ACCENT, BTN_BORDERED, BTN_OUTLINE, BTN_QUIET } from "./buttons";
 
 // One Inbox item, rendered identically in the Inbox list and inline in its own session view
 // (answer-in-context). Resolving either place hits the same item id — first responder wins.
@@ -22,14 +23,6 @@ import {
 
 // Shared styles (mock parity — same language as SourcesDrawer/PersonaView).
 const SEC = "text-[11px] uppercase tracking-[0.05em] text-faint font-semibold";
-const BTN_PRIMARY =
-  "px-3 py-1.5 rounded-lg bg-accent text-white text-[13px] font-medium hover:brightness-105 disabled:opacity-40 disabled:hover:brightness-100";
-const BTN_BORDERED =
-  "px-3 py-1.5 rounded-lg border border-line bg-paper text-[13px] hover:border-lineStrong";
-// §35 approval buttons: blue border for the primary, quiet Deny (matches ApprovalCard).
-const BTN_ACCENT =
-  "px-3 py-1.5 rounded-lg border border-accent text-accent text-[13px] font-semibold hover:bg-accentSoft";
-const BTN_QUIET = "px-3 py-1.5 text-[13px] text-faint hover:text-danger";
 const OPT_BASE =
   "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-[13px] transition-colors";
 const OPT_OFF = "border-line bg-paper text-ink hover:border-accent hover:bg-accentSoft/50";
@@ -189,7 +182,7 @@ function QuestionBlock({ spec, onAnswer }: { spec: QSpec; onAnswer: (a: string) 
       {multi && options.length > 0 && (
         <div className="mt-2.5">
           <button
-            className={BTN_PRIMARY}
+            className={BTN_ACCENT}
             disabled={!selected.length}
             onClick={() => onAnswer(selected.join(", "))}
           >
@@ -209,7 +202,7 @@ function QuestionBlock({ spec, onAnswer }: { spec: QSpec; onAnswer: (a: string) 
               if (e.key === "Enter" && text.trim()) onAnswer(text);
             }}
           />
-          <button className={BTN_PRIMARY} disabled={!text.trim()} onClick={() => onAnswer(text)}>
+          <button className={BTN_ACCENT} disabled={!text.trim()} onClick={() => onAnswer(text)}>
             {t("common.send")}
           </button>
         </div>
@@ -361,7 +354,7 @@ export function InboxItemCard({
       {item.kind === "approval" ? (
         <div className="flex items-center gap-2 mt-2.5 flex-wrap">
           <button
-            className={item.data?.tool ? BTN_ACCENT : BTN_PRIMARY}
+            className={item.data?.tool ? BTN_OUTLINE : BTN_ACCENT}
             onClick={() => onResolve(item.id, "allow")}
           >
             {item.data?.tool ? approvalActionLabels(item.data.tool).allow : t("inbox.approve")}
@@ -393,7 +386,7 @@ export function InboxItemCard({
       ) : item.kind === "directory" ? (
         <div className="flex items-center gap-2 mt-2.5">
           <button
-            className={BTN_PRIMARY}
+            className={BTN_ACCENT}
             disabled={!item.data?.path}
             title={item.data?.path || t("inbox.no_folder_suggested")}
             onClick={() =>
@@ -420,7 +413,7 @@ export function InboxItemCard({
       ) : item.kind === "plan" ? (
         <div className="flex items-center gap-2 mt-2.5">
           <button
-            className={BTN_PRIMARY}
+            className={BTN_ACCENT}
             onClick={() => onResolve(item.id, JSON.stringify({ approved: true, mode: "interactive" }))}
           >
             {t("inbox.approve")}

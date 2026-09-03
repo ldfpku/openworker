@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { setWorkspaceTrusted, type WorkspaceCommandTrust } from "../api";
+import { BTN_ACCENT, BTN_BORDERED } from "./buttons";
 
 export function WorkspaceTrustPrompt({
   request,
@@ -43,10 +44,10 @@ export function WorkspaceTrustPrompt({
         <div className="text-[12px] text-muted mt-2 break-all">{request.workspace}</div>
         {error && <div className="gate-error">{error}</div>}
         <div className="gate-foot justify-end gap-2">
-          <button className="btn" onClick={onClose} disabled={saving}>
+          <button className={BTN_BORDERED} onClick={onClose} disabled={saving}>
             {t("workspace_trust.keep_asking")}
           </button>
-          <button className="btn primary" onClick={() => void trust()} disabled={saving}>
+          <button className={BTN_ACCENT} onClick={() => void trust()} disabled={saving}>
             {saving ? t("workspace_trust.saving") : t("workspace_trust.trust")}
           </button>
         </div>

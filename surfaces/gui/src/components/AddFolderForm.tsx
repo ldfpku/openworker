@@ -3,6 +3,8 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { chooseFolder } from "../tauri";
 import { Icon } from "./Icon";
+import { IconButton } from "./IconButton";
+import { BTN_ACCENT, BTN_BORDERED } from "./buttons";
 
 // A single "Give access to a folder" affordance. Collapsed it's one button; expanded it's a path
 // field (Browse on desktop, paste anywhere) + an "Allow writing" checkbox that's OFF by default —
@@ -69,9 +71,7 @@ export function AddFolderForm({
             else if (e.key === "Escape") reset();
           }}
         />
-        <button className="btn icon-only" onClick={browse} title={t("access.choose_location")} aria-label={t("access.choose_location")}>
-          <Icon name="folder" size={15} />
-        </button>
+        <IconButton variant="bordered" icon="folder" size={15} onClick={browse} label={t("access.choose_location")} />
       </div>
       <div className="addfolder-actions">
         <label className="addfolder-write" title={t("access.allow_writes_help")}>
@@ -79,10 +79,10 @@ export function AddFolderForm({
           {t("access.allow_writes")}
         </label>
         <span className="spacer" />
-        <button className="btn" onClick={reset}>
+        <button className={BTN_BORDERED} onClick={reset}>
           {t("access.cancel")}
         </button>
-        <button className="btn primary" disabled={busy || !path.trim()} onClick={submit}>
+        <button className={BTN_ACCENT} disabled={busy || !path.trim()} onClick={submit}>
           {t("access.add_btn")}
         </button>
       </div>

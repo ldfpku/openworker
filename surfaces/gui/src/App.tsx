@@ -60,6 +60,7 @@ import { streamMode } from "./streamGate";
 import { InboxItemCard } from "./components/InboxItemCard";
 import { chooseFolder, isTauri, platformOS, startWindowDrag } from "./tauri";
 import { Icon } from "./components/Icon";
+import { IconButton } from "./components/IconButton";
 import { Sidebar } from "./components/Sidebar";
 import { GuidedTour, TOUR_DONE_KEY } from "./components/GuidedTour";
 import { ThinkingBlock, Transcript } from "./components/Transcript";
@@ -82,6 +83,7 @@ import { InboxView } from "./components/InboxView";
 import { LibraryView } from "./components/LibraryView";
 import { HelpView } from "./components/HelpView";
 import { parseAppTarget, type HelpAction, type HelpSettingsTab } from "./help";
+import { BTN_BORDERED_SM } from "./components/buttons";
 import { ApprovalCard } from "./components/ApprovalCard";
 import { ToolRequestCard } from "./components/ToolRequestCard";
 import { DirectoryRequestCard } from "./components/DirectoryRequestCard";
@@ -1764,14 +1766,15 @@ export function App() {
             >
               {t("toast.view_run")} ›
             </button>
-            <button
-              className="text-[12px] text-faint px-0.5"
+            <IconButton
+              variant="inline"
+              icon="x"
+              size={12}
+              className="px-0.5"
               data-testid="toast-dismiss"
-              title={t("common.dismiss")}
+              label={t("common.dismiss")}
               onClick={() => setRunToast(null)}
-            >
-              ✕
-            </button>
+            />
           </div>
           <div className="absolute left-3 right-3 bottom-1 h-[2px] rounded bg-line overflow-hidden">
             <span className="block h-full bg-faint toast-drain" />
@@ -1790,15 +1793,14 @@ export function App() {
           surface EXCEPT the session view, whose topbar carries the [sidebar][+][search] cluster
           instead (§22; no duplicate reveal buttons). */}
       {navCollapsed && !navPeek && surface !== "session" && (
-        <button
+        <IconButton
+          icon="sidebar"
+          label={t("topbar.show_sidebar")}
+          size={16}
           className="nav-reveal-btn"
           onClick={toggleNav}
           onMouseEnter={() => setNavPeek(true)}
-          title={t("topbar.show_sidebar")}
-          aria-label={t("topbar.show_sidebar_short")}
-        >
-          <Icon name="sidebar" size={16} />
-        </button>
+        />
       )}
       {onboarding && (
         <Onboarding
@@ -1930,30 +1932,9 @@ export function App() {
                 data-testid="topbar-cluster"
                 onPointerDown={(e) => e.stopPropagation()}
               >
-                <button
-                  className="topbar-icon-btn"
-                  onClick={toggleNav}
-                  aria-label={t("topbar.show_sidebar_short")}
-                  title={t("topbar.show_sidebar")}
-                >
-                  <Icon name="sidebar" size={16} />
-                </button>
-                <button
-                  className="topbar-icon-btn"
-                  onClick={() => startNewSession()}
-                  aria-label={t("sidebar.new_session")}
-                  title={t("sidebar.new_session")}
-                >
-                  <Icon name="plus" size={16} />
-                </button>
-                <button
-                  className="topbar-icon-btn"
-                  onClick={() => setSearchOpen(true)}
-                  aria-label={t("topbar.search")}
-                  title={t("topbar.search")}
-                >
-                  <Icon name="search" size={16} />
-                </button>
+                <IconButton icon="sidebar" onClick={toggleNav} label={t("topbar.show_sidebar")} />
+                <IconButton icon="plus" onClick={() => startNewSession()} label={t("sidebar.new_session")} />
+                <IconButton icon="search" onClick={() => setSearchOpen(true)} label={t("topbar.search")} />
               </div>
             )}
             {/* §32: no session-settings row up here anymore — the §23 rest/hover/click glance
@@ -2015,16 +1996,13 @@ export function App() {
             {/* §32: the panel toggle is the ONE session-panel entry, for every non-chat persona
                 (the rail now carries Access, so code-family gets it too). */}
             {agent !== "chat" && (
-              <button
-                className="topbar-icon-btn"
+              <IconButton
+                icon="sidebarRight"
                 data-testid="rail-toggle"
                 onPointerDown={(e) => e.stopPropagation()}
                 onClick={() => setRailHiddenPersist(!railHidden)}
-                aria-label={railHidden ? t("topbar.show_side_panel") : t("topbar.hide_side_panel")}
-                title={railHidden ? t("topbar.show_side_panel") : t("topbar.hide_side_panel")}
-              >
-                <Icon name="sidebarRight" size={16} />
-              </button>
+                label={railHidden ? t("topbar.show_side_panel") : t("topbar.hide_side_panel")}
+              />
             )}
           </div>
         </div>
@@ -2209,7 +2187,7 @@ export function App() {
                   {t("app.sleep.talk_anytime")}
                 </span>
                 <button
-                  className="btn sm"
+                  className={BTN_BORDERED_SM}
                   data-testid="sleep-status-btn"
                   onClick={() => send(t("app.sleep.status_prompt"))}
                 >

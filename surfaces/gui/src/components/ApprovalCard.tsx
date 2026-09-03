@@ -3,6 +3,7 @@ import { getI18n, useTranslation } from "react-i18next";
 import type { ApprovalDecision, Item } from "../types";
 import { humanizeApprovalTitle, type HumanLine } from "../humanize";
 import { Icon } from "./Icon";
+import { BTN_BORDERED, BTN_OUTLINE, BTN_QUIET } from "./buttons";
 
 export function shortArgs(args: any): string {
   if (!args || typeof args !== "object") return "";
@@ -229,12 +230,12 @@ function Buttons({
     item.name === "web_search";
   return (
     <div className="approval-btns">
-      <button className="btn approval-primary" onClick={() => onApprove("once")}>
+      <button className={BTN_OUTLINE} onClick={() => onApprove("once")}>
         {primaryLabel}
       </button>
       {offerStanding && (
         <button
-          className="btn"
+          className={BTN_BORDERED}
           title={t("approval.btn.always_task_title", { name: item.name, target: item.standingTarget, task: runTask?.title || t("approval.btn.this_automation") })}
           onClick={() => onApprove("always_task")}
         >
@@ -250,7 +251,7 @@ function Buttons({
           (SKILLS-SPEC §5: one gate, always). */}
       {!noSessionGrant && (
         <button
-          className="btn"
+          className={BTN_BORDERED}
           title={t("approval.btn.always_tool_title", { name: verbName })}
           onClick={() => onApprove("always_tool")}
         >
@@ -259,7 +260,7 @@ function Buttons({
       )}
       {!autoApprove && !offerStanding && item.name === "web_fetch" && fetchHost && (
         <button
-          className="btn"
+          className={BTN_BORDERED}
           title={t("approval.btn.always_domain_title", { host: fetchHost })}
           onClick={() => onApprove("always_domain")}
         >
@@ -268,7 +269,7 @@ function Buttons({
       )}
       {!autoApprove && !offerStanding && item.name === "web_search" && (
         <button
-          className="btn"
+          className={BTN_BORDERED}
           title={t("approval.btn.always_search_title")}
           onClick={() => onApprove("always_tool")}
         >
@@ -276,7 +277,7 @@ function Buttons({
         </button>
       )}
       {!autoApprove && item.name === "run_shell" && (
-        <button className="btn" onClick={() => onApprove("always_command")}>
+        <button className={BTN_BORDERED} onClick={() => onApprove("always_command")}>
           {t("approval.btn.always_command")}
         </button>
       )}
@@ -286,7 +287,7 @@ function Buttons({
           anything doubtful keep asking. */}
       {item.name === "run_shell" && item.readonlyOk && !item.resolved && (
         <button
-          className="btn"
+          className={BTN_BORDERED}
           data-testid="allow-readonly-session"
           title={t("approval.btn.readonly_session_title")}
           onClick={() => onApprove("readonly_session")}
@@ -295,7 +296,7 @@ function Buttons({
         </button>
       )}
       <span className="spacer" />
-      <button className="btn quiet-deny" onClick={() => onApprove("deny")}>
+      <button className={BTN_QUIET} onClick={() => onApprove("deny")}>
         {denyLabel ?? t("approval.btn.deny")}
       </button>
     </div>

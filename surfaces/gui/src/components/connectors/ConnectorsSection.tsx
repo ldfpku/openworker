@@ -12,6 +12,7 @@ import {
   type SlackStatus,
 } from "../../api";
 import { McpServerDetail } from "./CustomMcp";
+import { BackLink } from "../BackLink";
 import { ConnectorBadge } from "../../connectors/ConnectorIcon";
 import {
   AllowlistBlock,
@@ -30,7 +31,8 @@ import { GithubDetail } from "./GithubDetail";
 import { GmailDetail } from "./GmailDetail";
 import { HubSpotDetail } from "./HubSpotDetail";
 import { SlackDetail } from "./SlackDetail";
-import { GRP, PILL_LINE } from "./ui";
+import { GRP } from "./ui";
+import { BTN_BORDERED_SM } from "../buttons";
 
 // Connectors surface = LIST ⇄ per-connector DETAIL SUBPAGE (UX-DECISIONS §21). The
 // Integrations sub-nav never grows per-connector items; detail pages live behind a
@@ -98,15 +100,11 @@ export function ConnectorsSection() {
     const s = mcpServers.find((x) => "mcp:" + x.name === detail);
     return (
       <div>
-        <button
-          className="text-[13px] text-accent mb-3"
-          data-testid="connectors-breadcrumb"
-          onClick={() => setDetail(null)}
-        >
-          {t("‹ Connectors")}
-        </button>
+        <BackLink className="mb-3" data-testid="connectors-breadcrumb" onClick={() => setDetail(null)}>
+          {t("connector.back_to_connectors")}
+        </BackLink>
         {!s ? (
-          <div className="text-[13px] text-muted">{t("Loading…")}</div>
+          <div className="text-[13px] text-muted">{t("connector.loading")}</div>
         ) : (
           <McpServerDetail server={s} onChanged={refresh} onGone={() => setDetail(null)} />
         )}
@@ -119,13 +117,9 @@ export function ConnectorsSection() {
     const Page = DETAIL_PAGES[detail];
     return (
       <div>
-        <button
-          className="text-[13px] text-accent mb-3"
-          data-testid="connectors-breadcrumb"
-          onClick={() => setDetail(null)}
-        >
+        <BackLink className="mb-3" data-testid="connectors-breadcrumb" onClick={() => setDetail(null)}>
           {t("connector.back_to_connectors")}
-        </button>
+        </BackLink>
         {!c ? (
           <div className="text-[13px] text-muted">{t("connector.loading")}</div>
         ) : !c.connected ? (
@@ -186,7 +180,7 @@ function GenericDetail({
         </div>
         {c.auth === "qr" && (
           <button
-            className={PILL_LINE}
+            className={BTN_BORDERED_SM}
             data-testid={`rescan-${c.name}`}
             title={t("Sign in again without losing who you've allowed")}
             onClick={() => setRescan(true)}

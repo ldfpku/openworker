@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getRecentWorkspaces, openWorkspace, type RecentWorkspace } from "../api";
 import { chooseFolder } from "../tauri";
+import { BTN_ACCENT, BTN_BORDERED } from "./buttons";
 
 // The mandatory workspace picker for project-scoped personas. Deliberately no
 // "switch persona" escape hatch: if a persona needs a folder, the choice here is
@@ -58,10 +59,10 @@ export function FolderGate({ onChoose, onCancel, create }: Props) {
             onKeyDown={(e) => e.key === "Enter" && !isComposing(e) && open(path, create)}
             autoFocus
           />
-          <button className="btn" onClick={browse} title={t("folder_gate.pick_folder")}>
+          <button className={BTN_BORDERED} onClick={browse} title={t("folder_gate.pick_folder")}>
             {t("folder_gate.browse")}
           </button>
-          <button className="btn primary" onClick={() => open(path, create)} disabled={!path.trim()}>
+          <button className={BTN_ACCENT} onClick={() => open(path, create)} disabled={!path.trim()}>
             {create ? t("folder_gate.create") : t("folder_gate.open")}
           </button>
         </div>
@@ -83,7 +84,7 @@ export function FolderGate({ onChoose, onCancel, create }: Props) {
 
         {onCancel && (
           <div className="gate-foot">
-            <button className="btn gate-cancel" onClick={onCancel}>
+            <button className={BTN_BORDERED} onClick={onCancel}>
               {t("folder_gate.cancel")}
             </button>
           </div>

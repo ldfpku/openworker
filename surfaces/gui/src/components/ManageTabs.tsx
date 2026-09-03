@@ -25,7 +25,9 @@ import {
 } from "../api";
 import type { SessionInfo } from "../types";
 import { sessionDisplayTitle, sessionTitleText } from "../sessionTitle";
+import { BTN_ACCENT, BTN_BORDERED } from "./buttons";
 import { CloudSignInInline, CloudStatusPending } from "./connectors/CloudSignIn";
+import { IconButton } from "./IconButton";
 import { ModelChecklist } from "./ModelChecklist";
 import { ProviderCards, ProviderForm, useProviderSetup } from "../providers/ProviderSetup";
 import { formatRelative } from "../relTime";
@@ -34,9 +36,6 @@ import { formatRelative } from "../relTime";
 // when Settings/Activity became full-page surfaces): ModelsTab → Settings ▸ Models; ConnectorsTab →
 // Integrations ▸ Connectors (the MCP tab retired into the Connectors page, UX-034).
 const SEC_H = "text-[11px] uppercase tracking-[0.05em] text-faint font-semibold";
-const BTN_BORDERED =
-  "text-[13px] px-3 py-1.5 rounded-lg border border-line bg-paper hover:border-lineStrong shrink-0";
-const BTN_ACCENT = "text-[13px] px-3 py-1.5 rounded-lg bg-accent text-white shrink-0 disabled:opacity-50";
 
 /** Two-letter initials for a chip/avatar (first+last word, else first two chars). */
 function initials(name: string): string {
@@ -448,16 +447,18 @@ export function ListeningSessionsBlock({ c }: { c: Connector }) {
               <span className="text-muted shrink-0" title={s.channel}>
                 ← {s.channel_name ? `#${s.channel_name}` : s.channel}
               </span>
-              <button
-                className="ml-auto text-faint hover:text-danger shrink-0"
-                title={t("manage.listening_unsub_tip")}
+              <IconButton
+                variant="inline"
+                icon="x"
+                size={12}
+                tone="danger"
+                className="ml-auto"
+                label={t("manage.listening_unsub_tip")}
                 onClick={async () => {
                   await unsubscribeChannel(s.session_id, s.channel);
                   load();
                 }}
-              >
-                ×
-              </button>
+              />
             </div>
           ))}
         </div>
@@ -509,16 +510,18 @@ export function AllowlistBlock({
                 {initials(names?.[u] || u)}
               </span>
               {names?.[u] || u}
-              <button
-                className="w-4 h-4 grid place-items-center text-faint hover:text-danger"
-                title={t("common.remove")}
+              <IconButton
+                variant="inline"
+                icon="x"
+                size={12}
+                tone="danger"
+                className="w-4 h-4"
+                label={t("common.remove")}
                 onClick={async () => {
                   await disallowUser(c.name, u, teamId);
                   onChanged();
                 }}
-              >
-                ×
-              </button>
+              />
             </span>
           ))}
         </div>

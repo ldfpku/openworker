@@ -7,6 +7,7 @@ import { useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import type { Item } from "../types";
 import { Icon } from "./Icon";
+import { BTN_ACCENT, BTN_BORDERED } from "./buttons";
 
 export function TeamRequestCard({
   item,
@@ -55,11 +56,11 @@ export function TeamRequestCard({
       <div className="dirreq-actions">
         <span className="teamreq-grant">{t("team.grant_note")}</span>
         <span className="spacer" />
-        <button className="btn" onClick={() => onRespond(false)}>
+        <button className={BTN_BORDERED} onClick={() => onRespond(false)}>
           {t("team.not_now")}
         </button>
         <button
-          className="btn primary"
+          className={BTN_ACCENT}
           data-testid="teamreq-approve"
           onClick={() => onRespond(true, undefined, chat)}
         >

@@ -12,6 +12,7 @@ import {
 } from "../../api";
 import { formatRelative } from "../../relTime";
 import { Icon } from "../Icon";
+import { IconButton } from "../IconButton";
 import { Toggle } from "../Toggle";
 import {
   CHIP_ERR,
@@ -20,10 +21,9 @@ import {
   CHIP_WARN,
   GRP,
   GRP_H,
-  PILL_ACCENT,
-  PILL_QUIET,
   ROW,
 } from "./ui";
+import { BTN_ACCENT_SM, BTN_OUTLINE_SM } from "../buttons";
 
 // Custom/BYO MCP servers on the Connectors page (UX-DECISIONS §21 + UX-034: the
 // separate MCP tab is retired). They render as a "Custom · MCP" group at the end
@@ -145,7 +145,7 @@ export function CustomMcpGroup({
               <span className="block text-[12px] text-muted truncate">{t(p.blurb)}</span>
             </span>
             <span
-              className={PILL_QUIET + " cursor-pointer"}
+              className={BTN_OUTLINE_SM + " cursor-pointer"}
               role="button"
               onClick={async () => {
                 await addMcpServer(p.name, p.config);
@@ -267,9 +267,13 @@ export function AddMcpModal({
       <div className="absolute left-1/2 top-24 -translate-x-1/2 w-[540px] max-w-[92vw] rounded-xl2 border border-line bg-panel shadow-xl p-5 space-y-3">
         <div className="flex items-center justify-between">
           <div className="text-[14px] font-semibold">{t("mcp.add_title")}</div>
-          <button className="text-faint hover:text-ink text-[16px] leading-none" onClick={onClose}>
-            ×
-          </button>
+          <IconButton
+            variant="inline"
+            icon="x"
+            size={16}
+            label={t("modal.close")}
+            onClick={onClose}
+          />
         </div>
         <div className="flex items-center gap-1.5">
           <button className={tabBtn(tab === "url")} onClick={() => setTab("url")} data-testid="mcp-add-tab-url">
@@ -317,7 +321,7 @@ export function AddMcpModal({
           </>
         )}
         <div className="flex items-center gap-3">
-          <button className={PILL_ACCENT} onClick={tab === "url" ? saveUrl : saveJson}>
+          <button className={BTN_ACCENT_SM} onClick={tab === "url" ? saveUrl : saveJson}>
             {tab === "url" ? t("mcp.add_and_test") : t("manage.add_btn")}
           </button>
           <button className="text-[13px] text-muted hover:text-ink" onClick={onClose}>
@@ -407,7 +411,7 @@ export function McpServerDetail({
           </span>
           {server.auth_hint && !isOauth ? (
             <span
-              className={PILL_ACCENT + " cursor-pointer"}
+              className={BTN_ACCENT_SM + " cursor-pointer"}
               role="button"
               onClick={signInWithOauth}
               data-testid={`mcp-authfix-${server.name}`}
@@ -416,7 +420,7 @@ export function McpServerDetail({
             </span>
           ) : isOauth && server.status === "needs_auth" ? (
             <span
-              className={PILL_ACCENT + " cursor-pointer"}
+              className={BTN_ACCENT_SM + " cursor-pointer"}
               role="button"
               onClick={runTest}
               data-testid={`mcp-signin-${server.name}`}
@@ -425,7 +429,7 @@ export function McpServerDetail({
             </span>
           ) : (
             <span
-              className={PILL_QUIET + " cursor-pointer" + (authorizing ? " opacity-50" : "")}
+              className={BTN_OUTLINE_SM + " cursor-pointer" + (authorizing ? " opacity-50" : "")}
               role="button"
               onClick={authorizing ? undefined : runTest}
               data-testid={`mcp-test-${server.name}`}

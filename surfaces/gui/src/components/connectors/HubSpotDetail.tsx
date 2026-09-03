@@ -8,10 +8,12 @@ import {
   type HubSpotPortal,
 } from "../../api";
 import { ConnectorBadge } from "../../connectors/ConnectorIcon";
+import { IconButton } from "../IconButton";
 import { AddConnectionModal } from "./AddConnectionModal";
 import type { DetailProps } from "./ConnectorsSection";
 import { ToolsDisclosure } from "./ToolsDisclosure";
-import { FOOT, GRP, GRP_H, PILL_ACCENT, ROW, TAG_ACCENT, TAG_QUIET, TAG_WARN, XBTN } from "./ui";
+import { FOOT, GRP, GRP_H, ROW, TAG_ACCENT, TAG_QUIET, TAG_WARN } from "./ui";
+import { BTN_ACCENT_SM } from "../buttons";
 
 // The HubSpot detail page (UX-DECISIONS §21): connected portals (multi-portal,
 // Default/Sandbox tags, the consent tier granted at connect) + Access & privacy
@@ -45,7 +47,7 @@ export function HubSpotDetail({ c, cloud, slack: _slack, onChanged }: DetailProp
             )}
           </div>
         </div>
-        <button className={PILL_ACCENT} data-testid="add-portal-btn" onClick={() => setAdding(true)}>
+        <button className={BTN_ACCENT_SM} data-testid="add-portal-btn" onClick={() => setAdding(true)}>
           {t("hubspot.add_portal")}
         </button>
       </div>
@@ -119,20 +121,21 @@ function PortalRow({ p, onChanged }: { p: HubSpotPortal; onChanged: () => void }
           {t("connector.make_default")}
         </button>
       )}
-      <button
-        className={XBTN}
-        title={t("hubspot.disconnect_portal_title")}
+      <IconButton
+        variant="inline"
+        icon="x"
+        size={12}
+        tone="danger"
         data-testid={`hubspot-disconnect-${p.hub_id}`}
         disabled={busy}
+        label={t("hubspot.disconnect_portal_title")}
         onClick={async () => {
           setBusy(true);
           await disconnectHubSpotPortal(p.hub_id);
           setBusy(false);
           onChanged();
         }}
-      >
-        ×
-      </button>
+      />
     </div>
   );
 }
@@ -164,9 +167,14 @@ function PrivacyGroup({ c, onChanged }: Pick<DetailProps, "c" | "onChanged">) {
                 className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-paper border border-line text-[13px] font-mono"
               >
                 {f}
-                <button className={XBTN} title={t("common.remove")} onClick={() => save(fields.filter((x) => x !== f))}>
-                  ×
-                </button>
+                <IconButton
+                  variant="inline"
+                  icon="x"
+                  size={12}
+                  tone="danger"
+                  label={t("common.remove")}
+                  onClick={() => save(fields.filter((x) => x !== f))}
+                />
               </span>
             ))}
             <input

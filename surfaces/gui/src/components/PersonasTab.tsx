@@ -11,7 +11,9 @@ import {
 } from "../api";
 import { chooseFolder } from "../tauri";
 import type { SessionInfo } from "../types";
+import { BTN_ACCENT, BTN_BORDERED } from "./buttons";
 import { Icon } from "./Icon";
+import { IconButton } from "./IconButton";
 import { Toggle } from "./Toggle";
 
 // Personas management (UX-035): grouped General/Security lists with ONE toggle per row
@@ -22,9 +24,6 @@ const CARD = "rounded-xl2 border border-line bg-panel";
 const SELECT = "px-2.5 py-2 rounded-lg border border-line bg-paper text-[13px] text-ink shrink-0";
 const INPUT =
   "flex-1 min-w-0 px-3 py-2 rounded-lg border border-line bg-paper text-[13px] text-ink outline-none focus:border-accent";
-const BTN_ACCENT = "text-[13px] px-3 py-2 rounded-lg bg-accent text-white shrink-0 disabled:opacity-40";
-const BTN_BORDERED =
-  "text-[13px] px-2.5 py-1.5 rounded-lg border border-line bg-paper hover:border-lineStrong shrink-0 disabled:opacity-40 disabled:hover:border-line";
 
 const QUIET_ROW =
   "w-full flex items-center gap-2 px-4 pt-2 mt-6 text-[13px] text-muted select-none";
@@ -193,15 +192,14 @@ export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) =>
                       title={p.enabled ? t("personas.disable_coworker") : t("personas.enable_coworker")}
                     />
                     {onOpenPersona && (
-                      <button
-                        className="text-faint hover:text-ink shrink-0 p-1"
-                        title={t("personas.configure_title", { name: p.name })}
-                        aria-label={t("personas.configure_title", { name: p.name })}
+                      <IconButton
+                        small
+                        icon="sliders"
+                        size={15}
+                        label={t("personas.configure_title", { name: p.name })}
                         data-testid={`persona-configure-${p.id}`}
                         onClick={() => onOpenPersona(p.id)}
-                      >
-                        <Icon name="sliders" size={15} />
-                      </button>
+                      />
                     )}
                   </>
                 )}

@@ -14,10 +14,12 @@ import {
   type Subscription,
 } from "../../api";
 import { ConnectorBadge } from "../../connectors/ConnectorIcon";
+import { IconButton } from "../IconButton";
 import { AddConnectionModal } from "./AddConnectionModal";
 import type { DetailProps } from "./ConnectorsSection";
 import { ToolsDisclosure } from "./ToolsDisclosure";
-import { FOOT, GRP, GRP_H, PILL_ACCENT, PILL_LINE, ROW, TAG_WARN, XBTN } from "./ui";
+import { FOOT, GRP, GRP_H, ROW, TAG_WARN } from "./ui";
+import { BTN_ACCENT_SM, BTN_BORDERED_SM } from "../buttons";
 import { sessionTitleText } from "../../sessionTitle";
 
 // The GitHub detail page (github-relay-spec §8), the Slack page's shape: one
@@ -89,7 +91,7 @@ export function GithubDetail({ c, cloud, onChanged }: DetailProps) {
         </div>
         {(relay || !c.connected) && (
           <button
-            className={PILL_ACCENT}
+            className={BTN_ACCENT_SM}
             data-testid="add-installation-btn"
             onClick={() => setAdding(true)}
           >
@@ -262,13 +264,14 @@ function PeopleRow({
           >
             {/* GitHub logins ARE the readable identity — no resolution needed. */}
             @{login}
-            <button
-              className={XBTN}
-              title={t("common.remove")}
+            <IconButton
+              variant="inline"
+              icon="x"
+              size={12}
+              tone="danger"
+              label={t("common.remove")}
               onClick={() => disallowUser("github", login, installationId).then(onChanged)}
-            >
-              ×
-            </button>
+            />
           </span>
         ))}
       </span>
@@ -291,7 +294,7 @@ function WaitingRow({ m, onChanged }: { m: ParkedMessage; onChanged: () => void 
         <span className="block text-[13px] text-muted truncate">“{m.text}”</span>
       </span>
       <button
-        className={PILL_ACCENT + " !py-1"}
+        className={BTN_ACCENT_SM + " !py-1"}
         data-testid={`parked-allow-deliver-${m.id}`}
         title={t("github.allow_deliver_title")}
         onClick={() => act("allow_deliver")}
@@ -299,16 +302,23 @@ function WaitingRow({ m, onChanged }: { m: ParkedMessage; onChanged: () => void 
         {t("connector.allow_deliver")}
       </button>
       <button
-        className={PILL_LINE + " !py-1"}
+        className={BTN_BORDERED_SM + " !py-1"}
         data-testid={`parked-allow-${m.id}`}
         title={t("github.allow_discard_title")}
         onClick={() => act("allow")}
       >
         {t("connector.allow")}
       </button>
-      <button className={XBTN + " px-1"} data-testid={`parked-dismiss-${m.id}`} title={t("connector.dismiss")} onClick={() => act("dismiss")}>
-        ×
-      </button>
+      <IconButton
+        variant="inline"
+        icon="x"
+        size={12}
+        tone="danger"
+        className="px-1"
+        data-testid={`parked-dismiss-${m.id}`}
+        label={t("connector.dismiss")}
+        onClick={() => act("dismiss")}
+      />
     </div>
   );
 }
@@ -328,16 +338,18 @@ function ListeningRows({ subs, onChanged }: { subs: Subscription[]; onChanged: (
             <span className="text-muted truncate" title={s.channel}>
               {s.channel.replace(/^github:/, "")}
             </span>
-            <button
-              className={XBTN + " ml-auto"}
-              title={t("connector.unsubscribe_title")}
+            <IconButton
+              variant="inline"
+              icon="x"
+              size={12}
+              tone="danger"
+              className="ml-auto"
+              label={t("connector.unsubscribe_title")}
               onClick={async () => {
                 await unsubscribeChannel(s.session_id, s.channel);
                 onChanged();
               }}
-            >
-              ×
-            </button>
+            />
           </span>
         ))}
       </span>

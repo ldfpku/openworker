@@ -14,6 +14,7 @@ import type { TFunction } from "i18next";
 import { Trans, getI18n, useTranslation } from "react-i18next";
 import type { Board, BoardItem, BoardItemDetail, BoardTimelineEvent } from "../api";
 import { Icon } from "./Icon";
+import { IconButton } from "./IconButton";
 
 // Rail display order: needs-attention first (mock UX-030: "blocked on top").
 const RAIL_GROUPS: { state: string; labelKey: string }[] = [
@@ -220,14 +221,7 @@ export function BoardOverlay({
             <span>{t("rail.board_title")}</span>
             <span className="board-overlay-space">{board.name}</span>
           </div>
-          <button
-            className="artifact-icon-btn"
-            onClick={onClose}
-            aria-label={t("board.close_board")}
-            title={t("rail.close")}
-          >
-            <Icon name="x" size={16} />
-          </button>
+          <IconButton icon="x" onClick={onClose} label={t("board.close_board")} />
         </div>
         <div className="board-overlay-body">
           <div className="board-list">

@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { addModel, getSettings, removeModel, setDefaultModel, type ProviderCatalog } from "../api";
 import { isFreeModel } from "../providers/logos";
 import { formatRelative } from "../relTime";
+import { BTN_ACCENT_SM } from "./buttons";
 
 // Cloud-account providers dispatch by a family segment baked into the model id
 // (`bedrock:claude/…`, `vertex:openweight/…`). The add-model row shows a dropdown so
@@ -212,7 +213,7 @@ export function ModelChecklist({
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && !isComposing(e) && add()}
           />
-          <button className="btn-primary sm" onClick={add} disabled={!draft.trim()}>
+          <button className={BTN_ACCENT_SM} onClick={add} disabled={!draft.trim()}>
             {t("models.add_btn")}
           </button>
         </div>
