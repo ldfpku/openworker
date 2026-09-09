@@ -169,13 +169,18 @@ export async function checkQuota(
   env: Env,
   email: string,
   limits: Limits,
-  now: number
+  now: number,
+  opts: { metered?: boolean } = {}
 ): Promise<QuotaVerdict> {
   if (unlimited(limits)) return { ok: true };
   // A zero is an explicit suspension, and it should not cost a database round trip.
   if (limits.rpm === 0 || limits.rpd === 0 || limits.tpd === 0) {
     return { ok: false, scope: "suspended", limit: 0, used: 0, retryAfter: toNextDay(now) };
   }
+  // `metered: false` — the request is admitted without touching the counters (the model
+  // list: free upstream, and never something a generation ceiling should refuse). A
+  // suspension above still applies; only the ceilings are skipped.
+  if (opts.metered === false) return { ok: true };
 
   const counters = await readCounters(env, email, bucketsAt(now));
 

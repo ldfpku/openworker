@@ -226,6 +226,17 @@ def create_app(manager: SessionManager) -> FastAPI:
             import traceback
 
             traceback.print_exc()
+        try:
+            # Background pulls of every configured provider's live model list, so the
+            # composer picker and Settings ▸ Models are current before anyone opens them
+            # (each is a daemon thread; nothing here waits on the network).
+            warming = manager.warm_model_catalogs()
+            if warming:
+                print(f"[coworker] model catalogs refreshing: {', '.join(warming)}")
+        except Exception:  # best-effort cache warm-up — never a reason not to start
+            import traceback
+
+            traceback.print_exc()
         yield
         await manager.aclose()  # stop gateway + close MCP connections on shutdown
 
@@ -1703,6 +1714,10 @@ def create_app(manager: SessionManager) -> FastAPI:
                 ),
                 status_code=400,
             )
+        # Signing in is what makes the relay answer `/v1beta/models` at all: pull the
+        # catalog now, rather than leaving a "not signed in" failure recorded minutes ago
+        # to sit out its retry window while Settings shows the built-in list.
+        manager.kick_catalog_refresh("gemini")
         who = result.get("name") or result.get("email") or ""
         return HTMLResponse(
             _browser_page(

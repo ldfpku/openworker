@@ -613,7 +613,13 @@ export default {
     // The counting gate. Keyed on the verified mailbox, so rotating a Google key does not
     // reset anyone's counter. Deliberately last: a client that is merely misconfigured
     // should hear about that first, and should not burn a slot doing so.
-    const verdict = await checkQuota(env, user.email, user.limits, t0);
+    //
+    // Listing models is not metered: it is free at Google, and the app does it in the
+    // background every few hours (and on every Settings visit while its cache is stale) —
+    // a ceiling meant for generation must neither refuse that list nor let it spend one of
+    // the person's slots. Suspension (a limit of 0) still applies to everything.
+    const metered = kind !== "models";
+    const verdict = await checkQuota(env, user.email, user.limits, t0, { metered });
     if (!verdict.ok) {
       const latencyMs = Date.now() - t0;
       ctx.waitUntil(
@@ -628,7 +634,9 @@ export default {
     }
     // Admitted — count it now rather than at completion, so a burst of long streaming
     // requests cannot all slip under the per-minute ceiling while none of them has finished.
-    ctx.waitUntil(runCounters(env, countRequest(env, user.email, user.limits, t0)));
+    if (metered) {
+      ctx.waitUntil(runCounters(env, countRequest(env, user.email, user.limits, t0)));
+    }
 
     const headers = new Headers(request.headers);
     for (const name of STRIP_REQUEST_HEADERS) headers.delete(name);

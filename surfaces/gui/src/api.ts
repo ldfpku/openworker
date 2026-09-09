@@ -1983,10 +1983,15 @@ export interface ProviderField {
 // Live model-catalog status for a provider (absent on old servers — treat as "no catalog info").
 export interface ProviderCatalog {
   supported: boolean; // false = this provider has no list-models API (ark, bedrock, vertex, aigw, openai-codex, ollama)
-  fetched_at: string | null; // ISO timestamp of the last successful fetch, if any
-  error: string | null; // last fetch error, if any
+  fetched_at: string | null; // ISO timestamp of the last SUCCESSFUL fetch, if any
+  error: string | null; // the latest fetch failure since then, if any (can coexist with live)
+  failed_at?: string | null; // ISO timestamp of that failure (absent on older servers)
   live: boolean; // true = suggested_models came from the provider's real-time catalog
   count: number; // number of models in the catalog
+  // true = a background fetch is running right now (the server kicks one on the providers
+  // request itself when the cache is stale, so the first answer after an upgrade is this
+  // rather than live/error) — the Models tab polls until it settles. Absent on older servers.
+  pending?: boolean;
 }
 
 export interface ProviderInfo {

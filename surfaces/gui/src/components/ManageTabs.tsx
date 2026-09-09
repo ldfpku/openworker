@@ -64,6 +64,30 @@ export function ModelsTab() {
   useEffect(() => {
     refreshSettings();
   }, []);
+  // While the open provider's catalog is still being fetched (the server kicks the pull on
+  // the providers request itself and answers `pending` before it lands — every first visit
+  // after an upgrade), ask again every couple of seconds until it settles into live/error,
+  // so the list appears without leaving the page. Before 2026-09-09 nothing re-asked, and
+  // that state rendered no status row either: a colleague saw neither the list nor a way
+  // to fetch it. Bounded — a pull that never reports back must not poll forever; the
+  // status row's Refresh button stays as the manual way out.
+  const catalogPending =
+    !!ps.info?.configured && !!ps.info.catalog?.supported && !ps.info.catalog.live && !ps.info.catalog.error;
+  useEffect(() => {
+    if (!catalogPending) return;
+    const POLL_MS = 2000;
+    const MAX_POLLS = 15;
+    let polls = 0;
+    const timer = window.setInterval(() => {
+      if (++polls > MAX_POLLS) {
+        window.clearInterval(timer);
+        return;
+      }
+      void ps.refreshProviders();
+      refreshSettings();
+    }, POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [catalogPending, ps.sel]);
 
   if (settings === undefined) return <div className="text-[13px] text-muted">{t("manage.loading")}</div>;
 

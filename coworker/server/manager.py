@@ -287,16 +287,16 @@ class SessionManager:
         self._prefs = self._load_prefs()
         if self._prefs.get("default_model"):
             self.model = self._prefs["default_model"]
-        # Live model-catalog cache (per provider: fetched_at / models / error), persisted
-        # under prefs["model_catalog"] so a restart doesn't lose an already-pulled list.
-        # Malformed entries (wrong type, or a provider that no longer supports a catalog)
-        # are dropped rather than carried forward.
+        # Live model-catalog cache (per provider: fetched_at / models / error / failed_at),
+        # persisted under prefs["model_catalog"] so a restart doesn't lose an already-pulled
+        # list. Malformed entries (wrong type, or a provider that no longer supports a
+        # catalog) are dropped rather than carried forward; older shapes are upgraded.
         self._catalog_lock = threading.Lock()
         self._catalog_inflight: set[str] = set()
         raw_catalog = self._prefs.get("model_catalog")
         self._model_catalog: dict[str, dict[str, Any]] = (
             {
-                name: entry
+                name: self._normalize_catalog_entry(entry)
                 for name, entry in raw_catalog.items()
                 if name in CATALOG_PROVIDERS and isinstance(entry, dict)
             }
@@ -3169,6 +3169,21 @@ class SessionManager:
     # {"fetched_at": iso8601, "models": [CatalogModel.to_dict(), ...], "error": str|None}.
     # A provider with no entry has simply never been fetched (fresh install, or a
     # provider that doesn't support a catalog at all).
+    @staticmethod
+    def _normalize_catalog_entry(entry: dict[str, Any]) -> dict[str, Any]:
+        """Bring a persisted entry up to the current shape. Before 2026-09-09 a FAILED pull
+        overwrote `fetched_at` (there was no `failed_at`), so an old entry carrying an
+        error has its failure time in the wrong slot: move it, and forget a `fetched_at`
+        that never was a success (no models) — otherwise a legacy failure would wait out
+        the full TTL instead of the retry window, and Settings would date a list that
+        never arrived."""
+        out = dict(entry)
+        if out.get("error") and not out.get("failed_at"):
+            out["failed_at"] = out.get("fetched_at")
+            if not out.get("models"):
+                out["fetched_at"] = None
+        return out
+
     def _catalog_entry(self, name: str) -> dict[str, Any]:
         return dict(getattr(self, "_model_catalog", {}).get(name) or {})
 
@@ -3179,35 +3194,50 @@ class SessionManager:
         models = getattr(self, "_model_catalog", {}).get(name, {}).get("models")
         return models if isinstance(models, list) else []
 
+    @staticmethod
+    def _catalog_age(stamp: Any) -> Optional[float]:
+        """Seconds since an ISO-8601 stamp, or None when absent/unparseable."""
+        from datetime import datetime, timezone
+
+        try:
+            return (
+                datetime.now(timezone.utc) - datetime.fromisoformat(stamp)
+            ).total_seconds()
+        except (TypeError, ValueError):
+            return None
+
     def _catalog_is_stale(self, name: str) -> bool:
-        """No entry yet → stale. An entry with live models is fresh for MODEL_CATALOG_TTL;
-        an entry that only ever recorded a failure (no models) retries sooner, on
-        MODEL_CATALOG_RETRY, so a fixed key or a recovered outage is noticed quickly."""
+        """No entry yet → stale. `fetched_at` is the last SUCCESSFUL pull and holds for
+        MODEL_CATALOG_TTL. `failed_at` is the latest failure since then and, while set,
+        governs instead: retry on MODEL_CATALOG_RETRY, so a fixed key or a recovered
+        outage is noticed within minutes while an outage isn't hammered on every settings
+        load. Neither stamp parseable → stale."""
         entry = getattr(self, "_model_catalog", {}).get(name)
         if not entry:
             return True
-        fetched_at = entry.get("fetched_at")
-        try:
-            from datetime import datetime, timezone
-
-            age = (
-                datetime.now(timezone.utc) - datetime.fromisoformat(fetched_at)
-            ).total_seconds()
-        except (TypeError, ValueError):
-            return True
-        ttl = self.MODEL_CATALOG_TTL if entry.get("models") else self.MODEL_CATALOG_RETRY
-        return age > ttl
+        failed = self._catalog_age(entry.get("failed_at"))
+        if failed is not None:
+            return failed > self.MODEL_CATALOG_RETRY
+        fetched = self._catalog_age(entry.get("fetched_at"))
+        return fetched is None or fetched > self.MODEL_CATALOG_TTL
 
     def _catalog_status(self, name: str) -> dict[str, Any]:
-        """Settings-pane-facing summary of a provider's catalog state."""
+        """Settings-pane-facing summary of a provider's catalog state. `pending` = a
+        background pull is running right now. `get_providers` starts one for a stale or
+        never-fetched provider *inside the same request*, so the first answer after an
+        upgrade would otherwise read "no catalog, no error" — a state the GUI used to
+        render as nothing at all (no status line, no Refresh; owner-hit 2026-09-09 on a
+        colleague's machine). With the flag the GUI shows "fetching…" and asks again."""
         entry = getattr(self, "_model_catalog", {}).get(name) or {}
         models = entry.get("models") if isinstance(entry.get("models"), list) else []
         return {
             "supported": supports_catalog(name),
-            "fetched_at": entry.get("fetched_at"),
-            "error": entry.get("error"),
+            "fetched_at": entry.get("fetched_at"),  # last SUCCESSFUL pull
+            "error": entry.get("error"),  # latest failure since then, if any
+            "failed_at": entry.get("failed_at"),
             "live": bool(models),
             "count": len(models),
+            "pending": name in getattr(self, "_catalog_inflight", ()),
         }
 
     def _probe_credentials(
@@ -3314,10 +3344,11 @@ class SessionManager:
         )
 
     def _store_model_catalog(self, name: str, result: dict[str, Any]) -> None:
-        """Persist a fetch outcome: success replaces the cached models outright; a failure
-        keeps whatever models were already cached (an outage shouldn't empty a picker that
-        was working a minute ago) and just records the error; "unsupported" (a provider
-        that lost catalog support, or never had it) drops the entry entirely."""
+        """Persist a fetch outcome: success replaces the cached models outright and stamps
+        `fetched_at`; a failure keeps whatever models were already cached (an outage
+        shouldn't empty a picker that was working a minute ago) and records the error
+        under its own `failed_at`; "unsupported" (a provider that lost catalog support,
+        or never had it) drops the entry entirely."""
         from datetime import datetime, timezone
 
         now = datetime.now(timezone.utc).isoformat()
@@ -3329,12 +3360,17 @@ class SessionManager:
                     "fetched_at": now,
                     "models": result.get("models") or [],
                     "error": None,
+                    "failed_at": None,
                 }
             else:
+                # `fetched_at` stays what it was — the last time the list actually came
+                # back. A failure used to overwrite it, so Settings read "updated just
+                # now" over a pull that had just failed (owner-hit 2026-09-09: nvidia and
+                # custom both said "updated 3h ago" about a ConnectError).
                 entry = dict(self._model_catalog.get(name) or {})
                 entry["models"] = entry.get("models") or []
                 entry["error"] = result.get("error")
-                entry["fetched_at"] = now
+                entry["failed_at"] = now
                 self._model_catalog[name] = entry
             self._prefs["model_catalog"] = dict(self._model_catalog)
         try:
@@ -3371,10 +3407,13 @@ class SessionManager:
             out["error"] = result["error"]
         return out
 
-    def _kick_catalog_refresh(self, name: str) -> None:
-        """Start one daemon-thread catalog fetch for `name`; concurrent calls (another
-        settings-load racing in) no-op via `_catalog_inflight`. Never raises, never
-        blocks the caller — `get_providers` calls this inline on every fetch."""
+    def kick_catalog_refresh(self, name: str) -> None:
+        """Start one daemon-thread catalog fetch for `name`, TTL/retry window ignored;
+        concurrent calls (another settings-load racing in) no-op via `_catalog_inflight`.
+        Never raises, never blocks the caller. Callers: `get_providers` (stale cache),
+        `warm_model_catalogs` (server start), and the relay sign-in callback in app.py —
+        signing in is what makes the relay answer `/v1beta/models` at all, and a "not
+        signed in" failure recorded minutes earlier must not sit out its retry window."""
         if not self._provider_configured(name) or not supports_catalog(name):
             return
         with self._catalog_lock:
@@ -3396,6 +3435,26 @@ class SessionManager:
             target=work, name=f"catalog-refresh-{name}", daemon=True
         ).start()
 
+    def _catalog_wants_refresh(self, name: str, configured: bool) -> bool:
+        """Whether a background pull is due: a configured provider with a model-list API
+        whose cache is missing or past its TTL (a recorded failure retries on the shorter
+        MODEL_CATALOG_RETRY). One predicate for `get_providers` and `warm_model_catalogs`."""
+        return configured and supports_catalog(name) and self._catalog_is_stale(name)
+
+    def warm_model_catalogs(self) -> list[str]:
+        """Server start: kick a pull for every configured provider whose catalog is stale
+        or was never fetched. Until 2026-09-09 opening Settings ▸ Models was the ONLY
+        trigger, so a colleague who had set Gemini up before the catalog feature shipped
+        (v0.4.7) reached that page to a first answer of "not fetched yet" — and, with no
+        second look, never saw the list land. Returns the providers kicked (logs/tests)."""
+        kicked: list[str] = []
+        for d in provider_descriptors():
+            profile = self.secrets.get(f"provider:{d.name}") or {}
+            if self._catalog_wants_refresh(d.name, descriptor_configured(d, profile)):
+                self.kick_catalog_refresh(d.name)
+                kicked.append(d.name)
+        return kicked
+
     # -- model providers (OpenAI, Ollama, …) ------------------------------------
     def get_providers(self) -> list[dict[str, Any]]:
         """Descriptor + per-provider status for the Settings UI. Never returns secret values;
@@ -3405,8 +3464,8 @@ class SessionManager:
         for d in provider_descriptors():
             profile = self.secrets.get(f"provider:{d.name}") or {}
             configured = descriptor_configured(d, profile)
-            if configured and supports_catalog(d.name) and self._catalog_is_stale(d.name):
-                self._kick_catalog_refresh(d.name)
+            if self._catalog_wants_refresh(d.name, configured):
+                self.kick_catalog_refresh(d.name)
             values = {
                 f.key: profile.get(f.key)
                 for f in d.fields

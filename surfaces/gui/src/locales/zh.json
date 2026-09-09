@@ -1243,6 +1243,8 @@
     "add_placeholder": "添加其他模型…",
     "catalog_error": "拉取模型列表失败（{{error}}），正在显示内置列表。",
     "catalog_live": "模型列表来自提供商 API · {{when}}更新",
+    "catalog_live_error": "模型列表来自提供商 API · {{when}}更新 · 最近一次刷新失败（{{error}}）",
+    "catalog_pending": "正在从提供商获取模型列表…",
     "catalog_refresh": "刷新",
     "catalog_refreshing": "正在刷新…",
     "catalog_retry": "重试",

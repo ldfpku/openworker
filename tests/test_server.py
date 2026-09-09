@@ -1273,6 +1273,34 @@ def test_providers_models_refresh_route_unsupported_provider(tmp_path):
     assert res["ok"] is False and res["unsupported"] is True
 
 
+def test_relay_callback_success_kicks_the_gemini_catalog(tmp_path, monkeypatch):
+    """Signing in to the company relay is what makes it answer `/v1beta/models`, so a
+    completed sign-in pulls Gemini's catalog right away — a "not signed in" failure
+    recorded minutes earlier must not sit out its retry window while Settings shows the
+    built-in list. A failed exchange kicks nothing."""
+    from coworker import relay_auth
+
+    kicked: list[str] = []
+    monkeypatch.setattr(
+        SessionManager, "kick_catalog_refresh", lambda self, name: kicked.append(name)
+    )
+    monkeypatch.setattr(
+        relay_auth,
+        "deliver_callback",
+        lambda secrets, code, state: {"ok": True, "email": "a@x.test", "name": "A"},
+    )
+    client = _client(tmp_path, [])
+    res = client.get("/relay/callback", params={"code": "c", "state": "s"})
+    assert res.status_code == 200 and kicked == ["gemini"]
+
+    monkeypatch.setattr(
+        relay_auth, "deliver_callback", lambda secrets, code, state: {"ok": False, "error": "x"}
+    )
+    kicked.clear()
+    res = client.get("/relay/callback", params={"code": "c", "state": "s"})
+    assert res.status_code == 400 and kicked == []
+
+
 def test_ws_ready_reports_live_turn(tmp_path):
     # A reconnect can land mid-turn (sidebar revisit, relaunch, dropped socket). `ready`
     # must carry server truth on the running turn or the GUI loses Stop + the waiting row

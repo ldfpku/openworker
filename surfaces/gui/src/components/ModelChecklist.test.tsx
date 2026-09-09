@@ -108,6 +108,98 @@ describe("ModelChecklist live catalog status", () => {
     );
     expect(screen.getByPlaceholderText("Add another model…")).toBeTruthy();
     expect(screen.getByText(/Couldn't fetch the model list \(timeout\)/)).toBeTruthy();
+    expect(screen.getByText("Retry")).toBeTruthy();
+  });
+
+  it("keeps the live list but says the latest refresh failed when an error rides along", () => {
+    // A failure after a successful pull: the cached list stays (and stays editable as the
+    // provider's own), the row dates the last success and names the failure, and the
+    // button reads Retry. Before 2026-09-09 the error was hidden and the date was the
+    // failure's (owner's own nvidia/custom rows said "updated 3h ago" about a ConnectError).
+    const catalog: ProviderCatalog = {
+      supported: true,
+      live: true,
+      fetched_at: "2026-09-09T01:00:00Z",
+      error: "Couldn't reach OpenAI (ConnectError).",
+      failed_at: "2026-09-09T04:00:00Z",
+      count: 1,
+    };
+    render(
+      <ModelChecklist
+        provider="openai"
+        knownProviders={KNOWN}
+        suggested={["gpt-5.5"]}
+        curated={[]}
+        defaultModel=""
+        catalog={catalog}
+        onRefresh={async () => {}}
+        onChanged={() => {}}
+      />,
+    );
+    expect(screen.getByText(/Model list from the provider's API · updated .* · the latest refresh failed \(Couldn't reach OpenAI/)).toBeTruthy();
+    expect(screen.getByText("Retry")).toBeTruthy();
+    expect(screen.queryByPlaceholderText("Add another model…")).toBeNull();
+    expect(screen.getAllByRole("checkbox")).toHaveLength(1);
+  });
+
+  it("shows a fetching line with a Refresh button while the first pull is still in flight", () => {
+    // The very first Settings visit after an upgrade: the server kicked the pull on the
+    // providers request and answered before it landed. This state used to render NOTHING
+    // (no status line, no button) — what a colleague on v0.4.7 saw (owner-hit 2026-09-09).
+    const onRefresh = vi.fn(async () => {});
+    const catalog: ProviderCatalog = { supported: true, live: false, fetched_at: null, error: null, count: 0, pending: true };
+    render(
+      <ModelChecklist
+        provider="gemini"
+        knownProviders={KNOWN}
+        suggested={["gemini-3.5-flash"]}
+        curated={[]}
+        defaultModel=""
+        catalog={catalog}
+        onRefresh={onRefresh}
+        onChanged={() => {}}
+      />,
+    );
+    expect(screen.getByText("Fetching the model list from the provider…")).toBeTruthy();
+    expect(screen.getByPlaceholderText("Add another model…")).toBeTruthy(); // built-in list still editable meanwhile
+    fireEvent.click(screen.getByText("Refresh"));
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats an older server's answer without the pending flag the same way", () => {
+    const catalog: ProviderCatalog = { supported: true, live: false, fetched_at: null, error: null, count: 0 };
+    render(
+      <ModelChecklist
+        provider="gemini"
+        knownProviders={KNOWN}
+        suggested={["gemini-3.5-flash"]}
+        curated={[]}
+        defaultModel=""
+        catalog={catalog}
+        onRefresh={async () => {}}
+        onChanged={() => {}}
+      />,
+    );
+    expect(screen.getByText("Fetching the model list from the provider…")).toBeTruthy();
+    expect(screen.getByText("Refresh")).toBeTruthy();
+  });
+
+  it("shows no status row for a provider without a model-list API", () => {
+    const catalog: ProviderCatalog = { supported: false, live: false, fetched_at: null, error: null, count: 0 };
+    render(
+      <ModelChecklist
+        provider="openai"
+        knownProviders={KNOWN}
+        suggested={["gpt-5.5"]}
+        curated={[]}
+        defaultModel=""
+        catalog={catalog}
+        onRefresh={async () => {}}
+        onChanged={() => {}}
+      />,
+    );
+    expect(screen.queryByTestId("mlist-catalog-status")).toBeNull();
+    expect(screen.getByText(/no model-list API/)).toBeTruthy();
   });
 
   it("filters the rows by id/label once there are more than 12 and the catalog is live", () => {

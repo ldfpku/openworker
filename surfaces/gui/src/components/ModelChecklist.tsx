@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { addModel, getSettings, removeModel, setDefaultModel, type ProviderCatalog } from "../api";
 import { isFreeModel } from "../providers/logos";
 import { formatRelative } from "../relTime";
-import { BTN_ACCENT_SM } from "./buttons";
+import { BTN_ACCENT_SM, BTN_BORDERED_SM } from "./buttons";
 
 // Cloud-account providers dispatch by a family segment baked into the model id
 // (`bedrock:claude/…`, `vertex:openweight/…`). The add-model row shows a dropdown so
@@ -113,31 +113,35 @@ export function ModelChecklist({
     }
   };
 
+  // One status row for every provider that HAS a model-list API, whatever state the fetch
+  // is in — the Refresh button is the way out of each of them. The third state ("not
+  // fetched yet": the server kicks the pull on the providers request itself and answers
+  // before it lands, i.e. every first visit after an upgrade) used to render nothing at
+  // all, so a colleague saw neither the list nor a way to ask for it (owner-hit 2026-09-09).
+  // A live list can carry an error too: the cached list still shows (an outage must not
+  // empty a picker that worked a minute ago), but the row says the latest refresh failed
+  // instead of only dating the last success.
+  const status = !catalog?.supported
+    ? null
+    : catalog.live
+      ? {
+          text: t(catalog.error ? "models.catalog_live_error" : "models.catalog_live", {
+            when: formatRelative(catalog.fetched_at, t, { style: "short" }),
+            error: catalog.error,
+          }),
+          action: t(catalog.error ? "models.catalog_retry" : "models.catalog_refresh"),
+        }
+      : catalog.error
+        ? { text: t("models.catalog_error", { error: catalog.error }), action: t("models.catalog_retry") }
+        : { text: t("models.catalog_pending"), action: t("models.catalog_refresh") };
+
   return (
     <div className="mlist">
-      {catalog?.live && (
-        <div className="text-[12px] text-muted mb-1.5 flex items-center gap-2">
-          <span>
-            {t("models.catalog_live", { when: formatRelative(catalog.fetched_at, t, { style: "short" }) })}
-          </span>
-          <button
-            className="text-[12px] px-2 py-0.5 rounded-md border border-line bg-paper hover:border-lineStrong shrink-0 disabled:opacity-50"
-            onClick={doRefresh}
-            disabled={refreshing}
-          >
-            {refreshing ? t("models.catalog_refreshing") : t("models.catalog_refresh")}
-          </button>
-        </div>
-      )}
-      {catalog && !catalog.live && catalog.error && (
-        <div className="text-[12px] text-muted mb-1.5 flex items-center gap-2">
-          <span>{t("models.catalog_error", { error: catalog.error })}</span>
-          <button
-            className="text-[12px] px-2 py-0.5 rounded-md border border-line bg-paper hover:border-lineStrong shrink-0 disabled:opacity-50"
-            onClick={doRefresh}
-            disabled={refreshing}
-          >
-            {refreshing ? t("models.catalog_refreshing") : t("models.catalog_retry")}
+      {status && (
+        <div className="text-[12px] text-muted mb-1.5 flex items-center gap-2" data-testid="mlist-catalog-status">
+          <span>{status.text}</span>
+          <button className={BTN_BORDERED_SM} onClick={doRefresh} disabled={refreshing}>
+            {refreshing ? t("models.catalog_refreshing") : status.action}
           </button>
         </div>
       )}

@@ -1269,6 +1269,8 @@
     "add_placeholder": "Add another model…",
     "catalog_error": "Couldn't fetch the model list ({{error}}) — showing the built-in list.",
     "catalog_live": "Model list from the provider's API · updated {{when}}",
+    "catalog_live_error": "Model list from the provider's API · updated {{when}} · the latest refresh failed ({{error}})",
+    "catalog_pending": "Fetching the model list from the provider…",
     "catalog_refresh": "Refresh",
     "catalog_refreshing": "Refreshing…",
     "catalog_retry": "Retry",

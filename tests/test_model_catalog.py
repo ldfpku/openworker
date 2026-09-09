@@ -465,6 +465,120 @@ def test_catalog_failure_keeps_previously_cached_models(tmp_path, monkeypatch):
     assert mgr._catalog_status("zai")["error"] == "boom"
 
 
+def test_catalog_failure_keeps_fetched_at_and_stamps_failed_at(tmp_path, monkeypatch):
+    """`fetched_at` dates the last list that actually arrived; a failure lands in
+    `failed_at`. Until 2026-09-09 a failure overwrote `fetched_at`, so Settings said
+    "updated 3h ago" about a ConnectError (the owner's own nvidia/custom rows)."""
+    mgr = SessionManager(data_dir=tmp_path / "data")
+    mgr.secrets.put("provider:zai", {"api_key": "zk"})
+    ok = {"ok": True, "models": [{"id": "glm-5.2", "label": "x", "context_window": None}]}
+    monkeypatch.setattr(
+        SessionManager, "_fetch_model_catalog", lambda self, name, fields=None: dict(ok)
+    )
+    mgr.refresh_model_catalog("zai")
+    first = mgr._catalog_status("zai")
+    assert first["fetched_at"] and first["failed_at"] is None and first["error"] is None
+
+    monkeypatch.setattr(
+        SessionManager,
+        "_fetch_model_catalog",
+        lambda self, name, fields=None: {"ok": False, "error": "boom"},
+    )
+    mgr.refresh_model_catalog("zai")
+    failed = mgr._catalog_status("zai")
+    assert failed["fetched_at"] == first["fetched_at"]  # a failure doesn't re-date the list
+    assert failed["failed_at"] and failed["error"] == "boom"
+    assert failed["live"] is True and failed["count"] == 1  # the list itself survives
+
+    monkeypatch.setattr(
+        SessionManager, "_fetch_model_catalog", lambda self, name, fields=None: dict(ok)
+    )
+    mgr.refresh_model_catalog("zai")
+    healed = mgr._catalog_status("zai")
+    assert healed["failed_at"] is None and healed["error"] is None
+    assert healed["fetched_at"] >= first["fetched_at"]
+
+
+def test_catalog_staleness_follows_the_latest_failure_then_the_ttl(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    mgr = SessionManager(data_dir=tmp_path / "data")
+    now = datetime.now(timezone.utc)
+
+    def ago(seconds: float) -> str:
+        return (now - timedelta(seconds=seconds)).isoformat()
+
+    models = [{"id": "glm-5.2", "label": "x", "context_window": None}]
+    retry, ttl = SessionManager.MODEL_CATALOG_RETRY, SessionManager.MODEL_CATALOG_TTL
+
+    # A list past its TTL with a failure a minute ago: the failure governs — don't hammer.
+    mgr._model_catalog["zai"] = {
+        "fetched_at": ago(ttl + 3600),
+        "models": models,
+        "error": "boom",
+        "failed_at": ago(60),
+    }
+    assert mgr._catalog_is_stale("zai") is False
+    mgr._model_catalog["zai"]["failed_at"] = ago(retry + 1)
+    assert mgr._catalog_is_stale("zai") is True  # retry window over
+
+    # No failure: the success date and the TTL decide.
+    mgr._model_catalog["zai"] = {
+        "fetched_at": ago(60),
+        "models": models,
+        "error": None,
+        "failed_at": None,
+    }
+    assert mgr._catalog_is_stale("zai") is False
+    mgr._model_catalog["zai"]["fetched_at"] = ago(ttl + 1)
+    assert mgr._catalog_is_stale("zai") is True
+
+    # A failure-only entry waits out the (short) retry window too.
+    mgr._model_catalog["zai"] = {
+        "fetched_at": None,
+        "models": [],
+        "error": "boom",
+        "failed_at": ago(30),
+    }
+    assert mgr._catalog_is_stale("zai") is False
+    mgr._model_catalog["zai"]["failed_at"] = ago(retry + 1)
+    assert mgr._catalog_is_stale("zai") is True
+
+    # Nothing parseable → stale.
+    mgr._model_catalog["zai"] = {
+        "fetched_at": "garbage",
+        "models": [],
+        "error": None,
+        "failed_at": None,
+    }
+    assert mgr._catalog_is_stale("zai") is True
+
+
+def test_legacy_catalog_entries_are_upgraded_on_load(tmp_path):
+    """Pre-2026-09-09 prefs stamped failures into `fetched_at`. On load, an entry carrying
+    an error moves that stamp to `failed_at`; a failure-only entry also forgets the
+    `fetched_at` it never earned — so it retries on the short window instead of the TTL,
+    and Settings never dates a list that never arrived."""
+    stamp = "2026-09-09T01:00:00+00:00"
+    model = [{"id": "m", "label": "x", "context_window": None}]
+    seed = SessionManager(data_dir=tmp_path / "data")
+    seed._prefs["model_catalog"] = {
+        "zai": {"fetched_at": stamp, "models": [], "error": "offline"},
+        "kimi": {"fetched_at": stamp, "models": model, "error": "offline"},
+        "openai": {"fetched_at": stamp, "models": model, "error": None},
+    }
+    seed._save_prefs()
+
+    mgr = SessionManager(data_dir=tmp_path / "data")
+    zai = mgr._catalog_status("zai")
+    assert zai["fetched_at"] is None and zai["failed_at"] == stamp
+    assert zai["error"] == "offline" and zai["live"] is False
+    kimi = mgr._catalog_status("kimi")
+    assert kimi["fetched_at"] == stamp and kimi["failed_at"] == stamp and kimi["live"]
+    openai = mgr._catalog_status("openai")
+    assert openai["fetched_at"] == stamp and openai["failed_at"] is None
+
+
 def test_refresh_model_catalog_unknown_and_unsupported_and_unconfigured(tmp_path):
     mgr = SessionManager(data_dir=tmp_path / "data")
     assert mgr.refresh_model_catalog("nope") == {
@@ -480,7 +594,7 @@ def test_refresh_model_catalog_unknown_and_unsupported_and_unconfigured(tmp_path
 def test_get_providers_kicks_refresh_only_when_configured_and_stale(tmp_path, monkeypatch):
     mgr = SessionManager(data_dir=tmp_path / "data")
     calls: list[str] = []
-    monkeypatch.setattr(mgr, "_kick_catalog_refresh", lambda name: calls.append(name))
+    monkeypatch.setattr(mgr, "kick_catalog_refresh", lambda name: calls.append(name))
     mgr.get_providers()
     assert "zai" not in calls  # not configured → never kicked
 
@@ -501,7 +615,7 @@ def test_get_providers_kicks_refresh_only_when_configured_and_stale(tmp_path, mo
     assert "zai" not in calls  # fresh → not kicked again
 
 
-def test_kick_catalog_refresh_dedupes_inflight(tmp_path, monkeypatch):
+def testkick_catalog_refresh_dedupes_inflight(tmp_path, monkeypatch):
     import threading
     import time as _time
 
@@ -518,12 +632,83 @@ def test_kick_catalog_refresh_dedupes_inflight(tmp_path, monkeypatch):
         return {"ok": False, "error": "offline"}
 
     monkeypatch.setattr(SessionManager, "_fetch_model_catalog", slow_fetch)
-    mgr._kick_catalog_refresh("zai")
+    mgr.kick_catalog_refresh("zai")
     assert started.wait(timeout=2)
-    mgr._kick_catalog_refresh("zai")  # already in-flight → no-op, no second thread
+    mgr.kick_catalog_refresh("zai")  # already in-flight → no-op, no second thread
     release.set()
     _time.sleep(0.2)
     assert calls == ["zai"]
+
+
+def test_get_providers_reports_pending_while_the_first_fetch_is_in_flight(
+    tmp_path, monkeypatch
+):
+    """The first Settings visit after an upgrade: `get_providers` kicks the pull and
+    answers before it lands. That answer must say "pending", not "no catalog, no error"
+    — the GUI used to render the latter as nothing at all (no status line, no Refresh),
+    which is exactly what a colleague on v0.4.7 saw (owner-hit 2026-09-09)."""
+    import threading
+    import time as _time
+
+    mgr = SessionManager(data_dir=tmp_path / "data")
+    mgr.secrets.put("provider:zai", {"api_key": "zk"})
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_fetch(self, name, fields=None):
+        started.set()
+        release.wait(timeout=2)
+        return {"ok": False, "error": "offline"}
+
+    monkeypatch.setattr(SessionManager, "_fetch_model_catalog", slow_fetch)
+    # The in-flight mark is set on the caller's thread before the worker starts, so the
+    # very response that kicked the pull already carries `pending`.
+    row = next(p for p in mgr.get_providers() if p["name"] == "zai")
+    assert row["catalog"] == {
+        "supported": True,
+        "fetched_at": None,
+        "error": None,
+        "failed_at": None,
+        "live": False,
+        "count": 0,
+        "pending": True,
+    }
+    assert started.wait(timeout=2)
+    release.set()
+    for _ in range(100):  # the worker clears the mark in its `finally`
+        if not mgr._catalog_status("zai")["pending"]:
+            break
+        _time.sleep(0.02)
+    status = mgr._catalog_status("zai")
+    assert status["pending"] is False
+    assert status["error"] == "offline" and status["live"] is False
+
+
+def test_warm_model_catalogs_kicks_configured_stale_providers_only(tmp_path, monkeypatch):
+    """Server start pulls every configured provider's list — the trigger that was missing
+    for a colleague who had configured Gemini before the catalog feature existed (their
+    only trigger was opening Settings ▸ Models, which then showed nothing)."""
+    mgr = SessionManager(data_dir=tmp_path / "data")
+    calls: list[str] = []
+    monkeypatch.setattr(mgr, "kick_catalog_refresh", lambda name: calls.append(name))
+    mgr.warm_model_catalogs()
+    assert "zai" not in calls  # not configured → nothing to pull with
+
+    mgr.secrets.put("provider:zai", {"api_key": "zk"})
+    mgr.secrets.put("provider:ark", {"api_key": "ak"})
+    calls.clear()
+    kicked = mgr.warm_model_catalogs()
+    assert "zai" in kicked and kicked == calls
+    assert "ark" not in kicked  # configured, but no model-list API
+
+    from datetime import datetime, timezone
+
+    mgr._model_catalog["zai"] = {
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "models": [{"id": "glm-5.2", "label": "x", "context_window": None}],
+        "error": None,
+    }
+    assert "zai" not in mgr.warm_model_catalogs()  # fresh → left alone
 
 
 # -- manager: _suggested_models / _curated_models / add_model / remove_model -----------
