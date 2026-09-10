@@ -29,6 +29,7 @@ import { BackLink } from "./BackLink";
 import { BTN_ACCENT_SM, BTN_BORDERED_SM } from "./buttons";
 import { Icon } from "./Icon";
 import { Markdown } from "./Markdown";
+import { PersonaPrompt, permissionModeLabel } from "./PersonaPeek";
 import { Toggle } from "./Toggle";
 import { indexConnectors, labelFor, visualFor, type ConnectorMap } from "../connectors/visuals";
 
@@ -89,7 +90,12 @@ export function PersonaView({
   const toggleEnabled = async (next: boolean) => {
     setDetail((d) => (d ? { ...d, enabled: next } : d)); // optimistic
     const r = await setPersonaEnabled(personaId, next);
-    if (!r.ok) getPersonaDetail(personaId).then(setDetail).catch(() => {});
+    if (!r.ok) {
+      // The server refuses to switch off the default coworker (every new session and
+      // inbound DM lands on it) — say why instead of silently snapping back.
+      setMsg(r.error || t("persona.load_error"));
+      getPersonaDetail(personaId).then(setDetail).catch(() => {});
+    }
   };
 
   const toggleDefault = async (connector: string, next: boolean) => {
@@ -183,7 +189,15 @@ export function PersonaView({
             </div>
             <div className="ml-auto flex items-center gap-2">
               <span className="text-[12px] text-muted">{detail.enabled ? t("persona.enabled") : t("persona.disabled")}</span>
-              <Toggle checked={detail.enabled} onChange={toggleEnabled} title={t("persona.enable_title")} />
+              {/* The default coworker can't be switched off (new sessions, the disabled-
+                  coworker fallback and inbound DMs all land on it): pick another default
+                  first. The list page has hidden its toggle for the same reason. */}
+              <Toggle
+                checked={detail.enabled}
+                onChange={toggleEnabled}
+                disabled={detail.default}
+                title={detail.default ? t("persona.default_locked_tip") : t("persona.enable_title")}
+              />
             </div>
           </header>
 
@@ -240,6 +254,15 @@ export function PersonaView({
                   )}
                 </div>
               )}
+            </section>
+          )}
+
+          {/* the instructions themselves — the one thing a "what is this coworker" page
+              never showed (owner ask 2026-09-10). Read-only; a bundle edit changes it. */}
+          {detail.system_prompt && (
+            <section data-testid="persona-prompt-section">
+              <p className="text-[12px] text-muted mb-2 leading-relaxed">{t("persona.prompt_intro")}</p>
+              <PersonaPrompt prompt={detail.system_prompt} />
             </section>
           )}
 
@@ -349,7 +372,7 @@ export function PersonaView({
             )}
             {detail.default_permission_mode && (
               <div>
-                <span className="text-faint">{t("persona.default_mode_label")}</span> · {detail.default_permission_mode}
+                <span className="text-faint">{t("persona.default_mode_label")}</span> · {permissionModeLabel(t, detail.default_permission_mode)}
               </div>
             )}
             <div>
@@ -364,7 +387,8 @@ export function PersonaView({
               <input
                 type="checkbox"
                 checked={detail.surfaced}
-                disabled={!detail.enabled}
+                disabled={!detail.enabled || detail.default}
+                title={detail.default ? t("persona.default_locked_tip") : undefined}
                 data-testid="persona-surfaced"
                 onChange={(e) => patch({ surfaced: e.target.checked })}
               />

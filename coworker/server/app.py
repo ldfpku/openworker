@@ -639,6 +639,8 @@ def create_app(manager: SessionManager) -> FastAPI:
                 reg.set_default(persona_id)
         except KeyError:
             return {"ok": False, "error": f"unknown persona: {persona_id}"}
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
         return {"ok": True, "personas": reg.list_all(), "archived_sessions": archived}
 
     @app.delete("/v1/personas/{persona_id}")
@@ -689,6 +691,8 @@ def create_app(manager: SessionManager) -> FastAPI:
             )
         except KeyError:
             return {"ok": False, "error": f"unknown persona: {persona_id}"}
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
         return {"ok": True, "personas": manager.personas.list_all()}
 
     @app.post("/v1/personas/{persona_id}/connections")
@@ -1757,7 +1761,16 @@ def create_app(manager: SessionManager) -> FastAPI:
     async def aigw_logout() -> dict[str, Any]:
         from .. import aigw_auth
 
-        return await asyncio.to_thread(lambda: aigw_auth.logout(manager.secrets))
+        def _logout() -> dict[str, Any]:
+            out = aigw_auth.logout(manager.secrets)
+            # The gateway's models stop being callable the moment its login goes; a
+            # default left on one of them would block sending everywhere.
+            manager._forget_model_catalog("aigw")
+            manager._refresh_provider("aigw")
+            manager.ensure_default_model_available()
+            return out
+
+        return await asyncio.to_thread(_logout)
 
     @app.post("/v1/connectors/{name}/connect-managed")
     async def connector_connect_managed(
@@ -2585,6 +2598,9 @@ def create_app(manager: SessionManager) -> FastAPI:
             # old lock existed to prevent.
             if not model or manager.is_running(session_id):
                 return
+            # An explicit pick from the composer: from here on a default-model change
+            # in Settings leaves this draft alone (manager.set_default_model).
+            engine.model_pinned = True
             notice = engine.switch_model(model)
             if notice is None:  # same model, or first bind on a fresh session
                 return

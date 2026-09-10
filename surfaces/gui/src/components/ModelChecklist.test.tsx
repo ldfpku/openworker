@@ -225,3 +225,50 @@ describe("ModelChecklist live catalog status", () => {
     expect(screen.getAllByRole("checkbox")).toHaveLength(4);
   });
 });
+
+// Audit 2026-09-10 fixes: suggestions are always the open provider's (an Ollama tag named
+// like a cloud provider must not route to that provider), the default leads the list, a
+// ticked/default id the live catalog no longer carries is badged, and the by-id add row
+// stays reachable behind a link while the catalog is live.
+describe("ModelChecklist — catalog hygiene", () => {
+  const LIVE: ProviderCatalog = { supported: true, live: true, fetched_at: "2026-09-10T00:00:00Z", error: null, count: 2, pending: false };
+
+  it("prefixes every suggestion with the open provider, even one named like another provider", () => {
+    render(
+      <ModelChecklist
+        provider="ollama"
+        knownProviders={[...KNOWN, "ollama", "mistral", "qwen"]}
+        suggested={["mistral:latest", "qwen:7b"]}
+        curated={[]}
+        defaultModel=""
+        onChanged={() => {}}
+      />,
+    );
+    const boxes = screen.getAllByRole("checkbox");
+    fireEvent.click(boxes[0]);
+    expect(addModel).toHaveBeenCalledWith("ollama:mistral:latest");
+  });
+
+  it("lists the default first and badges ids the live catalog doesn't carry; add stays reachable", () => {
+    render(
+      <ModelChecklist
+        provider="gemini"
+        knownProviders={[...KNOWN, "gemini"]}
+        suggested={["gemini-3.7-flash", "gemini-3.5-flash"]}
+        curated={["gemini:gemini-3.5-flash", "gemini:gemini-3.8-flash"]}
+        defaultModel="gemini:gemini-3.8-flash"
+        catalog={LIVE}
+        onChanged={() => {}}
+      />,
+    );
+    const names = screen.getAllByTitle(/^gemini:/).map((el) => el.getAttribute("title"));
+    expect(names[0]).toBe("gemini:gemini-3.8-flash");
+    expect(screen.getByTestId("mlist-off-catalog-gemini:gemini-3.8-flash")).toBeTruthy();
+    expect(screen.queryByTestId("mlist-off-catalog-gemini:gemini-3.5-flash")).toBeNull();
+    // Live catalog: the free-type row is folded behind a link, not gone.
+    expect(screen.queryByPlaceholderText("Add another model…")).toBeNull();
+    fireEvent.click(screen.getByTestId("mlist-add-manually"));
+    addTyped("gemini-4-preview");
+    expect(addModel).toHaveBeenCalledWith("gemini:gemini-4-preview");
+  });
+});

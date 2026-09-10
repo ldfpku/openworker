@@ -33,9 +33,15 @@ vi.mock("../api", () => ({
   addModel: vi.fn(async (id: string) => ({ ok: true, models: [id], model: id })),
   removeModel: vi.fn(async () => ({ ok: true, models: [], model: "" })),
   setDefaultModel: vi.fn(async () => ({ ok: true })),
+  verifyProvider: vi.fn(async () => ({ ok: true })),
+  setProvider: vi.fn(async () => ({ ok: true })),
+  removeProvider: vi.fn(async () => ({ ok: true })),
+  codexAuthStatus: vi.fn(async () => ({})),
+  codexSignin: vi.fn(async () => ({})),
+  codexSignout: vi.fn(async () => ({})),
 }));
 
-import { getProviders } from "../api";
+import { getProviders, setProvider, verifyProvider } from "../api";
 
 afterEach(() => {
   cleanup();
@@ -91,5 +97,35 @@ describe("ModelsTab — catalog pending poll", () => {
     expect(await screen.findByText(/Model list from the provider's API/)).toBeTruthy();
     await new Promise((r) => setTimeout(r, 2300));
     expect(getProviders).toHaveBeenCalledTimes(1);
+  }, 10000);
+});
+
+// A passing Test on Settings ▸ Models saves the key and STAYS on the provider's page —
+// the model checklist under the form is the next thing to work on (owner-hit
+// 2026-09-10: the §39 onboarding auto-return slid people back to the gallery mid-setup).
+describe("ModelsTab — Test stays on the provider page", () => {
+  it("keeps the form (and its model checklist) open after a passing Test", async () => {
+    const unconfigured: ProviderInfo = { ...gemini(LIVE, ["gemini-3.5-flash"]), configured: false };
+    vi.mocked(getProviders)
+      .mockResolvedValueOnce([unconfigured])
+      .mockResolvedValue([gemini(LIVE, ["gemini-3.5-flash"])]);
+
+    render(<ModelsTab />);
+    fireEvent.click(await screen.findByTestId("set-provider-gemini"));
+    const key = (await screen.findByTestId("set-field-api_key")) as HTMLInputElement;
+    fireEvent.change(key, { target: { value: "AIza-test" } });
+    fireEvent.click(screen.getByTestId("set-test"));
+
+    // Verified + saved…
+    expect(await screen.findByTestId("set-saved-pill")).toBeTruthy();
+    expect(verifyProvider).toHaveBeenCalledWith("gemini", expect.objectContaining({ api_key: "AIza-test" }));
+    expect(setProvider).toHaveBeenCalled();
+    // …and still here a beat later: the form, the masked key, and the checklist.
+    await new Promise((r) => setTimeout(r, 1200));
+    expect(screen.getByTestId("set-back")).toBeTruthy();
+    expect(screen.queryByTestId("set-provider-gemini")).toBeNull();
+    expect(key.value).toBe("");
+    expect(key.placeholder).toBe("••••••••");
+    expect(screen.getByText("gemini-3.5-flash")).toBeTruthy();
   }, 10000);
 });

@@ -95,7 +95,19 @@ function QuotaLine({ quota }: { quota: RelayQuota }) {
   );
 }
 
-export function RelaySignIn({ tp, onChanged }: { tp: string; onChanged?: () => void }) {
+export function RelaySignIn({
+  tp,
+  onChanged,
+  keyState,
+}: {
+  tp: string;
+  onChanged?: () => void;
+  // Any string that changes when the Gemini key is saved or removed (the parent passes
+  // `configured:key_set_at`). The pane used to load its status once on mount and then,
+  // since Test stopped leaving the page, kept showing "Almost there — paste your key"
+  // next to a freshly saved key (audit 2026-09-10).
+  keyState?: string;
+}) {
   const { t } = useTranslation();
   // undefined = still loading, null = the fetch failed, object = ready.
   const [status, setStatus] = useState<RelayStatus | null | undefined>(undefined);
@@ -113,6 +125,14 @@ export function RelaySignIn({ tp, onChanged }: { tp: string; onChanged?: () => v
     void load(true);
     return () => cancelRef.current?.();
   }, []);
+  // The key half changed under us (saved via Test, or removed): re-read `has_api_key`
+  // without the verify round trip — nothing about the login moved.
+  const firstKeyState = useRef(keyState);
+  useEffect(() => {
+    if (keyState === firstKeyState.current) return;
+    firstKeyState.current = keyState;
+    void load(false);
+  }, [keyState]);
 
   const signIn = async () => {
     setError("");
@@ -203,11 +223,13 @@ export function RelaySignIn({ tp, onChanged }: { tp: string; onChanged?: () => v
             "Cloudflare emails a one-time code to your mailbox. Only addresses on the allow list receive one — ask an administrator if yours doesn't.",
           )}
         </p>
-        <p className="text-[11.5px] text-faint mt-1">
-          {t(
-            "Step 2: paste the Gemini API key your administrator issued you. Signing in says who you are; the key is what calls Google.",
-          )}
-        </p>
+        {!status.has_api_key && (
+          <p className="text-[11.5px] text-faint mt-1">
+            {t(
+              "Step 2: paste the Gemini API key your administrator issued you. Signing in says who you are; the key is what calls Google.",
+            )}
+          </p>
+        )}
         <p className="text-[11.5px] text-faint mt-1">{t("Relay: {{host}}", { host })}</p>
         {(error || status.verify_error) && (
           <p className="text-[11.5px] text-danger mt-2" data-testid={`${tp}-relay-message`}>

@@ -96,6 +96,27 @@ def test_persona_detail_endpoint(tmp_path, monkeypatch):
     }
 
 
+def test_persona_detail_carries_the_instructions(tmp_path, monkeypatch):
+    """The glance/detail page shows what a coworker actually tells the model (owner ask
+    2026-09-10): a manifest persona's markdown body, a code-built one's agent prompt."""
+    mgr = _mgr(tmp_path, monkeypatch)
+    client = TestClient(create_app(mgr))
+
+    ops = client.get("/v1/personas/ops").json()
+    entry = mgr.personas.get("ops")
+    assert ops["system_prompt"] == entry.manifest.system_prompt
+    assert ops["system_prompt"].strip()
+    assert ops["source"] == str(entry.manifest.source)
+
+    cowork = client.get("/v1/personas/cowork").json()
+    assert cowork["system_prompt"] == entry_prompt("cowork", mgr)
+    assert cowork["source"] == ""
+
+
+def entry_prompt(persona_id: str, mgr) -> str:
+    return str(mgr.personas.get(persona_id).agent().system_prompt)
+
+
 def test_persona_set_default_connection(tmp_path, monkeypatch):
     mgr = _mgr(tmp_path, monkeypatch)
     _connect_github(mgr)

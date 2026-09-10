@@ -16,3 +16,6 @@ gemini-relay/scripts/roster.csv
 # Throwaway local diagnostics (probe scripts, one-off dumps) — never committed.
 /scratch/
 .claude/settings.local.json
+
+# 桌面应用落到仓库目录里的会话附件
+/Claude outputs/

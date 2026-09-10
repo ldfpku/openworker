@@ -1413,6 +1413,11 @@ export interface PersonaDetail {
   requires_folder: boolean; // folder gate (workspace-scratch-design.md)
   recommends: PersonaRecommendation[];
   default_connections: PersonaDefaultConnection[];
+  /** The instructions the coworker runs on (manifest body, or the built-in agent's
+   *  prompt). Read-only here; absent on older servers. */
+  system_prompt?: string;
+  /** Where a manifest-backed coworker's bundle lives on this machine ("" for built-ins). */
+  source?: string;
 }
 
 /** Fetch one bundle screenshot with launch auth and hand back an object URL. */
@@ -2013,6 +2018,9 @@ export interface ProviderInfo {
   authorizing?: boolean;
   last_error?: string | null;
   catalog?: ProviderCatalog; // absent on old servers that predate the live-catalog feature
+  /** Gemini only: a key is stored but the relay sign-in is missing/expired — the next
+   *  request would fail "not signed in", so the card must not read "Connected". */
+  needs_signin?: boolean;
 }
 
 // -- ChatGPT-subscription provider sign-in (OAuth; tokens never reach the GUI) ------
@@ -2687,6 +2695,32 @@ export interface LibraryExpert {
   emoji: string;
   color: string; // CSS color keyword or hex — pass straight to a style prop
   pair: boolean; // same id also exists in the other-language library
+  /** Written on this machine (id `local/…`) — the pack knows nothing of it (P4). */
+  local?: boolean;
+  /** A pack expert whose text was edited here; the pack original is one click away. */
+  modified?: boolean;
+  updated_at?: string;
+}
+
+/** The editable fields of an expert (pack override or local); the id/lib address it. */
+export interface LibraryExpertMeta {
+  name: string;
+  description: string;
+  emoji: string;
+  color: string;
+  category: string;
+  categoryName: string;
+}
+
+export interface LibraryExpertPrompt {
+  name: string;
+  prompt: string;
+  local?: boolean;
+  modified?: boolean;
+  /** The shipped text, present for pack experts (equal to `prompt` unless modified). */
+  pack_prompt?: string;
+  meta?: LibraryExpertMeta;
+  updated_at?: string;
 }
 
 export interface LibrarySkill {
@@ -2726,12 +2760,79 @@ export async function libraryExperts(lib: "zh" | "en"): Promise<LibraryExpert[]>
 export async function libraryExpertPrompt(
   lib: "zh" | "en",
   id: string,
-): Promise<{ name: string; prompt: string } | null> {
+): Promise<LibraryExpertPrompt | null> {
   const res = await fetch(
     libraryUrl(`/expert-prompt?lib=${encodeURIComponent(lib)}&id=${encodeURIComponent(id)}`),
   );
   const data = await res.json();
-  return data.ok ? { name: data.name, prompt: data.prompt } : null;
+  return data.ok
+    ? {
+        name: data.name,
+        prompt: data.prompt,
+        local: data.local === true,
+        modified: data.modified === true,
+        pack_prompt: data.pack_prompt,
+        meta: data.meta,
+        updated_at: data.updated_at,
+      }
+    : null;
+}
+
+// -- Library local layer (P4) -------------------------------------------------
+// Edits never touch the pack: they live in the app's state dir on this machine. An
+// expert that is already installed as a coworker is re-installed from the saved text
+// (`reinstalled` names them), so the next session it hosts runs on the edit.
+
+export async function librarySaveExpert(body: {
+  lib: "zh" | "en";
+  id?: string; // omit to create a new local expert
+  name: string;
+  description?: string;
+  emoji?: string;
+  color?: string;
+  category?: string;
+  categoryName?: string;
+  prompt: string;
+}): Promise<{
+  ok: boolean;
+  id?: string;
+  created?: boolean;
+  expert?: LibraryExpert;
+  prompt?: string;
+  path?: string;
+  reinstalled?: string[];
+  error?: string;
+}> {
+  const res = await fetch(libraryUrl("/expert"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const out = await res.json();
+  if (out.ok && out.reinstalled?.length) announcePersonasChanged();
+  return out;
+}
+
+/** Drop the local text: restores a pack expert's shipped original, deletes a local one. */
+export async function libraryDeleteExpert(
+  lib: "zh" | "en",
+  id: string,
+): Promise<{
+  ok: boolean;
+  deleted?: boolean;
+  restored?: boolean;
+  reinstalled?: string[];
+  /** Coworkers this flow had installed for a deleted local expert — gone with it. */
+  uninstalled?: string[];
+  error?: string;
+}> {
+  const res = await fetch(
+    libraryUrl(`/expert?lib=${encodeURIComponent(lib)}&id=${encodeURIComponent(id)}`),
+    { method: "DELETE" },
+  );
+  const out = await res.json();
+  if (out.ok && (out.reinstalled?.length || out.uninstalled?.length)) announcePersonasChanged();
+  return out;
 }
 
 export async function librarySkills(): Promise<LibrarySkill[]> {
@@ -2812,11 +2913,13 @@ export async function libraryActivateExpert(
 
 export async function libraryInstallSkills(
   names: string[],
+  // replace=true re-copies the shipped original over an installed (possibly edited) copy.
+  replace = false,
 ): Promise<{ ok: boolean; results?: { name: string; ok: boolean; error?: string }[]; error?: string }> {
   const res = await fetch(libraryUrl("/install-skills"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ names }),
+    body: JSON.stringify(replace ? { names, replace: true } : { names }),
   });
   return res.json();
 }

@@ -145,6 +145,9 @@ def test_overview_counts(tmp_path, pack_dir):
     set_pack_for_tests(LibraryPack(root=pack_dir))
     client = _client(tmp_path)
     res = client.get("/v1/library").json()
+    # local_dir: where this machine's own edits live (P4, library/local.py) — a path,
+    # so it is asserted by shape rather than value.
+    assert res.pop("local_dir").endswith("library-local")
     assert res == {
         "ok": True,
         "version": 1,
@@ -161,6 +164,8 @@ def test_experts_lib_zh_fields(tmp_path, pack_dir):
     client = _client(tmp_path)
     res = client.get("/v1/library/experts", params={"lib": "zh"}).json()
     assert res["ok"] is True
+    # `local` / `modified` (P4, library/local.py): where the row's text comes from —
+    # nothing is edited here, so both are False on every pack row.
     assert res["experts"] == [
         {
             "id": "academic/academic-geographer",
@@ -171,6 +176,8 @@ def test_experts_lib_zh_fields(tmp_path, pack_dir):
             "emoji": "🌍",
             "color": "blue",
             "pair": True,
+            "local": False,
+            "modified": False,
         },
         {
             "id": "academic/academic-historian",
@@ -181,6 +188,8 @@ def test_experts_lib_zh_fields(tmp_path, pack_dir):
             "emoji": "🤖",
             "color": "#888",
             "pair": False,
+            "local": False,
+            "modified": False,
         },
     ]
 

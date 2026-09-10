@@ -665,6 +665,9 @@ class SessionManager:
         if engine is not None:
             self._draft_carry[session_id] = {
                 "model": engine.model,
+                # A hand-picked draft model rides along too, so a default-model change
+                # made while the draft is re-targeting still leaves the pick alone.
+                "model_pinned": bool(getattr(engine, "model_pinned", False)),
                 "mode": engine.permissions.mode,
                 "messages": [m for m in engine.messages if m.get("role") != "system"],
                 "extra_roots": self._extra_roots_of(engine, session_id),
@@ -884,6 +887,8 @@ class SessionManager:
 
             engine.compaction_state = CompactionState.from_dict(record.compaction)
         engine.compaction_settings = self.compaction_settings
+        if carry is not None and carry.get("model_pinned"):
+            engine.model_pinned = True
         self._engines[session_id] = engine
         self._draft_carry.pop(session_id, None)  # consumed: the rebuild succeeded
         if carry is not None and record is not None:
@@ -1049,12 +1054,27 @@ class SessionManager:
             if media_dir
             else []
         )
+        # The instructions the coworker actually runs on. A manifest-backed persona's is
+        # its markdown body; a code-built one (OpenWorker, Code) materializes its Agent for
+        # the text. Shown read-only wherever a coworker is picked or named, so "which
+        # prompt am I about to talk to" is never a guess (owner ask 2026-09-10).
+        if manifest is not None:
+            system_prompt = manifest.system_prompt
+        else:
+            try:
+                system_prompt = str(entry.agent().system_prompt or "")
+            except Exception:  # noqa: BLE001 — a preview must never break the detail page
+                system_prompt = ""
         return {
             "id": entry.id,
             "name": entry.name,
             "icon": entry.icon,
             "tagline": entry.tagline,
             "description": manifest.description if manifest else "",
+            "system_prompt": system_prompt,
+            "source": (
+                str(manifest.source) if manifest and manifest.source else ""
+            ),
             "media": media,
             "builtin": entry.builtin,
             "group": entry.group,
@@ -1099,8 +1119,18 @@ class SessionManager:
         non-internal) sessions — disable means "put this coworker and its history away", so
         the persona's sidebar section disappears with it (owner call, 2026-07-04). Re-enabling
         never unarchives: that would overwrite the user's archive state; history returns one
-        click at a time via the Show-archived disclosure. Raises KeyError for unknown ids.
+        click at a time via the Show-archived disclosure. Raises KeyError for unknown ids
+        and ValueError when asked to disable the default persona — every new session,
+        the disabled-coworker fallback and inbound DMs land on the default, so switching
+        it off would strand them on whatever enabled entry came first (audit 2026-09-10:
+        out of the box that was an unshipped, folder-gated team worker). Pick another
+        default first.
         """
+        if not enabled and persona_id == self.personas.default_id():
+            raise ValueError(
+                "this coworker is the default for new sessions — make another one the "
+                "default before switching it off"
+            )
         self.personas.set_enabled(persona_id, enabled)
         archived = 0
         if not enabled:
@@ -3485,6 +3515,16 @@ class SessionManager:
                     d.name
                 ),
             }
+            if d.name == "gemini":
+                # The relay refuses a key without a login and a login without a key
+                # (README: "缺一样都不行"). "configured" only means the key is there, so
+                # the card said "✓ Connected" while the very next request would fail
+                # with "not signed in" (audit 2026-09-10). Say which half is missing.
+                from ..providers.gemini_provider import resolve_relay_token
+
+                row["needs_signin"] = configured and not bool(
+                    resolve_relay_token(self.secrets)
+                )
             if d.auth == "oauth":
                 # Sign-in state instead of key state; the token values themselves
                 # never leave the SecretStore.
@@ -3667,15 +3707,76 @@ class SessionManager:
         }
 
     def remove_provider(self, name: str) -> dict[str, Any]:
-        """Forget a provider's stored config (Settings ▸ Models "Remove key"). The whole
-        `provider:<name>` profile goes — key, endpoint, key_set_at — so the provider reads
-        as never configured. Curated models stay; they just gray out until a new key."""
+        """Forget a provider's stored config (Settings ▸ Models "Remove key"). The
+        `provider:<name>` profile's key, endpoint and key_set_at go, so the provider reads
+        as never configured. Curated models stay; they just gray out until a new key.
+
+        Two providers keep a LOGIN in the same profile, and "remove key" must not throw
+        that away with it (audit 2026-09-10): Gemini's relay sign-in (relay_* fields —
+        the key is the person's, the login is who they are; dropping both silently was a
+        surprise the confirm dialog never mentioned), and the AI Gateway, which has no key
+        at all — its only credential IS the sign-in, so removing it is its sign-out.
+        The cached model catalog goes too (an unconfigured card must not keep showing a
+        list as if live), and a default model left pointing at this provider moves on.
+        """
         d = get_descriptor(name)
         if d is None:
             return {"ok": False, "error": f"unknown provider: {name}"}
-        self.secrets.delete(f"provider:{name}")
+        if name == "aigw":
+            from .. import aigw_auth
+
+            aigw_auth.logout(self.secrets)
+        else:
+            profile = dict(self.secrets.get(f"provider:{name}") or {})
+            kept = {k: v for k, v in profile.items() if k.startswith("relay_")}
+            if kept:
+                self.secrets.put(f"provider:{name}", kept)
+            else:
+                self.secrets.delete(f"provider:{name}")
+        self._forget_model_catalog(name)
         self._refresh_provider(name)
+        self.ensure_default_model_available()
         return {"ok": True, "provider": name}
+
+    def _forget_model_catalog(self, name: str) -> None:
+        """Drop a provider's cached live catalog (memory + prefs) — for a provider that
+        just lost its credentials, the list would otherwise keep rendering as live."""
+        with self._catalog_lock:
+            self._model_catalog.pop(name, None)
+            self._prefs["model_catalog"] = dict(self._model_catalog)
+        try:
+            self._save_prefs()
+        except OSError:
+            logger.debug("model catalog: failed to persist prefs", exc_info=True)
+
+    def ensure_default_model_available(self) -> bool:
+        """If the default model's provider is no longer configured, move the default to
+        the first curated model whose provider still is. Returns True when it moved.
+
+        Without this, removing a key or signing out of the gateway left `model_ready`
+        false for EVERY session — the composer swaps its picker for "No model connected"
+        and refuses to send — even with another provider connected and ready (audit
+        2026-09-10). A default nobody can call is not a default."""
+        if self._provider_configured(self._model_provider(self.model)):
+            return False
+        if self._model_provider(self.model) == "ollama" and self._ollama_alive():
+            return False
+        for candidate in self._curated_models():
+            provider = self._model_provider(candidate)
+            if provider == "ollama":
+                if self._ollama_alive():
+                    break
+                continue
+            if self._provider_configured(provider):
+                break
+        else:
+            return False
+        if candidate == self.model:
+            return False
+        self.model = candidate
+        self._prefs["default_model"] = candidate
+        self._save_prefs()
+        return True
 
     # -- ChatGPT-subscription provider (OAuth, no key) ---------------------------
     def begin_codex_signin(self) -> None:
@@ -3727,6 +3828,7 @@ class SessionManager:
         had_tokens = codex_auth.CodexTokenStore(self.secrets).clear()
         self._codex_error = None
         self._refresh_provider("openai-codex")
+        self.ensure_default_model_available()
         return {"ok": True, "had_tokens": had_tokens}
 
     def verify_provider(
@@ -4340,13 +4442,41 @@ class SessionManager:
         return {"ok": True, **self.get_settings()}
 
     def set_default_model(self, model: str) -> dict[str, Any]:
-        """Set + persist the default model for new sessions (the UI pre-selects it)."""
+        """Set + persist the default model for new sessions (the UI pre-selects it).
+
+        Also rebinds every DRAFT that is already open — an engine built for a session that
+        has no turn yet (its model was copied from the old default at build time), and the
+        carried picks of a draft being re-targeted. Without this the composer the person
+        returns to after Settings still showed the model they had just moved away from,
+        and their first message went out on it (owner-hit 2026-09-10: "the default
+        doesn't apply globally"). A draft whose model the person picked BY HAND in the
+        composer keeps that pick (`model_pinned`, set by the socket's set_model) — the
+        default is a fallback, not an override of an explicit choice. Sessions with
+        history are untouched: their model is a fact of the conversation.
+        """
         model = (model or "").strip()
         if not model:
             return {"ok": False, "error": "empty model"}
         self.model = model
         self._prefs["default_model"] = model
         self._save_prefs()
+        for session_id, engine in list(self._engines.items()):
+            if self.is_running(session_id) or getattr(engine, "model_pinned", False):
+                continue
+            if any(
+                m.get("role") not in ("system", "notice") for m in engine.messages
+            ):
+                continue
+            engine.switch_model(model)  # a draft: first bind, no notice
+        for carry in self._draft_carry.values():
+            if carry.get("model_pinned"):
+                continue
+            if any(
+                m.get("role") not in ("system", "notice")
+                for m in carry.get("messages") or []
+            ):
+                continue
+            carry["model"] = model
         return {"ok": True, **self.get_settings()}
 
     def set_onboarded(self, value: bool = True) -> dict[str, Any]:

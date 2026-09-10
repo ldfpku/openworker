@@ -81,6 +81,11 @@ export interface ProviderSetupState {
   providers: ProviderInfo[];
   ordered: ProviderInfo[];
   refreshProviders: () => Promise<void>;
+  // Providers AND the model settings (curated list, default, labels). The sign-in panes
+  // change both — a gateway/relay sign-in adds models and can move the default, a
+  // sign-out removes them — so refreshing only the cards left the checklist stale
+  // (audit 2026-09-10).
+  refreshAll: () => Promise<void>;
   sel: string | null;
   info: ProviderInfo | undefined;
   fields: Record<string, string>;
@@ -106,7 +111,15 @@ export interface ProviderSetupState {
   fieldSaved: string | null; // field key flashing "✓ Saved"
 }
 
-export function useProviderSetup(opts?: { onSaved?: () => void }): ProviderSetupState {
+export function useProviderSetup(opts?: {
+  onSaved?: () => void;
+  // Settings ▸ Models passes true: a passing Test saves and STAYS on the provider's page,
+  // because the model checklist below the form is what the person came to work on next
+  // (owner-hit 2026-09-10: Test slid them back to the gallery mid-configuration, and the
+  // catalog they had just pulled was two clicks away again). Onboarding keeps the §39
+  // auto-return — there the gallery card wearing its ✓ IS the next step.
+  stayAfterTest?: boolean;
+}): ProviderSetupState {
   const { t } = useTranslation();
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   // null = the gallery; a provider name = that provider's key form.
@@ -129,6 +142,10 @@ export function useProviderSetup(opts?: { onSaved?: () => void }): ProviderSetup
     getProviders()
       .then(setProviders)
       .catch(() => {});
+  const refreshAll = async () => {
+    await refreshProviders();
+    opts?.onSaved?.();
+  };
   useEffect(() => {
     refreshProviders();
     return () => {
@@ -162,8 +179,9 @@ export function useProviderSetup(opts?: { onSaved?: () => void }): ProviderSetup
     setVerify({ state: "idle" });
   };
 
-  // Test = verify AND save AND return (§39: a passing Test auto-saves and takes
-  // you back to the gallery, where the card now wears its ✓ — no extra clicks).
+  // Test = verify AND save AND (onboarding only) return (§39: a passing Test auto-saves
+  // and takes you back to the gallery, where the card now wears its ✓ — no extra
+  // clicks). With `stayAfterTest` the return is skipped — see the option's note above.
   const runTestAndSave = async (): Promise<boolean> => {
     if (!sel) return false;
     setVerify({ state: "testing" });
@@ -172,13 +190,37 @@ export function useProviderSetup(opts?: { onSaved?: () => void }): ProviderSetup
       setVerify({ state: "error", msg: res.error || t("provider.err_couldnt_verify") });
       return false;
     }
-    if (dirty || !info?.configured) await setProvider(sel, fields).catch(() => {});
+    if (dirty || !info?.configured) {
+      // The save can fail after a passing verify (a store write error, a provider that
+      // wants a field the probe tolerated) — claiming "Tested & saved" then, and clearing
+      // the typed key, would be a lie that costs the person their paste (audit 2026-09-10).
+      const saved = await setProvider(sel, fields).catch(() => ({ ok: false, error: "" }));
+      if (!saved.ok) {
+        setVerify({
+          state: "error",
+          msg: (saved as { error?: string }).error || t("provider.err_save_failed"),
+        });
+        return false;
+      }
+    }
     if (!info?.needs_key) setKeylessOk((s) => new Set(s).add(sel));
     setVerify({ state: "ok" });
     setDirty(false);
     setDrafts((d) => ({ ...d, [sel]: {} }));
     await refreshProviders();
     opts?.onSaved?.();
+    if (opts?.stayAfterTest) {
+      // Stay put. The key is saved server-side now, so the field goes back to the masked
+      // placeholder + "✓ Tested & saved" pill (same look as reopening a configured
+      // provider) instead of keeping the plaintext secret in the box; non-secret fields
+      // (endpoint, region) keep what was typed — they ARE the stored values.
+      setFields((cur) => {
+        const next = { ...cur };
+        for (const f of info?.fields || []) if (f.secret) next[f.key] = "";
+        return next;
+      });
+      return true;
+    }
     // Let the in-field "✓ Tested & saved" register, then slide home. NOT backToGallery:
     // the timeout would fire its stale closure (dirty/fields from before the save) and
     // re-stash the just-saved key as a draft — the state-restore bug (owner catch
@@ -235,6 +277,15 @@ export function useProviderSetup(opts?: { onSaved?: () => void }): ProviderSetup
         return <span className="block text-[12px] text-ok font-medium truncate">{t("provider.signed_in")}</span>;
       return <span className="block text-[12px] text-faint truncate">{t("provider.sign_in_with_plan")}</span>;
     }
+    if (p.configured && p.needs_key && p.needs_signin) {
+      // A key without the relay login: the very next request fails "not signed in", so
+      // the card must say what is missing rather than "Connected" (audit 2026-09-10).
+      return (
+        <span className="block text-[12px] text-warnInk font-medium truncate">
+          {t("provider.needs_sign_in")}
+        </span>
+      );
+    }
     if (p.configured && p.needs_key) {
       const used = o?.lastUsed ? formatRelative(p.last_used_at, t, { style: "short" }) : "";
       return (
@@ -263,6 +314,7 @@ export function useProviderSetup(opts?: { onSaved?: () => void }): ProviderSetup
         providerRank(a.name) - providerRank(b.name),
     ),
     refreshProviders,
+    refreshAll,
     sel,
     info,
     fields,
@@ -485,7 +537,7 @@ export function ProviderForm({
   const relayCard =
     sel === RELAY_PROVIDER ? (
       <div className="mt-3 mb-1">
-        <RelaySignIn tp={tp} onChanged={ps.refreshProviders} />
+        <RelaySignIn tp={tp} onChanged={ps.refreshAll} keyState={`${info?.configured}:${info?.key_set_at || ""}`} />
       </div>
     ) : null;
 
@@ -496,7 +548,7 @@ export function ProviderForm({
   const gatewayCard =
     sel === GATEWAY_PROVIDER ? (
       <div className="mt-3 mb-1">
-        <GatewaySignIn tp={tp} onChanged={ps.refreshProviders} />
+        <GatewaySignIn tp={tp} onChanged={ps.refreshAll} />
       </div>
     ) : null;
 
@@ -561,7 +613,7 @@ export function ProviderForm({
       </div>
       {info?.blurb && <p className="text-[12px] text-faint mt-1">{t(info.blurb)}</p>}
 
-      {info?.auth === "oauth" && <OAuthSignIn info={info} tp={tp} onChanged={ps.refreshProviders} />}
+      {info?.auth === "oauth" && <OAuthSignIn info={info} tp={tp} onChanged={ps.refreshAll} />}
 
       {/* Fork sign-in panes: Gemini goes through the company relay, GPT/Claude through
 

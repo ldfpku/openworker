@@ -5,6 +5,14 @@
 // one-click copy. An expert's "Start session" installs it as a persona (consent modal, same
 // trust language as Settings ▸ Coworkers), enables it, and opens a session bound to it; a
 // skill's detail modal installs it into the global skills directory the same way SkillsTab does.
+//
+// P4 (owner ask 2026-09-10): the library is also EDITABLE, on this machine only. Any expert
+// can be edited in place (a local override — the pack's own file is never touched, and
+// "Restore original" drops the override), and new experts can be written from scratch
+// ("New expert"). Both live in the app's state dir, so an app update never overwrites them;
+// an expert already installed as a coworker is re-installed from the saved text. Installed
+// skills get the same treatment through the skill page: edit the local copy's SKILL.md,
+// open its folder for the scripts, or put the shipped original back.
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
@@ -12,21 +20,29 @@ import i18n from "../i18n";
 import { Markdown } from "./Markdown";
 import {
   libraryActivateExpert,
+  libraryDeleteExpert,
   libraryExperts,
   libraryExpertPrompt,
   libraryInstallExpert,
   libraryInstallSkills,
   libraryOverview,
+  librarySaveExpert,
   librarySkillDetail,
   librarySkills,
   libraryStatus,
+  listSkills,
+  revealSkill,
+  updateSkill,
   type LibraryExpert,
+  type LibraryExpertPrompt,
   type LibraryExpertVariant,
   type LibrarySkill,
   type PersonaConsent,
+  type SkillRow,
 } from "../api";
+import { isComposing } from "../ime";
 import { RISK_PHRASE } from "./PersonasTab";
-import { BTN_ACCENT, BTN_BORDERED_SM, BTN_OUTLINE_SM } from "./buttons";
+import { BTN_ACCENT, BTN_BORDERED, BTN_BORDERED_SM, BTN_DANGER_SM, BTN_OUTLINE_SM } from "./buttons";
 import { IconButton } from "./IconButton";
 
 const CARD = "rounded-xl border border-line bg-panel/60";
@@ -40,7 +56,7 @@ const PILL_OFF = BTN_BORDERED_SM;
 const MAX_TEAM_SIZE = 6;
 
 type Tab = "experts" | "skills";
-type PromptResult = { name: string; prompt: string };
+type PromptResult = LibraryExpertPrompt;
 type SkillResult = {
   name: string;
   description: string;
@@ -59,6 +75,30 @@ const skillDesc = (s: { description: string; description_zh?: string }) =>
 type Detail =
   | { kind: "expert"; id: string; lib: "zh" | "en"; pair: boolean; categoryName: string }
   | { kind: "skill"; name: string; categoryName: string; scripts: number; compatibility?: string };
+
+// The expert editor (P4): create a new local expert, or edit one in place. Editing a pack
+// expert writes an override under the same id; its category stays the pack's.
+type ExpertEditor =
+  | { mode: "create"; lib: "zh" | "en" }
+  | { mode: "edit"; lib: "zh" | "en"; id: string; local: boolean };
+
+// The exact input class the Skills settings editor uses, so the two editors read as one.
+const INPUT =
+  "w-full px-3 py-2 rounded-lg border border-line bg-paper text-[13px] text-ink outline-none focus:border-accent";
+
+// The library unmounts whenever another surface shows (Settings, a session…). Its browse
+// state — which tab/language, the search, the category chip — lives here so coming back
+// lands where the person left off instead of on Experts/中文 with an empty search
+// (audit 2026-09-10). Team picks are deliberately NOT kept: half a team from an earlier
+// visit would be a surprise.
+const BROWSE_DEFAULTS = { tab: "experts" as Tab, lib: "zh" as "zh" | "en", query: "", category: "all" };
+const browseMemory: { tab: Tab; lib: "zh" | "en"; query: string; category: string } = { ...BROWSE_DEFAULTS };
+/** Test hook: forget the remembered browse state between renders. */
+export function resetLibraryBrowseMemory() {
+  Object.assign(browseMemory, BROWSE_DEFAULTS);
+}
+const FIELD_LABEL = "text-[12px] text-muted";
+const MAX_EDITOR_PROMPT = 200_000;
 
 type LibraryStatus = {
   experts: Record<string, { solo?: LibraryExpertVariant; worker?: LibraryExpertVariant }>;
@@ -125,6 +165,7 @@ async function copyText(text: string): Promise<boolean> {
 export function LibraryView({
   onStartExpertSession,
   onStartTeamSession,
+  onOpenSkillsSettings,
 }: {
   // Opens a NEW session bound to this persona (the same "browse a persona, start a
   // session for it" mechanism the sidebar's own New-session action uses) and switches
@@ -134,13 +175,18 @@ export function LibraryView({
   // variant is installed + enabled, hands off the free-text goal and the member names
   // so the caller can start an Expert Team Lead session and prefill its composer.
   onStartTeamSession: (goal: string, names: string) => void;
+  // Settings ▸ Skills — where a skill is written from scratch (the editor lives there).
+  onOpenSkillsSettings?: () => void;
 }) {
   const { t } = useTranslation();
   const [overview, setOverview] = useState<{ ok: boolean } | null>(null);
-  const [tab, setTab] = useState<Tab>("experts");
-  const [lib, setLib] = useState<"zh" | "en">("zh");
-  const [query, setQuery] = useState("");
-  const [category, setCategory] = useState<string>("all");
+  const [tab, setTab] = useState<Tab>(browseMemory.tab);
+  const [lib, setLib] = useState<"zh" | "en">(browseMemory.lib);
+  const [query, setQuery] = useState(browseMemory.query);
+  const [category, setCategory] = useState<string>(browseMemory.category);
+  useEffect(() => {
+    Object.assign(browseMemory, { tab, lib, query, category });
+  }, [tab, lib, query, category]);
   const [experts, setExperts] = useState<LibraryExpert[] | null>(null); // null = loading
   const [skills, setSkills] = useState<LibrarySkill[] | null>(null); // null = loading
   const [detail, setDetail] = useState<Detail | null>(null);
@@ -152,6 +198,19 @@ export function LibraryView({
   const [teamModalOpen, setTeamModalOpen] = useState(false);
   // Bumped by the retry button — re-runs both load effects below.
   const [reloadTick, setReloadTick] = useState(0);
+  // P4: the open expert editor, and the one-line confirmation after a save/restore/delete
+  // (the list re-renders underneath it, so the change itself is visible too).
+  const [editor, setEditor] = useState<ExpertEditor | null>(null);
+  const [notice, setNotice] = useState<{ text: string; tone: "ok" | "warn" } | null>(null);
+  const noticeTimer = useRef<number | null>(null);
+  const showNotice = useCallback((text: string, tone: "ok" | "warn" = "ok") => {
+    setNotice({ text, tone });
+    if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
+    noticeTimer.current = window.setTimeout(() => setNotice(null), 6000);
+  }, []);
+  useEffect(() => () => {
+    if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
+  }, []);
 
   const promptCache = useRef<Map<string, PromptResult>>(new Map());
   const skillCache = useRef<Map<string, SkillResult>>(new Map());
@@ -182,20 +241,30 @@ export function LibraryView({
     };
   }, [loadStatus, reloadTick]);
 
+  // Bumped after a save/restore/delete (P4): re-pulls the listing WITHOUT blanking the
+  // grid — the person just edited one card and should see it change in place, not the
+  // whole page flash "Loading…".
+  const [expertsTick, setExpertsTick] = useState(0);
+  const keepGridRef = useRef(false);
   useEffect(() => {
     let live = true;
-    setExperts(null);
+    if (!keepGridRef.current) setExperts(null);
+    keepGridRef.current = false;
     libraryExperts(lib)
       .then((e) => live && setExperts(e))
       .catch(() => live && setExperts([]));
     return () => {
       live = false;
     };
-  }, [lib, reloadTick]);
+  }, [lib, reloadTick, expertsTick]);
 
   // Category chips are per-dataset — reset the filter whenever the dataset underneath
-  // them changes so a stale selection never silently hides everything.
+  // them changes so a stale selection never silently hides everything. Not on mount:
+  // a remembered category must survive coming back to the page.
+  const datasetKey = useRef(`${tab}:${lib}`);
   useEffect(() => {
+    if (datasetKey.current === `${tab}:${lib}`) return;
+    datasetKey.current = `${tab}:${lib}`;
     setCategory("all");
   }, [tab, lib]);
 
@@ -205,7 +274,9 @@ export function LibraryView({
     const key = `${l}:${id}`;
     const cached = promptCache.current.get(key);
     if (cached) return cached;
-    const r = await libraryExpertPrompt(l, id);
+    // A throw (sidecar restarting, non-JSON 500) reads as "could not load", never as a
+    // modal stuck on "Loading…" (audit 2026-09-10).
+    const r = await libraryExpertPrompt(l, id).catch(() => null);
     if (r) promptCache.current.set(key, r);
     return r;
   }, []);
@@ -213,7 +284,7 @@ export function LibraryView({
   const fetchSkill = useCallback(async (name: string): Promise<SkillResult | null> => {
     const cached = skillCache.current.get(name);
     if (cached) return cached;
-    const r = await librarySkillDetail(name);
+    const r = await librarySkillDetail(name).catch(() => null);
     if (r) skillCache.current.set(name, r);
     return r;
   }, []);
@@ -223,7 +294,7 @@ export function LibraryView({
   // caller (a card or the detail modal) awaits this to know when to drop its own busy state.
   const beginExpertFlow = useCallback(
     async (l: "zh" | "en", id: string, categoryName: string, mode: ExpertFlow["mode"]) => {
-      const r = await libraryInstallExpert(l, id);
+      const r = await libraryInstallExpert(l, id).catch(() => ({ ok: false as const, error: t("unreachable") }));
       if (!r.ok || !r.persona_id) {
         setExpertFlow({
           lib: l,
@@ -254,7 +325,7 @@ export function LibraryView({
     if (!expertFlow || expertFlow.status !== "ready" || !expertFlow.personaId) return;
     const { mode, personaId } = expertFlow;
     setExpertFlow((f) => (f ? { ...f, status: "activating", error: undefined } : f));
-    const r = await libraryActivateExpert(personaId);
+    const r = await libraryActivateExpert(personaId).catch(() => ({ ok: false as const, error: t("unreachable") }));
     if (!r.ok) {
       setExpertFlow((f) =>
         f ? { ...f, status: "ready", error: r.error || t("Could not enable this coworker.") } : f,
@@ -269,12 +340,59 @@ export function LibraryView({
   const closeExpertFlow = () => setExpertFlow(null);
 
   const installSkill = async (name: string): Promise<{ ok: boolean; error?: string }> => {
-    const r = await libraryInstallSkills([name]);
+    const r = await libraryInstallSkills([name]).catch(() => ({ ok: false as const, error: t("unreachable") }));
     if (!r.ok) return { ok: false, error: r.error };
     const item = (r.results || []).find((x) => x.name === name);
     if (item && !item.ok) return { ok: false, error: item.error };
     loadStatus();
     return { ok: true };
+  };
+
+  // P4: a save/restore/delete changed what the listing and the prompt say — drop the
+  // cached prompt for that id and re-pull the listing + install status.
+  const refreshAfterEdit = useCallback(
+    (l: "zh" | "en", id?: string) => {
+      if (id) promptCache.current.delete(`${l}:${id}`);
+      else promptCache.current.clear();
+      keepGridRef.current = true;
+      setExpertsTick((n) => n + 1);
+      loadStatus();
+    },
+    [loadStatus],
+  );
+
+  const unreachable = () => ({ ok: false as const, error: t("unreachable") });
+
+  const restoreExpert = async (l: "zh" | "en", id: string) => {
+    const r = await libraryDeleteExpert(l, id).catch(unreachable);
+    if (!r.ok) {
+      showNotice(r.error || t("Could not restore the original."), "warn");
+      return false;
+    }
+    refreshAfterEdit(l, id);
+    showNotice(
+      r.reinstalled?.length
+        ? t("Original restored — the installed coworker was updated too.")
+        : t("Original restored."),
+    );
+    return true;
+  };
+
+  const deleteLocalExpert = async (l: "zh" | "en", id: string) => {
+    const r = await libraryDeleteExpert(l, id).catch(unreachable);
+    if (!r.ok) {
+      showNotice(r.error || t("Could not delete this expert."), "warn");
+      return false;
+    }
+    refreshAfterEdit(l, id);
+    // A deleted expert leaves a half-built team: drop it from the picks (audit 2026-09-10).
+    setTeamSelected((cur) => cur.filter((m) => teamKey(m) !== teamKey({ lib: l, id })));
+    showNotice(
+      r.uninstalled?.length
+        ? t("Expert deleted from this machine, and its coworker was uninstalled.")
+        : t("Expert deleted from this machine."),
+    );
+    return true;
   };
 
   // Entering clears any stale pick from a previous pass; leaving (the pill again, or the
@@ -404,7 +522,38 @@ export function LibraryView({
                 {t("Build an expert team")}
               </button>
             )}
+            {tab === "experts" && !teamMode && (
+              <button
+                className={BTN_ACCENT}
+                onClick={() => setEditor({ mode: "create", lib })}
+                data-testid="library-new-expert"
+              >
+                {t("New expert")}
+              </button>
+            )}
+            {tab === "skills" && onOpenSkillsSettings && (
+              <button
+                className={BTN_BORDERED_SM}
+                onClick={onOpenSkillsSettings}
+                data-testid="library-new-skill"
+                title={t("Skills are written in Settings ▸ Skills; installed library skills are edited there too.")}
+              >
+                {t("New skill…")}
+              </button>
+            )}
           </div>
+
+          {notice && (
+            <div
+              className={
+                "mb-3 text-[12.5px] rounded-lg border px-3 py-2 " +
+                (notice.tone === "ok" ? "border-okLine bg-okSoft text-ink" : "border-warnInk/30 bg-warnSoft text-warnInk")
+              }
+              data-testid="library-notice"
+            >
+              {notice.text}
+            </div>
+          )}
 
           <div className="flex items-center gap-1.5 flex-wrap mb-5" data-testid="library-category-chips">
             <button className={category === "all" ? PILL_ON : PILL_OFF} onClick={() => setCategory("all")}>
@@ -466,6 +615,7 @@ export function LibraryView({
                     onView={() =>
                       setDetail({ kind: "expert", id: e.id, lib, pair: e.pair, categoryName: e.categoryName })
                     }
+                    onEdit={() => setEditor({ mode: "edit", lib, id: e.id, local: e.local === true })}
                     fetchPrompt={fetchPrompt}
                     onStartExpertSession={onStartExpertSession}
                     onInstallForStart={(l, id, categoryName) => beginExpertFlow(l, id, categoryName, "start")}
@@ -518,6 +668,18 @@ export function LibraryView({
           fetchPrompt={fetchPrompt}
           expertsStatus={status?.experts}
           onInstallAsCoworker={(l, id, categoryName) => beginExpertFlow(l, id, categoryName, "installOnly")}
+          onEdit={(l, id, local) => {
+            setDetail(null);
+            setEditor({ mode: "edit", lib: l, id, local });
+          }}
+          onRestore={async (l, id) => {
+            if (!window.confirm(t("Restore the shipped original? Your edits to this expert will be discarded."))) return;
+            if (await restoreExpert(l, id)) setDetail(null);
+          }}
+          onDelete={async (l, id) => {
+            if (!window.confirm(t("Delete this expert from this machine? This cannot be undone."))) return;
+            if (await deleteLocalExpert(l, id)) setDetail(null);
+          }}
         />
       )}
       {detail?.kind === "skill" && (
@@ -530,6 +692,41 @@ export function LibraryView({
           onClose={() => setDetail(null)}
           fetchSkill={fetchSkill}
           onInstall={installSkill}
+          onReinstall={async (name) => {
+            const r = await libraryInstallSkills([name], true);
+            const item = (r.results || []).find((x) => x.name === name);
+            if (!r.ok || (item && !item.ok)) return { ok: false, error: r.error || item?.error };
+            loadStatus();
+            showNotice(t("Shipped original restored for {{name}}.", { name }));
+            return { ok: true };
+          }}
+          onNotice={showNotice}
+        />
+      )}
+      {editor && (
+        <ExpertEditorModal
+          editor={editor}
+          categories={allExperts
+            .filter((e) => !e.local)
+            .map((e) => ({ category: e.category, categoryName: e.categoryName }))
+            .filter((c, i, a) => a.findIndex((x) => x.category === c.category) === i)}
+          fetchPrompt={fetchPrompt}
+          onClose={() => setEditor(null)}
+          onSaved={(res) => {
+            setEditor(null);
+            refreshAfterEdit(editor.lib, res.id);
+            // A renamed expert keeps its place in a half-built team, under the new name.
+            setTeamSelected((cur) =>
+              cur.map((m) => (teamKey(m) === teamKey({ lib: editor.lib, id: res.id }) ? { ...m, name: res.name } : m)),
+            );
+            showNotice(
+              res.created
+                ? t("Expert saved on this machine.")
+                : res.reinstalled?.length
+                  ? t("Saved — the installed coworker runs on the new text from its next session.")
+                  : t("Saved on this machine."),
+            );
+          }}
         />
       )}
       {/* Renders on top of a possibly-still-open detail modal (later in DOM = paints last),
@@ -594,6 +791,7 @@ function ExpertCard({
   lib,
   variant,
   onView,
+  onEdit,
   fetchPrompt,
   onStartExpertSession,
   onInstallForStart,
@@ -607,6 +805,8 @@ function ExpertCard({
   // chip and whether "Start session" can skip straight to a session).
   variant: LibraryExpertVariant | undefined;
   onView: () => void;
+  // P4: open the editor on this expert (a pack expert gets a local override).
+  onEdit: () => void;
   fetchPrompt: (lib: "zh" | "en", id: string) => Promise<PromptResult | null>;
   onStartExpertSession: (personaId: string) => void;
   onInstallForStart: (lib: "zh" | "en", id: string, categoryName: string) => Promise<void>;
@@ -640,8 +840,11 @@ function ExpertCard({
       return;
     }
     setStartBusy(true);
-    await onInstallForStart(lib, entry.id, entry.categoryName);
-    setStartBusy(false);
+    try {
+      await onInstallForStart(lib, entry.id, entry.categoryName);
+    } finally {
+      setStartBusy(false);
+    }
   };
 
   const installed = variant?.enabled === true;
@@ -710,11 +913,24 @@ function ExpertCard({
             ✓
           </span>
         ) : (
-          installed && (
-            <span className={CHIP} data-testid={`expert-installed-chip-${entry.id}`}>
-              {t("Installed")}
-            </span>
-          )
+          <span className="flex items-center gap-1 shrink-0">
+            {/* Where the text comes from (P4): written here, or a pack expert edited here. */}
+            {entry.local && (
+              <span className={CHIP + " border-accent/40 text-accent"} data-testid={`expert-local-chip-${entry.id}`}>
+                {t("This machine")}
+              </span>
+            )}
+            {entry.modified && (
+              <span className={CHIP + " border-accent/40 text-accent"} data-testid={`expert-modified-chip-${entry.id}`}>
+                {t("Edited")}
+              </span>
+            )}
+            {installed && (
+              <span className={CHIP} data-testid={`expert-installed-chip-${entry.id}`}>
+                {t("Installed")}
+              </span>
+            )}
+          </span>
         )}
       </div>
       <div className="text-[12px] text-muted leading-relaxed line-clamp-3 flex-1 mb-3">
@@ -741,6 +957,17 @@ function ExpertCard({
         >
           {copyState === "copied" ? t("Copied") : copyState === "error" ? t("Copy failed") : t("Copy prompt")}
         </button>
+        {!teamMode && (
+          <IconButton
+            icon="pencil"
+            size={14}
+            variant="bordered"
+            small
+            label={t("Edit prompt")}
+            data-testid={`expert-edit-${entry.id}`}
+            onClick={(e) => { e.stopPropagation(); onEdit(); }}
+          />
+        )}
       </div>
     </div>
   );
@@ -813,7 +1040,8 @@ function ModalShell({
   const { t } = useTranslation();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      // The Escape that cancels a pinyin candidate must not close (and discard) the modal.
+      if (e.key === "Escape" && !isComposing(e)) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -848,6 +1076,9 @@ function ExpertDetailModal({
   fetchPrompt,
   expertsStatus,
   onInstallAsCoworker,
+  onEdit,
+  onRestore,
+  onDelete,
 }: {
   id: string;
   initialLib: "zh" | "en";
@@ -857,6 +1088,10 @@ function ExpertDetailModal({
   fetchPrompt: (lib: "zh" | "en", id: string) => Promise<PromptResult | null>;
   expertsStatus: LibraryStatus["experts"] | undefined;
   onInstallAsCoworker: (lib: "zh" | "en", id: string, categoryName: string) => Promise<void>;
+  // P4: edit in place / drop the local override / delete a local expert.
+  onEdit: (lib: "zh" | "en", id: string, local: boolean) => void;
+  onRestore: (lib: "zh" | "en", id: string) => void;
+  onDelete: (lib: "zh" | "en", id: string) => void;
 }) {
   const { t } = useTranslation();
   const [curLib, setCurLib] = useState<"zh" | "en">(initialLib);
@@ -887,8 +1122,11 @@ function ExpertDetailModal({
 
   const handleInstall = async () => {
     setInstallBusy(true);
-    await onInstallAsCoworker(curLib, id, categoryName);
-    setInstallBusy(false);
+    try {
+      await onInstallAsCoworker(curLib, id, categoryName);
+    } finally {
+      setInstallBusy(false);
+    }
   };
 
   return (
@@ -914,13 +1152,28 @@ function ExpertDetailModal({
         <div className="text-[12.5px] text-danger">{t("Could not load this prompt.")}</div>
       ) : (
         <>
+          {(data.local || data.modified) && (
+            <div className="text-[12px] text-muted mb-2" data-testid="expert-source-note">
+              {data.local
+                ? t("Written on this machine — the pack knows nothing of it.")
+                : t("Edited on this machine — the shipped original is untouched and can be restored.")}
+              {data.updated_at ? ` · ${new Date(data.updated_at).toLocaleString()}` : ""}
+            </div>
+          )}
           {/* Rendered markdown (the packs are authored in md); Copy still hands over the raw text. */}
           <div className="text-[13px] bg-paper rounded-lg border border-line px-3.5 py-1" data-testid="expert-prompt-md">
             <Markdown text={data.prompt} />
           </div>
-          <div className="flex items-center gap-2 mt-3">
+          <div className="flex items-center gap-2 mt-3 flex-wrap">
             <button className={BTN_ACCENT} onClick={doCopy}>
               {copyState === "copied" ? t("Copied") : copyState === "error" ? t("Copy failed") : t("Copy")}
+            </button>
+            <button
+              className={BTN_BORDERED_SM}
+              onClick={() => onEdit(curLib, id, data.local === true)}
+              data-testid="expert-detail-edit"
+            >
+              {t("Edit prompt")}
             </button>
             {installed ? (
               <button className={BTN_BORDERED_SM} disabled data-testid="expert-installed-badge">
@@ -934,6 +1187,17 @@ function ExpertDetailModal({
                 data-testid="expert-install-as-coworker"
               >
                 {installBusy ? t("Installing…") : t("Install as coworker")}
+              </button>
+            )}
+            <span className="flex-1" />
+            {data.modified && (
+              <button className={BTN_DANGER_SM} onClick={() => onRestore(curLib, id)} data-testid="expert-restore">
+                {t("Restore original")}
+              </button>
+            )}
+            {data.local && (
+              <button className={BTN_DANGER_SM} onClick={() => onDelete(curLib, id)} data-testid="expert-delete">
+                {t("Delete")}
               </button>
             )}
           </div>
@@ -952,6 +1216,8 @@ function SkillDetailModal({
   onClose,
   fetchSkill,
   onInstall,
+  onReinstall,
+  onNotice,
 }: {
   name: string;
   categoryName: string;
@@ -961,6 +1227,9 @@ function SkillDetailModal({
   onClose: () => void;
   fetchSkill: (name: string) => Promise<SkillResult | null>;
   onInstall: (name: string) => Promise<{ ok: boolean; error?: string }>;
+  // P4: put the shipped original back over an installed (edited) copy.
+  onReinstall?: (name: string) => Promise<{ ok: boolean; error?: string }>;
+  onNotice?: (text: string, tone?: "ok" | "warn") => void;
 }) {
   const { t } = useTranslation();
   const [data, setData] = useState<SkillResult | null | undefined>(undefined); // undefined = loading
@@ -969,6 +1238,13 @@ function SkillDetailModal({
   // of a skill that ships executable scripts) before the actual install call fires.
   const [installState, setInstallState] = useState<"idle" | "confirm" | "busy" | "error">("idle");
   const [installError, setInstallError] = useState("");
+  // P4: the installed copy on this machine (Settings ▸ Skills' row for it) — what the
+  // model actually loads. Editable here so a library skill can be tuned where it was found.
+  const [localRow, setLocalRow] = useState<SkillRow | null | undefined>(undefined);
+  const [localEditor, setLocalEditor] = useState<{ description: string; instructions: string } | null>(null);
+  const [localBusy, setLocalBusy] = useState(false);
+  const [localError, setLocalError] = useState("");
+  const [localTick, setLocalTick] = useState(0);
 
   useEffect(() => {
     let live = true;
@@ -979,19 +1255,88 @@ function SkillDetailModal({
     };
   }, [name, fetchSkill]);
 
+  useEffect(() => {
+    if (!installed) {
+      setLocalRow(null);
+      setLocalEditor(null);
+      return;
+    }
+    let live = true;
+    setLocalRow(undefined);
+    listSkills()
+      .then((rows) => live && setLocalRow(rows.find((r) => r.name === name) || null))
+      .catch(() => live && setLocalRow(null));
+    return () => {
+      live = false;
+    };
+  }, [installed, name, localTick]);
+
+  const localDirty =
+    !!localEditor &&
+    !!localRow &&
+    (localEditor.description !== localRow.description || localEditor.instructions !== localRow.instructions);
+  // Esc / backdrop / × with unsaved edits to the local copy ask first (audit 2026-09-10).
+  const close = () => {
+    if (localDirty && !window.confirm(t("Discard your unsaved changes?"))) return;
+    onClose();
+  };
+
+  const saveLocal = async () => {
+    if (!localEditor) return;
+    setLocalBusy(true);
+    setLocalError("");
+    try {
+      const r = await updateSkill(name, {
+        description: localEditor.description.trim(),
+        instructions: localEditor.instructions,
+      }).catch(() => ({ ok: false as const, error: t("unreachable") }));
+      if (!r.ok) {
+        setLocalError(r.error || t("Could not save the local copy."));
+        return;
+      }
+      setLocalEditor(null);
+      setLocalTick((n) => n + 1);
+      onNotice?.(t("Local copy of {{name}} saved.", { name }));
+    } finally {
+      setLocalBusy(false);
+    }
+  };
+
+  const reinstall = async () => {
+    if (!onReinstall) return;
+    if (!window.confirm(t("Put the shipped original back? Your edits to the local copy will be discarded."))) return;
+    setLocalBusy(true);
+    try {
+      const r = await onReinstall(name).catch(() => ({ ok: false as const, error: t("unreachable") }));
+      if (!r.ok) {
+        setLocalError(r.error || t("Could not restore the original."));
+        return;
+      }
+      setLocalEditor(null);
+      setLocalTick((n) => n + 1);
+    } finally {
+      setLocalBusy(false);
+    }
+  };
+
+  const reveal = async () => {
+    const r = await revealSkill(name).catch(() => ({ ok: false as const, error: t("unreachable") }));
+    if (!r.ok) setLocalError(r.error || t("Could not open the folder."));
+  };
+
   // 展示与复制同源：中文界面且有译文时用 SKILL.zh.md，否则英文原文。
   const shownMd = data ? (zhUI() && data.skill_md_zh ? data.skill_md_zh : data.skill_md) : "";
 
   const doCopy = async () => {
     if (!data) return;
-    const ok = await copyText(shownMd);
+    const ok = await copyText(installed && localRow ? localRow.instructions : shownMd);
     setCopyState(ok ? "copied" : "error");
     window.setTimeout(() => setCopyState("idle"), 1500);
   };
 
   const doInstall = async () => {
     setInstallState("busy");
-    const r = await onInstall(name);
+    const r = await onInstall(name).catch(() => ({ ok: false as const, error: t("unreachable") }));
     if (!r.ok) {
       setInstallError(r.error || t("Could not install this skill."));
       setInstallState("error");
@@ -1004,7 +1349,7 @@ function SkillDetailModal({
   const shown = files.slice(0, 20);
 
   return (
-    <ModalShell title={data?.name || name} sub={categoryName} onClose={onClose}>
+    <ModalShell title={data?.name || name} sub={categoryName} onClose={close}>
       {data === undefined ? (
         <div className="text-[12.5px] text-muted">{t("Loading…")}</div>
       ) : data === null ? (
@@ -1014,8 +1359,16 @@ function SkillDetailModal({
           {data.description && (
             <div className="text-[12.5px] text-muted mb-3">{skillDesc(data)}</div>
           )}
+          {/* Installed: the text shown is the local copy's — what the model actually loads
+              (the shipped page could read differently after an edit, or in Chinese while
+              the installed English copy is what runs; audit 2026-09-10). */}
+          {installed && localRow && !localEditor && (
+            <div className="text-[11.5px] text-faint mb-1.5" data-testid="skill-md-source">
+              {t("Showing the installed copy on this machine — the text the model loads.")}
+            </div>
+          )}
           <div className="text-[13px] bg-paper rounded-lg border border-line px-3.5 py-1" data-testid="skill-md">
-            <Markdown text={shownMd} />
+            <Markdown text={installed && localRow ? localRow.instructions : shownMd} />
           </div>
           <button className={BTN_ACCENT + " mt-3"} onClick={doCopy}>
             {copyState === "copied" ? t("Copied") : copyState === "error" ? t("Copy failed") : t("Copy")}
@@ -1035,6 +1388,99 @@ function SkillDetailModal({
               <div className="text-[11.5px] text-faint mt-2">
                 {t("{{count}} files total", { count: files.length })}
               </div>
+            </div>
+          )}
+          {installed && (
+            <div className="mt-4 rounded-lg border border-line bg-paper p-3.5" data-testid="skill-local-copy">
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="text-[11px] uppercase tracking-[0.05em] text-faint font-semibold">
+                  {t("Installed copy on this machine")}
+                </div>
+                <span className="flex-1" />
+                {localRow && !localEditor && (
+                  <>
+                    <button
+                      className={BTN_BORDERED_SM}
+                      onClick={() =>
+                        setLocalEditor({ description: localRow.description, instructions: localRow.instructions })
+                      }
+                      data-testid="skill-local-edit"
+                    >
+                      {t("Edit local copy")}
+                    </button>
+                    <button
+                      className={BTN_BORDERED_SM}
+                      onClick={() => void reveal()}
+                      title={t("Scripts and other bundled files live in the skill's folder — edit them there.")}
+                      data-testid="skill-local-reveal"
+                    >
+                      {t("Open folder")}
+                    </button>
+                    {onReinstall && (
+                      <button
+                        className={BTN_DANGER_SM}
+                        onClick={() => void reinstall()}
+                        disabled={localBusy}
+                        data-testid="skill-local-reinstall"
+                      >
+                        {t("Restore original")}
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+              {localRow === undefined ? (
+                <div className="text-[12px] text-muted mt-2">{t("Loading…")}</div>
+              ) : localRow === null ? (
+                <div className="text-[12px] text-muted mt-2">{t("The installed copy could not be read.")}</div>
+              ) : localEditor ? (
+                <div className="mt-2.5">
+                  <label className={FIELD_LABEL} htmlFor="skill-local-desc">
+                    {t("Description")}
+                  </label>
+                  <input
+                    id="skill-local-desc"
+                    className={`${INPUT} mt-1 mb-3`}
+                    value={localEditor.description}
+                    onChange={(e) => setLocalEditor({ ...localEditor, description: e.target.value })}
+                  />
+                  <label className={FIELD_LABEL} htmlFor="skill-local-instructions">
+                    {t("Instructions (SKILL.md body)")}
+                  </label>
+                  <textarea
+                    id="skill-local-instructions"
+                    className={`${INPUT} mt-1 mb-2 min-h-[220px] font-mono text-[12px]`}
+                    value={localEditor.instructions}
+                    spellCheck={false}
+                    onChange={(e) => setLocalEditor({ ...localEditor, instructions: e.target.value })}
+                    data-testid="skill-local-instructions"
+                  />
+                  <div className="text-[11.5px] text-faint mb-2.5">
+                    {t("Scripts and other bundled files are not edited here — Open folder reaches them. Changes apply from the next session.")}
+                  </div>
+                  {localError && <div className="text-[12.5px] text-danger mb-2">{localError}</div>}
+                  <div className="flex items-center gap-2">
+                    <button
+                      className={BTN_ACCENT}
+                      disabled={localBusy || !localEditor.instructions.trim()}
+                      onClick={() => void saveLocal()}
+                      data-testid="skill-local-save"
+                    >
+                      {localBusy ? t("Saving…") : t("Save local copy")}
+                    </button>
+                    <button className={BTN_BORDERED_SM} onClick={() => setLocalEditor(null)} disabled={localBusy}>
+                      {t("Cancel")}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-2 text-[12px] text-muted">
+                  <div className="truncate" title={localRow.path}>
+                    {localRow.path}
+                  </div>
+                  {localError && <div className="text-danger mt-1">{localError}</div>}
+                </div>
+              )}
             </div>
           )}
           <div className="mt-4">
@@ -1078,6 +1524,278 @@ function SkillDetailModal({
                   </button>
                 </div>
               </div>
+            )}
+          </div>
+        </>
+      )}
+    </ModalShell>
+  );
+}
+
+// The expert editor (P4): one modal for "New expert" and "Edit prompt". Saving writes the
+// machine-local file (an override for a pack expert; the expert's own file for a local
+// one) and, for an installed expert, re-installs its coworker from the new text. Nothing
+// here can touch the pack. Escape / backdrop close it — with a confirm when there are
+// unsaved changes, so a stray click never eats a long prompt.
+function ExpertEditorModal({
+  editor,
+  categories,
+  fetchPrompt,
+  onClose,
+  onSaved,
+}: {
+  editor: ExpertEditor;
+  categories: { category: string; categoryName: string }[];
+  fetchPrompt: (lib: "zh" | "en", id: string) => Promise<PromptResult | null>;
+  onClose: () => void;
+  onSaved: (res: { id: string; created: boolean; reinstalled?: string[]; name: string }) => void;
+}) {
+  const { t } = useTranslation();
+  const isEdit = editor.mode === "edit";
+  const [loaded, setLoaded] = useState<PromptResult | null | undefined>(isEdit ? undefined : null);
+  const [name, setName] = useState("");
+  const [emoji, setEmoji] = useState("");
+  const [description, setDescription] = useState("");
+  const [category, setCategory] = useState(categories[0]?.category || "local");
+  const [customCategory, setCustomCategory] = useState("");
+  const [prompt, setPrompt] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [dirty, setDirty] = useState(false);
+  const promptRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (!isEdit) return;
+    let live = true;
+    setLoaded(undefined);
+    fetchPrompt(editor.lib, editor.id).then((r) => {
+      if (!live) return;
+      setLoaded(r);
+      if (r) {
+        setName(r.meta?.name || r.name || "");
+        setEmoji(r.meta?.emoji || "");
+        setDescription(r.meta?.description || "");
+        // A category the pack doesn't know (a local expert's own) reopens as "Custom…"
+        // with its NAME in the box — not its internal slug (audit 2026-09-10).
+        const known = categories.some((c) => c.category === r.meta?.category);
+        if (known) setCategory(r.meta?.category || "local");
+        else {
+          setCategory("__custom__");
+          setCustomCategory(r.meta?.categoryName || r.meta?.category || "");
+        }
+        setPrompt(r.prompt);
+      }
+    });
+    return () => {
+      live = false;
+    };
+  }, [isEdit, editor, fetchPrompt]);
+
+  const close = () => {
+    if (dirty && !window.confirm(t("Discard your unsaved changes?"))) return;
+    onClose();
+  };
+
+  // A local expert keeps whatever category it was given (free text); a pack expert's
+  // category is the pack's and stays read-only — the override changes its text, not
+  // where it is filed.
+  const categoryEditable = !isEdit || editor.local;
+  const customPicked = category === "__custom__";
+  const knownCategory = categories.find((c) => c.category === category);
+  const canSave = !!name.trim() && !!prompt.trim() && !saving && (!customPicked || !!customCategory.trim());
+
+  const save = async () => {
+    if (!canSave) return;
+    setSaving(true);
+    setError("");
+    try {
+      const cat = customPicked ? customCategory.trim() : category;
+      const catName = customPicked ? customCategory.trim() : knownCategory?.categoryName || loaded?.meta?.categoryName || cat;
+      const res = await librarySaveExpert({
+        lib: editor.lib,
+        id: isEdit ? editor.id : undefined,
+        name: name.trim(),
+        description: description.trim(),
+        emoji: emoji.trim(),
+        color: loaded?.meta?.color || "",
+        category: categoryEditable ? cat : loaded?.meta?.category || "",
+        categoryName: categoryEditable ? catName : loaded?.meta?.categoryName || "",
+        prompt,
+      }).catch(() => ({ ok: false as const, error: t("unreachable") }));
+      if (!res.ok || !res.id) {
+        setError(res.error || t("Could not save this expert."));
+        return;
+      }
+      setDirty(false);
+      onSaved({ id: res.id, created: res.created === true, reinstalled: res.reinstalled, name: name.trim() });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const mark = <T,>(setter: (v: T) => void) => (v: T) => {
+    setter(v);
+    setDirty(true);
+  };
+
+  return (
+    <ModalShell
+      title={isEdit ? t("Edit {{name}}", { name: loaded?.name || editor.id }) : t("New expert")}
+      sub={
+        isEdit
+          ? editor.local
+            ? t("A local expert — saved on this machine only.")
+            : t("Your edit is kept on this machine; the shipped original stays and can be restored.")
+          : t("Saved on this machine only. It appears in the library like any other expert.")
+      }
+      onClose={close}
+      testId="library-editor-modal"
+      panelClassName="w-[760px]"
+      z="z-[55]"
+    >
+      {loaded === undefined ? (
+        <div className="text-[12.5px] text-muted">{t("Loading…")}</div>
+      ) : isEdit && loaded === null ? (
+        <div className="text-[12.5px] text-danger">{t("Could not load this prompt.")}</div>
+      ) : (
+        <>
+          <div className="grid grid-cols-[1fr_88px] gap-3">
+            <div>
+              <label className={FIELD_LABEL} htmlFor="expert-name">
+                {t("Name")}
+              </label>
+              <input
+                id="expert-name"
+                className={`${INPUT} mt-1`}
+                value={name}
+                placeholder={t("e.g. Production planner")}
+                onChange={(e) => mark(setName)(e.target.value)}
+                data-testid="expert-editor-name"
+              />
+            </div>
+            <div>
+              <label className={FIELD_LABEL} htmlFor="expert-emoji">
+                {t("Emoji")}
+              </label>
+              <input
+                id="expert-emoji"
+                className={`${INPUT} mt-1 text-center`}
+                value={emoji}
+                placeholder="🧭"
+                maxLength={8}
+                onChange={(e) => mark(setEmoji)(e.target.value)}
+                data-testid="expert-editor-emoji"
+              />
+            </div>
+          </div>
+          <div className="mt-3">
+            <label className={FIELD_LABEL} htmlFor="expert-desc">
+              {t("One-line description")}
+            </label>
+            <input
+              id="expert-desc"
+              className={`${INPUT} mt-1`}
+              value={description}
+              placeholder={t("What this expert is for — shown on the card")}
+              onChange={(e) => mark(setDescription)(e.target.value)}
+              data-testid="expert-editor-desc"
+            />
+          </div>
+          <div className="mt-3">
+            <label className={FIELD_LABEL} htmlFor="expert-category">
+              {t("Category")}
+            </label>
+            {categoryEditable ? (
+              <div className="flex gap-2 mt-1">
+                <select
+                  id="expert-category"
+                  className={INPUT + " w-auto min-w-[180px]"}
+                  value={customPicked || knownCategory ? category : "__custom__"}
+                  onChange={(e) => mark(setCategory)(e.target.value)}
+                  data-testid="expert-editor-category"
+                >
+                  {categories.map((c) => (
+                    <option key={c.category} value={c.category}>
+                      {c.categoryName}
+                    </option>
+                  ))}
+                  <option value="__custom__">{t("Custom…")}</option>
+                </select>
+                {(customPicked || !knownCategory) && (
+                  <input
+                    className={INPUT}
+                    value={customPicked ? customCategory : category}
+                    placeholder={t("Category name")}
+                    onChange={(e) => {
+                      setDirty(true);
+                      if (customPicked) setCustomCategory(e.target.value);
+                      else setCategory(e.target.value);
+                    }}
+                    data-testid="expert-editor-category-custom"
+                  />
+                )}
+              </div>
+            ) : (
+              <div className="text-[13px] text-muted mt-1">{loaded?.meta?.categoryName || "—"}</div>
+            )}
+          </div>
+          <div className="mt-3">
+            <div className="flex items-center gap-2">
+              <label className={FIELD_LABEL} htmlFor="expert-prompt">
+                {t("Prompt (markdown)")}
+              </label>
+              <span className="flex-1" />
+              <span className="text-[11px] text-faint">
+                {t("{{count}} characters", { count: prompt.length })}
+              </span>
+              {isEdit && !editor.local && loaded?.pack_prompt && loaded.pack_prompt !== prompt && (
+                <button
+                  className="text-[11.5px] text-muted hover:text-ink underline underline-offset-2"
+                  onClick={() => {
+                    mark(setPrompt)(loaded.pack_prompt || "");
+                    promptRef.current?.focus();
+                  }}
+                  data-testid="expert-editor-reset-text"
+                >
+                  {t("Reset to shipped text")}
+                </button>
+              )}
+            </div>
+            <textarea
+              id="expert-prompt"
+              ref={promptRef}
+              className={`${INPUT} mt-1 min-h-[320px] font-mono text-[12px] leading-relaxed`}
+              value={prompt}
+              spellCheck={false}
+              placeholder={t("Who this expert is, what it does, how it answers…")}
+              onChange={(e) => mark(setPrompt)(e.target.value)}
+              onKeyDown={(e) => {
+                // Ctrl/Cmd+S saves — the natural key in a text editor.
+                if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s" && !isComposing(e)) {
+                  e.preventDefault();
+                  void save();
+                }
+              }}
+              maxLength={MAX_EDITOR_PROMPT}
+              data-testid="expert-editor-prompt"
+            />
+          </div>
+          {error && (
+            <div className="text-[12.5px] text-danger mt-2" data-testid="expert-editor-error">
+              {error}
+            </div>
+          )}
+          <div className="flex items-center gap-2 mt-3.5">
+            <button className={BTN_ACCENT} disabled={!canSave} onClick={() => void save()} data-testid="expert-editor-save">
+              {saving ? t("Saving…") : isEdit ? t("Save") : t("Create expert")}
+            </button>
+            <button className={BTN_BORDERED} onClick={close} disabled={saving}>
+              {t("Cancel")}
+            </button>
+            {isEdit && !editor.local && (
+              <span className="text-[11.5px] text-faint ml-auto">
+                {t("Installed as a coworker? It is updated on save.")}
+              </span>
             )}
           </div>
         </>
@@ -1227,7 +1945,7 @@ function ExpertTeamModal({
       list = list.map((r, idx) => (idx === i ? { ...r, status: "installing" } : r));
       if (!live.current) return;
       setResults(list);
-      const r = await libraryInstallExpert(m.lib, m.id, true);
+      const r = await libraryInstallExpert(m.lib, m.id, true).catch(() => ({ ok: false as const, error: t("unreachable") }));
       if (!live.current) return;
       if (!r.ok || !r.persona_id) {
         list = list.map((r2, idx) =>
@@ -1252,7 +1970,7 @@ function ExpertTeamModal({
     setActivateError(null);
     for (const r of results) {
       if (r.skipped || !r.personaId) continue;
-      const res = await libraryActivateExpert(r.personaId);
+      const res = await libraryActivateExpert(r.personaId).catch(() => ({ ok: false as const, error: t("unreachable") }));
       if (!live.current) return;
       if (!res.ok) {
         setActivating(false);

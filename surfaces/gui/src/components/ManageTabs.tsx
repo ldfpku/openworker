@@ -60,7 +60,10 @@ export function ModelsTab() {
   // getSettings/getProviders carry a 15s timeout specifically to fail fast INTO this retry.
   const [settings, setSettings] = useState<ModelSettings | null | undefined>(undefined);
   const refreshSettings = () => getSettings().then(setSettings).catch(() => setSettings(null));
-  const ps = useProviderSetup({ onSaved: refreshSettings });
+  // stayAfterTest: on this page a passing Test must NOT slide back to the gallery — the
+  // model checklist right below the key form is the next thing to work on, and it only
+  // fills in once Test has pulled the provider's catalog (owner-hit 2026-09-10).
+  const ps = useProviderSetup({ onSaved: refreshSettings, stayAfterTest: true });
   useEffect(() => {
     refreshSettings();
   }, []);
@@ -72,7 +75,11 @@ export function ModelsTab() {
   // to fetch it. Bounded — a pull that never reports back must not poll forever; the
   // status row's Refresh button stays as the manual way out.
   const catalogPending =
-    !!ps.info?.configured && !!ps.info.catalog?.supported && !ps.info.catalog.live && !ps.info.catalog.error;
+    !!ps.info?.configured &&
+    !!ps.info.catalog?.supported &&
+    // The server's own word first: a fresh pull kicked over a stale error (signing back in
+    // after the token expired) is `pending` even though `error` is still set.
+    (ps.info.catalog.pending === true || (!ps.info.catalog.live && !ps.info.catalog.error));
   useEffect(() => {
     if (!catalogPending) return;
     const POLL_MS = 2000;
@@ -127,7 +134,9 @@ export function ModelsTab() {
         ps={ps}
         tp="set"
         footer={
-          ps.credentialed ? (
+          // The gateway has no key: its card's own Sign out is the way out (a "Remove key"
+          // there deleted the OAuth registration behind the sign-in — audit 2026-09-10).
+          ps.credentialed && ps.sel !== "aigw" ? (
             <button
               className="text-[13px] text-danger/80 hover:text-danger hover:underline underline-offset-2"
               data-testid="set-remove-key"

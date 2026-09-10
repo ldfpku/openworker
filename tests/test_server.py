@@ -134,6 +134,18 @@ def test_disable_persona_archives_its_sessions(tmp_path):
     client.post("/v1/personas/code/enable", json={"enabled": False})
     assert store.load("chat-c").archived
 
+    # The DEFAULT coworker cannot be switched off (audit 2026-09-10): every new session,
+    # the disabled-coworker fallback and inbound DMs land on it. Both routes refuse, and
+    # its sessions stay put.
+    for path in ("/v1/personas/cowork", "/v1/personas/cowork/enable"):
+        body = client.post(path, json={"enabled": False}).json()
+        assert body["ok"] is False and "default" in body["error"]
+    assert manager.personas.is_enabled("cowork") is True
+    assert store.load("cowork-a").archived is False
+    # Make another one the default first, and it goes.
+    client.post("/v1/personas/code", json={"enabled": True, "default": True})
+    assert client.post("/v1/personas/cowork", json={"enabled": False}).json()["ok"] is True
+
 
 def test_connector_tool_settings_and_audit_rest(tmp_path):
     client = _client(tmp_path, [])

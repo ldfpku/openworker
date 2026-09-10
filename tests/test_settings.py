@@ -174,3 +174,109 @@ def test_ollama_models_gated_on_liveness(tmp_path, monkeypatch):
 
     monkeypatch.setattr(SessionManager, "_ollama_alive", lambda self: True)
     assert "ollama:llama3.3" in manager.get_settings()["models"]
+
+
+def test_default_model_change_rebinds_open_drafts_but_not_history_or_hand_picks(
+    tmp_path, monkeypatch
+):
+    """Owner-hit 2026-09-10 ("the default model doesn't apply globally"): a draft whose
+    engine was built before the default changed kept the OLD default, so the composer the
+    person came back to still showed the model they had just moved away from. The new
+    default now lands in every open draft — except one whose model was picked by hand in
+    the composer (engine.model_pinned) — and never touches a session with history."""
+    from coworker.server.manager import SessionManager
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    manager = SessionManager(data_dir=tmp_path / "data")
+    old = manager.model
+
+    draft = manager.get_engine("draft-1", agent="cowork")
+    pinned = manager.get_engine("draft-2", agent="cowork")
+    pinned.switch_model("zai:glm-5.2")
+    pinned.model_pinned = True  # what the socket's set_model sets
+    talked = manager.get_engine("talked-1", agent="cowork")
+    talked.messages.append({"role": "user", "content": "hi"})
+    talked.messages.append({"role": "assistant", "content": "hello"})
+    assert draft.model == old and talked.model == old
+
+    # A draft mid re-target carries its picks outside the engine map.
+    manager._draft_carry["draft-3"] = {
+        "model": old,
+        "mode": manager.mode,
+        "messages": [],
+        "extra_roots": [],
+    }
+    manager._draft_carry["draft-4"] = {
+        "model": "zai:glm-5.2",
+        "model_pinned": True,
+        "mode": manager.mode,
+        "messages": [],
+        "extra_roots": [],
+    }
+
+    res = manager.set_default_model("gemini:gemini-3.5-flash")
+    assert res["ok"] is True and res["model"] == "gemini:gemini-3.5-flash"
+    assert draft.model == "gemini:gemini-3.5-flash"
+    assert pinned.model == "zai:glm-5.2"
+    assert talked.model == old
+    assert manager._draft_carry["draft-3"]["model"] == "gemini:gemini-3.5-flash"
+    assert manager._draft_carry["draft-4"]["model"] == "zai:glm-5.2"
+
+
+def test_remove_key_keeps_the_gemini_login_and_moves_a_stranded_default(tmp_path, monkeypatch):
+    """Audit 2026-09-10: "Remove key…" on Gemini used to delete the whole profile —
+    including the relay sign-in the confirm dialog never mentioned — and a default model
+    left on a provider that just lost its key blocked sending in every session even with
+    another provider connected. Now the login survives, the cached catalog goes, and the
+    default moves to a model whose provider still works."""
+    from coworker.server.manager import SessionManager
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    manager = SessionManager(data_dir=tmp_path / "data")
+    manager.secrets.put(
+        "provider:gemini",
+        {
+            "type": "api_key",
+            "api_key": "AIza-test",
+            "key_set_at": "2026-09-01",
+            "relay_token": "owr_abc",
+            "relay_email": "a@example.test",
+            "relay_name": "A",
+        },
+    )
+    manager.secrets.put("provider:zai", {"type": "api_key", "api_key": "sk-glm"})
+    manager._model_catalog["gemini"] = {"fetched_at": "x", "models": [{"id": "m", "label": "M"}], "error": None, "failed_at": None}
+    assert manager.set_default_model("gemini:gemini-3.5-flash")["ok"] is True
+    assert manager.get_settings()["model_ready"] is True
+
+    # The Gemini card knows a key without a login is not "connected".
+    row = next(r for r in manager.get_providers() if r["name"] == "gemini")
+    assert row["configured"] is True and row["needs_signin"] is False
+
+    assert manager.remove_provider("gemini")["ok"] is True
+    profile = manager.secrets.get("provider:gemini") or {}
+    assert "api_key" not in profile and "key_set_at" not in profile
+    assert profile["relay_token"] == "owr_abc" and profile["relay_email"] == "a@example.test"
+    assert "gemini" not in manager._model_catalog
+    assert manager._model_provider(manager.model) == "zai"
+    assert manager.get_settings()["model_ready"] is True
+
+    # A key without a login: still "configured", but flagged so the card can say so.
+    manager.secrets.put("provider:gemini", {"type": "api_key", "api_key": "AIza-test"})
+    row = next(r for r in manager.get_providers() if r["name"] == "gemini")
+    assert row["configured"] is True and row["needs_signin"] is True
+
+
+def test_default_stays_put_when_no_other_provider_is_connected(tmp_path, monkeypatch):
+    from coworker.server.manager import SessionManager
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    manager = SessionManager(data_dir=tmp_path / "data")
+    manager.secrets.put("provider:zai", {"type": "api_key", "api_key": "sk-glm"})
+    manager.set_default_model("zai:glm-5.2")
+    assert manager.remove_provider("zai")["ok"] is True
+    # Nothing else to move to: the default is left alone (model_ready says the rest).
+    assert manager.model == "zai:glm-5.2"
+    assert manager.get_settings()["model_ready"] is False

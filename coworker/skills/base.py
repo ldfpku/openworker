@@ -89,6 +89,30 @@ class SkillLoader:
         ]
 
 
+def _parse_frontmatter(raw: str) -> Optional[dict]:
+    """The frontmatter block as a mapping via YAML, or ``None`` when it does not parse
+    as one (a hand-written file with a stray tab or an unquoted colon) — the caller then
+    falls back to the forgiving line scanner that predates this."""
+    try:
+        import yaml
+
+        data = yaml.safe_load(raw)
+    except Exception:  # noqa: BLE001 — any YAML error → line scanner
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _unquote(value: str) -> str:
+    """A frontmatter scalar as its author meant it: YAML-quoted values (the shipped
+    library skills quote every description — `description: "How to use…"`) lose their
+    quotes and `\"` escapes, so neither the catalog line nor the Settings editor shows
+    them. Unquoted values pass through untouched."""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        inner = value[1:-1]
+        return inner.replace('\\"', '"') if value[0] == '"' else inner.replace("''", "'")
+    return value
+
+
 def _parse_skill(md: Path) -> Skill:
     # Author-written file: one saved in a legacy codepage (ANSI/GBK on a Chinese
     # Windows) must degrade to mojibake, never raise — _discover runs during engine
@@ -100,17 +124,31 @@ def _parse_skill(md: Path) -> Skill:
         if end != -1:
             frontmatter = text[3:end]
             body = text[end + 4 :].lstrip("\n")
-            for line in frontmatter.splitlines():
-                if ":" not in line:
-                    continue
-                key, value = line.split(":", 1)
-                key, value = key.strip().lower(), value.strip()
-                if key == "name" and value:
-                    name = value
-                elif key == "description":
-                    description = value
-                elif key in ("allowed-tools", "allowed_tools"):
-                    allowed = [t.strip() for t in value.split(",") if t.strip()]
+            parsed = _parse_frontmatter(frontmatter)
+            if parsed is not None:
+                # Real YAML: folded/literal descriptions (`description: >` — the shipped
+                # bids/onekgpd skills) read as their text, not as ">" (audit 2026-09-10).
+                if parsed.get("name"):
+                    name = str(parsed["name"]).strip() or name
+                if parsed.get("description") is not None:
+                    description = " ".join(str(parsed["description"]).split())
+                tools = parsed.get("allowed-tools", parsed.get("allowed_tools"))
+                if isinstance(tools, str):
+                    allowed = [t.strip() for t in tools.split(",") if t.strip()]
+                elif isinstance(tools, list):
+                    allowed = [str(t).strip() for t in tools if str(t).strip()]
+            else:
+                for line in frontmatter.splitlines():
+                    if ":" not in line:
+                        continue
+                    key, value = line.split(":", 1)
+                    key, value = key.strip().lower(), _unquote(value.strip())
+                    if key == "name" and value:
+                        name = value
+                    elif key == "description":
+                        description = value
+                    elif key in ("allowed-tools", "allowed_tools"):
+                        allowed = [t.strip() for t in value.split(",") if t.strip()]
     return Skill(
         name=name,
         description=description,

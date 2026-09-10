@@ -58,13 +58,30 @@ export function ModelChecklist({
     const i = id.indexOf(":");
     return i > 0 && knownProviders.includes(id.slice(0, i)) ? id.slice(0, i) : "openai";
   };
+  // Typed input may already carry a provider prefix; leave that alone.
   const prefixed = (m: string) => (provider === "openai" || provOf(m) !== "openai" ? m : `${provider}:${m}`);
+  // Suggestions from the provider NEVER carry one — an Ollama tag like `mistral:latest`
+  // or `qwen:7b` must become `ollama:mistral:latest`, not be read as the Mistral cloud
+  // provider's model (audit 2026-09-10: ticking it did nothing, or added a broken row).
+  const suggestedId = (m: string) => (provider === "openai" ? m : `${provider}:${m}`);
   const bare = (id: string) => (id.startsWith(`${provider}:`) ? id.slice(provider.length + 1) : id);
 
+  const suggestedIds = suggested.map(suggestedId);
   const rows = [
-    ...suggested.map(prefixed),
+    ...suggestedIds,
     ...curated.filter((id) => provOf(id) === provider),
   ].filter((id, i, a) => a.indexOf(id) === i);
+  // The default leads the list — it used to trail every catalog row, which for a
+  // catalog of a few hundred models put "which one do new sessions use" off-screen.
+  if (rows.includes(defaultModel)) rows.splice(0, 0, ...rows.splice(rows.indexOf(defaultModel), 1));
+  // With a live catalog, a ticked/default id the provider's list doesn't carry (a model
+  // the vendor retired, or one typed by hand) gets a badge instead of vanishing silently.
+  const catalogLive = !!catalog?.live;
+  const offCatalog = (id: string) => catalogLive && !suggestedIds.includes(id);
+  // The free-type add row hides behind a link once the catalog is live — the list is
+  // authoritative then — but never disappears: gateways and previews the catalog omits
+  // still need a way in.
+  const [showAdd, setShowAdd] = useState(false);
 
   // Once the list comes live from the provider's real API, a text filter beats scrolling
   // through it — but only once it's long enough to need one.
@@ -123,17 +140,19 @@ export function ModelChecklist({
   // instead of only dating the last success.
   const status = !catalog?.supported
     ? null
-    : catalog.live
-      ? {
+    : catalog.pending && !catalog.live
+      ? { text: t("models.catalog_pending"), action: t("models.catalog_refresh") }
+      : catalog.live
+        ? {
           text: t(catalog.error ? "models.catalog_live_error" : "models.catalog_live", {
             when: formatRelative(catalog.fetched_at, t, { style: "short" }),
             error: catalog.error,
           }),
           action: t(catalog.error ? "models.catalog_retry" : "models.catalog_refresh"),
         }
-      : catalog.error
-        ? { text: t("models.catalog_error", { error: catalog.error }), action: t("models.catalog_retry") }
-        : { text: t("models.catalog_pending"), action: t("models.catalog_refresh") };
+        : catalog.error
+          ? { text: t("models.catalog_error", { error: catalog.error }), action: t("models.catalog_retry") }
+          : { text: t("models.catalog_pending"), action: t("models.catalog_refresh") };
 
   return (
     <div className="mlist">
@@ -174,6 +193,15 @@ export function ModelChecklist({
               <span className="mlist-name" title={id}>
                 {labels?.[id] || bare(id)}
               </span>
+              {offCatalog(id) && (
+                <span
+                  className="text-[10.5px] px-1.5 py-0.5 rounded border border-warnInk/30 text-warnInk shrink-0"
+                  title={t("models.not_in_catalog_tip")}
+                  data-testid={`mlist-off-catalog-${id}`}
+                >
+                  {t("models.not_in_catalog")}
+                </span>
+              )}
               {isFreeModel(id) && (
                 <span
                   className="mlist-free"
@@ -193,7 +221,16 @@ export function ModelChecklist({
           </div>
         );
       })}
-      {!catalog?.live && (
+      {catalogLive && !showAdd && (
+        <button
+          className="text-[12px] text-muted hover:text-ink mt-1.5 underline underline-offset-2"
+          onClick={() => setShowAdd(true)}
+          data-testid="mlist-add-manually"
+        >
+          {t("models.add_manually")}
+        </button>
+      )}
+      {(!catalogLive || showAdd) && (
         <div className="mlist-add">
           {families && (
             <select

@@ -104,6 +104,41 @@ def test_update_preserves_resources(store):
     assert extra.read_text(encoding="utf-8") == "keep me"
 
 
+def test_update_keeps_a_library_skills_frontmatter_and_unquotes_descriptions(store):
+    """A skill installed from the library ships license/compatibility/metadata lines and a
+    YAML-quoted description. Editing it from Settings must keep those lines (an edit is
+    not a re-authoring) and never show the quotes to the person."""
+    folder = store.global_dir / "adaptyv"
+    folder.mkdir(parents=True)
+    (folder / "SKILL.md").write_text(
+        "---\n"
+        "name: adaptyv\n"
+        'description: "How to use the API: submit, then \\"poll\\"."\n'
+        "license: MIT\n"
+        "compatibility: Requires Python 3.10+\n"
+        "metadata:\n"
+        '  version: "1.2"\n'
+        "---\n\n# Adaptyv\n\nOriginal body.\n",
+        encoding="utf-8",
+    )
+    row = next(r for r in store.rows() if r["name"] == "adaptyv")
+    assert row["description"] == 'How to use the API: submit, then "poll".'
+
+    store.update("adaptyv", description="Edited: a new summary", instructions="Edited body.")
+    text = (folder / "SKILL.md").read_text(encoding="utf-8")
+    assert "license: MIT" in text and "compatibility: Requires Python 3.10+" in text
+    assert 'version: "1.2"' in text
+    assert text.count("description:") == 1
+    assert text.rstrip().endswith("Edited body.")
+    loader = SkillLoader([store.global_dir])
+    assert loader.get("adaptyv").description == "Edited: a new summary"
+    assert loader.get("adaptyv").instructions == "Edited body."
+
+    # A description that a bare YAML line could not carry is quoted, and reads back clean.
+    store.update("adaptyv", description="- starts with a dash: risky")
+    assert SkillLoader([store.global_dir]).get("adaptyv").description == "- starts with a dash: risky"
+
+
 def test_delete_and_unknown(store):
     store.create(name="gone", description="", instructions="x")
     store.delete("gone")

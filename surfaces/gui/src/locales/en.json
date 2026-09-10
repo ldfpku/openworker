@@ -1279,7 +1279,10 @@
     "default_locked": "The default model is always shown — make another model default first",
     "filter_placeholder": "Filter models…",
     "key_set": "Key set",
-    "make_default": "Make default"
+    "make_default": "Make default",
+    "not_in_catalog": "not in the provider's list",
+    "not_in_catalog_tip": "The provider's model list doesn't include this id — calls to it may fail. It stays here because it is ticked or is the default.",
+    "add_manually": "Add a model by id…"
   },
   "onboarding": {
     "cancel": "Cancel",
@@ -1375,7 +1378,16 @@
     "delete": "Delete",
     "keep": "Keep",
     "delete_ellipsis": "Delete…",
-    "delete_failed": "delete failed"
+    "delete_failed": "delete failed",
+    "prompt_label": "Instructions",
+    "prompt_chars": "{{count}} characters",
+    "prompt_rendered": "Show rendered",
+    "prompt_raw": "Show raw text",
+    "prompt_empty": "This coworker carries no instructions of its own.",
+    "prompt_source": "Bundle: {{path}}",
+    "prompt_intro": "Exactly what this coworker tells the model at the start of every session. Read-only here — edit its bundle to change it.",
+    "peek_manage": "Manage in Settings…",
+    "default_locked_tip": "This is the default coworker for new sessions — make another one the default first."
   },
   "personas": {
     "add_help": "Load from a local directory or a public GitHub repo. Files are copied into a managed area (a snapshot), so the source can change without affecting the install.",
@@ -1487,7 +1499,9 @@
     "oauth_start_error": "Couldn't start the sign-in.",
     "copy_command": "Copy command",
     "test_save_hint": "Runs one read-only check, then saves.",
-    "test_save_btn": "Test & save"
+    "test_save_btn": "Test & save",
+    "err_save_failed": "verified, but the key could not be saved",
+    "needs_sign_in": "Key saved · sign in to use it"
   },
   "workspace_trust": {
     "title": "Trust this workspace’s commands?",
@@ -1662,7 +1676,12 @@
     "manage_coworkers": "Manage coworkers…",
     "choose_folder": "Choose folder",
     "choose_another_folder": "Choose another folder…",
-    "choose_a_folder": "Choose a folder…"
+    "choose_a_folder": "Choose a folder…",
+    "general_coworker": "OpenWorker (general)",
+    "use_specialist": "Use a specialist coworker",
+    "use_specialist_on": "This session runs on the coworker below. Switch off to talk to the general OpenWorker instead.",
+    "use_specialist_off": "Off — the general OpenWorker, with no specialist instructions. Switch on to bring the last coworker back.",
+    "view_coworker": "View instructions & permissions"
   },
   "mcp": {
     "preset_granola_blurb": "Meeting notes & transcripts — sign in with your Granola account.",

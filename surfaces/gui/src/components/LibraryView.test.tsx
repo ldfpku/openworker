@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { LibraryView } from "./LibraryView";
+import { LibraryView, resetLibraryBrowseMemory } from "./LibraryView";
 import i18n from "../i18n";
 
 // UI chrome asserts on the English literal (the i18next key itself — see setupTests.ts: jsdom
@@ -88,11 +88,39 @@ vi.mock("../api", () => ({
     ok: true,
     results: names.map((name) => ({ name, ok: true })),
   })),
+  // P4: the local layer + the installed-skill editing the skill page reaches into.
+  librarySaveExpert: vi.fn(async (body: { id?: string; name: string }) => ({
+    ok: true,
+    id: body.id || "local/new-expert",
+    created: !body.id,
+    reinstalled: body.id === "academic/academic-geographer" ? ["academic-geographer"] : [],
+  })),
+  libraryDeleteExpert: vi.fn(async (_lib: string, id: string) => ({
+    ok: true,
+    deleted: id.startsWith("local/"),
+    restored: !id.startsWith("local/"),
+    reinstalled: [],
+  })),
+  listSkills: vi.fn(async () => [
+    {
+      name: "scanpy",
+      description: "Single-cell analysis toolkit for Python.",
+      instructions: "# scanpy\n\nfull instructions here",
+      scope: "global",
+      source: "local",
+      enabled: true,
+      path: "/state/skills/scanpy",
+      files: 24,
+    },
+  ]),
+  updateSkill: vi.fn(async () => ({ ok: true })),
+  revealSkill: vi.fn(async () => ({ ok: true })),
 }));
 
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  resetLibraryBrowseMemory(); // the page remembers tab/search across mounts by design
 });
 
 describe("LibraryView — experts tab", () => {
@@ -507,5 +535,227 @@ describe("LibraryView — build an expert team", () => {
 
     fireEvent.keyDown(screen.getByTestId(cardId), { key: "Enter" });
     expect(screen.getByTestId(cardId).getAttribute("aria-checked")).toBe("false");
+  });
+});
+
+// P4 (owner ask 2026-09-10): the library is editable on this machine — new experts,
+// in-place edits of pack experts (overrides), restore/delete — and an installed skill's
+// local copy can be edited from its page.
+describe("LibraryView — editing on this machine", () => {
+  it("New expert: fills the editor, saves, and the list refreshes with the local card", async () => {
+    const { librarySaveExpert, libraryExperts } = await import("../api");
+    vi.mocked(libraryExperts)
+      .mockResolvedValueOnce(EXPERTS_ZH)
+      .mockResolvedValueOnce([
+        ...EXPERTS_ZH,
+        {
+          id: "local/new-expert",
+          category: "academic",
+          categoryName: "学术研究",
+          name: "排产专家",
+          description: "为交期负责",
+          emoji: "📅",
+          color: "#888",
+          pair: false,
+          local: true,
+          modified: false,
+        },
+      ]);
+
+    render(<LibraryView onStartExpertSession={vi.fn()} onStartTeamSession={vi.fn()} />);
+    await screen.findByText("地理学家");
+    fireEvent.click(screen.getByTestId("library-new-expert"));
+    const modal = await screen.findByTestId("library-editor-modal");
+    expect(within(modal).getByText("New expert")).toBeTruthy();
+
+    // Save is armed only once a name and a prompt are in.
+    const save = within(modal).getByTestId("expert-editor-save") as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    fireEvent.change(within(modal).getByTestId("expert-editor-name"), { target: { value: "排产专家" } });
+    fireEvent.change(within(modal).getByTestId("expert-editor-emoji"), { target: { value: "📅" } });
+    fireEvent.change(within(modal).getByTestId("expert-editor-desc"), { target: { value: "为交期负责" } });
+    fireEvent.change(within(modal).getByTestId("expert-editor-prompt"), { target: { value: "你是排产专家。" } });
+    expect(save.disabled).toBe(false);
+    fireEvent.click(save);
+
+    await waitFor(() =>
+      expect(librarySaveExpert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          lib: "zh",
+          id: undefined,
+          name: "排产专家",
+          emoji: "📅",
+          description: "为交期负责",
+          category: "academic",
+          categoryName: "学术研究",
+          prompt: "你是排产专家。",
+        }),
+      ),
+    );
+    await waitFor(() => expect(screen.queryByTestId("library-editor-modal")).toBeNull());
+    expect(await screen.findByTestId("expert-card-local/new-expert")).toBeTruthy();
+    expect(screen.getByTestId("expert-local-chip-local/new-expert")).toBeTruthy();
+    expect(screen.getByTestId("library-notice").textContent).toContain("Expert saved on this machine.");
+  });
+
+  it("Edit prompt on a pack expert: loads its text, saves an override, reports the re-install", async () => {
+    const { librarySaveExpert, libraryExpertPrompt } = await import("../api");
+    vi.mocked(libraryExpertPrompt).mockResolvedValue({
+      name: "地理学家",
+      prompt: "shipped prompt",
+      local: false,
+      modified: false,
+      pack_prompt: "shipped prompt",
+      meta: { name: "地理学家", description: "分析空间数据", emoji: "🌍", color: "blue", category: "academic", categoryName: "学术研究" },
+    });
+
+    render(<LibraryView onStartExpertSession={vi.fn()} onStartTeamSession={vi.fn()} />);
+    await screen.findByText("地理学家");
+    fireEvent.click(screen.getByTestId("expert-edit-academic/academic-geographer"));
+    const modal = await screen.findByTestId("library-editor-modal");
+    const prompt = (await within(modal).findByTestId("expert-editor-prompt")) as HTMLTextAreaElement;
+    expect(prompt.value).toBe("shipped prompt");
+    // The category is the pack's — shown, not editable.
+    expect(within(modal).queryByTestId("expert-editor-category")).toBeNull();
+    expect(within(modal).getByText("学术研究")).toBeTruthy();
+
+    fireEvent.change(prompt, { target: { value: "my better prompt" } });
+    // Reset link appears once the text differs from the shipped one; leave it edited.
+    expect(within(modal).getByTestId("expert-editor-reset-text")).toBeTruthy();
+    fireEvent.click(within(modal).getByTestId("expert-editor-save"));
+
+    await waitFor(() =>
+      expect(librarySaveExpert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          lib: "zh",
+          id: "academic/academic-geographer",
+          name: "地理学家",
+          category: "academic",
+          prompt: "my better prompt",
+        }),
+      ),
+    );
+    await waitFor(() => expect(screen.queryByTestId("library-editor-modal")).toBeNull());
+    expect(screen.getByTestId("library-notice").textContent).toContain("installed coworker");
+  });
+
+  it("the detail modal offers Restore original for an edited expert and Delete for a local one", async () => {
+    const { libraryDeleteExpert, libraryExpertPrompt } = await import("../api");
+    vi.mocked(libraryExpertPrompt).mockImplementation(async (_lib: string, id: string) =>
+      id === "academic/academic-geographer"
+        ? { name: "地理学家", prompt: "edited", modified: true, local: false, pack_prompt: "shipped" }
+        : { name: "文案撰稿人", prompt: "p", modified: false, local: true },
+    );
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<LibraryView onStartExpertSession={vi.fn()} onStartTeamSession={vi.fn()} />);
+    await screen.findByText("地理学家");
+    const geoCard = screen.getByTestId("expert-card-academic/academic-geographer");
+    fireEvent.click(within(geoCard).getByText("View prompt"));
+    const modal = await screen.findByTestId("library-detail-modal");
+    expect(await within(modal).findByTestId("expert-source-note")).toBeTruthy();
+    expect(within(modal).queryByTestId("expert-delete")).toBeNull();
+    fireEvent.click(within(modal).getByTestId("expert-restore"));
+    await waitFor(() => expect(libraryDeleteExpert).toHaveBeenCalledWith("zh", "academic/academic-geographer"));
+    await waitFor(() => expect(screen.queryByTestId("library-detail-modal")).toBeNull());
+    expect(screen.getByTestId("library-notice").textContent).toContain("Original restored");
+
+    const copyCard = screen.getByTestId("expert-card-writing/copywriter");
+    fireEvent.click(within(copyCard).getByText("View prompt"));
+    const modal2 = await screen.findByTestId("library-detail-modal");
+    expect(within(modal2).queryByTestId("expert-restore")).toBeNull();
+    fireEvent.click(await within(modal2).findByTestId("expert-delete"));
+    await waitFor(() => expect(libraryDeleteExpert).toHaveBeenCalledWith("zh", "writing/copywriter"));
+    confirmSpy.mockRestore();
+  });
+
+  it("an installed skill's page edits the local copy and can put the original back", async () => {
+    const { libraryStatus, updateSkill, libraryInstallSkills } = await import("../api");
+    vi.mocked(libraryStatus).mockResolvedValue({ experts: {}, skills: ["scanpy"] });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<LibraryView onStartExpertSession={vi.fn()} onStartTeamSession={vi.fn()} />);
+    await screen.findByText("地理学家");
+    fireEvent.click(screen.getByTestId("library-tab-skills"));
+    await screen.findByTestId("skill-card-scanpy");
+    fireEvent.click(screen.getByText("View description"));
+    const modal = await screen.findByTestId("library-detail-modal");
+
+    const local = await within(modal).findByTestId("skill-local-copy");
+    expect(await within(local).findByText("/state/skills/scanpy")).toBeTruthy();
+    fireEvent.click(within(local).getByTestId("skill-local-edit"));
+    const body = within(local).getByTestId("skill-local-instructions") as HTMLTextAreaElement;
+    expect(body.value).toContain("full instructions here");
+    fireEvent.change(body, { target: { value: "tuned instructions" } });
+    fireEvent.click(within(local).getByTestId("skill-local-save"));
+    await waitFor(() =>
+      expect(updateSkill).toHaveBeenCalledWith("scanpy", {
+        description: "Single-cell analysis toolkit for Python.",
+        instructions: "tuned instructions",
+      }),
+    );
+    expect(await screen.findByTestId("library-notice")).toBeTruthy();
+
+    fireEvent.click(await within(local).findByTestId("skill-local-reinstall"));
+    await waitFor(() => expect(libraryInstallSkills).toHaveBeenCalledWith(["scanpy"], true));
+    confirmSpy.mockRestore();
+  });
+});
+
+describe("LibraryView — audit 2026-09-10 hardening", () => {
+  it("remembers tab, language, search and category across a remount", async () => {
+    const { unmount } = render(<LibraryView onStartExpertSession={vi.fn()} onStartTeamSession={vi.fn()} />);
+    await screen.findByText("地理学家");
+    fireEvent.click(screen.getByTestId("library-tab-skills"));
+    await screen.findByTestId("skill-card-scanpy");
+    fireEvent.change(screen.getByTestId("library-search"), { target: { value: "scan" } });
+    unmount();
+
+    render(<LibraryView onStartExpertSession={vi.fn()} onStartTeamSession={vi.fn()} />);
+    // Back on Skills, with the search still typed.
+    expect(await screen.findByTestId("skill-card-scanpy")).toBeTruthy();
+    expect((screen.getByTestId("library-search") as HTMLInputElement).value).toBe("scan");
+    expect(screen.queryByTestId("library-expert-grid")).toBeNull();
+  });
+
+  it("an installed skill's page shows the local copy's text, not the shipped one", async () => {
+    const { libraryStatus, listSkills } = await import("../api");
+    vi.mocked(libraryStatus).mockResolvedValue({ experts: {}, skills: ["scanpy"] });
+    vi.mocked(listSkills).mockResolvedValue([
+      {
+        name: "scanpy",
+        description: "d",
+        instructions: "# scanpy (edited locally)\n\ntuned instructions",
+        scope: "global",
+        source: "local",
+        enabled: true,
+        path: "/state/skills/scanpy",
+      },
+    ]);
+    render(<LibraryView onStartExpertSession={vi.fn()} onStartTeamSession={vi.fn()} />);
+    await screen.findByText("地理学家");
+    fireEvent.click(screen.getByTestId("library-tab-skills"));
+    await screen.findByTestId("skill-card-scanpy");
+    fireEvent.click(screen.getByText("View description"));
+    const modal = await screen.findByTestId("library-detail-modal");
+    expect(await within(modal).findByTestId("skill-md-source")).toBeTruthy();
+    expect(within(modal).getByTestId("skill-md").textContent).toContain("tuned instructions");
+    expect(within(modal).getByTestId("skill-md").textContent).not.toContain("full instructions here");
+  });
+
+  it("a request that throws lands as an error, not a button stuck on busy", async () => {
+    const { librarySaveExpert } = await import("../api");
+    vi.mocked(librarySaveExpert).mockRejectedValueOnce(new Error("boom"));
+    render(<LibraryView onStartExpertSession={vi.fn()} onStartTeamSession={vi.fn()} />);
+    await screen.findByText("地理学家");
+    fireEvent.click(screen.getByTestId("library-new-expert"));
+    const modal = await screen.findByTestId("library-editor-modal");
+    fireEvent.change(within(modal).getByTestId("expert-editor-name"), { target: { value: "x" } });
+    fireEvent.change(within(modal).getByTestId("expert-editor-prompt"), { target: { value: "p" } });
+    fireEvent.click(within(modal).getByTestId("expert-editor-save"));
+    expect(await within(modal).findByTestId("expert-editor-error")).toBeTruthy();
+    expect((within(modal).getByTestId("expert-editor-save") as HTMLButtonElement).disabled).toBe(false);
+    // The typed prompt is still there.
+    expect((within(modal).getByTestId("expert-editor-prompt") as HTMLTextAreaElement).value).toBe("p");
   });
 });

@@ -100,15 +100,65 @@ def _stamp_source(md: Path, source: str) -> bool:
     return True
 
 
+def _yaml_scalar(value: str) -> str:
+    """A single-line frontmatter value, quoted only when a bare one would not read back
+    (a leading quote/`#`, a `: ` or ` #` inside, or surrounding whitespace). JSON quoting
+    is valid YAML double-quoting, and `_parse_skill`'s `_unquote` reverses it."""
+    text = " ".join((value or "").split())
+    if not text:
+        return '""'
+    risky = text[0] in "\"'#&*!|>%@`[]{},-?:" or ": " in text or " #" in text
+    return json.dumps(text, ensure_ascii=False) if risky else text
+
+
 def _write_skill_md(
     folder: Path, *, name: str, description: str, instructions: str, source: str = ""
 ) -> None:
-    lines = ["---", f"name: {name}", f"description: {description}"]
+    lines = ["---", f"name: {name}", f"description: {_yaml_scalar(description)}"]
     if source:
         lines.append(f"source: {source}")
     lines += ["---", "", instructions.strip(), ""]
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "SKILL.md").write_text("\n".join(lines), encoding="utf-8")
+
+
+def _rewrite_skill_md(md: Path, *, description: str, instructions: str) -> bool:
+    """Swap the description line and the body of an EXISTING SKILL.md, keeping every
+    other frontmatter line (license, compatibility, metadata, allowed-tools — what a
+    library skill ships with) exactly as the author wrote it. False when the file has no
+    frontmatter block to preserve — the caller then writes a fresh one."""
+    try:
+        text = md.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    if not text.startswith("---"):
+        return False
+    end = text.find("\n---", 3)
+    if end == -1:
+        return False
+    lines = text[3:end].split("\n")  # lines[0] is "" (the newline after the opening ---)
+    out: list[str] = []
+    replaced = False
+    skipping = False  # continuation lines of a folded/literal description block
+    for line in lines:
+        if skipping:
+            if line.startswith((" ", "\t")) or not line.strip():
+                continue
+            skipping = False
+        if not replaced and re.match(r"^description\s*:", line):
+            out.append(f"description: {_yaml_scalar(description)}")
+            replaced = True
+            skipping = True
+        else:
+            out.append(line)
+    if not replaced:
+        # No description line yet: put one right after `name:` (or first).
+        at = next((i + 1 for i, line in enumerate(out) if re.match(r"^name\s*:", line)), 1)
+        out.insert(at, f"description: {_yaml_scalar(description)}")
+    md.write_text(
+        "---" + "\n".join(out) + "\n---\n\n" + instructions.strip() + "\n", encoding="utf-8"
+    )
+    return True
 
 
 class SkillStore:
@@ -245,17 +295,24 @@ class SkillStore:
         current = _parse_skill(folder / "SKILL.md")
         if instructions is not None and not instructions.strip():
             raise ValueError("Skill instructions are required.")
-        _write_skill_md(
-            folder,
-            name=current.name,
-            description=(
-                description if description is not None else current.description
-            ),
-            instructions=(
-                instructions if instructions is not None else current.instructions
-            ),
-            source=_frontmatter_source(folder / "SKILL.md"),
+        next_description = description if description is not None else current.description
+        next_instructions = (
+            instructions if instructions is not None else current.instructions
         )
+        # Rewrite in place so a library skill's license/compatibility/metadata lines
+        # survive an edit from Settings; only a file with no frontmatter is rebuilt.
+        if not _rewrite_skill_md(
+            folder / "SKILL.md",
+            description=next_description,
+            instructions=next_instructions,
+        ):
+            _write_skill_md(
+                folder,
+                name=current.name,
+                description=next_description,
+                instructions=next_instructions,
+                source=_frontmatter_source(folder / "SKILL.md"),
+            )
         return {"name": current.name, "scope": scope}
 
     def delete(self, name: str, workspace: Optional[str | Path] = None) -> None:

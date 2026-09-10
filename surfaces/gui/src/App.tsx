@@ -22,6 +22,7 @@ import {
   updateMemory,
   getSettings,
   getPersonas,
+  setPersonaEnabled,
   getInbox,
   getUnattended,
   PERSONAS_CHANGED,
@@ -78,6 +79,7 @@ import { RightRail } from "./components/RightRail";
 import { IntegrationsView } from "./components/IntegrationsView";
 import { SettingsView } from "./components/SettingsView";
 import { PersonaView } from "./components/PersonaView";
+import { PersonaPeek } from "./components/PersonaPeek";
 import { AuditView } from "./components/AuditView";
 import { InboxView } from "./components/InboxView";
 import { LibraryView } from "./components/LibraryView";
@@ -212,6 +214,17 @@ export function App() {
     useState<WorkspaceCommandTrust | null>(null);
   const [agent, setAgent] = useState("cowork");
   const [model, setModel] = useState("gpt-5.6-sol");
+  // The default model as Settings last reported it. A CHANGE (the person made another
+  // model the default in Settings ▸ Models) is adopted into the open draft on the way
+  // back — the draft's model was only ever the old default copied at connect time, so
+  // leaving it there made "make default" look like it did nothing (owner-hit 2026-09-10).
+  // null until the first load, so the first answer never reads as a change.
+  const defaultModelRef = useRef<string | null>(null);
+  // True once the person picked THIS draft's model by hand in the composer: an explicit
+  // pick outranks a later default change (the server keeps the same rule — engine.model_pinned).
+  const modelPinnedRef = useRef(false);
+  // Live "is the active session still a draft" answer for the async settings load above.
+  const draftRef = useRef(true);
   const [models, setModels] = useState<string[]>([]);
   const [modelLabels, setModelLabels] = useState<Record<string, string>>({});
   // {full model id → context window in tokens} from the curated matrix (verified only);
@@ -330,6 +343,10 @@ export function App() {
     setPersonaViewId(id);
     setSurface("persona");
   };
+  // The read-only coworker glance (PersonaPeek): opened from the composer's coworker
+  // picker and from the session subtitle — what a coworker actually tells the model
+  // was unreadable from the conversation surface before (owner ask 2026-09-10).
+  const [peekPersonaId, setPeekPersonaId] = useState<string | null>(null);
   const [browserRefreshKey, setBrowserRefreshKey] = useState(0);
   // Agent teams (OPE-96): board for the current session's workspace space.
   const [board, setBoard] = useState<Board | null>(null);
@@ -458,9 +475,29 @@ export function App() {
   // Persona metadata drives workspace behavior by FAMILY, not by hardcoded id (so a DevOps/SecOps
   // code-family persona gates a folder like Code, and a knowledge persona starts orphan like Cowork).
   const [personas, setPersonas] = useState<Persona[] | null>(null);
-  const loadPersonas = useCallback(() => {
-    getPersonas().then(setPersonas).catch(() => {});
-  }, []);
+  const loadPersonas = useCallback(
+    () =>
+      getPersonas()
+        .then((list) => {
+          setPersonas(list);
+          return list;
+        })
+        .catch(() => null),
+    [],
+  );
+  // Make sure a coworker is switched on BEFORE a session is started on it: the
+  // disabled-coworker fallback below would otherwise bounce the new draft straight back
+  // (the Expert Team Lead ships disabled, so "Build an expert team" used to land on
+  // OpenWorker with the typed goal gone — audit 2026-09-10). Resolves once the fresh
+  // persona list is in state, so the fallback effect sees the coworker as enabled.
+  const ensurePersonaEnabled = async (id: string) => {
+    const current = (personas || []).find((p) => p.id === id);
+    if (current?.enabled) return true;
+    const res = await setPersonaEnabled(id, true).catch(() => ({ ok: false }));
+    if (!res.ok) return false;
+    await loadPersonas();
+    return true;
+  };
   useEffect(() => {
     loadPersonas();
     // The composer's coworker picker is always mounted on a fresh session — refetch on
@@ -560,7 +597,9 @@ export function App() {
       setSessions(loadedSessions);
       const sess = loadedSessions;
       const ts = (s: SessionInfo) => Date.parse(s.updated_at || "") || Number(s.updated_at) || 0;
-      const last = [...sess].sort((a, b) => ts(b) - ts(a))[0];
+      // Archived conversations are put away — reopening one on launch (archiving doesn't
+      // touch updated_at) undid the archive every restart (audit 2026-09-10).
+      const last = [...sess].filter((s) => !s.archived).sort((a, b) => ts(b) - ts(a))[0];
       if (last) {
         setResumedExisting(true);
         if (last.agent) setAgent(last.agent);
@@ -672,6 +711,20 @@ export function App() {
         setContextBar(s.context_bar === true);
         setModelReady(s.model_ready);
         if (s.surfaces) setSurfaces(s.surfaces);
+        // A new default model applies to the draft we are (or will be) composing in —
+        // unless its model was picked by hand. Sessions with history keep theirs.
+        const prevDefault = defaultModelRef.current;
+        if (s.model) defaultModelRef.current = s.model;
+        if (
+          s.model &&
+          prevDefault !== null &&
+          s.model !== prevDefault &&
+          draftRef.current &&
+          !modelPinnedRef.current
+        ) {
+          setModel(s.model);
+          sessionRef.current?.setModel(s.model);
+        }
       })
       .catch(() => {});
 
@@ -683,6 +736,10 @@ export function App() {
   useEffect(() => {
     if (surface !== "settings") loadSettings();
   }, [surface]);
+  // A hand-picked model belongs to ONE draft; the next session starts on the default again.
+  useEffect(() => {
+    modelPinnedRef.current = false;
+  }, [sessionId]);
 
   useEffect(() => {
     refreshSessions();
@@ -710,7 +767,13 @@ export function App() {
   // one visibility axis, and a deliberately picked coworker must never be reverted.
   useEffect(() => {
     const p = personaOf(agent);
-    if (p && !p.enabled) switchAgent("cowork");
+    // Land on the configured default coworker (what new sessions and inbound DMs use),
+    // not a hardcoded id — and without leaving Settings, where this most often fires
+    // (the person just switched a coworker off there; audit 2026-09-10).
+    if (p && !p.enabled) {
+      const fallback = (personas || []).find((x) => x.default && x.enabled)?.id || "cowork";
+      switchAgent(fallback, { keepSurface: true });
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent, personas]);
 
@@ -1282,6 +1345,7 @@ export function App() {
   };
   const changeModel = (m: string) => {
     if (running) return; // the server refuses mid-turn rebinds — don't let the header lie
+    modelPinnedRef.current = true; // a hand pick: a later default change leaves it alone
     setModel(m);
     sessionRef.current?.setModel(m);
   };
@@ -1343,9 +1407,11 @@ export function App() {
     if (id === agent) return;
     setAgent(id);
     // An explicit draft folder pick survives a coworker change (owner catch
-    // 2026-08-24). Anything inherited — boot-resume, scratch adoption, temp
-    // dirs — still resets; the "never inherit" rule exists for those.
-    if (!gatesWorkspace(id) || tempWorkspace || !draftFolderPicked || !workspace) {
+    // 2026-08-24) — whichever coworker is picked next: the folder chip shows for every
+    // draft, so a folder picked for OpenWorker was dropped the moment a scratch
+    // coworker was chosen (audit 2026-09-10). Anything inherited — boot-resume, scratch
+    // adoption, temp dirs — still resets; the "never inherit" rule exists for those.
+    if (tempWorkspace || !draftFolderPicked || !workspace) {
       setWorkspace(null);
       setBranch(null);
     }
@@ -1499,8 +1565,8 @@ export function App() {
       setUsage(emptyUsage());
     }
   };
-  const switchAgent = async (name: string) => {
-    setSurface("session");
+  const switchAgent = async (name: string, opts?: { keepSurface?: boolean }) => {
+    if (!opts?.keepSurface) setSurface("session");
     if (name === agent) return;
     setDraftFolderPicked(false); // leaving the draft — any pick belonged to it
     rememberLastSession(agent, sessionId, workspace);
@@ -1653,6 +1719,7 @@ export function App() {
   // activity: a transcript holding only that is still a draft (owner ask 2026-09-02).
   const started = hasConversation(items);
   const idle = !started && !streaming && !running;
+  draftRef.current = idle;
   const pendingApproval = [...items].reverse().find((i) => i.kind === "approval" && !i.resolved);
   const pendingDirReq = [...items].reverse().find((i) => i.kind === "dirreq" && !i.resolved);
   const pendingToolReq = [...items].reverse().find((i) => i.kind === "toolreq" && !i.resolved);
@@ -1894,12 +1961,21 @@ export function App() {
         <InboxView onOpenSession={openSessionFromInbox} />
       ) : surface === "library" ? (
         <LibraryView
-          onStartExpertSession={startNewSession}
-          onStartTeamSession={(goal, names) => {
+          onStartExpertSession={async (personaId) => {
+            // activate-expert enabled it server-side; wait for our own list to say so
+            // before switching, or the disabled-coworker fallback fires on the stale list.
+            await ensurePersonaEnabled(personaId);
+            startNewSession(personaId);
+          }}
+          onOpenSkillsSettings={() => openSettings("skills")}
+          onStartTeamSession={async (goal, names) => {
             // Same doorway as onCreateSkill above: switch to the Expert Team Lead,
             // start a fresh session, and hand it the goal + who's already on the roster
             // via the composer — the folder gate (expert-lead requires_folder) still
             // shows its own setup-row chip; the user picks a folder and sends.
+            // The lead ships disabled: switch it on first, or the disabled-coworker
+            // fallback bounces the draft to OpenWorker with the goal gone.
+            await ensurePersonaEnabled("expert-lead");
             startNewSession("expert-lead");
             prefillComposer(
               t(
@@ -1955,7 +2031,19 @@ export function App() {
                 this release (owner ask 2026-07-22). */}
             {hasHistory && (
               <span className="title-sub" data-testid="session-subtitle">
-                {subtitleParts.join(" · ")}
+                {/* The coworker's name opens its read-only glance (instructions +
+                    capabilities); the rest of the facts stay plain text. */}
+                <button
+                  className="hover:text-ink hover:underline underline-offset-2"
+                  data-testid="session-subtitle-coworker"
+                  title={t("setup.view_coworker")}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={() => setPeekPersonaId(agent)}
+                >
+                  {subtitleParts[0]}
+                </button>
+                {" · "}
+                {subtitleParts.slice(1).join(" · ")}
                 {showSaveAsProject && (
                   <>
                     {" · "}
@@ -2158,6 +2246,7 @@ export function App() {
                 folderName={workspace && !tempWorkspace ? baseName(workspace) : null}
                 onPickCoworker={pickCoworker}
                 onPickFolder={pickDraftFolder}
+                onPeek={setPeekPersonaId}
                 onManage={() => openSettings("personas")}
                 onImport={() => {
                   openSettings("personas");
@@ -2371,6 +2460,16 @@ export function App() {
         />
       )}
 
+      {peekPersonaId && (
+        <PersonaPeek
+          personaId={peekPersonaId}
+          onClose={() => setPeekPersonaId(null)}
+          onManage={(id) => {
+            setPeekPersonaId(null);
+            openPersona(id, "session");
+          }}
+        />
+      )}
       {/* UX-029: the send-time folder dialog — the stashed message flies as soon as a
           choice lands; Escape/backdrop restores the draft to the composer. */}
       {sendGate && surface === "session" && (

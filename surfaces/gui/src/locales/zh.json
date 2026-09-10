@@ -1253,7 +1253,10 @@
     "default_locked": "默认模型始终显示——请先将其他模型设为默认",
     "filter_placeholder": "筛选模型…",
     "key_set": "密钥已设置",
-    "make_default": "设为默认"
+    "make_default": "设为默认",
+    "not_in_catalog": "不在提供商列表里",
+    "not_in_catalog_tip": "提供商返回的模型列表里没有这个 id，调用可能失败。它还留在这里，是因为已勾选或是默认模型。",
+    "add_manually": "按 id 手动添加模型…"
   },
   "onboarding": {
     "cancel": "取消",
@@ -1349,7 +1352,16 @@
     "delete": "删除",
     "keep": "保留",
     "delete_ellipsis": "删除…",
-    "delete_failed": "删除失败"
+    "delete_failed": "删除失败",
+    "prompt_label": "提示词",
+    "prompt_chars": "{{count}} 字",
+    "prompt_rendered": "显示排版",
+    "prompt_raw": "显示原文",
+    "prompt_empty": "这个协作代理没有自己的提示词。",
+    "prompt_source": "文件：{{path}}",
+    "prompt_intro": "这就是它在每个会话开头对模型说的话。此处只读——要改，编辑它的安装包（专家库里装的，直接在专家库改）。",
+    "peek_manage": "在设置中管理…",
+    "default_locked_tip": "这是新建会话的默认协作代理——先把另一个设为默认。"
   },
   "personas": {
     "add_help": "从本地目录或公开 GitHub 仓库加载。文件会复制到托管区域（快照），因此源文件变更不会影响已安装版本。",
@@ -1458,7 +1470,9 @@
     "oauth_start_error": "无法启动登录。",
     "copy_command": "复制命令",
     "test_save_hint": "运行一次只读检查，然后保存。",
-    "test_save_btn": "测试并保存"
+    "test_save_btn": "测试并保存",
+    "err_save_failed": "已验证，但密钥没能保存",
+    "needs_sign_in": "已填 key · 还需登录"
   },
   "workspace_trust": {
     "title": "信任此工作区的命令？",
@@ -1621,7 +1635,12 @@
     "manage_coworkers": "管理协作代理…",
     "choose_folder": "选择文件夹",
     "choose_another_folder": "选择其他文件夹…",
-    "choose_a_folder": "选择文件夹…"
+    "choose_a_folder": "选择文件夹…",
+    "general_coworker": "OpenWorker（通用）",
+    "use_specialist": "使用协作代理",
+    "use_specialist_on": "本会话由下方选中的协作代理主持。关闭后改由通用 OpenWorker 应答。",
+    "use_specialist_off": "已关闭——由通用 OpenWorker 应答，不带专业提示词。打开即恢复上次选用的协作代理。",
+    "view_coworker": "查看提示词与权限"
   },
   "mcp": {
     "preset_granola_blurb": "会议记录与转写文本——使用你的 Granola 账号登录。",

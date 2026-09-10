@@ -1,6 +1,8 @@
 // Settings ▸ Models key flows on the shared provider gallery (§39 components, UX-021 page):
-// bad key fails in place, a passing Test auto-saves and slides home to the gallery where the
-// card wears its ✓. Providers are seeded in three states (OpenAI configured+used, Anthropic
+// bad key fails in place, a passing Test auto-saves and STAYS on the provider's page (the
+// model checklist below is the next thing to work on — the onboarding-only auto-return used
+// to slide people home mid-setup, owner-hit 2026-09-10); the gallery card wears its ✓ on the
+// way back. Providers are seeded in three states (OpenAI configured+used, Anthropic
 // configured-unused, Z AI unconfigured w/ a prefilled endpoint behind the disclosure). The
 // mock's /verify fails on a key containing "bad"; POST /v1/providers flips `configured`.
 import { expect } from "@playwright/test";
@@ -14,7 +16,7 @@ async function openModels(page) {
   await expect(page.getByTestId("set-provider-openai")).toBeVisible();
 }
 
-test("Test with a bad key fails in place; a good key saves and returns to the gallery", async ({
+test("Test with a bad key fails in place; a good key saves and stays on the provider page", async ({
   page,
 }) => {
   await openModels(page);
@@ -24,11 +26,20 @@ test("Test with a bad key fails in place; a good key saves and returns to the ga
   await page.getByTestId("set-test").click();
   await expect(page.getByText("Invalid API key.")).toBeVisible();
 
-  // A good key: Test verifies AND saves (§39) — the in-field pill confirms, then the form
-  // slides home and the card wears its ✓.
+  // A good key: Test verifies AND saves (§39) — the in-field pill confirms, the typed
+  // secret gives way to the masked placeholder, and the page stays open with the model
+  // checklist now unlocked below the form.
   await page.getByTestId("set-field-api_key").fill("sk-glm-realkey");
   await page.getByTestId("set-test").click();
   await expect(page.getByTestId("set-saved-pill")).toContainText("Tested & saved");
+  await expect(page.getByTestId("set-field-api_key")).toHaveValue("");
+  await expect(page.getByTestId("set-field-api_key")).toHaveAttribute("placeholder", "••••••••");
+  await page.waitForTimeout(1200);
+  await expect(page.getByTestId("set-back")).toBeVisible();
+  await expect(page.getByTestId("set-provider-zai")).toHaveCount(0);
+
+  // Back on the gallery the card wears its ✓.
+  await page.getByTestId("set-back").click();
   await expect(page.getByTestId("set-provider-zai")).toContainText("✓ Connected", {
     timeout: 5_000,
   });

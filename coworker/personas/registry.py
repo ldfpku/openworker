@@ -334,7 +334,11 @@ class PersonaRegistry:
             return entry.default_surfaced if entry else True
 
     def default_id(self) -> str:
-        # The configured default if it's enabled, else cowork if present, else any enabled one.
+        # The configured default if it's enabled, else cowork if present, else any enabled
+        # one a person could actually be offered: shipped, and not a team worker (those
+        # stay enabled only so a lead can staff them — their prompts talk to a lead, and
+        # most need a folder). Landing new sessions on `appsec-worker` because it was the
+        # first enabled entry was a real out-of-the-box path (audit 2026-09-10).
         with self._lock:
             if self._default in self._entries and self.is_enabled(self._default):
                 return self._default
@@ -342,9 +346,12 @@ class PersonaRegistry:
                 DEFAULT_PERSONA_ID
             ):
                 return DEFAULT_PERSONA_ID
-            for pid in self._entries:
-                if self.is_enabled(pid):
-                    return pid
+            for pid, entry in self._entries.items():
+                if not self.is_enabled(pid) or not self._visible(entry):
+                    continue
+                if entry.manifest is not None and entry.manifest.team == "worker":
+                    continue
+                return pid
             return DEFAULT_PERSONA_ID
 
     def agent(self, persona_id: Optional[str]) -> Agent:
