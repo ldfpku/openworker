@@ -487,6 +487,22 @@ def test_a_local_path_remote_matches_what_git_prints(repo, tmp_path):
     assert flat is None or flat == session_facts._git_remotes_uncached(repo)
 
 
+def test_git_remote_output_with_a_spaced_url_is_not_truncated(repo, monkeypatch):
+    """`git remote -v` is tab-separated for a reason: splitting on whitespace cut a local
+    path remote off at its first space, and the fetch/push suffix has to go by name."""
+
+    class _Proc:
+        stdout = (
+            "local\t/home/me/src/local repo (fetch)\n"
+            "local\t/home/me/src/local repo (push)\n"
+        )
+
+    monkeypatch.setattr(session_facts.subprocess, "run", lambda *a, **kw: _Proc())
+    assert session_facts._git_remotes_uncached(repo) == (
+        ("local", "/home/me/src/local repo"),
+    )
+
+
 def test_remotes_memo_expires_so_a_new_remote_eventually_shows(repo, monkeypatch):
     """The other half of the memo invariant (the safe-direction one is above): a burst
     absorber, not a cache of record — a genuinely new remote must become visible."""

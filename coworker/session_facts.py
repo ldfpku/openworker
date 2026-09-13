@@ -167,9 +167,17 @@ def _git_remotes_uncached(cwd: Path) -> tuple[tuple[str, str], ...]:
         return ()
     seen: dict[str, str] = {}
     for line in proc.stdout.splitlines():
-        parts = line.split()
-        if len(parts) >= 2:
-            seen.setdefault(parts[0], parts[1])
+        # `<name>\t<url> (fetch|push)`, split exactly: whitespace splitting truncated URLs
+        # that contain spaces (a local path remote), and the flat reader returns those
+        # intact — which is how the differential test caught the disagreement on Linux.
+        name, tab, rest = line.partition("\t")
+        if not tab:
+            continue
+        for suffix in (" (fetch)", " (push)"):
+            if rest.endswith(suffix):
+                rest = rest[: -len(suffix)]
+                break
+        seen.setdefault(name, rest)
     return tuple(seen.items())
 
 
