@@ -9,9 +9,9 @@ import i18n from "./i18n";
 // here at display time.
 //
 // Reuses the exact Chinese words the Composer's mode picker already shows for the same modes
-// (composer.mode.* — Composer.tsx's own `modeLabel()` comment says as much: "so the
-// transcript's mode markers read the same names the user just chose from") rather than
-// inventing separate wording that could drift from the picker.
+// (composer.mode.*, whose label table now lives in `modes.ts` — one vocabulary for the whole
+// GUI, so the transcript's mode markers read the same names the user just chose from) rather
+// than inventing separate wording that could drift from the picker.
 const MODE_LABEL_KEYS: Record<string, string> = {
   Discuss: "composer.mode.discuss",
   Plan: "composer.mode.plan",

@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { isComposing } from "../ime";
-import { getI18n, useTranslation } from "react-i18next";
+import { useTranslation } from "react-i18next";
 import type { Attachment, SessionUsage } from "../types";
 import { isPdfFile, readFile, splitDataTransfer } from "../attach";
 import { ProjectBindMenu } from "./ProjectBindMenu";
@@ -12,6 +12,7 @@ import { Icon } from "./Icon";
 import { IconButton } from "./IconButton";
 import { Toggle } from "./Toggle";
 import { BTN_OUTLINE } from "./buttons";
+import { MODE_KEYS, modeLabel, normalizeMode } from "../modes";
 import {
   cancelDictation,
   getDictationLevel,
@@ -25,16 +26,20 @@ import {
 // Plan + Custom hidden for this release (owner ask 2026-07-22): Plan's approval flow isn't
 // polished enough to ship, and Custom (config.toml auto-allow rules) is a power-user mode
 // with no in-app explanation. The server still honors both — a session already in one of
-// those modes keeps working; the picker just doesn't offer them.
-// "auto" is the legacy wire value for Bypass approvals (server: Mode.BYPASS_APPROVALS) —
-// kept so saved sessions and configs keep working. Auto-Approve ("auto-approve") is the
+// those modes keeps working, and ModeMenu synthesises a row for whichever one it is so the
+// current mode is still legible; the picker just doesn't offer them as choices.
+// Mode values on the wire are the server's canonical ones; the legacy "auto" is folded into
+// "bypass-approvals" by modes.ts. Auto-Approve ("auto-approve") is the
 // reviewer mode (spec: reviewed-auto-mode.md); it appears only when the server says the
 // feature flag is on, wired in the settings pass — until then the picker omits it.
 // `caution` prefixes the label with a warning triangle; `gated` hides the entry unless the
 // server's auto_approve flag is on. Picker-local extensions of Dropdown's Option.
 type ModeOption = Option & { caution?: boolean; gated?: boolean };
 
-// "auto" is the legacy wire value for Bypass approvals (server: Mode.BYPASS_APPROVALS).
+// Values are the server's canonical Mode values (audit 2026-09-13): the picker used to carry
+// the legacy "auto" here, so every session that reported "bypass-approvals" — which is what
+// the server actually emits — matched no row and lost its label, ✓ and highlight. The legacy
+// spelling is still understood on the way IN, via modes.ts `normalizeMode`.
 // Auto-approve is `gated`: shown only when getSettings().auto_approve is true (the feature
 // flag, off by default).
 // Labels/descriptions are i18n keys (resolved at render via t()); kept as keys here so the
@@ -49,19 +54,19 @@ const PERMISSION_OPTIONS: ModeOption[] = [
     gated: true,
   },
   {
-    value: "auto",
+    value: "bypass-approvals",
     label: "composer.mode.auto",
     description: "composer.mode.auto_desc",
     caution: true,
   },
 ];
 
-/** The picker's label for a mode value ("auto-approve" -> "Auto-approve"). Exported so the
- * transcript's mode markers read the same names the user just chose from. */
-export function modeLabel(value: string): string {
-  const option = PERMISSION_OPTIONS.find((o) => o.value === value);
-  return option ? getI18n().t(option.label) : value;
-}
+// Descriptions for the modes the picker doesn't offer but can still have to DISPLAY (see the
+// synthesised row in ModeMenu). Only Custom has one to say; Plan's name speaks for itself and
+// the catalogs carry no plan_desc.
+const MODE_DESCRIPTIONS: Record<string, string> = {
+  custom: "composer.mode.custom_desc",
+};
 
 // No hardcoded model fallback: until the server supplies the list (a few seconds after a
 // cold app boot), the picker renders a disabled "Loading models…" chip. A baked-in list
@@ -1079,10 +1084,24 @@ function ModeMenu({
       .then((s) => setAutoApproveEnabled(s.auto_approve === true))
       .catch(() => {});
   }, [open]);
-  const options = PERMISSION_OPTIONS.filter(
-    (o) => !o.gated || autoApproveEnabled || o.value === mode,
+  // Normalise ONCE, here: `mode` comes straight off the wire (the server's "ready", a
+  // mode_changed echo, a persisted session) and may still carry the legacy "auto" spelling.
+  // Everything below compares against `value`, and `onModeChange` only ever emits canonical
+  // option values — so no legacy spelling leaves this component (audit 2026-09-13).
+  const value = normalizeMode(mode);
+  const offered = PERMISSION_OPTIONS.filter(
+    (o) => !o.gated || autoApproveEnabled || o.value === value,
   );
-  const current = PERMISSION_OPTIONS.find((o) => o.value === mode);
+  // Plan and Custom aren't offered in the picker (see PERMISSION_OPTIONS above), but a session
+  // started from the CLI/TUI — or an older config — can already BE in one. Synthesise a row
+  // for the current mode so the ✓ and the selected-row highlight always have a home instead of
+  // an open menu where nothing looks chosen (audit 2026-09-13).
+  const options: ModeOption[] = offered.some((o) => o.value === value)
+    ? offered
+    : [
+        ...offered,
+        { value, label: MODE_KEYS[value] ?? value, description: MODE_DESCRIPTIONS[value] },
+      ];
   return (
     <div className="relative">
       {/* Borderless, and it names the CHOSEN mode (owner ask 2026-07-11, competitor composer
@@ -1095,13 +1114,13 @@ function ModeMenu({
         aria-expanded={open}
         aria-label={t("composer.mode_label")}
         title={
-          `${t("composer.mode_label")}: ${current ? t(current.label) : mode}` +
-          (reviewerPaused && mode === "auto-approve" ? " · " + t("composer.reviewer_paused_tip") : "") +
+          `${t("composer.mode_label")}: ${modeLabel(t, value)}` +
+          (reviewerPaused && value === "auto-approve" ? " · " + t("composer.reviewer_paused_tip") : "") +
           (unattended ? " · " + t("composer.approvals_to_inbox") : "")
         }
       >
-        {current ? t(current.label) : mode}
-        {reviewerPaused && mode === "auto-approve" && (
+        {modeLabel(t, value)}
+        {reviewerPaused && value === "auto-approve" && (
           <span className="text-[11px] text-warnInk" data-testid="mode-paused">· {t("composer.paused")}</span>
         )}
         <Icon name="chevronDown" size={11} className="text-faint" />
@@ -1126,14 +1145,14 @@ function ModeMenu({
                 <span
                   className={
                     "flex items-center text-[13px] " +
-                    (o.value === mode ? "font-medium text-accent" : "text-ink")
+                    (o.value === value ? "font-medium text-accent" : "text-ink")
                   }
                 >
                   {o.caution && (
                     <Icon name="warning" size={13} className="mr-1.5 shrink-0 text-warnInk" />
                   )}
                   {t(o.label)}
-                  {o.value === mode && <span className="ml-1.5">✓</span>}
+                  {o.value === value && <span className="ml-1.5">✓</span>}
                 </span>
                 <span className="text-[11px] text-faint leading-snug">{t(o.description ?? "")}</span>
               </button>

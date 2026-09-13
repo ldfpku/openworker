@@ -148,9 +148,9 @@ def test_rescan_reads_disk_only_when_something_changed(tmp_path):
     reads: list[str] = []
     real = type(loader)._discover
 
-    def counting(self, directory):
+    def counting(self, directory, into):
         reads.append(str(directory))
-        return real(self, directory)
+        return real(self, directory, into)
 
     type(loader)._discover = counting
     try:

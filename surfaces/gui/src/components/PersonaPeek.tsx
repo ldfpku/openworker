@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getPersonaDetail, type PersonaDetail } from "../api";
 import { fullPersonaName } from "../personaScope";
+import { BASELINE_PERSONA } from "../personaLifecycle";
 import { isComposing } from "../ime";
+import { modeLabel } from "../modes";
 import { BTN_ACCENT_SM, BTN_BORDERED_SM } from "./buttons";
 import { CopyButton } from "./CopyButton";
 import { IconButton } from "./IconButton";
@@ -17,19 +19,13 @@ import { Markdown } from "./Markdown";
 
 const SEC_H = "text-[11px] uppercase tracking-[0.05em] text-faint font-semibold";
 
-// A manifest's default_permission_mode as the composer names it (its Mode menu is where
-// people know these words from); an unknown value falls back to the raw id.
-const MODE_KEY: Record<string, string> = {
-  interactive: "composer.mode.interactive",
-  discuss: "composer.mode.discuss",
-  plan: "composer.mode.plan",
-  auto: "composer.mode.auto",
-  "bypass-approvals": "composer.mode.auto",
-  "auto-approve": "composer.mode.auto_approve",
-};
+/** A manifest's default_permission_mode as the composer names it (its Mode menu is where
+ *  people know these words from); an unknown value falls back to the raw id.
+ *  The lookup table this used to keep privately moved to ../modes (audit 2026-09-13) — it was
+ *  the only place that knew the canonical "bypass-approvals", while the picker knew only the
+ *  legacy "auto". The name stays: PersonaView and the tests call it. */
 export function permissionModeLabel(t: (key: string) => string, mode: string): string {
-  const key = MODE_KEY[mode];
-  return key ? t(key) : mode;
+  return modeLabel(t, mode);
 }
 
 export function PersonaPrompt({
@@ -108,7 +104,7 @@ export function PersonaPeek({
   // The general coworker reads as it does in the picker ("OpenWorker (general)"), not
   // as the family word — a modal titled "Coworker" says nothing about which one.
   const name = detail
-    ? detail.id === "cowork"
+    ? detail.id === BASELINE_PERSONA
       ? t("setup.general_coworker")
       : fullPersonaName(detail.name, detail.id)
     : personaId;

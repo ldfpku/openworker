@@ -1,4 +1,5 @@
 import i18n from "./i18n";
+import { BASELINE_PERSONA } from "./personaLifecycle";
 
 // A persona is "project-scoped" when it declares requires_folder: an explicit directory the
 // user picks, sessions grouped by project in the sidebar. Everything else runs on a transparent
@@ -18,7 +19,7 @@ export function isProjectScoped(p?: { requires_folder?: boolean }): boolean {
 // other UI string (English key falls through untouched — same word-list mechanism as
 // Sidebar's t(p.name)).
 export function shortPersonaName(name?: string, id?: string): string {
-  if (id === "cowork") return i18n.t("Coworker");
+  if (id === BASELINE_PERSONA) return i18n.t("Coworker");
   const n = (name || id || "").trim();
   return i18n.t(n.replace(/\s*coworker$/i, "").trim() || n);
 }
@@ -27,7 +28,7 @@ export function shortPersonaName(name?: string, id?: string): string {
 // Chat isn't a coworker — left as-is. The " Coworker" suffix goes through a template key so
 // zh can drop it ("专家团队长 Coworker" read as noise; the zh entry is just "{{name}}").
 export function fullPersonaName(name?: string, id?: string): string {
-  if (id === "cowork") return i18n.t("Coworker");
+  if (id === BASELINE_PERSONA) return i18n.t("Coworker");
   const n = (name || id || "").trim();
   if (id === "chat" || !n) return n;
   return /coworker$/i.test(n) ? i18n.t(n) : i18n.t("{{name}} Coworker", { name: i18n.t(n) });

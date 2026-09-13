@@ -118,6 +118,27 @@ def test_uninstall_default_falls_back_to_cowork(tmp_path):
     assert reg.default_id() == "cowork"
 
 
+def test_clear_default_on_installed_persona(tmp_path):
+    """The other way back from a third-party default: unset it instead of uninstalling.
+    The pointer's zero value is the baseline (audit 2026-09-13), so clearing returns to
+    the general OpenWorker while the installed persona stays installed and enabled."""
+    reg = PersonaRegistry(state_path=tmp_path / "personas.json")
+    reg.install_from_dir(_persona_dir(tmp_path))
+    reg.set_default("acme-ops")
+    assert reg.default_id() == "acme-ops"
+
+    assert reg.clear_default() == "cowork"
+    assert reg.default_id() == "cowork"
+    assert "acme-ops" in reg.ids() and reg.is_enabled("acme-ops")
+
+    # And a default naming an installed persona survives a restart: the load-time
+    # self-heal runs after the install snapshots are re-read, so it must not mistake a
+    # third-party id for a stale one.
+    reg.set_default("acme-ops")
+    reg2 = PersonaRegistry(state_path=tmp_path / "personas.json")
+    assert reg2.default_id() == "acme-ops"
+
+
 def test_uninstall_refuses_builtins_and_unknown(tmp_path):
     reg = PersonaRegistry(state_path=tmp_path / "personas.json")
     with pytest.raises(ValueError):

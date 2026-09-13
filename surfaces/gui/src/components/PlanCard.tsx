@@ -64,7 +64,10 @@ export function PlanCard({
           <button className={BTN_BORDERED} onClick={() => onRespond(true, "interactive")}>
             {t("plan.approve_ask")}
           </button>
-          <button className={BTN_ACCENT} onClick={() => onRespond(true, "auto")}>
+          {/* Canonical Mode value, not the legacy "auto" (audit 2026-09-13): the server still
+              accepts the old spelling, but sending it makes the composer's chip and the
+              transcript disagree about what the session just switched to. */}
+          <button className={BTN_ACCENT} onClick={() => onRespond(true, "bypass-approvals")}>
             {t("plan.approve_and_run")}
           </button>
         </div>

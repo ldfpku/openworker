@@ -285,6 +285,31 @@ def test_activate_expert_enables_and_stays_unsurfaced(tmp_path, pack_dir):
     assert manager.personas.is_surfaced(persona_id) is False
 
 
+def test_activate_expert_keeps_the_default_in_the_picker(tmp_path, pack_dir):
+    """Re-adding an already-installed expert from the library page runs install+activate
+    again. The force-unsurface that keeps ordinary experts out of the picker must exempt a
+    default: new sessions land on it, so a menu that does not list it is the incoherent
+    state set_default exists to prevent — and Settings offers no way back (audit
+    2026-09-13)."""
+    client, manager = _client(tmp_path, pack_dir)
+    persona_id = client.post(
+        "/v1/library/install-expert", json={"lib": "zh", "id": "academic/geographer"}
+    ).json()["persona_id"]
+    client.post("/v1/library/activate-expert", json={"persona_id": persona_id})
+    assert manager.personas.is_surfaced(persona_id) is False  # the ordinary case holds
+
+    assert client.post(f"/v1/personas/{persona_id}", json={"default": True}).json()["ok"]
+    assert manager.personas.is_surfaced(persona_id) is True
+
+    res = client.post(
+        "/v1/library/activate-expert", json={"persona_id": persona_id}
+    ).json()
+    assert res == {"ok": True, "enabled": True}
+    assert manager.personas.default_id() == persona_id
+    assert manager.personas.is_enabled(persona_id) is True
+    assert manager.personas.is_surfaced(persona_id) is True  # the guard under test
+
+
 def test_activate_expert_rejects_non_library_persona(tmp_path, pack_dir):
     client, manager = _client(tmp_path, pack_dir)
     # A builtin persona was never installed from the library staging dir.

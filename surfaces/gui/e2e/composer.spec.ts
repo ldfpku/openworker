@@ -35,9 +35,21 @@ test("composer: send-gating, + attach menu, Mode menu", async ({ page }) => {
   // The current mode is marked with a ✓.
   await expect(menu.locator("button").filter({ hasText: "Ask for approval" })).toContainText("✓");
   await expect(menu.getByRole("switch", { name: "Send approvals to the Inbox" })).toBeVisible();
-  // Picking an option closes the menu (and would flip the live engine's mode).
+  // Picking an option closes the menu and flips the live engine's mode — and the chip then
+  // reads the option's NAME. It is fed by the value the server echoes back, in the server's
+  // canonical vocabulary; while the picker still spoke the legacy "auto" that value matched no
+  // row and the chip printed the raw `bypass-approvals` (audit 2026-09-13).
   await menu.getByText("Bypass approvals").click();
   await expect(page.getByTestId("mode-menu")).toHaveCount(0);
+  const modeChip = page.getByRole("button", { name: "Mode", exact: true });
+  await expect(modeChip).toContainText("Bypass approvals");
+  await expect(modeChip).not.toContainText("bypass-approvals");
+
+  // Re-opening shows the ✓ against that same row — the match is on the canonical value now.
+  await modeChip.click();
+  await expect(
+    page.getByTestId("mode-menu").locator("button").filter({ hasText: "Bypass approvals" }),
+  ).toContainText("✓");
 });
 
 // PDFs read as data URLs and show a named chip (DMG #29 walkthrough catch: PDFs silently

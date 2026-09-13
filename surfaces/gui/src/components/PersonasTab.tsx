@@ -10,6 +10,9 @@ import {
   type PersonaConsent,
 } from "../api";
 import { chooseFolder } from "../tauri";
+import { modeLabel } from "../modes";
+import { BASELINE_PERSONA } from "../personaLifecycle";
+import { personaErrorText } from "../personaErrors";
 import type { SessionInfo } from "../types";
 import { BTN_ACCENT, BTN_BORDERED } from "./buttons";
 import { Icon } from "./Icon";
@@ -42,6 +45,14 @@ const KNOWN_GROUPS: ReadonlySet<string> = new Set<string>(
   GROUPS.filter((g) => g.id !== "general").map((g) => g.id),
 );
 
+// The BASELINE coworker (server-side DEFAULT_PERSONA_ID, coworker/personas/registry.py): the
+// general OpenWorker every fallback lands on. It can never be disabled, so it gets a status
+// tag where the other rows get an Enable switch. One declaration, in personaLifecycle.ts.
+const BASELINE = BASELINE_PERSONA;
+
+const TAG =
+  "text-[11px] font-medium px-2 py-0.5 rounded-full bg-paper border border-lineStrong text-muted shrink-0";
+
 export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) => void }) {
   const { t } = useTranslation();
   const [personas, setPersonas] = useState<Persona[]>([]);
@@ -57,6 +68,10 @@ export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) =>
   // arm an inline confirm (same two-step idiom as delete) instead of flipping immediately.
   const [confirmOff, setConfirmOff] = useState<string | null>(null);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  // A refused write (the server keeps the baseline enabled and the default un-disable-able)
+  // used to vanish into a silent reload. Keyed by row so the reason lands under the switch
+  // the user just flipped (audit 2026-09-13).
+  const [rowError, setRowError] = useState<{ id: string; text: string } | null>(null);
   // The picker's "Import coworker…" door lands here and asks us to put the Add section
   // front and center (sharing v1).
   const addRef = useRef<HTMLDivElement | null>(null);
@@ -93,7 +108,16 @@ export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) =>
     id: string,
     body: { enabled?: boolean; surfaced?: boolean; default?: boolean },
   ) => {
+    setRowError(null);
     const r = await updatePersona(id, body);
+    if (r.ok === false) {
+      // Don't reload() past the refusal — the list would snap back with no explanation and
+      // read as a broken switch. Say why instead, in the user's language: the server's own
+      // words are English prose, so the refusal's `code` is what we translate on.
+      setRowError({ id, text: personaErrorText(r, t) });
+      reload();
+      return;
+    }
     if (r.personas) setPersonas(r.personas);
     else reload();
     if (body.enabled === false) reloadSessions(); // counts just changed
@@ -171,39 +195,60 @@ export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) =>
                   <div className="text-[14px] font-medium truncate">{t(p.name)}</div>
                   <div className="text-[12px] text-faint truncate mt-0.5">{p.tagline && t(p.tagline)}</div>
                 </div>
-                {p.default ? (
-                  /* The default coworker cannot be disabled or hidden — no toggle, no
-                     configure; a quiet tag says why (owner 2026-08-21). It regains its
-                     controls the moment another coworker is made default. */
+                {/* Status is a tag; controls are controls. The default keeps its quiet tag
+                    (owner 2026-08-21) but NOT at the price of its configure gear: hiding the
+                    gear too made the default coworker's detail page unreachable from
+                    Settings — where "clear default", "in picker", export and delete all live.
+                    Revises that 2026-08-21 decision (audit 2026-09-13). */}
+                {p.default && (
                   <span
-                    className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-paper border border-lineStrong text-muted shrink-0"
+                    className={TAG}
                     title={t("personas.default_for_new")}
                     data-testid="persona-default-tag"
                   >
                     {t("personas.default_tag")}
                   </span>
-                ) : (
-                  <>
-                    <Toggle
-                      checked={p.enabled}
-                      onChange={(next) =>
-                        next ? toggle(p.id, { enabled: true }) : requestDisable(p)
-                      }
-                      title={p.enabled ? t("personas.disable_coworker") : t("personas.enable_coworker")}
-                    />
-                    {onOpenPersona && (
-                      <IconButton
-                        small
-                        icon="sliders"
-                        size={15}
-                        label={t("personas.configure_title", { name: p.name })}
-                        data-testid={`persona-configure-${p.id}`}
-                        onClick={() => onOpenPersona(p.id)}
-                      />
-                    )}
-                  </>
+                )}
+                {p.id === BASELINE ? (
+                  /* The baseline is never disable-able (the server refuses), so an Enable
+                     switch here could only ever bounce back. A tag states the fact; the tip
+                     points at the one control that DOES hide it — "Show in picker", behind
+                     the gear. */
+                  <span
+                    className={TAG}
+                    title={t("persona.baseline_tip")}
+                    data-testid="persona-baseline-tag"
+                  >
+                    {t("personas.baseline_tag")}
+                  </span>
+                ) : p.default ? null : (
+                  <Toggle
+                    checked={p.enabled}
+                    onChange={(next) =>
+                      next ? toggle(p.id, { enabled: true }) : requestDisable(p)
+                    }
+                    title={p.enabled ? t("personas.disable_coworker") : t("personas.enable_coworker")}
+                  />
+                )}
+                {onOpenPersona && (
+                  <IconButton
+                    small
+                    icon="sliders"
+                    size={15}
+                    label={t("personas.configure_title", { name: p.name })}
+                    data-testid={`persona-configure-${p.id}`}
+                    onClick={() => onOpenPersona(p.id)}
+                  />
                 )}
               </div>
+              {rowError?.id === p.id && (
+                <div
+                  className="mt-2 text-[12px] text-warnInk"
+                  data-testid={`persona-error-${p.id}`}
+                >
+                  {rowError.text}
+                </div>
+              )}
               {confirmOff === p.id && (
                 <div
                   className="mt-2 flex items-center gap-2.5 text-[12px] text-muted"
@@ -236,8 +281,9 @@ export function PersonasTab({ onOpenPersona }: { onOpenPersona?: (id: string) =>
 
   return (
     <div>
-      {/* One toggle per row (enable implies picker); ★ marks the default. Everything
-          else — in-picker nuance, default, export, delete — lives on the detail page. */}
+      {/* One toggle per row (enable implies picker) plus the configure gear on every row;
+          status tags say "Default" / "Always on". Everything else — in-picker nuance,
+          make/clear default, export, delete — lives on the detail page behind that gear. */}
       {GROUPS.map(({ id, label }) => (
         <Fragment key={id}>
           {group(
@@ -475,7 +521,8 @@ function ConsentCard({
           </button>
         )}
         <span className="text-[12px] text-faint">
-          {t("personas.consent_recommended_mode", { mode: c.recommended_mode })}
+          {/* One mode vocabulary for the whole GUI — never interpolate the raw wire value. */}
+          {t("personas.consent_recommended_mode", { mode: modeLabel(t, c.recommended_mode) })}
         </span>
       </div>
     </div>

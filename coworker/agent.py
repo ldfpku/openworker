@@ -40,7 +40,7 @@ from .roots import RootDir, normalize_roots, render_context
 from .providers import ProviderClient, ProviderRouter
 from .overrides import RiskOverrideStore
 from .secrets import SecretStore, state_dir
-from .skills import SkillLoader, save_skill_tool, skill_catalog_text, skill_tools
+from .skills import save_skill_tool, shared_loader, skill_catalog_text, skill_tools
 from .tools import ToolRegistry
 from .tools.ask import ask_user_tool
 from .tools.deferred import make_deferred_toolset_loader
@@ -547,7 +547,14 @@ def build_engine(
 
     # Persona dirs come FIRST so a user's global/workspace copy of the same name shadows
     # the bundle's (later dirs overwrite earlier in the loader).
-    skill_loader = SkillLoader([Path(d) for d in (extra_skill_dirs or [])] + _skill_dirs(ws))
+    # Shared across builds and rescanned here, not reconstructed (audit 2026-09-13): a
+    # fresh loader's mtime fingerprint can never short-circuit, so the draft re-target path
+    # (rebuild on every coworker/folder pick) re-parsed the whole 163-file library each
+    # time. The loader holds no per-session state — `skill_filter` below is the per-session
+    # view, and it is consulted at read time.
+    skill_loader = shared_loader(
+        [Path(d) for d in (extra_skill_dirs or [])] + _skill_dirs(ws)
+    )
     # Per-session effective menu (SKILLS-SPEC §3). The manager passes a CALLABLE so
     # load_skill consults the LIVE state per call (a Settings disable applies to running
     # sessions; a skill created after this build is still loadable). The catalog itself

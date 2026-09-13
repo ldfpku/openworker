@@ -60,6 +60,12 @@ test("mode notices: full explainer once, one-line markers after", async ({ page 
   // Later switches: one-line markers only — the banner never repeats.
   await pickMode("Ask for approval");
   await expect(page.getByText("Ask for approval is on.")).toBeVisible();
+  // The marker names the mode the user picked. The server builds it from the CANONICAL value
+  // it just applied, so a client that sent the legacy "auto" got a marker reading the raw wire
+  // id back (audit 2026-09-13).
+  await pickMode("Bypass approvals");
+  await expect(page.getByText("Bypass approvals is on.")).toBeVisible();
+  await expect(page.locator(".main-scroll").getByText(/^auto is on\.$/)).toHaveCount(0);
   await pickMode("Auto-approve");
   await expect(page.getByText("Auto-approve is on.")).toHaveCount(2); // title + marker
   await expect(

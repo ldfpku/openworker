@@ -9,8 +9,10 @@ into the agent's context; the full body is loaded on demand via the `load_skill`
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
+from stat import S_ISREG
 from typing import Callable, Optional, Union
 
 import aisuite as ai
@@ -28,53 +30,70 @@ class Skill:
 
 
 class SkillLoader:
+    """The parsed skill catalogue for a set of directories.
+
+    Holds nothing per-session — every field is a pure function of what is on disk — which
+    is what lets one loader be shared by every engine built over the same dirs
+    (`shared_loader` below). Concurrent `rescan()`s are serialised by `_lock`; readers
+    (`get`/`names`/`catalog`) take no lock because a rescan swaps the dict in one
+    assignment rather than mutating it in place.
+    """
+
     def __init__(self, dirs: list[str | Path]) -> None:
         self._dirs = [Path(d) for d in dirs]
         self._skills: dict[str, Skill] = {}
         self._fingerprint: Optional[tuple] = None
+        self._lock = threading.Lock()
         self.rescan()
 
     def _dir_fingerprint(self) -> tuple:
-        """(path, mtime) for every SKILL.md we would read. Cheap: one stat per skill, no
-        file reads, no parsing. Catches creation, deletion and edits alike."""
-        stamps: list[tuple[str, float]] = []
+        """(path, mtime, size) for every SKILL.md we would read. Cheap: one stat per skill,
+        no file reads, no parsing. Catches creation, deletion and edits alike — size is in
+        there because a loader now outlives the engine that built it (audit 2026-09-13),
+        so an edit landing inside one filesystem mtime tick must not read as "unchanged"."""
+        stamps: list[tuple[str, float, int]] = []
         for directory in self._dirs:
             if not directory.is_dir():
                 continue
             for sub in sorted(directory.iterdir()):
                 md = sub / "SKILL.md"
                 try:
-                    if md.is_file():
-                        stamps.append((str(md), md.stat().st_mtime))
+                    st = md.stat()
                 except OSError:  # vanished between listing and stat — next scan sees it
                     continue
+                if S_ISREG(st.st_mode):  # the stat we already took, not a second one
+                    stamps.append((str(md), st.st_mtime, st.st_size))
         return tuple(stamps)
 
     def rescan(self, *, force: bool = False) -> None:
         """Re-read the skill dirs when something on disk actually changed.
 
-        `agent.py` calls this once per TURN while building the <system-context> block, so
-        without the fingerprint every round trip re-read and re-parsed every SKILL.md —
-        163 files of frontmatter to produce bytes that are almost always identical. The
-        stat-only check keeps the reason it is called per turn (a skill created after the
-        engine was built must still be loadable) without paying for it every time.
-        `force=True` skips the check for callers that just wrote a skill themselves."""
-        fingerprint = self._dir_fingerprint()
-        if not force and self._skills and fingerprint == self._fingerprint:
-            return
-        self._skills = {}
-        for directory in self._dirs:
-            self._discover(directory)
-        self._fingerprint = fingerprint
+        `agent.py` calls this once per TURN while building the <system-context> block, and
+        once per engine BUILD (the loader is shared across builds, so this is the check
+        that replaces the old fresh-loader-per-build full parse). Without the fingerprint
+        every round trip re-read and re-parsed every SKILL.md — 163 files of frontmatter to
+        produce bytes that are almost always identical. The stat-only check keeps the
+        reason it is called per turn (a skill created after the engine was built must still
+        be loadable) without paying for it every time. `force=True` skips the check for
+        callers that just wrote a skill themselves."""
+        with self._lock:
+            fingerprint = self._dir_fingerprint()
+            if not force and self._skills and fingerprint == self._fingerprint:
+                return
+            found: dict[str, Skill] = {}
+            for directory in self._dirs:
+                self._discover(directory, found)
+            self._skills = found  # one assignment: lock-free readers never see a half-scan
+            self._fingerprint = fingerprint
 
-    def _discover(self, directory: Path) -> None:
+    def _discover(self, directory: Path, into: dict[str, Skill]) -> None:
         if not directory.is_dir():
             return
         for sub in sorted(directory.iterdir()):
             md = sub / "SKILL.md"
             if md.is_file():
                 skill = _parse_skill(md)
-                self._skills[skill.name] = skill
+                into[skill.name] = skill
 
     def names(self) -> list[str]:
         return list(self._skills)
@@ -87,6 +106,40 @@ class SkillLoader:
             {"name": s.name, "description": s.description}
             for s in self._skills.values()
         ]
+
+
+# One loader per directory SET, shared across engine builds (audit 2026-09-13). Before
+# this, every build constructed a fresh loader, and a fresh loader's mtime fingerprint can
+# never short-circuit — so the draft re-target path re-parsed all 163 SKILL.md files on
+# every coworker and folder pick. Sharing is safe precisely because the loader holds no
+# per-session state: the per-session view is `skill_filter`, applied at read time.
+_SHARED_LOADERS: dict[tuple[str, ...], SkillLoader] = {}
+_SHARED_LOCK = threading.Lock()
+# A process sees one state dir plus a handful of workspaces; the cap is only there so a
+# long-lived server cannot accumulate catalogues for folders visited once.
+_MAX_SHARED_LOADERS = 32
+
+
+def shared_loader(dirs: list[str | Path]) -> SkillLoader:
+    """The shared loader for `dirs`, rescanned so a skill written since the last build is
+    already there. The cold construction runs under the lock on purpose: two builds racing
+    on the same dirs should parse the library once, not twice."""
+    key = tuple(str(Path(d)) for d in dirs)
+    with _SHARED_LOCK:
+        loader = _SHARED_LOADERS.get(key)
+        if loader is None:
+            if len(_SHARED_LOADERS) >= _MAX_SHARED_LOADERS:
+                _SHARED_LOADERS.clear()
+            loader = _SHARED_LOADERS[key] = SkillLoader(list(dirs))
+            return loader  # __init__ already scanned
+    loader.rescan()  # outside the lock — rescan has its own
+    return loader
+
+
+def reset_shared_loaders() -> None:
+    """Drop every shared loader. Tests only: callers want the sharing."""
+    with _SHARED_LOCK:
+        _SHARED_LOADERS.clear()
 
 
 def _parse_frontmatter(raw: str) -> Optional[dict]:

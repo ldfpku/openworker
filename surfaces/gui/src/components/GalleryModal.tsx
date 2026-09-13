@@ -12,6 +12,7 @@ import {
   type GalleryDetail,
   type GalleryPersona,
 } from "../api";
+import { modeLabel } from "../modes";
 import { BrandIcon } from "./brandIcons";
 import { BackLink } from "./BackLink";
 import { BTN_ACCENT } from "./buttons";
@@ -332,7 +333,10 @@ export function GalleryModal({
                 </div>
                 <div>
                   <span className="text-muted">{t("gallery.permissions_label")}</span>
-                  {t("gallery.mode_suffix", { mode: caps.recommended_mode })}
+                  {/* The manifest's recommended_mode is a wire value ("bypass-approvals",
+                      sometimes the legacy "auto"); name it the way the composer's Mode menu
+                      does instead of leaking the id (audit 2026-09-13). */}
+                  {t("gallery.mode_suffix", { mode: modeLabel(t, caps.recommended_mode) })}
                   {caps.messaging ? ` · ${t("gallery.can_message")}` : ""}
                   {caps.mcp.length > 0 ? ` · ${t("gallery.mcp_suffix", { mcp: caps.mcp.join(", ") })}` : ""}
                 </div>

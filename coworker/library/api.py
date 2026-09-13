@@ -372,9 +372,14 @@ def register_library_routes(
                 "error": f"{persona_id} was not installed from the library",
             }
         # enable() implies surfacing (registry.set_enabled) — library experts stay out
-        # of the new-session picker, so surface must be forced back off after.
+        # of the new-session picker, so surface must be forced back off after. Never for the
+        # DEFAULT coworker, though: set_default now forces surfaced=True precisely because a
+        # default the picker refuses to offer is an incoherent state, and Settings gives no way
+        # back out of it — the detail page disables "in picker" for a non-baseline default
+        # (audit 2026-09-13).
         reg.set_enabled(persona_id, True)
-        reg.set_surfaced(persona_id, False)
+        if reg.default_id() != persona_id:
+            reg.set_surfaced(persona_id, False)
         return {"ok": True, "enabled": True}
 
     @app.post("/v1/library/install-skills")

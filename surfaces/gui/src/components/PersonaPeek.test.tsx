@@ -3,7 +3,7 @@
 // way to read what it actually is).
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { PersonaPeek } from "./PersonaPeek";
+import { PersonaPeek, permissionModeLabel } from "./PersonaPeek";
 
 vi.mock("../api", () => ({
   getPersonaDetail: vi.fn(async (id: string) =>
@@ -58,6 +58,16 @@ describe("PersonaPeek", () => {
   it("reports a coworker that can't be loaded instead of an empty panel", async () => {
     render(<PersonaPeek personaId="missing" onClose={() => {}} />);
     expect(await screen.findByText("Could not load this coworker.")).toBeTruthy();
+  });
+
+  // The lookup table moved to ../modes (audit 2026-09-13); this pins the behaviour callers
+  // (PersonaView, the persona pages) depend on, whichever module owns it.
+  it("names a manifest's permission mode the way the composer does, both spellings", () => {
+    const t = (k: string) => k;
+    expect(permissionModeLabel(t, "bypass-approvals")).toBe("composer.mode.auto");
+    expect(permissionModeLabel(t, "auto")).toBe("composer.mode.auto");
+    expect(permissionModeLabel(t, "custom")).toBe("composer.mode.custom");
+    expect(permissionModeLabel(t, "no-such-mode")).toBe("no-such-mode");
   });
 
   it("Escape closes it", async () => {

@@ -56,6 +56,15 @@ import { sessionDisplayTitle } from "./sessionTitle";
 import { compactionText, modelSwitchText, modeNoticeBody, modeOnText, reviewerPausedText } from "./modeNotice";
 import { itemsFromMessages } from "./itemsFromMessages";
 import { hasConversation } from "./draft";
+import { normalizeMode } from "./modes";
+import { BASELINE_PERSONA, fallbackAgent } from "./personaLifecycle";
+import {
+  clearPick,
+  pendingFor,
+  recordPick,
+  reconcileSetting,
+  type PendingPicks,
+} from "./sessionSettings";
 import { addTurnUsage, emptyUsage, formatTokens, usageFromMessages } from "./usage";
 import { streamMode } from "./streamGate";
 import { InboxItemCard } from "./components/InboxItemCard";
@@ -212,7 +221,7 @@ export function App() {
   const [showGate, setShowGate] = useState(false);
   const [workspaceTrustRequest, setWorkspaceTrustRequest] =
     useState<WorkspaceCommandTrust | null>(null);
-  const [agent, setAgent] = useState("cowork");
+  const [agent, setAgent] = useState(BASELINE_PERSONA);
   const [model, setModel] = useState("gpt-5.6-sol");
   // The default model as Settings last reported it. A CHANGE (the person made another
   // model the default in Settings ▸ Models) is adopted into the open draft on the way
@@ -265,6 +274,11 @@ export function App() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [projects, setProjects] = useState<RecentWorkspace[]>([]);
   const [sessionId, setSessionId] = useState<string>(newId());
+  // Model/mode picks this client has sent but the server has not acknowledged yet. A pick is
+  // authoritative until it comes back as an echo (or as a `ready` already reporting it): a
+  // reconnect's opening snapshot predates the pick and used to revert it (audit 2026-09-13).
+  // See sessionSettings.ts for the protocol; scoped to one session id, reset below.
+  const pendingPicksRef = useRef<PendingPicks>({ sessionId });
   // Automation-run context (§ owner ask 2026-07-04): which task an open __run__ session belongs
   // to, driving the banner + "Back to runs". Best-effort — a run session without context still
   // shows a generic banner (detected by its __run__ id).
@@ -702,6 +716,15 @@ export function App() {
     return () => clearTimeout(t);
   }, [uiReady, booting]);
 
+  // Acknowledgement protocol (sessionSettings.ts): remember a model/mode we are about to send
+  // so a reconnect's `ready` can't revert it, and forget it once the server confirms.
+  const notePick = (key: "model" | "mode", value: string) => {
+    pendingPicksRef.current = recordPick(pendingPicksRef.current, sessionId, key, value);
+  };
+  const ackPick = (key: "model" | "mode") => {
+    pendingPicksRef.current = clearPick(pendingPicksRef.current, key);
+  };
+
   const loadSettings = () =>
     getSettings()
       .then((s) => {
@@ -723,6 +746,7 @@ export function App() {
           !modelPinnedRef.current
         ) {
           setModel(s.model);
+          notePick("model", s.model); // sent below — don't let a reconnect undo it
           sessionRef.current?.setModel(s.model);
         }
       })
@@ -739,6 +763,9 @@ export function App() {
   // A hand-picked model belongs to ONE draft; the next session starts on the default again.
   useEffect(() => {
     modelPinnedRef.current = false;
+    // Outstanding picks belong to the session they were made in — never re-assert one against
+    // the conversation the user just moved to (audit 2026-09-13).
+    pendingPicksRef.current = { sessionId };
   }, [sessionId]);
 
   useEffect(() => {
@@ -761,19 +788,22 @@ export function App() {
     return () => window.removeEventListener(PERSONAS_CHANGED, onPersonas);
   }, [refreshSessions]);
 
-  // If the active persona is DISABLED (turned off in Settings, or a resumed session landed
-  // on one), fall back to Cowork. This used to key on the legacy sidebar-visibility prefs
-  // (show_chat/show_code) — with the composer picker shipped (UX-029), enablement is the
-  // one visibility axis, and a deliberately picked coworker must never be reverted.
+  // If the active persona is DISABLED (turned off in Settings, or a resumed session landed on
+  // one), land on the configured default coworker — see personaLifecycle.ts for exactly which
+  // states count as broken (the baseline is never one of them). This used to key on the legacy
+  // sidebar-visibility prefs (show_chat/show_code); with the composer picker shipped (UX-029),
+  // enablement is the one visibility axis, and a deliberately picked coworker must never be
+  // reverted. It also stays out of Settings, where this most often fires (the person just
+  // switched a coworker off there; audit 2026-09-10).
   useEffect(() => {
-    const p = personaOf(agent);
-    // Land on the configured default coworker (what new sessions and inbound DMs use),
-    // not a hardcoded id — and without leaving Settings, where this most often fires
-    // (the person just switched a coworker off there; audit 2026-09-10).
-    if (p && !p.enabled) {
-      const fallback = (personas || []).find((x) => x.default && x.enabled)?.id || "cowork";
-      switchAgent(fallback, { keepSurface: true });
-    }
+    const fallback = fallbackAgent(agent, personas);
+    if (!fallback) return;
+    // HOW we move matters. `switchAgent` means "resume that coworker's last conversation": it
+    // wipes the transcript and may load a stale one over the top. On an UNSAVED DRAFT that
+    // replaces the thing being composed — so re-target the draft in place instead, exactly as
+    // the setup row's coworker picker does (audit 2026-09-13).
+    if (unsavedDraft) pickCoworker(fallback);
+    else switchAgent(fallback, { keepSurface: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent, personas]);
 
@@ -813,8 +843,26 @@ export function App() {
       switch (ev.type) {
         case "ready":
           setConnected(true);
-          if (d.model) setModel(d.model);
-          if (d.mode) setMode(d.mode);
+          // `ready` is the snapshot the engine had as this socket opened, so it can predate a
+          // model/mode the user picked a moment ago — applying it unconditionally reverted such
+          // a pick whenever anything reconnected (audit 2026-09-13). A pick outranks it until
+          // the server acknowledges it; `ready` reporting the picked value IS that
+          // acknowledgement. Mode is normalised first so a session persisted with the legacy
+          // "auto" spelling still matches a "bypass-approvals" pick (C4).
+          {
+            const readyModel = reconcileSetting(
+              pendingFor(pendingPicksRef.current, sessionId, "model"),
+              d.model ? String(d.model) : undefined,
+            );
+            if (readyModel.apply) setModel(readyModel.apply);
+            if (readyModel.clearPending) ackPick("model");
+            const readyMode = reconcileSetting(
+              pendingFor(pendingPicksRef.current, sessionId, "mode"),
+              d.mode ? normalizeMode(String(d.mode)) : undefined,
+            );
+            if (readyMode.apply) setMode(readyMode.apply);
+            if (readyMode.clearPending) ackPick("mode");
+          }
           if (d.command_trust?.required) setWorkspaceTrustRequest(d.command_trust);
           // Cowork: adopt the server-provisioned scratch dir (only when we don't already have one).
           if (d.workspace) setWorkspace((cur) => cur || d.workspace);
@@ -1045,12 +1093,34 @@ export function App() {
           ]);
           break;
         case "model_changed":
-          // Mid-session switch (server-applied): update the header fact and drop the
-          // persisted marker into the live transcript (replay renders it from history).
-          // Bookkeeping, same as a mode marker: a model picked before the first message
-          // is a SETTING and must not end the draft phase (owner ask 2026-09-02).
-          if (d.model) setModel(d.model);
-          setItems((p) => [...p, { kind: "notice", tone: "info", text: d.text ? modelSwitchText(String(d.text)) : t("app.notice.model_switched"), bookkeeping: true }]);
+          // The server acknowledging an applied model (C3). An echo is the server SPEAKING
+          // about this key, so it always wins and always retires the pending pick — unlike
+          // `ready`, which is only a snapshot.
+          if (d.model) {
+            setModel(String(d.model));
+            ackPick("model");
+          }
+          // `text` is the server-authored, PERSISTED marker — present only when this switch
+          // belongs in the transcript. A draft's pick is a setting, not history, and the
+          // server sends no text for it: inventing a notice here put a line into a
+          // conversation that had not started yet (owner ask 2026-09-02; audit 2026-09-13).
+          // Bookkeeping, same as a mode marker: it must not end the draft phase.
+          if (d.text)
+            setItems((p) => [
+              ...p,
+              { kind: "notice", tone: "info", text: modelSwitchText(String(d.text)), bookkeeping: true },
+            ]);
+          break;
+        case "mode_changed":
+          // Chip-only echo of an applied mode (C3) — it NEVER carries transcript text;
+          // `mode_notice` stays the transcript channel for sessions with history, so appending
+          // anything here would double every mode marker. Like `model_changed`, an echo is the
+          // server SPEAKING about this key, so it always retires the pending pick — and the
+          // value is normalised because the server speaks canonical "bypass-approvals" (C4).
+          if (d.mode) {
+            setMode(normalizeMode(String(d.mode)));
+            ackPick("mode");
+          }
           break;
         case "memory_saved":
           // §5.1 save notice — inline in the transcript, where the user is already
@@ -1118,6 +1188,18 @@ export function App() {
       onEvent: handleEvent,
       onOpen: () => {
         setConnected(true);
+        // Re-assert any model/mode pick the server has not acknowledged (C6). A pick made
+        // while the previous socket was already tearing down — a coworker switch, a draft
+        // folder pick, a dropped connection — never reached the engine at all; the successor
+        // is the only place it can land, and it must go BEFORE the pending prompt so the turn
+        // runs under the settings the user chose (audit 2026-09-13).
+        {
+          const picks = pendingPicksRef.current;
+          if (picks.sessionId === sessionId) {
+            if (picks.model) sessionRef.current?.setModel(picks.model);
+            if (picks.mode) sessionRef.current?.setMode(picks.mode);
+          }
+        }
         // Auto-send the pending message once the session connects ("Run now" prompts and
         // UX-029's deferred first send).
         const p = pendingPromptRef.current;
@@ -1201,7 +1283,7 @@ export function App() {
   // Track produced-file count for the topbar "Artifacts" affordance (works even when the rail is
   // hidden, where the rail itself doesn't fetch). Cowork only; refreshes on file writes/turn end.
   useEffect(() => {
-    if (agent !== "cowork" || surface !== "session") {
+    if (agent !== BASELINE_PERSONA || surface !== "session") {
       setArtifactCount(0);
       return;
     }
@@ -1301,8 +1383,13 @@ export function App() {
   const respondPlan = (approved: boolean, mode?: string, feedback?: string) => {
     setItems((p) => resolveLastPlan(p, approved ? "approved" : "rejected"));
     dropSessionInbox("plan");
-    sessionRef.current?.respondPlan(approved, mode, feedback);
-    if (approved && mode) setMode(mode); // the server flips the live engine to this mode
+    // Canonical on the wire (C4) — the server accepts the legacy "auto" but never says it.
+    const canonical = mode ? normalizeMode(mode) : undefined;
+    sessionRef.current?.respondPlan(approved, canonical, feedback);
+    if (approved && canonical) {
+      setMode(canonical); // the server flips the live engine to this mode
+      notePick("mode", canonical); // ...and its `ready` won't say so until it has
+    }
   };
   const respondTeam = (approved: boolean, feedback?: string, enableChat?: boolean) => {
     setItems((p) => resolveLastTeam(p, approved ? "approved" : "rejected"));
@@ -1340,13 +1427,19 @@ export function App() {
     sessionRef.current?.retry();
   };
   const changeMode = (m: string) => {
-    setMode(m);
-    sessionRef.current?.setMode(m);
+    // One vocabulary on the wire and in state (C4): the canonical `Mode` value, never the
+    // legacy "auto" spelling — otherwise the `ready` reconciliation above would never match a
+    // pending pick against the canonical value the server echoes back.
+    const canonical = normalizeMode(m);
+    setMode(canonical);
+    notePick("mode", canonical);
+    sessionRef.current?.setMode(canonical);
   };
   const changeModel = (m: string) => {
     if (running) return; // the server refuses mid-turn rebinds — don't let the header lie
     modelPinnedRef.current = true; // a hand pick: a later default change leaves it alone
     setModel(m);
+    notePick("model", m);
     sessionRef.current?.setModel(m);
   };
 
@@ -1357,13 +1450,8 @@ export function App() {
     // typed text, the model/mode and the folder pick all stay, and a different coworker
     // re-targets it exactly like the setup row does (owner ask 2026-09-02). This is also
     // the only way back from Settings, since a draft has no sidebar row to click. A session
-    // with a turn, a Recents row or a live run gets a fresh id as before.
-    const unsavedDraft =
-      !hasConversation(items) &&
-      !running &&
-      !streaming &&
-      !sessionId.startsWith("__") &&
-      !sessions.some((s) => s.session_id === sessionId);
+    // with a turn, a Recents row or a live run gets a fresh id as before. (`unsavedDraft` is
+    // the shared predicate below — the disabled-coworker repair asks the same question.)
     if (unsavedDraft) {
       if (target !== agent) pickCoworker(target);
       return;
@@ -1515,7 +1603,7 @@ export function App() {
         title: d.task_title || t("toast.automation_fallback"),
         sessionId: d.session_id || "",
         workspace: d.workspace || "",
-        agent: d.agent || "cowork",
+        agent: d.agent || BASELINE_PERSONA,
         time: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
       });
       announceAutomationsChanged(); // the Scheduled band's badge is now stale
@@ -1720,6 +1808,13 @@ export function App() {
   const started = hasConversation(items);
   const idle = !started && !streaming && !running;
   draftRef.current = idle;
+  // The draft the composer is sitting in right now: nothing sent, no live turn, not an
+  // automation-run id, and no sidebar row of its own. Two callers ask the same question —
+  // "New session" returns to such a draft instead of starting another, and the
+  // disabled-coworker repair re-targets it in place rather than resuming a stored
+  // conversation over the top of it (owner ask 2026-09-02; audit 2026-09-13).
+  const unsavedDraft =
+    idle && !sessionId.startsWith("__") && !sessions.some((s) => s.session_id === sessionId);
   const pendingApproval = [...items].reverse().find((i) => i.kind === "approval" && !i.resolved);
   const pendingDirReq = [...items].reverse().find((i) => i.kind === "dirreq" && !i.resolved);
   const pendingToolReq = [...items].reverse().find((i) => i.kind === "toolreq" && !i.resolved);
@@ -2135,7 +2230,7 @@ export function App() {
             <div className="main-scroll" ref={scrollRef} onScroll={handleScroll}>
               {idle ? (
                 <>
-                {agent === "cowork" ? (
+                {agent === BASELINE_PERSONA ? (
                   <SessionIntro
                     sessionId={sessionId}
                     onOpenSessionSettings={openAccess}

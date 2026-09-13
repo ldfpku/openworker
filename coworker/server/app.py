@@ -10,11 +10,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import functools
 import json
 import logging
 import os
 import re
 import secrets
+import time
 import uuid
 from collections import deque
 from contextlib import asynccontextmanager
@@ -55,6 +57,33 @@ _WS_RATE_LIMIT_COUNT = 30
 _WS_RATE_LIMIT_WINDOW_SECONDS = 10.0
 _MAX_MESSAGE_TEXT_CHARS = 200_000
 _MAX_ATTACHMENTS_BYTES = 15_000_000  # leaves JSON overhead below the 16 MiB frame cap
+
+# A connect slower than this gets its phase breakdown at INFO, not just DEBUG. The owner
+# reports "several seconds" to open a session on their machine and the cause is not
+# reproducible here (audit 2026-09-13) — this is how the phase that actually costs the
+# time (MCP startup vs. the engine build's git spawns) gets named from their logs.
+_SLOW_CONNECT_SECONDS = 0.5
+
+
+def _log_connect_timing(
+    session_id: str, t0: float, t1: float, t2: float, t3: float
+) -> None:
+    """Phase breakdown of the WS connect sequence: retarget → prepare_mcp → get_engine."""
+    total = t3 - t0
+    detail = (
+        "%s took %.0f ms "
+        "(retarget %.0f ms, prepare_mcp %.0f ms, get_engine %.0f ms)"
+    )
+    args = (
+        session_id,
+        total * 1000,
+        (t1 - t0) * 1000,
+        (t2 - t1) * 1000,
+        (t3 - t2) * 1000,
+    )
+    logger.debug("session connect " + detail, *args)
+    if total > _SLOW_CONNECT_SECONDS:
+        logger.info("session connect slow — " + detail, *args)
 
 
 def _json_value_size(value: Any) -> int:
@@ -627,6 +656,20 @@ def create_app(manager: SessionManager) -> FastAPI:
         reg = manager.personas
         archived = 0
         try:
+            # The DEFAULT branch runs FIRST (audit 2026-09-13). The settings UI sends
+            # whole rows, so an "unset the default and switch it off" click arrives as
+            # one body: {"default": false, "enabled": false}. Handled the other way round
+            # the disable is refused for being the default, and the user has to click
+            # twice to express one intention.
+            if body.get("default") is not None:
+                if body["default"]:
+                    reg.set_default(persona_id)
+                elif persona_id == reg.default_id():
+                    # default:false is "clear THE default", and the pointer's zero value
+                    # is the baseline. Sent for a persona that is not the current default
+                    # it is stale client state, never an instruction to move anyone
+                    # else's default — no-op.
+                    reg.clear_default()
             if "enabled" in body:
                 # Disable archives the persona's sessions atomically (server-side, one
                 # request) so any client gets the same semantic. See set_persona_enabled.
@@ -635,12 +678,20 @@ def create_app(manager: SessionManager) -> FastAPI:
                 )["archived_sessions"]
             if "surfaced" in body:
                 reg.set_surfaced(persona_id, bool(body["surfaced"]))
-            if body.get("default"):
-                reg.set_default(persona_id)
         except KeyError:
-            return {"ok": False, "error": f"unknown persona: {persona_id}"}
+            return {
+                "ok": False,
+                "code": "unknown_persona",
+                "error": f"unknown persona: {persona_id}",
+            }
         except ValueError as e:
-            return {"ok": False, "error": str(e)}
+            # `code` is the stable name the GUI translates on; `error` stays the English
+            # fallback for anything that does not know the code (audit 2026-09-13).
+            return {
+                "ok": False,
+                "code": getattr(e, "code", ""),
+                "error": str(e),
+            }
         return {"ok": True, "personas": reg.list_all(), "archived_sessions": archived}
 
     @app.delete("/v1/personas/{persona_id}")
@@ -690,9 +741,13 @@ def create_app(manager: SessionManager) -> FastAPI:
                 persona_id, bool((body or {}).get("enabled", True))
             )
         except KeyError:
-            return {"ok": False, "error": f"unknown persona: {persona_id}"}
+            return {
+                "ok": False,
+                "code": "unknown_persona",
+                "error": f"unknown persona: {persona_id}",
+            }
         except ValueError as e:
-            return {"ok": False, "error": str(e)}
+            return {"ok": False, "code": getattr(e, "code", ""), "error": str(e)}
         return {"ok": True, "personas": manager.personas.list_all()}
 
     @app.post("/v1/personas/{persona_id}/connections")
@@ -2589,7 +2644,7 @@ def create_app(manager: SessionManager) -> FastAPI:
                 session_id, [i for i in items if isinstance(i, dict)]
             )
 
-        async def _apply_model(model: Optional[str]) -> None:
+        async def _apply_model(model: Optional[str], *, echo: bool = True) -> None:
             # Mid-session rebind is allowed (roadmap item 3, supersedes the 2026-07-04
             # lock): history is canonical and providers convert per call. A real switch
             # appends a persisted notice; broadcast it so live views render the marker
@@ -2599,19 +2654,39 @@ def create_app(manager: SessionManager) -> FastAPI:
             if not model or manager.is_running(session_id):
                 return
             # An explicit pick from the composer: from here on a default-model change
-            # in Settings leaves this draft alone (manager.set_default_model).
+            # in Settings leaves this draft alone (manager.set_default_model). Set BEFORE
+            # the redundant-pick return below — deliberately re-picking the model you are
+            # already on still pins it, exactly as it did before that return existed.
             engine.model_pinned = True
-            notice = engine.switch_model(model)
-            if notice is None:  # same model, or first bind on a fresh session
+            # A pick the engine is already on is otherwise a no-op: api.ts re-sends
+            # outstanding picks on every socket open (C6), so the redundant frame is the
+            # NORMAL case on a reconnect. Return before switch_model so nothing is
+            # broadcast and the client's own state is left alone (audit 2026-09-13).
+            if engine.model == model:
                 return
+            notice = engine.switch_model(model)
             # Same rule as a mode change (owner ask 2026-09-02): picking a model is a
             # SETTING, not activity. `switch_model` speaks once the transcript holds any
             # non-system message, so a draft carrying only the Auto-approve banner used to
             # earn a Recents row here, stamped now — and boot would resume that ghost.
             _persist_bookkeeping()
+            # ALWAYS echo (contract C3, audit 2026-09-13). `notice is None` means the
+            # switch took but wrote no transcript marker — the draft case, which used to
+            # return here without telling anyone. api.ts flushes a queued set_model at
+            # socket open and the server reads it only AFTER sending "ready", so the
+            # client's "ready" handler reverted the user's pick and, with no echo, nothing
+            # ever corrected it. `text` present ⇒ append the notice; absent ⇒ chip only.
+            if not echo and notice is None:
+                # A user_message carries the composer's CURRENT selection on EVERY send
+                # (api.ts, race-proofing from 2026-07-04), so a silent first bind there
+                # is a re-assert, not a pick — echoing it would fire model_changed on the
+                # first message of every session. A real mid-session switch still speaks.
+                return
+            data: dict[str, Any] = {"model": model}
+            if notice is not None:
+                data["text"] = notice
             await manager.broadcast_session(
-                session_id,
-                {"type": "model_changed", "data": {"model": model, "text": notice}},
+                session_id, {"type": "model_changed", "data": data}
             )
 
         def _resolve_pending(resolution: str) -> None:
@@ -2639,30 +2714,55 @@ def create_app(manager: SessionManager) -> FastAPI:
                 pass  # client already gone — nothing left to tell
 
         try:
-            # A never-used draft reconnecting with another coworker/folder keeps its id
-            # (owner ask 2026-09-02) — this drops its cached engine so the rebuild below
-            # targets the new pick. It must run BEFORE prepare_mcp_tools, which returns []
-            # while an engine is cached.
-            manager.retarget_draft(session_id, workspace=workspace, agent=agent)
-            mcp_tools = await manager.prepare_mcp_tools(
-                session_id, workspace=workspace, agent=agent
-            )
-            engine = manager.get_engine(
-                session_id,
-                workspace=workspace,
-                agent=agent,
-                approver=approver,
-                extra_tools=mcp_tools,
-                directory_requester=directory_requester,
-                plan_approver=plan_approver,
-                question_asker=question_asker,
-                tool_requester=tool_requester,
-                team_approver=team_approver,
-                items_approver=items_approver,
-            )
-            if engine is None:
-                await fail_connect("no valid workspace — choose a project folder first")
-                return
+            # The lock lives on the manager, not here: two sockets for one id can be in
+            # flight at once (the GUI bumps connectNonce on a coworker/folder pick), and
+            # so can a durable Inbox resume or an inbound DM for the same session — all
+            # of which build engines. One lock per id covers every caller (audit
+            # 2026-09-13); this sequence is NOT re-entrant, since retarget_draft drops the
+            # cached engine and prepare_mcp_tools returns [] while one is cached.
+            async with manager.engine_lock(session_id):
+                t0 = time.monotonic()
+                # A never-used draft reconnecting with another coworker/folder keeps its id
+                # (owner ask 2026-09-02) — this drops its cached engine so the rebuild below
+                # targets the new pick. It must run BEFORE prepare_mcp_tools, which returns []
+                # while an engine is cached.
+                manager.retarget_draft(session_id, workspace=workspace, agent=agent)
+                t1 = time.monotonic()
+                mcp_tools = await manager.prepare_mcp_tools(
+                    session_id, workspace=workspace, agent=agent
+                )
+                t2 = time.monotonic()
+                # get_engine is synchronous and expensive — 100-250 ms of skill/prompt
+                # assembly, and up to ~20 s when a git spawn stalls (environment.py runs
+                # four commands at timeout=5). Run on the loop it froze EVERY other
+                # session, every REST call and the model-catalog poll for that whole
+                # window (owner's "several seconds" report, measured 2026-09-13), so it
+                # goes to a worker thread. Safe there since C1 made the build thread-safe
+                # and nothing on the path needs the running loop except the memory-toast
+                # notifier, which degrades to a lost toast by design.
+                engine = await asyncio.to_thread(
+                    functools.partial(
+                        manager.get_engine,
+                        session_id,
+                        workspace=workspace,
+                        agent=agent,
+                        approver=approver,
+                        extra_tools=mcp_tools,
+                        directory_requester=directory_requester,
+                        plan_approver=plan_approver,
+                        question_asker=question_asker,
+                        tool_requester=tool_requester,
+                        team_approver=team_approver,
+                        items_approver=items_approver,
+                    )
+                )
+                t3 = time.monotonic()
+                _log_connect_timing(session_id, t0, t1, t2, t3)
+                if engine is None:
+                    await fail_connect(
+                        "no valid workspace — choose a project folder first"
+                    )
+                    return
             # MCP servers that failed to start while preparing this session's tools:
             # leave a quiet, persistent notice instead of the session silently lacking
             # them (drill 2026-08-20: three silent startup failures in a row).
@@ -2953,6 +3053,21 @@ def create_app(manager: SessionManager) -> FastAPI:
                                     session_id,
                                     {"type": "mode_notice", "data": notice_data},
                                 )
+                            # Chip-only echo of the accepted mode (contract C3, audit
+                            # 2026-09-13). mode_notice is the TRANSCRIPT channel and a
+                            # draft deliberately has none, so the client had no way to
+                            # learn its pick landed — and "ready", which arrives after
+                            # the flushed set_mode was queued, reverted it. Sent on every
+                            # accepted change, draft or not; the canonical Mode value, so
+                            # a client that sent the legacy "auto" gets back
+                            # "bypass-approvals" (contract C4).
+                            await manager.broadcast_session(
+                                session_id,
+                                {
+                                    "type": "mode_changed",
+                                    "data": {"mode": engine.permissions.mode.value},
+                                },
+                            )
                 elif kind == "set_model":
                     model = message.get("model")
                     if model is not None and not isinstance(model, str):
@@ -3066,7 +3181,7 @@ def create_app(manager: SessionManager) -> FastAPI:
                             f'load_skill("{skill}") and follow its instructions.'
                             + (f"\n\n{text}" if text else "")
                         )
-                    await _apply_model(model)
+                    await _apply_model(model, echo=False)
                     if text or attachments:
                         content = build_user_content(text, attachments)
                         await claim_turn(content=content, display=display)

@@ -1,4 +1,11 @@
-from .base import Skill, SkillLoader, skill_catalog_text, skill_tools
+from .base import (
+    Skill,
+    SkillLoader,
+    reset_shared_loaders,
+    shared_loader,
+    skill_catalog_text,
+    skill_tools,
+)
 from .store import (
     SessionSkillStore,
     SkillStore,
@@ -10,6 +17,8 @@ from .store import (
 __all__ = [
     "Skill",
     "SkillLoader",
+    "reset_shared_loaders",
+    "shared_loader",
     "skill_catalog_text",
     "skill_tools",
     "SkillStore",

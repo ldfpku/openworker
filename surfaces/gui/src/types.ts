@@ -21,6 +21,10 @@ export type EventType =
   | "input_rejected"
   | "interrupted"
   | "model_changed"
+  // The chip-only echo of an applied mode (audit 2026-09-13): every accepted `set_mode` comes
+  // back as one, draft or not, carrying only the canonical value. `mode_notice` stays the
+  // TRANSCRIPT channel — the two are deliberately separate events.
+  | "mode_changed"
   | "mode_notice"
   | "memory_saved"
   | "compacting"

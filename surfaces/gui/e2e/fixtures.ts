@@ -597,6 +597,30 @@ export async function mockApi(page: import("@playwright/test").Page) {
     { ...LIVE_SESSION },
     { ...SLACK_SESSION },
   ];
+  // What the fake ENGINE holds for a session — the settings the real server keeps on the
+  // engine and reports in `ready`, plus the two facts that decide whether a change is
+  // history or bookkeeping. Keyed by SESSION ID, never by socket: a draft keeps one id
+  // across coworker and folder picks (owner ask 2026-09-02), so every `connectNonce`
+  // reconnect re-opens on the same key and must be told what was picked before it.
+  const engineState = new Map<
+    string,
+    { mode: string; model: string | null; hadTurn: boolean; modeNoticeShown: boolean }
+  >();
+  const engineFor = (sid: string) => {
+    let st = engineState.get(sid);
+    if (!st) {
+      st = {
+        // A stored session opens on its persisted mode; a fresh draft on the server default,
+        // which is what the GUI also starts on.
+        mode: sessions.find((s) => s.session_id === sid)?.mode || "interactive",
+        model: null,
+        hadTurn: false,
+        modeNoticeShown: false,
+      };
+      engineState.set(sid, st);
+    }
+    return st;
+  };
   // Inbox items + the outbound routing binding — mutable for resolve + the inline Slack config.
   const inbox: any[] = INBOX_ITEMS.map((i) => ({ ...i }));
   const routing: { name: string; channel: string | null; target: string } = {
@@ -694,14 +718,25 @@ export async function mockApi(page: import("@playwright/test").Page) {
     // The page's session id, from the socket URL — team approval stamps THIS session
     // as the lead (the active conversation IS the lead; workers hang off it).
     const sid = ws.url().split("/ws/session/")[1]?.split("?")[0] || "sess-lead";
-    send("ready", sid === "resume-live-1" ? { running: true } : {});
+    const st = engineFor(sid);
+    // `ready` is the engine's opening SNAPSHOT, and the real one reports the session's
+    // settings — which is the whole reason the client needs an acknowledgement protocol
+    // (C6). The fixture used to omit the mode entirely, so a draft could pick "Bypass
+    // approvals", reconnect through a coworker/folder re-target, and nothing on the wire
+    // could ever have contradicted the pick: the revert bug was untestable here
+    // (audit 2026-09-13). The mode is CANONICAL, as everything the server emits is (C4),
+    // and the model rides only once one has been bound.
+    send("ready", {
+      mode: st.mode,
+      ...(st.model ? { model: st.model } : {}),
+      ...(sid === "resume-live-1" ? { running: true } : {}),
+    });
     let pendingTool = "run_shell"; // which proposal the next approval decision resolves
     let epicTimer: ReturnType<typeof setInterval> | null = null; // the slow stream, stoppable via interrupt
-    let hadTurn = false; // a user_message landed — set_model is now a mid-session switch
     ws.onMessage((raw) => {
       const msg = JSON.parse(String(raw));
       if (msg.type === "user_message") {
-        hadTurn = true;
+        st.hadTurn = true;
         // Force-run (SKILLS-SPEC §6): like the real server, TURN_START ships the user's
         // literal "/name …" line as `display` so the client dedupes on what the user sees.
         send("turn_start", {
@@ -1094,13 +1129,18 @@ export async function mockApi(page: import("@playwright/test").Page) {
         send("interrupted", {});
         send("turn_done");
       } else if (msg.type === "set_mode") {
+        // Canonicalise on input exactly as `Mode._missing_` does: "auto" is the pre-2026-08-12
+        // spelling of bypass-approvals, accepted on the way IN and never spoken back (C4). The
+        // client now sends canonical values, so this only covers older senders — but it is also
+        // what makes the echo below safe to compare against a pending pick.
+        const mode = msg.mode === "auto" ? "bypass-approvals" : String(msg.mode);
+        st.mode = mode;
         // Mirrors the server: full explainer the FIRST time a session enters
         // Auto-Approve, a one-line marker for every later change — but on a DRAFT (no user
         // turn yet) the mode is a setting, not history, so no marker is written at all
         // (owner ask 2026-09-02).
-        const anyWs = ws as any;
-        if (msg.mode === "auto-approve" && !anyWs.__modeNoticeShown) {
-          anyWs.__modeNoticeShown = true;
+        if (mode === "auto-approve" && !st.modeNoticeShown) {
+          st.modeNoticeShown = true;
           send("mode_notice", {
             title: "Auto-approve is on.",
             text:
@@ -1109,25 +1149,35 @@ export async function mockApi(page: import("@playwright/test").Page) {
               "still carries some risk i.e. a command it allows still reaches anything you " +
               "can. These are model judgments, and not guarantees.",
           });
-        } else if (hadTurn) {
+        } else if (st.hadTurn) {
+          // Keyed CANONICALLY, and now reached with canonical values — while the client still
+          // sent the legacy "auto", every Bypass-approvals marker read as the raw wire id
+          // (audit 2026-09-13).
           const labels: Record<string, string> = {
             discuss: "Discuss",
+            plan: "Plan",
             interactive: "Ask for approval",
+            custom: "Custom",
             "bypass-approvals": "Bypass approvals",
             "auto-approve": "Auto-approve",
           };
-          send("mode_notice", { text: `${labels[msg.mode] || msg.mode} is on.` });
+          send("mode_notice", { text: `${labels[mode] || mode} is on.` });
         }
+        // The ACK (C3): every accepted mode change echoes, draft or not, always after the
+        // notice — chip-only, never carrying `text`, since `mode_notice` is the transcript
+        // channel and a `text` here would double every marker.
+        send("mode_changed", { mode });
       } else if (msg.type === "set_model") {
-        // Mid-session switch: the server applies it and broadcasts the persisted marker.
-        // Like the real server, the FIRST bind (fresh session) is silent — notices such as
-        // the Auto-approve banner are bookkeeping, not history, so a draft never gets a
-        // marker (owner ask 2026-09-02).
-        if (hadTurn)
-          send("model_changed", {
-            model: msg.model,
-            text: `Model switched to ${msg.model}`,
-          });
+        // The server applies it and always echoes (C3) — that echo is what retires the
+        // client's pending pick. `text` is the PERSISTED transcript marker and rides only on a
+        // real mid-session switch: like the real server, the first bind on a draft is silent,
+        // because a model picked before the first message is a setting, not history (owner ask
+        // 2026-09-02).
+        st.model = String(msg.model);
+        send("model_changed", {
+          model: msg.model,
+          ...(st.hadTurn ? { text: `Model switched to ${msg.model}` } : {}),
+        });
       } else if (msg.type === "retry") {
         // Like the real engine: re-runs with NO new user message (turn_start input is empty).
         send("turn_start", { input: "" });

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { PersonaView } from "./PersonaView";
+import en from "../locales/en.json";
 
 // A hermetic fetch stub routing by URL substring + method. Records calls so tests can assert POSTs.
 type Call = { url: string; method: string; body: any };
@@ -139,5 +140,150 @@ describe("PersonaView", () => {
       expect(post).toBeTruthy();
       expect(post!.body).toMatchObject({ enabled: false });
     });
+  });
+});
+
+// The default is a POINTER whose zero value is the baseline (registry contract). The page has
+// to show where it currently points AND offer the way back — the old single button did
+// neither: it turned into a disabled "Default for new sessions" label with no reverse
+// (audit 2026-09-13).
+describe("PersonaView default pointer", () => {
+  const routes = (detail: any, extra: { match: string; method?: string; json: any }[] = []) => [
+    ...extra,
+    { match: `/v1/personas/${detail.id}`, method: "GET", json: detail },
+    { match: "/v1/connectors", method: "GET", json: CONNECTORS },
+  ];
+
+  it("offers Clear default on a non-baseline default and POSTs {default:false}", async () => {
+    const calls = stubFetch(
+      routes({ ...DETAIL, default: true }, [
+        { match: "/v1/personas/ops", method: "POST", json: { ok: true } },
+      ]),
+    );
+    render(<PersonaView personaId="ops" />);
+    await screen.findByText("Ops Coworker");
+
+    expect(screen.getByTestId("persona-default-status").textContent).toBe(
+      "Default for new sessions",
+    );
+    expect(screen.queryByTestId("persona-make-default")).toBeNull();
+    const clear = screen.getByTestId("persona-clear-default") as HTMLButtonElement;
+    expect(clear.disabled).toBe(false);
+    // The tip names the baseline the way the picker does, from first paint — a second
+    // request for its backend name only made the tip say two different things depending on
+    // timing, and settle on the less localized one (audit 2026-09-13).
+    expect(clear.title).toBe(
+      "New sessions, inbound DMs and the disabled-coworker fallback go back to OpenWorker (general).",
+    );
+
+    fireEvent.click(clear);
+    await waitFor(() => {
+      const post = calls.find(
+        (c) => c.method === "POST" && c.url.endsWith("/v1/personas/ops"),
+      );
+      expect(post).toBeTruthy();
+      expect(post!.body).toEqual({ default: false });
+    });
+  });
+
+  it("make default stays one click, even for a disabled coworker", async () => {
+    const calls = stubFetch(
+      routes({ ...DETAIL, enabled: false, default: false }, [
+        { match: "/v1/personas/ops", method: "POST", json: { ok: true } },
+      ]),
+    );
+    render(<PersonaView personaId="ops" />);
+    await screen.findByText("Ops Coworker");
+
+    const make = screen.getByTestId("persona-make-default") as HTMLButtonElement;
+    expect(make.disabled).toBe(false); // set_default enables as it goes
+    fireEvent.click(make);
+
+    await waitFor(() => {
+      const post = calls.find(
+        (c) => c.method === "POST" && c.url.endsWith("/v1/personas/ops"),
+      );
+      expect(post!.body).toEqual({ default: true });
+    });
+  });
+
+  it("keeps the enable switch live on a default that somehow arrived disabled", async () => {
+    stubFetch(routes({ ...DETAIL, enabled: false, default: true }));
+    render(<PersonaView personaId="ops" />);
+    await screen.findByText("Ops Coworker");
+
+    const enable = screen.getAllByRole("switch")[0] as HTMLButtonElement;
+    expect(enable.getAttribute("aria-checked")).toBe("false");
+    expect(enable.disabled).toBe(false); // otherwise it is unrecoverable
+  });
+
+  it("locks the enable switch on an enabled default (clear the default first)", async () => {
+    stubFetch(routes({ ...DETAIL, enabled: true, default: true }));
+    render(<PersonaView personaId="ops" />);
+    await screen.findByText("Ops Coworker");
+
+    expect((screen.getAllByRole("switch")[0] as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("gives the baseline a status tag, no enable switch and no Clear default", async () => {
+    const baseline = {
+      ...DETAIL,
+      id: "cowork",
+      name: "OpenWorker",
+      enabled: true,
+      default: true,
+      recommends: [],
+      default_connections: [],
+    };
+    stubFetch(routes(baseline));
+    render(<PersonaView personaId="cowork" />);
+    await screen.findByTestId("persona-baseline-tag");
+
+    expect(screen.queryAllByRole("switch")).toHaveLength(0);
+    expect(screen.getByTestId("persona-baseline-tag").textContent).toBe("Always on");
+    // Nothing to clear to: the baseline IS the pointer's zero value.
+    expect(screen.queryByTestId("persona-clear-default")).toBeNull();
+    expect(screen.getByTestId("persona-default-status")).toBeTruthy();
+    // …but "Show in picker" stays interactive — that is the documented way to hide it.
+    expect((screen.getByTestId("persona-surfaced") as HTMLInputElement).disabled).toBe(false);
+  });
+
+  it("puts the lock explanation somewhere it can actually be hovered", async () => {
+    // Chromium (WebView2 — the shipping platform) dispatches no hover to a DISABLED form
+    // control, so a `title` on the checkbox or on the Toggle's <button> is never seen. It
+    // rides on the enclosing label / wrapper instead (audit 2026-09-13).
+    stubFetch(routes({ ...DETAIL, enabled: true, default: true }));
+    render(<PersonaView personaId="ops" />);
+    await screen.findByText("Ops Coworker");
+
+    const box = screen.getByTestId("persona-surfaced") as HTMLInputElement;
+    expect(box.disabled).toBe(true);
+    expect(box.title).toBe(""); // not on the dead element…
+    expect((box.closest("label") as HTMLElement).title).toBe(en.persona.default_locked_tip);
+
+    const enable = screen.getAllByRole("switch")[0] as HTMLButtonElement;
+    expect(enable.disabled).toBe(true);
+    expect(enable.title).toBe("");
+    expect((enable.parentElement as HTMLElement).title).toBe(en.persona.default_locked_tip);
+  });
+
+  it("says a refusal out loud, and not in the colour of a success line", async () => {
+    stubFetch(
+      routes({ ...DETAIL, default: false }, [
+        {
+          match: "/v1/personas/ops",
+          method: "POST",
+          json: { ok: false, code: "default_locked", error: "english prose" },
+        },
+      ]),
+    );
+    render(<PersonaView personaId="ops" />);
+    await screen.findByText("Ops Coworker");
+
+    fireEvent.click(screen.getByTestId("persona-surfaced"));
+
+    const msg = await screen.findByTestId("persona-msg");
+    expect(msg.textContent).toBe(en.personas.refused_default_locked); // localized, not prose
+    expect(msg.className).toContain("text-warnInk"); // …and not the export success grey
   });
 });

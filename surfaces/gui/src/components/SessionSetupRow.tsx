@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { getRecentWorkspaces, openWorkspace, type Persona, type RecentWorkspace } from "../api";
 import { chooseFolder } from "../tauri";
 import { fullPersonaName } from "../personaScope";
+import { BASELINE_PERSONA } from "../personaLifecycle";
 import { baseName } from "../paths";
 import { Icon } from "./Icon";
 import { IconButton } from "./IconButton";
@@ -20,7 +21,9 @@ import { Toggle } from "./Toggle";
 // coworker actually says to the model can be read before (or after) picking it.
 
 // The general-purpose coworker every session falls back to when no specialist is picked.
-export const GENERAL_PERSONA = "cowork";
+// Declared once, in personaLifecycle.ts — the module that also owns the repair rule that
+// must never fire for it; re-exported here under this file's older name.
+export const GENERAL_PERSONA = BASELINE_PERSONA;
 // Where the last specialist pick is remembered across drafts (localStorage — a preference
 // of this machine, not of any session).
 const LAST_SPECIALIST_KEY = "openworker.lastSpecialistCoworker";

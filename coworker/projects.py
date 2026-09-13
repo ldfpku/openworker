@@ -15,11 +15,25 @@ import threading
 from pathlib import Path
 from typing import Any, Optional
 
+from .gitprobe import TTLCache
+
 NAME_KINDS = ("memory", "board")
 MAX_NAME_CHARS = 60
 
+# resolve_memory_key / resolve_board_space run on every engine build, and the draft
+# re-target path rebuilds on every coworker and folder pick (audit 2026-09-13). A folder's
+# repo does not change between two clicks; the short TTL is what keeps `git init` in a
+# folder the user is looking at from staying invisible for the rest of the process.
+_COMMON_DIR_CACHE = TTLCache()
+
 
 def _git_common_dir(workspace: Path) -> Optional[Path]:
+    # Callers pass an already-resolved path (project_key resolves first), so the string is
+    # a stable key.
+    return _COMMON_DIR_CACHE.get(str(workspace), lambda: _git_common_dir_uncached(workspace))
+
+
+def _git_common_dir_uncached(workspace: Path) -> Optional[Path]:
     try:
         out = subprocess.run(
             ["git", "-C", str(workspace), "rev-parse", "--git-common-dir"],

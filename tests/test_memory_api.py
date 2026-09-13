@@ -195,3 +195,47 @@ def test_agent_saves_reach_the_screen(tmp_path):
     )
     rows = client.get("/v1/memory").json()["memory"]
     assert [r["summary"] for r in rows] == ["avoid jargon"]
+
+
+def test_memory_toast_survives_a_build_off_the_event_loop(tmp_path):
+    """The save toast must still reach the socket when the engine was built on a worker
+    thread. `_memory_saved_notifier` captures the loop to post on at BUILD time via
+    `asyncio.get_running_loop()`; since get_engine moved off the event loop (audit
+    2026-09-13) that call always raises, and every WS session silently lost its
+    memory_saved toast. The gateway's loop — stamped by start_gateway, which create_app's
+    lifespan awaits before any socket can connect — is the fallback."""
+    import asyncio
+    import threading
+    import time
+
+    _, manager = _fixture(tmp_path)
+    sent: list[dict] = []
+
+    async def _record(session_id, payload):
+        sent.append({"session": session_id, **payload})
+
+    manager.broadcast_session = _record  # type: ignore[method-assign]
+    loop = asyncio.new_event_loop()
+    runner = threading.Thread(target=loop.run_forever, daemon=True)
+    runner.start()
+    try:
+        manager._loop = loop
+        # Built on a thread with NO running loop — exactly the worker-thread case.
+        engine = manager.get_engine("toast-session")
+        engine.registry.execute(
+            "remember",
+            {"content": "prefers metric units", "summary": "metric units", "scope": "global"},
+        )
+        for _ in range(200):  # the post is cross-thread: give the loop a moment
+            if sent:
+                break
+            time.sleep(0.01)
+        assert sent, "the save toast was dropped — the notifier captured no loop"
+        assert sent[0]["session"] == "toast-session"
+        assert sent[0]["type"] == "memory_saved"
+        assert sent[0]["data"]["summary"] == "metric units"
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        runner.join(timeout=2)
+        loop.close()
+        manager._loop = None

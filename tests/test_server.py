@@ -139,12 +139,18 @@ def test_disable_persona_archives_its_sessions(tmp_path):
     # its sessions stay put.
     for path in ("/v1/personas/cowork", "/v1/personas/cowork/enable"):
         body = client.post(path, json={"enabled": False}).json()
-        assert body["ok"] is False and "default" in body["error"]
+        assert body["ok"] is False and "always available" in body["error"]
     assert manager.personas.is_enabled("cowork") is True
     assert store.load("cowork-a").archived is False
-    # Make another one the default first, and it goes.
+    # …and unlike any other default, making something ELSE the default does not unlock
+    # it (audit 2026-09-13): the general OpenWorker is the BASELINE, the floor every
+    # fallback ends on, not merely whoever currently holds the default pointer.
     client.post("/v1/personas/code", json={"enabled": True, "default": True})
-    assert client.post("/v1/personas/cowork", json={"enabled": False}).json()["ok"] is True
+    assert manager.personas.default_id() == "code"
+    body = client.post("/v1/personas/cowork", json={"enabled": False}).json()
+    assert body["ok"] is False and "always available" in body["error"]
+    assert manager.personas.is_enabled("cowork") is True
+    assert store.load("cowork-a").archived is False  # a refused disable archives nothing
 
 
 def test_connector_tool_settings_and_audit_rest(tmp_path):
@@ -540,8 +546,15 @@ def test_standalone_server_token_file_is_user_only(tmp_path, monkeypatch):
         if sys.platform == "win32":
             # Windows has no POSIX mode bits (chmod only toggles read-only): the writer
             # restricts the ACL instead — inheritance stripped, current user alone.
+            # encoding/errors: icacls prints in the console codepage (cp936 on a zh-CN
+            # box), and decoding that as UTF-8 raises inside subprocess's reader thread,
+            # losing stdout entirely.
             out = subprocess.run(
-                ["icacls", str(path)], capture_output=True, text=True
+                ["icacls", str(path)],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
             ).stdout
             user = os.environ.get("USERNAME", "")
             assert user and user in out
@@ -1344,14 +1357,21 @@ def test_set_mode_persists_notice_once_then_markers(tmp_path):
         assert ev["type"] == "mode_notice"
         assert ev["data"]["title"] == "Auto-approve is on."
         assert "uses a model" in ev["data"]["text"]
+        # …followed by the chip-only echo every accepted change now carries (C3).
+        assert ws.receive_json() == {
+            "type": "mode_changed",
+            "data": {"mode": "auto-approve"},
+        }
         assert manager.session_store.load("modes1") is None  # a draft gets no row
         ws.send_json({"type": "user_message", "text": "hello"})
         assert "turn_done" in _drain(ws)
         ws.send_json({"type": "set_mode", "mode": "interactive"})
         assert ws.receive_json()["data"] == {"text": "Ask for approval is on."}
+        assert ws.receive_json()["data"] == {"mode": "interactive"}
         # Re-entering auto-approve: marker, never the banner again.
         ws.send_json({"type": "set_mode", "mode": "auto-approve"})
         assert ws.receive_json()["data"] == {"text": "Auto-approve is on."}
+        assert ws.receive_json()["data"] == {"mode": "auto-approve"}
 
     engine = manager._engines["modes1"]
     kinds = [m.get("kind") for m in engine.messages if m.get("role") == "notice"]
@@ -1400,6 +1420,11 @@ def test_set_mode_on_a_draft_is_a_setting_not_history(tmp_path):
     with client.websocket_connect("/ws/session/draft1") as ws:
         assert ws.receive_json()["type"] == "ready"
         ws.send_json({"type": "set_mode", "mode": "discuss"})
+        # Chip-only echo (contract C3, audit 2026-09-13): the draft gets no mode_notice,
+        # so this is the only frame that tells the client its pick landed.
+        echo = ws.receive_json()
+        assert echo["type"] == "mode_changed"
+        assert echo["data"] == {"mode": "discuss"}
         ws.send_json({"type": "user_message", "text": "hello"})
         # The next frame is the turn itself — no mode_notice was ever broadcast.
         first = ws.receive_json()
@@ -1615,7 +1640,12 @@ def test_set_model_on_a_draft_is_a_setting_not_history(tmp_path):
         assert ws.receive_json()["type"] == "ready"
         assert ws.receive_json()["type"] == "mode_notice"  # the banner is a notice, not history
         ws.send_json({"type": "set_model", "model": "other-model"})
-        # Silent: the next frame is the turn the user starts, not a model_changed marker.
+        # The echo is CHIP-ONLY — no `text`, so no transcript marker (contract C3, audit
+        # 2026-09-13). Without it the client's "ready" handler reverted the pick and
+        # nothing ever corrected it; the draft still earns no marker and no row.
+        echo = ws.receive_json()
+        assert echo["type"] == "model_changed"
+        assert echo["data"] == {"model": "other-model"}
         ws.send_json({"type": "user_message", "text": "hello"})
         assert ws.receive_json()["type"] == "turn_start"
         _drain(ws)
@@ -1626,3 +1656,335 @@ def test_set_model_on_a_draft_is_a_setting_not_history(tmp_path):
     record = manager.session_store.load("dm1")
     assert record is not None and record.model == "other-model"  # persisted by the turn
     assert [s["session_id"] for s in manager.list_sessions()].count("dm1") == 1
+
+
+def test_persona_default_pointer_round_trip(tmp_path):
+    """C2 — POST /v1/personas/{id} with `default`: true sets, false CLEARS (back to the
+    baseline, the pointer's zero value), and only when this persona actually holds the
+    pointer; absent/null leaves it alone."""
+    manager = SessionManager(workspace=tmp_path, provider=ScriptedProvider([]))
+    client = TestClient(create_app(manager))
+    reg = manager.personas
+
+    def default_of(body):
+        return next(p["id"] for p in body["personas"] if p["default"])
+
+    body = client.post("/v1/personas/code", json={"default": True}).json()
+    assert body["ok"] is True and default_of(body) == "code"
+    # Making it the default enabled AND surfaced it — a default the picker never offers
+    # is incoherent (Code ships unsurfaced).
+    assert reg.is_enabled("code") and reg.is_surfaced("code")
+    assert "code" in [a["name"] for a in client.get("/v1/agents").json()["agents"]]
+
+    # A stale client sending default:false for a persona that is NOT the default must
+    # never move anyone else's pointer.
+    body = client.post("/v1/personas/ops", json={"default": False}).json()
+    assert body["ok"] is True and default_of(body) == "code"
+    # Same for null / absent.
+    assert default_of(client.post("/v1/personas/code", json={"default": None}).json()) == "code"
+    assert default_of(client.post("/v1/personas/code", json={"surfaced": True}).json()) == "code"
+
+    # Clearing the real default returns to the baseline.
+    body = client.post("/v1/personas/code", json={"default": False}).json()
+    assert body["ok"] is True and default_of(body) == "cowork"
+    assert reg.is_enabled("cowork") and reg.is_surfaced("cowork")
+    # Clearing is not a disable: Code keeps running.
+    assert reg.is_enabled("code") is True
+
+
+def test_persona_clear_default_and_disable_in_one_body(tmp_path):
+    """The settings UI sends whole rows, so "stop being the default AND switch off"
+    arrives as one body. The default branch runs FIRST (audit 2026-09-13) — handled the
+    other way round the disable is refused for being the default and the user has to
+    click twice to express one intention."""
+    manager = SessionManager(workspace=tmp_path, provider=ScriptedProvider([]))
+    client = TestClient(create_app(manager))
+    reg = manager.personas
+
+    client.post("/v1/personas/ops", json={"default": True})
+    assert reg.default_id() == "ops"
+
+    body = client.post(
+        "/v1/personas/ops", json={"enabled": False, "default": False}
+    ).json()
+    assert body["ok"] is True
+    assert reg.default_id() == "cowork"
+    assert reg.is_enabled("ops") is False
+
+
+def test_persona_baseline_self_heals_end_to_end(tmp_path):
+    """The whole invariant chain through REST: an expert holds the default, the baseline
+    still refuses to be disabled, clearing the default brings the pointer home, and the
+    baseline is STILL not disableable afterwards."""
+    manager = SessionManager(workspace=tmp_path, provider=ScriptedProvider([]))
+    client = TestClient(create_app(manager))
+    reg = manager.personas
+
+    client.post("/v1/personas/ops", json={"default": True})
+    assert reg.default_id() == "ops"
+    body = client.post("/v1/personas/cowork", json={"enabled": False}).json()
+    assert body["ok"] is False and "always available" in body["error"]
+
+    body = client.post("/v1/personas/ops", json={"default": False}).json()
+    assert body["ok"] is True and reg.default_id() == "cowork"
+    assert reg.is_enabled("cowork") is True
+
+    body = client.post("/v1/personas/cowork", json={"enabled": False}).json()
+    assert body["ok"] is False and "always available" in body["error"]
+    assert reg.is_enabled("cowork") is True
+
+
+def test_the_default_cannot_be_unsurfaced_over_rest(tmp_path):
+    """A default the picker never offers is the same incoherent state set_default exists to
+    prevent, reached from the other side. The baseline stays exempt (audit 2026-09-13)."""
+    manager = SessionManager(workspace=tmp_path, provider=ScriptedProvider([]))
+    client = TestClient(create_app(manager))
+    reg = manager.personas
+
+    client.post("/v1/personas/ops", json={"default": True})
+    body = client.post("/v1/personas/ops", json={"surfaced": False}).json()
+    assert body["ok"] is False
+    assert body["code"] == "default_locked"  # what the GUI translates on
+    assert "clear the default" in body["error"]  # …and the English fallback
+    assert reg.is_surfaced("ops") is True
+
+    # Hiding the general coworker is still the supported way to de-clutter the menu.
+    assert client.post("/v1/personas/cowork", json={"surfaced": False}).json()["ok"]
+    assert reg.is_surfaced("cowork") is False
+
+
+def test_a_refusal_carries_a_stable_code_for_the_localized_ui(tmp_path):
+    """The GUI shows a refused toggle's reason inline, and the owner's UI is Chinese —
+    raw English prose is not translatable, so both refusals carry a machine code."""
+    manager = SessionManager(workspace=tmp_path, provider=ScriptedProvider([]))
+    client = TestClient(create_app(manager))
+
+    body = client.post("/v1/personas/cowork", json={"enabled": False}).json()
+    assert body["code"] == "baseline_locked"
+    assert client.post("/v1/personas/ops", json={"default": True}).json()["ok"]
+    body = client.post("/v1/personas/ops", json={"enabled": False}).json()
+    assert body["code"] == "default_locked"
+    # The dedicated enable route says the same thing (PersonaView's toggle uses it).
+    body = client.post("/v1/personas/cowork/enable", json={"enabled": False}).json()
+    assert body["code"] == "baseline_locked"
+    body = client.post("/v1/personas/nope/enable", json={"enabled": False}).json()
+    assert body["code"] == "unknown_persona"
+
+
+# -- B1: connect off the loop, under a per-session lock; every applied setting echoes ----
+
+
+def test_connect_flushes_a_queued_set_model_and_echoes_it(tmp_path):
+    """Contract C3 (audit 2026-09-13). api.ts flushes queued frames the instant the socket
+    opens and the server reads them only AFTER sending "ready", so the client's "ready"
+    handler used to revert the user's pick. On a DRAFT the switch writes no transcript
+    marker, so the only thing that can correct the client is a chip-only echo:
+    model_changed WITHOUT `text`. Still a setting, not history — no marker, no row."""
+    manager = SessionManager(workspace=tmp_path, provider=ScriptedProvider([_text("hi")]))
+    client = TestClient(create_app(manager))
+    with client.websocket_connect("/ws/session/flush1") as ws:
+        # Sent before "ready" is even read — exactly what the client's outbox flush does.
+        ws.send_json({"type": "set_model", "model": "picked-at-open"})
+        assert ws.receive_json()["type"] == "ready"
+        assert ws.receive_json() == {
+            "type": "model_changed",
+            "data": {"model": "picked-at-open"},
+        }
+    engine = manager._engines["flush1"]
+    assert engine.model == "picked-at-open"
+    assert engine.model_pinned is True
+    assert not any(m.get("kind") == "model_switch" for m in engine.messages)
+    assert manager.session_store.load("flush1") is None  # a draft still earns no row
+    assert [s["session_id"] for s in manager.list_sessions()].count("flush1") == 0
+
+
+def test_redundant_set_model_broadcasts_nothing(tmp_path):
+    """A pick the engine is already on is the NORMAL frame on a reconnect (the client
+    re-sends outstanding picks on every open, contract C6). It must stay silent."""
+    manager = SessionManager(workspace=tmp_path, provider=ScriptedProvider([_text("hi")]))
+    client = TestClient(create_app(manager))
+    with client.websocket_connect("/ws/session/same1") as ws:
+        ready = ws.receive_json()
+        assert ready["type"] == "ready"
+        ws.send_json({"type": "set_model", "model": ready["data"]["model"]})
+        ws.send_json({"type": "user_message", "text": "hello"})
+        # No model_changed slipped in front of the turn.
+        assert ws.receive_json()["type"] == "turn_start"
+        # turn_start proves the redundant frame was consumed — and silent or not, it was
+        # still a PICK: _apply_model pins BEFORE the early return, or the next Settings
+        # default-model change would re-point a draft the user explicitly chose a model
+        # for (set_default_model skips pinned engines; _draft_carry carries the pin).
+        assert manager._engines["same1"].model_pinned is True
+        _drain(ws)
+
+
+def test_set_mode_echoes_the_canonical_value_on_a_draft_and_with_history(tmp_path):
+    """Contract C3 + C4. mode_notice is the TRANSCRIPT channel and a draft deliberately
+    has none, so mode_changed is the draft's only acknowledgement; it carries the server's
+    CANONICAL Mode value, so a client that sent the legacy "auto" gets "bypass-approvals"
+    back. A session with history keeps its mode_notice and gains the chip echo after it."""
+    manager = SessionManager(
+        workspace=tmp_path, provider=ScriptedProvider([_text("hi"), _text("ok")])
+    )
+    client = TestClient(create_app(manager))
+    with client.websocket_connect("/ws/session/mc1") as ws:
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_json({"type": "set_mode", "mode": "auto"})  # legacy alias on the wire
+        assert ws.receive_json() == {
+            "type": "mode_changed",
+            "data": {"mode": "bypass-approvals"},
+        }
+        ws.send_json({"type": "user_message", "text": "hello"})
+        assert "turn_done" in _drain(ws)
+        # Now the session HAS history: the transcript marker is back, echo follows it.
+        ws.send_json({"type": "set_mode", "mode": "plan"})
+        notice = ws.receive_json()
+        assert notice["type"] == "mode_notice" and notice["data"]["text"]
+        assert ws.receive_json() == {"type": "mode_changed", "data": {"mode": "plan"}}
+    engine = manager._engines["mc1"]
+    # The draft's pick left no marker; only the post-history one did.
+    assert [
+        m.get("kind") for m in engine.messages if m.get("role") == "notice"
+    ].count("mode_switch") == 1
+
+
+def test_engine_build_runs_off_the_event_loop(tmp_path):
+    """The build is 100-250 ms of prompt assembly and up to ~20 s when a git spawn stalls
+    (environment.py runs four commands at timeout=5). On the loop it froze every OTHER
+    session, every REST call and the model-catalog poll for that whole window — the
+    owner's "several seconds" report (audit 2026-09-13). Two proofs: get_engine sees no
+    running loop in its thread, and a REST call lands while a slow build is in flight."""
+    import asyncio as _asyncio
+    import threading
+    import time as _time
+
+    manager = SessionManager(workspace=tmp_path, provider=ScriptedProvider([_text("hi")]))
+    real = manager.get_engine
+    seen: dict[str, object] = {}
+    building = threading.Event()
+    build_done = threading.Event()
+
+    def probe(*args, **kwargs):
+        try:
+            _asyncio.get_running_loop()
+            seen["on_loop"] = True
+        except RuntimeError:
+            seen["on_loop"] = False
+        building.set()
+        _time.sleep(0.5)
+        build_done.set()
+        return real(*args, **kwargs)
+
+    manager.get_engine = probe
+    # ONE portal (one event loop) for the socket and the REST call — outside this context
+    # TestClient spins a fresh portal per connection and the race being tested cannot happen.
+    with TestClient(create_app(manager)) as client:
+        with client.websocket_connect("/ws/session/offloop") as ws:
+            assert building.wait(5), "the connect never reached get_engine"
+            assert client.get("/v1/health").status_code == 200
+            # Causal, not a wall-clock budget: the REST call came back BEFORE the slow build
+            # finished. A threshold cuts both ways — a broken (on-loop) build measures ~0.5 s
+            # against a 0.4 s bar, so a 150 ms scheduling hiccup on the test thread would let
+            # the very regression this pins slip through green.
+            assert not build_done.is_set(), "/v1/health only returned after the build finished"
+            assert ws.receive_json()["type"] == "ready"
+    assert seen["on_loop"] is False
+
+
+def test_two_rapid_connects_for_one_draft_never_interleave(tmp_path):
+    """The connect sequence (retarget_draft → prepare_mcp_tools → get_engine) is NOT
+    re-entrant: retarget drops the cached engine, so an interleaved pair builds twice and
+    leaves the loser's engine cached. The GUI produces exactly this — a coworker pick bumps
+    connectNonce, so the new socket opens while the old build is still running."""
+    import threading
+    import time as _time
+
+    manager = SessionManager(workspace=tmp_path, provider=ScriptedProvider([_text("hi")]))
+    real = manager.get_engine
+    guard = threading.Lock()
+    state = {"inside": 0, "calls": 0, "overlapped": False}
+
+    def probe(*args, **kwargs):
+        with guard:
+            state["calls"] += 1
+            state["inside"] += 1
+            if state["inside"] > 1:
+                state["overlapped"] = True
+        _time.sleep(0.2)  # wide enough for a second connect to interleave if unlocked
+        try:
+            return real(*args, **kwargs)
+        finally:
+            with guard:
+                state["inside"] -= 1
+
+    manager.get_engine = probe
+    with TestClient(create_app(manager)) as client:
+        with client.websocket_connect("/ws/session/dup?agent=cowork") as first:
+            with client.websocket_connect("/ws/session/dup?agent=code") as second:
+                assert first.receive_json()["type"] == "ready"
+                assert second.receive_json()["type"] == "ready"
+    assert state["calls"] == 2  # the re-target really did force a second build
+    assert state["overlapped"] is False
+
+
+def test_one_build_per_session_across_concurrent_async_callers(tmp_path, monkeypatch):
+    """The WS connect is not the only builder: a durable Inbox resume and an out-of-band
+    delivery (self-wake, channel, DM) build too, and they used to be safe only because
+    every caller ran synchronously on the loop. Now the build goes to a worker thread, so
+    the lock has to cover all of them or two live engines hold divergent message lists for
+    one id and ConversationStore — which appends BY COUNT — splices one into the other
+    (audit 2026-09-13)."""
+    import asyncio as _asyncio
+    import time as _time
+
+    from coworker.server import manager as manager_mod
+
+    manager = SessionManager(workspace=tmp_path, provider=ScriptedProvider([_text("hi")]))
+    real_build = manager_mod.build_engine
+    calls = {"n": 0}
+
+    def slow_build(*args, **kwargs):
+        calls["n"] += 1
+        _time.sleep(0.3)  # wide enough for a rival caller to slip in if unserialised
+        return real_build(*args, **kwargs)
+
+    monkeypatch.setattr(manager_mod, "build_engine", slow_build)
+
+    async def drive():
+        return await _asyncio.gather(
+            manager.ensure_engine("race", workspace=str(tmp_path)),
+            manager.ensure_engine("race", workspace=str(tmp_path)),
+        )
+
+    first, second = _asyncio.run(drive())
+    assert calls["n"] == 1, "the session was built twice"
+    assert first is second is manager._engines["race"]
+
+
+def test_a_build_that_loses_the_cache_race_adopts_the_live_engine(tmp_path, monkeypatch):
+    """Belt-and-braces behind the lock: the final cache write must never OVERWRITE an
+    engine that appeared mid-build. The incumbent may already have a turn appended, so it
+    wins and this build is discarded — with this caller's callbacks rebound onto it."""
+    from coworker.server import manager as manager_mod
+
+    manager = SessionManager(workspace=tmp_path, provider=ScriptedProvider([_text("hi")]))
+    rival = manager.get_engine("adopt", workspace=str(tmp_path))
+    assert rival is not None
+    manager._engines.pop("adopt")
+
+    real_build = manager_mod.build_engine
+
+    def plant(*args, **kwargs):
+        engine = real_build(*args, **kwargs)
+        manager._engines["adopt"] = rival  # a rival caller landed while we were building
+        return engine
+
+    monkeypatch.setattr(manager_mod, "build_engine", plant)
+
+    def approver(*_a, **_k):
+        return None
+
+    got = manager.get_engine("adopt", workspace=str(tmp_path), approver=approver)
+    assert got is rival
+    assert manager._engines["adopt"] is rival  # the loser did not clobber the cache
+    assert rival.approver is approver  # …and this connect's callbacks reached it

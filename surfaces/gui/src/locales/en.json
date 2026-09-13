@@ -117,7 +117,9 @@
       "auto_desc": "Run everything without asking — approvals off",
       "auto_approve": "Auto-approve",
       "auto_approve_desc": "Let your session model classify actions and handle approvals, prompting you for anything it's unsure about",
-      "plan": "Plan"
+      "plan": "Plan",
+      "custom": "Custom rules",
+      "custom_desc": "Auto-allow rules from this folder's config.toml decide; everything else asks"
     },
     "voice": {
       "stop_transcribe": "Stop recording and transcribe",
@@ -458,7 +460,6 @@
   "app": {
     "notice": {
       "max_iterations": "Stopped: max iterations reached.",
-      "model_switched": "Model switched",
       "model_switched_to": "Model switched to {{label}}",
       "model_switched_no_vision": " — earlier images can't be read by this model",
       "interrupted": "Interrupted.",
@@ -1371,6 +1372,9 @@
     "show_in_picker": "Show in picker",
     "default_for_new": "Default for new sessions",
     "make_default": "Make default",
+    "clear_default": "Clear default",
+    "clear_default_tip": "New sessions, inbound DMs and the disabled-coworker fallback go back to {{name}}.",
+    "baseline_tip": "The general OpenWorker is the fallback for everything else, so it stays available; untick \"Show in picker\" on its settings page to hide it from the menu.",
     "export": "Export…",
     "exported_to": "Exported to {{path}}",
     "export_failed": "export failed",
@@ -1387,7 +1391,8 @@
     "prompt_source": "Bundle: {{path}}",
     "prompt_intro": "Exactly what this coworker tells the model at the start of every session. Read-only here — edit its bundle to change it.",
     "peek_manage": "Manage in Settings…",
-    "default_locked_tip": "This is the default coworker for new sessions — make another one the default first."
+    "default_locked_tip": "This is the default coworker for new sessions — clear the default first (\"Clear default\").",
+    "enable_first_tip": "Enable this coworker first."
   },
   "personas": {
     "add_help": "Load from a local directory or a public GitHub repo. Files are copied into a managed area (a snapshot), so the source can change without affecting the install.",
@@ -1439,6 +1444,11 @@
     "installed_one": "Installed {{count}} coworker — review and enable below.",
     "installed_other": "Installed {{count}} coworkers — review and enable below.",
     "default_tag": "Default",
+    "baseline_tag": "Always on",
+    "update_failed": "Couldn't apply that change.",
+    "refused_baseline_locked": "The general OpenWorker is always available — untick \"Show in picker\" on its settings page to hide it from the menu.",
+    "refused_default_locked": "This is the default coworker for new sessions — clear the default first.",
+    "refused_unknown_persona": "That coworker is no longer installed.",
     "disable_coworker": "Disable this coworker",
     "enable_coworker": "Enable this coworker",
     "enabling": "Enabling…",

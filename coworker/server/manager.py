@@ -8,6 +8,7 @@ sessions span folders.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import os
@@ -18,6 +19,7 @@ import subprocess
 import threading
 import time
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Optional
@@ -32,6 +34,14 @@ from ..connections import (
 from ..inbox import InboxStore, args_preview
 from ..inbox_routing import InboxRouting
 from ..personas import PersonaRegistry
+from ..personas.registry import (
+    BASELINE_ALWAYS_ON,
+    BASELINE_LOCKED,
+    DEFAULT_IS_LOCKED,
+    DEFAULT_LOCKED,
+    DEFAULT_PERSONA_ID,
+    PersonaRefused,
+)
 from ..personas.registry import set_registry as set_persona_registry
 from ..selfwake import WakeStore
 from ..mentions import MentionSessionStore
@@ -230,6 +240,9 @@ class SessionManager:
         if self.default_workspace:
             self.session_store.touch_workspace(self.default_workspace)
         self._engines: dict[str, TurnEngine] = {}
+        # One lock per session id, guarding the whole build sequence (retarget_draft →
+        # prepare_mcp_tools → get_engine). See `engine_lock` (audit 2026-09-13).
+        self._engine_locks: dict[str, tuple[asyncio.Lock, list[int]]] = {}
         # Drafts re-targeted by a reconnect (retarget_draft): the picks the dropped engine
         # carried, handed to the next get_engine so the rebuild keeps them.
         self._draft_carry: dict[str, dict[str, Any]] = {}
@@ -705,6 +718,52 @@ class SessionManager:
             return record.workspace or None
         return self.resolve_workspace(workspace)
 
+    @asynccontextmanager
+    async def engine_lock(self, session_id: str):
+        """Serialise the build sequence (retarget_draft → prepare_mcp_tools → get_engine)
+        for ONE session id across every async caller.
+
+        `get_engine` reads the cache, builds, then writes it back, and that read/build/write
+        was atomic only while every caller ran synchronously on the event loop. The build now
+        goes to a worker thread (it froze all REST for 100-250 ms per pick, up to ~20 s on a
+        stalled git), so the loop is free for the whole build and a rival caller — a durable
+        Inbox resume, a channel/DM delivery, a self-wake — can be inside `get_engine` for the
+        same id at once. Two live TurnEngines for one session diverge, and ConversationStore
+        appends BY COUNT, so the jsonl gets one engine's tail spliced into the other's.
+
+        An asyncio lock, not a threading one: a loop-side waiter must keep yielding to the
+        loop, or waiting for the build would re-freeze exactly what moving it off-thread
+        fixed. Entries are refcounted and dropped when nobody holds or waits, so the dict
+        cannot grow with dead sessions (audit 2026-09-13).
+        """
+        entry = self._engine_locks.get(session_id)
+        if entry is None:
+            entry = (asyncio.Lock(), [0])
+            self._engine_locks[session_id] = entry
+        lock, users = entry
+        users[0] += 1
+        try:
+            async with lock:
+                yield
+        finally:
+            users[0] -= 1
+            if users[0] <= 0 and self._engine_locks.get(session_id) is entry:
+                del self._engine_locks[session_id]
+
+    async def ensure_engine(self, session_id: str, **kwargs: Any) -> Optional[TurnEngine]:
+        """`get_engine` for async callers: serialised per session and run off the loop.
+
+        Every await-side entry point (durable resume, out-of-band delivery) goes through
+        here so the WebSocket connect — which holds the same lock while it re-targets a
+        draft and prepares MCP tools — cannot be building the same session at the same
+        time. With one build at a time per id, the second caller hits the cache fast path
+        and both sides share one engine object.
+        """
+        async with self.engine_lock(session_id):
+            return await asyncio.to_thread(
+                functools.partial(self.get_engine, session_id, **kwargs)
+            )
+
     def get_engine(
         self,
         session_id: str,
@@ -720,23 +779,29 @@ class SessionManager:
         team_approver: Optional[Any] = None,
         items_approver: Optional[Any] = None,
     ) -> Optional[TurnEngine]:
+        def _rebind(target: TurnEngine) -> TurnEngine:
+            """Point an already-built engine at THIS caller's callbacks (its socket's
+            approver, its pickers). Shared by the cache hit and the lost-race adoption
+            below so the two can never drift."""
+            if approver is not None:
+                target.approver = approver
+            if directory_requester is not None:
+                target.directory_requester = directory_requester
+            if plan_approver is not None:
+                target.plan_approver = plan_approver
+            if question_asker is not None:
+                target.question_asker = question_asker
+            if tool_requester is not None:
+                target.tool_requester = tool_requester
+            if team_approver is not None:
+                target.team_approver = team_approver
+            if items_approver is not None:
+                target.items_approver = items_approver
+            return target
+
         engine = self._engines.get(session_id)
         if engine is not None:
-            if approver is not None:
-                engine.approver = approver
-            if directory_requester is not None:
-                engine.directory_requester = directory_requester
-            if plan_approver is not None:
-                engine.plan_approver = plan_approver
-            if question_asker is not None:
-                engine.question_asker = question_asker
-            if tool_requester is not None:
-                engine.tool_requester = tool_requester
-            if team_approver is not None:
-                engine.team_approver = team_approver
-            if items_approver is not None:
-                engine.items_approver = items_approver
-            return engine
+            return _rebind(engine)
 
         # A draft this reconnect re-targeted (retarget_draft dropped its engine): its
         # picks ride along into the rebuild. READ, not popped — a build that bails (a
@@ -889,7 +954,28 @@ class SessionManager:
         engine.compaction_settings = self.compaction_settings
         if carry is not None and carry.get("model_pinned"):
             engine.model_pinned = True
-        self._engines[session_id] = engine
+        # Claim the cache slot atomically. `ensure_engine` already serialises every async
+        # caller per session id, so this should never lose — but the build runs on a worker
+        # thread now, and a plain `self._engines[session_id] = engine` would silently
+        # OVERWRITE an engine some other path cached mid-build, leaving two live engines
+        # for one id whose message lists diverge. setdefault is one atomic dict op under
+        # the GIL: whoever lands first wins and everyone else adopts it (audit 2026-09-13).
+        incumbent = self._engines.setdefault(session_id, engine)
+        if incumbent is not engine:
+            logger.info(
+                "engine build for %s lost a race — adopting the cached one", session_id
+            )
+            if extra_tools:
+                # This build's MCP tools were registered into the LOSER's registry; hand
+                # them to the winner or the session quietly runs without them.
+                try:
+                    incumbent.registry.register_all(list(extra_tools))
+                except Exception as exc:  # a duplicate name must not kill the connect
+                    logger.warning("could not rebind MCP tools for %s: %s", session_id, exc)
+            # No tail bookkeeping: the winner already consumed the carry, truncated the
+            # record and emitted session_created with the same inputs. Doing it twice
+            # would re-save an empty log over the engine that is actually live.
+            return _rebind(incumbent)
         self._draft_carry.pop(session_id, None)  # consumed: the rebuild succeeded
         if carry is not None and record is not None:
             # Persist the re-target onto the early record (a shared folder wrote one);
@@ -1123,14 +1209,17 @@ class SessionManager:
         and ValueError when asked to disable the default persona — every new session,
         the disabled-coworker fallback and inbound DMs land on the default, so switching
         it off would strand them on whatever enabled entry came first (audit 2026-09-10:
-        out of the box that was an unshipped, folder-gated team worker). Pick another
-        default first.
+        out of the box that was an unshipped, folder-gated team worker). Clear the default
+        first. The general OpenWorker (the BASELINE) is refused outright and with
+        its own message: it is not merely *a* default one can move elsewhere, it is the
+        floor every fallback ends on, so there is no "pick another first" for it (audit
+        2026-09-13). Both refusals happen BEFORE any archiving — a rejected disable must
+        leave the persona's sessions exactly where they were.
         """
+        if not enabled and persona_id == DEFAULT_PERSONA_ID:
+            raise PersonaRefused(BASELINE_LOCKED, BASELINE_ALWAYS_ON)
         if not enabled and persona_id == self.personas.default_id():
-            raise ValueError(
-                "this coworker is the default for new sessions — make another one the "
-                "default before switching it off"
-            )
+            raise PersonaRefused(DEFAULT_LOCKED, DEFAULT_IS_LOCKED)
         self.personas.set_enabled(persona_id, enabled)
         archived = 0
         if not enabled:
@@ -1372,7 +1461,10 @@ class SessionManager:
     async def _durable_resume(self, item) -> None:
         if not getattr(item, "tool_call_id", None):
             return  # nothing to reconstruct (legacy item) — best-effort: leave it
-        engine = self.get_engine(item.session_id)
+        # ensure_engine, not get_engine: a socket may be rebuilding this very session on a
+        # worker thread right now (the user tapped Allow in the Inbox mid-reconnect), and
+        # two engines for one id splice each other's turns into the jsonl.
+        engine = await self.ensure_engine(item.session_id)
         if engine is None or not hasattr(engine, "resume"):
             return
         self.mark_running(item.session_id)
@@ -5460,7 +5552,9 @@ class SessionManager:
         by self-wake and channel-subscription delivery. `source` is the display-only MessageSource
         sidecar for connector messages (framed `message` stays the model-facing text).
         """
-        engine = self.get_engine(session_id)
+        # Serialised + off-loop (see ensure_engine): a DM arriving while the user's socket
+        # is rebuilding the same session must share that engine, not build a rival one.
+        engine = await self.ensure_engine(session_id)
         if engine is None:
             return
         if not self.try_mark_running(session_id):
@@ -6938,7 +7032,12 @@ class SessionManager:
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            loop = None
+            # No loop on THIS thread is no longer the rare case: get_engine now builds on a
+            # worker thread, so every WS session landed here and silently lost its toast
+            # (audit 2026-09-13). The gateway's loop is the one to post to — set in
+            # start_gateway, which create_app's lifespan awaits before any socket can
+            # connect; it stays None for CLI/test use, which the guard below still covers.
+            loop = self._loop
 
         def notify(item, previous=None) -> None:
             if loop is None or not loop.is_running():

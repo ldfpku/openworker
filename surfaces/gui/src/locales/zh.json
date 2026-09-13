@@ -115,7 +115,9 @@
       "auto_desc": "无需询问，全部执行 —— 审批已关闭",
       "auto_approve": "自动审批",
       "auto_approve_desc": "由会话模型对操作分类并处理审批，拿不准的仍会询问你",
-      "plan": "计划"
+      "plan": "计划",
+      "custom": "自定义规则",
+      "custom_desc": "由该文件夹 config.toml 里的自动放行规则决定，其余仍会询问"
     },
     "voice": {
       "stop_transcribe": "停止录音并转写",
@@ -440,7 +442,6 @@
   "app": {
     "notice": {
       "max_iterations": "已停止：达到最大迭代次数。",
-      "model_switched": "已切换模型",
       "model_switched_to": "模型已切换为 {{label}}",
       "model_switched_no_vision": "——此前的图片该模型无法读取",
       "interrupted": "已中断。",
@@ -1152,7 +1153,7 @@
     "loading": "加载中…",
     "loading_gallery": "正在加载画廊…",
     "mcp_suffix": "MCP：{{mcp}}",
-    "mode_suffix": "{{mode}} 模式",
+    "mode_suffix": "「{{mode}}」模式",
     "none": "无",
     "permissions_label": "权限：",
     "risk_suffix": " · 风险：{{risk}}",
@@ -1345,6 +1346,9 @@
     "show_in_picker": "在选择器中显示",
     "default_for_new": "新会话默认",
     "make_default": "设为默认",
+    "clear_default": "取消默认",
+    "clear_default_tip": "新会话、外部私信以及协作代理被禁用时的回退，都改回 {{name}}。",
+    "baseline_tip": "通用 OpenWorker 是其他一切的回退，因此始终可用；不想在菜单里看到它，可到它的设置页取消勾选「在选择器中显示」。",
     "export": "导出…",
     "exported_to": "已导出到 {{path}}",
     "export_failed": "导出失败",
@@ -1361,7 +1365,8 @@
     "prompt_source": "文件：{{path}}",
     "prompt_intro": "这就是它在每个会话开头对模型说的话。此处只读——要改，编辑它的安装包（专家库里装的，直接在专家库改）。",
     "peek_manage": "在设置中管理…",
-    "default_locked_tip": "这是新建会话的默认协作代理——先把另一个设为默认。"
+    "default_locked_tip": "这是新建会话的默认协作代理——请先点「取消默认」。",
+    "enable_first_tip": "请先启用这个协作代理。"
   },
   "personas": {
     "add_help": "从本地目录或公开 GitHub 仓库加载。文件会复制到托管区域（快照），因此源文件变更不会影响已安装版本。",
@@ -1410,6 +1415,11 @@
     "disable_warning_other": "禁用后会归档其 {{count}} 个会话 —— 仍可在「显示已归档」中查看。",
     "installed_other": "已安装 {{count}} 位协作代理 —— 请在下方审核并启用。",
     "default_tag": "默认",
+    "baseline_tag": "始终可用",
+    "update_failed": "这项更改没有生效。",
+    "refused_baseline_locked": "通用 OpenWorker 始终可用——不想在菜单里看到它，可到它的设置页取消勾选「在选择器中显示」。",
+    "refused_default_locked": "这是新建会话的默认协作代理——请先点「取消默认」。",
+    "refused_unknown_persona": "这个协作代理已经不在了。",
     "disable_coworker": "禁用这个协作代理",
     "enable_coworker": "启用这个协作代理",
     "enabling": "正在启用…",

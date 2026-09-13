@@ -1276,7 +1276,9 @@ export async function getPersonasIndex(): Promise<{ personas: Persona[]; interna
 export async function updatePersona(
   id: string,
   body: { enabled?: boolean; surfaced?: boolean; default?: boolean },
-): Promise<{ ok: boolean; personas?: Persona[]; error?: string }> {
+  // `code` is the stable name a refusal carries so the UI can translate it; `error` is the
+  // English fallback (see personaErrors.ts).
+): Promise<{ ok: boolean; personas?: Persona[]; error?: string; code?: string }> {
   const res = await fetch(`${httpBase()}/v1/personas/${encodeURIComponent(id)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1452,7 +1454,7 @@ export async function setPersonaConnection(
 export async function setPersonaEnabled(
   id: string,
   enabled: boolean,
-): Promise<{ ok: boolean; personas?: Persona[]; error?: string }> {
+): Promise<{ ok: boolean; personas?: Persona[]; error?: string; code?: string }> {
   const res = await fetch(`${httpBase()}/v1/personas/${encodeURIComponent(id)}/enable`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

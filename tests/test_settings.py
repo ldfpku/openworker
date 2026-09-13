@@ -269,9 +269,15 @@ def test_remove_key_keeps_the_gemini_login_and_moves_a_stranded_default(tmp_path
 
 
 def test_default_stays_put_when_no_other_provider_is_connected(tmp_path, monkeypatch):
+    from coworker.providers.registry import provider_descriptors
     from coworker.server.manager import SessionManager
 
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    # EVERY provider key the registry reads, not just OpenAI's: one of them set on the
+    # machine running the suite (NVIDIA_API_KEY, ZAI_API_KEY…) makes "nothing else to move
+    # to" false, and the test then fails for a reason unrelated to what it checks.
+    for desc in provider_descriptors():
+        if getattr(desc, "env_key", None):
+            monkeypatch.delenv(desc.env_key, raising=False)
     monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
     manager = SessionManager(data_dir=tmp_path / "data")
     manager.secrets.put("provider:zai", {"type": "api_key", "api_key": "sk-glm"})

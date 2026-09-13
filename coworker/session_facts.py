@@ -12,12 +12,16 @@ Design of record: `ocw-context/docs/reviewed-auto-mode.md` Part 0 and §2.4.
 
 from __future__ import annotations
 
+import os
+import re
 import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 from urllib.parse import urlsplit
+
+from .gitprobe import TTLCache
 
 # Tool categories whose results carry content from outside this machine. Keyed on the
 # category rather than a list of tool names so new connectors are covered the day they ship:
@@ -47,12 +51,104 @@ def ingestion_source(arguments: dict[str, Any] | None) -> str:
     return (urlsplit(raw).hostname or "-").lower()
 
 
+# One spawn per workspace per TTL instead of one per engine build (audit 2026-09-13). The
+# staleness this buys errs the safe way: a remote the agent added seconds ago is still
+# *absent* from the next session's known world, never wrongly present — which is exactly
+# the direction the freeze in `KnownWorld` exists to protect.
+_REMOTES_CACHE = TTLCache()
+
+
+_REMOTE_SECTION = re.compile(r'^\[\s*remote\s+"(.+?)"\s*\]$')
+# Loose: anything that OPENS a remote section, however it is spelled. Git section names
+# are case-insensitive and a key may sit on the header line (`[remote "b"] url = …`), so a
+# header this file recognises but `_REMOTE_SECTION` does not is a shape to hand to git —
+# not one to skip while other remotes parse (audit 2026-09-13).
+_REMOTE_HEADER = re.compile(r"^\[\s*remote\b", re.IGNORECASE)
+
+
+def _remotes_from_config(cwd: Path) -> Optional[tuple[tuple[str, str], ...]]:
+    """Remotes read straight out of `<repo>/.git/config`, or None when this layout is not
+    the plain one and `git` has to answer after all (audit 2026-09-13).
+
+    Remotes live in one file; spawning a process to print it was ~30 ms of every engine
+    build. The bail-outs are the point — anything git would resolve differently than a flat
+    read (a `.git` FILE: worktree or submodule; a bare repo; `GIT_DIR` in the environment;
+    an `include` directive; a `[remote …]` section this parser did not understand) returns
+    None and falls through to git, so the unusual cases keep their old answer exactly.
+    """
+    if os.environ.get("GIT_DIR") or os.environ.get("GIT_COMMON_DIR"):
+        return None
+    try:
+        start = cwd.expanduser().resolve()
+        for base in [start, *start.parents]:
+            dot = base / ".git"
+            if dot.is_dir():
+                return _parse_remote_config(dot / "config")
+            if dot.exists():
+                return None  # worktree/submodule pointer file — let git resolve it
+    except OSError:
+        return None
+    # No `.git` anywhere above: not a repo, so no remotes — and no spawn to learn that.
+    return ()
+
+
+def _parse_remote_config(config: Path) -> Optional[tuple[tuple[str, str], ...]]:
+    try:
+        text = config.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ()  # a repo whose config we cannot read has no remotes we can name
+    squashed = text.replace(" ", "").replace("\t", "").lower()
+    if "[include" in squashed:
+        return None  # config includes: git knows where they point, this parser does not
+    found: dict[str, str] = {}
+    name: Optional[str] = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line[0] in "#;":
+            continue
+        if line.startswith("["):
+            match = _REMOTE_SECTION.match(line)
+            if match is None and _REMOTE_HEADER.match(line):
+                # PER SECTION, not "only when nothing parsed": a config that mixes one
+                # recognised `[remote "origin"]` with one this parser misses would
+                # otherwise return origin alone as if it were the whole answer.
+                return None
+            name = match.group(1) if match else None
+            continue
+        if name and "=" in line:
+            key, value = line.split("=", 1)
+            if key.strip().lower() == "url":
+                value = value.strip()
+                if any(ch in value for ch in '"\\#;'):
+                    # git's value grammar — surrounding quotes, backslash escapes, inline
+                    # comments — is not worth re-implementing for a shortcut. Reproducing
+                    # it half-way is how `url = "https://…"` keeps its quotes and stops
+                    # matching what `git remote -v` prints. `git remote add` never writes
+                    # these characters, so the ordinary repo still reads flat.
+                    return None
+                found.setdefault(name, value)
+    if not found and "[remote" in squashed:
+        return None  # backstop: a remote section whose url line never materialised
+    # `git remote -v` prints remotes sorted by name; match it so the rendered known world
+    # does not depend on config file order.
+    return tuple(sorted(found.items()))
+
+
 def _git_remotes(cwd: Path) -> tuple[tuple[str, str], ...]:
     """`(name, url)` per remote, deduplicated (git prints fetch and push separately).
 
     Best-effort by design: no git, not a repo, or a hang all yield an empty tuple. An empty
     known world is a reviewer with less orientation, never a blocked session.
     """
+    return _REMOTES_CACHE.get(str(cwd), lambda: _remotes_now(cwd))
+
+
+def _remotes_now(cwd: Path) -> tuple[tuple[str, str], ...]:
+    parsed = _remotes_from_config(cwd)
+    return parsed if parsed is not None else _git_remotes_uncached(cwd)
+
+
+def _git_remotes_uncached(cwd: Path) -> tuple[tuple[str, str], ...]:
     try:
         proc = subprocess.run(
             ["git", "remote", "-v"],

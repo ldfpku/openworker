@@ -34,6 +34,35 @@ DEFAULT_PERSONA_ID = "cowork"
 logger = logging.getLogger(__name__)
 
 
+class PersonaRefused(ValueError):
+    """A lifecycle write the invariants forbid, carrying a stable machine `code`.
+
+    The GUI renders a refusal inline next to the switch that bounced (never a silent
+    snap-back), and the owner's UI is Chinese — so the wire needs something to translate
+    ON. `code` is that; ``str(exc)`` stays the English fallback for any other client.
+    A ValueError subclass so every existing ``except ValueError`` handler is unchanged.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+# The two refusals, spelled ONCE. They are raised from both the registry (the library API
+# calls set_enabled directly) and the manager (which archives sessions around it), and used
+# to be near-duplicates with different punctuation and a control label — "In picker" — that
+# no longer matches the checkbox ("Show in picker") (audit 2026-09-13).
+BASELINE_LOCKED = "baseline_locked"
+DEFAULT_LOCKED = "default_locked"
+BASELINE_ALWAYS_ON = (
+    "the general coworker is always available — untick “Show in picker” to hide it "
+    "from the menu"
+)
+DEFAULT_IS_LOCKED = (
+    "this coworker is the default for new sessions — clear the default first"
+)
+
+
 def include_unshipped() -> bool:
     """Internal builds opt ships:false coworkers in (owner, 2026-08-21). A release
     build never sets this, so unshipped personas simply do not exist there."""
@@ -91,6 +120,34 @@ class PersonaEntry:
 
 
 class PersonaRegistry:
+    """Installed personas + their lifecycle state, on four independent axes.
+
+    BASELINE — ``DEFAULT_PERSONA_ID`` ("cowork", the general OpenWorker). It is the
+        floor of the whole system: unknown ids resolve to it, ``default_id()`` ends on
+        it, and the disabled-coworker fallback lands on it. It is therefore ALWAYS
+        enabled and can never be disabled. It can still be un-SURFACED (hidden from the
+        picker) — that axis is about menu clutter, not availability.
+    ENABLED — may run / be picked. Disabling is the "put this coworker and its history
+        away" action (the manager also archives its sessions).
+    SURFACED — shown in the composer picker. Orthogonal to enabled: library experts and
+        team workers are enabled-but-unsurfaced on purpose.
+    DEFAULT — a single-slot POINTER, not a flag. Its zero value is the BASELINE, so
+        "unset the default" is spelled ``clear_default()`` == ``set_default(BASELINE)``;
+        there is no state in which no persona is the default.
+
+    Invariants (audit 2026-09-13 — the settings UI and REST both code against these):
+      * ``is_enabled(BASELINE)`` is always True; ``set_enabled(BASELINE, False)`` raises.
+      * ``set_default(pid)`` forces ``enabled=True`` AND ``surfaced=True`` on the target,
+        and while it holds the pointer it cannot be un-surfaced either (the BASELINE is
+        exempt: hiding the general coworker is the supported way to de-clutter the menu).
+      * The stored state is self-healed at load time (in memory, persisted on the next
+        save): a stale ``enabled[BASELINE]=False`` is dropped, and a default naming a
+        persona that IS registered but disabled is repaired to the resolved
+        ``default_id()``. A default naming an id that simply did not load this run is
+        LEFT INTACT — a transient load failure must not lose the user's choice, and
+        ``default_id()`` already resolves the dangling pointer at read time.
+    """
+
     def __init__(
         self,
         *,
@@ -129,6 +186,7 @@ class PersonaRegistry:
             self._load_dir(d, builtin=False)
         self._load_state()
         self._load_installed()  # re-load snapshots from prior installs
+        self._heal_state()
 
     # -- loading ----------------------------------------------------------------
     def _register_builder(
@@ -260,6 +318,32 @@ class PersonaRegistry:
             self._installed_meta = dict(data.get("installed_meta", {}))
             self._default = data.get("default", DEFAULT_PERSONA_ID)
 
+    def _heal_state(self) -> None:
+        """Self-heal the stored lifecycle states the invariants say cannot exist (audit
+        2026-09-13). A prefs file written by an older build — or hand-edited — can say the
+        BASELINE is disabled, or point the default at a persona that is registered but
+        disabled. Honouring either strands every new session, and neither is recoverable
+        information, so both are repaired. Repair IN MEMORY only: save() from the load
+        path would rewrite the user's file on a mere read; the repair persists on their
+        next real change.
+
+        A default naming an id that is NOT in self._entries is deliberately NOT touched
+        (owner, 2026-09-13). "Missing" is not a stable fact about the prefs: _load_one
+        swallows manifest load errors for installed personas, so a truncated snapshot
+        after a crash, an antivirus file lock or one unreadable file this boot makes a
+        legitimately chosen default look gone for exactly one run — and rewriting the
+        pointer here would silently reset the user's default to the baseline and persist
+        that on the next save. Nothing needs the rewrite: default_id() already resolves a
+        dangling pointer to a fallback at READ time, so the stale pointer costs nothing
+        while its persona is away and is simply correct again once it loads.
+
+        Runs AFTER _load_installed(), because a stored default may legitimately name a
+        third-party persona that only exists once the install snapshots are loaded."""
+        if self._enabled.get(DEFAULT_PERSONA_ID) is False:
+            self._enabled.pop(DEFAULT_PERSONA_ID, None)
+        if self._default in self._entries and not self.is_enabled(self._default):
+            self._default = self.default_id()
+
     def save(self) -> None:
         if not self.state_path:
             return
@@ -318,6 +402,12 @@ class PersonaRegistry:
         # ▾ menu) — except ones registered default-off (Code). Installed third-party
         # personas stay disabled until the user consents from the risk screen.
         with self._lock:
+            # The BASELINE is never off (audit 2026-09-13): unknown ids, the resolved
+            # default and the disabled-coworker fallback all land on it, so an "off" bit
+            # here — from an old prefs file or a hand edit — would strand every one of
+            # them. Checked ahead of _enabled so no stored value can override it.
+            if persona_id == DEFAULT_PERSONA_ID:
+                return True
             if persona_id in self._enabled:
                 return bool(self._enabled[persona_id])
             entry = self._entries.get(persona_id)
@@ -416,6 +506,11 @@ class PersonaRegistry:
         with self._lock:
             if persona_id not in self._entries:
                 raise KeyError(persona_id)
+            # Refused at the registry level, not just in the manager, because
+            # coworker/library/api.py calls set_enabled directly (audit 2026-09-13).
+            # Hiding the general coworker is a SURFACING choice, not an availability one.
+            if not enabled and persona_id == DEFAULT_PERSONA_ID:
+                raise PersonaRefused(BASELINE_LOCKED, BASELINE_ALWAYS_ON)
             self._enabled[persona_id] = bool(enabled)
             if enabled:
                 # Enabling implies surfacing (installs land unsurfaced, and "enabled but
@@ -428,6 +523,17 @@ class PersonaRegistry:
         with self._lock:
             if persona_id not in self._entries:
                 raise KeyError(persona_id)
+            # The mirror of set_default forcing surfaced=True: a default the picker never
+            # offers is incoherent, so it cannot be hidden either while it holds the
+            # pointer (audit 2026-09-13). The BASELINE is exempt — hiding the general
+            # coworker is the supported way to keep it out of the menu, and it stays the
+            # floor everything falls back to whether or not the picker lists it.
+            if (
+                not surfaced
+                and persona_id != DEFAULT_PERSONA_ID
+                and persona_id == self._default
+            ):
+                raise PersonaRefused(DEFAULT_LOCKED, DEFAULT_IS_LOCKED)
             self._surfaced[persona_id] = bool(surfaced)
             self.save()
 
@@ -437,7 +543,28 @@ class PersonaRegistry:
                 raise KeyError(persona_id)
             self._default = persona_id
             self._enabled[persona_id] = True  # a default must be enabled
+            # …and surfaced. An explicitly chosen default overrides the unsurfaced-on-
+            # install rule that coworker/library/api.py applies to library experts: a
+            # default the picker never offers is incoherent — new sessions land on it
+            # while the menu pretends it does not exist (audit 2026-09-13).
+            self._surfaced[persona_id] = True
             self.save()
+
+    def clear_default(self) -> str:
+        """Point the default back at the BASELINE and return its id. This is what
+        "unset the default" means — the pointer has no empty value (see the class
+        docstring), so clearing it is the same operation as choosing the baseline.
+
+        Writes the dicts directly under the lock (mirroring set_default) rather than
+        calling self.set_enabled/set_surfaced: those re-enter the lock and, more to the
+        point, the archive/side-effect layer around enabling belongs to the manager —
+        the registry only owns the bits."""
+        with self._lock:
+            self._default = DEFAULT_PERSONA_ID
+            self._enabled[DEFAULT_PERSONA_ID] = True
+            self._surfaced[DEFAULT_PERSONA_ID] = True
+            self.save()
+            return DEFAULT_PERSONA_ID
 
     def uninstall(self, persona_id: str) -> None:
         """Remove an installed persona: registry entry, lifecycle state, and its snapshot

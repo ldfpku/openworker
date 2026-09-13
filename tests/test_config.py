@@ -83,8 +83,14 @@ def test_workspace_trust_is_canonical_and_user_owned(tmp_path):
     if sys.platform == "win32":
         # No POSIX mode bits on Windows: the writer restricts the ACL instead (inheritance
         # stripped, the current user alone granted) — assert that, like test_secrets does.
+        # encoding/errors: icacls prints in the console codepage (cp936 on a zh-CN box),
+        # and decoding that as UTF-8 raises inside subprocess's reader thread, losing stdout.
         out = subprocess.run(
-            ["icacls", str(store.path)], capture_output=True, text=True
+            ["icacls", str(store.path)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
         ).stdout
         user = os.environ.get("USERNAME", "")
         assert user and user in out
