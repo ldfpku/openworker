@@ -36,6 +36,8 @@ from typing import Any, Optional
 
 import aisuite as ai
 
+from .. import procutil
+
 _IS_WINDOWS = sys.platform == "win32"
 
 # Foreground timeout bounds: long enough for installs/builds/test runs by default, capped so
@@ -81,12 +83,8 @@ class _BackgroundTask:
         self.command = command
         if _IS_WINDOWS:
             argv = ["powershell.exe", "-NoProfile", "-Command", command]
-            spawn_kwargs: dict[str, Any] = {
-                "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP
-            }
         else:
             argv = ["/bin/bash", "-c", command]
-            spawn_kwargs = {"start_new_session": True}
         self.proc = subprocess.Popen(
             argv,
             stdin=subprocess.DEVNULL,
@@ -100,7 +98,11 @@ class _BackgroundTask:
             errors="replace",
             bufsize=1,
             env=env,
-            **spawn_kwargs,
+            # Own process group, same as the persistent shell's _spawn() below — kept
+            # consistent even though background_kill() only ever uses taskkill /F /T (no
+            # Ctrl-Break here). console_ctrl=True hides the window via SW_HIDE instead of
+            # CREATE_NO_WINDOW, which would otherwise give the child its own new console.
+            **procutil.popen_kwargs(group=True, console_ctrl=True, session=True),
         )
         self._lock = threading.Lock()
         self._lines: list[str] = []
@@ -128,6 +130,7 @@ class _BackgroundTask:
                 subprocess.run(
                     ["taskkill", "/F", "/T", "/PID", str(self.proc.pid)],
                     capture_output=True,
+                    **procutil.popen_kwargs(),
                 )
             except (OSError, subprocess.SubprocessError):
                 pass
@@ -212,14 +215,8 @@ class LocalExecutor(Executor):
                 "-Command",
                 "-",
             ]
-            # New process group so a timeout can deliver Ctrl-Break to the child (and only
-            # the child), without signaling our own process.
-            spawn_kwargs: dict[str, Any] = {
-                "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP
-            }
         else:
             argv = [self._shell_path]
-            spawn_kwargs = {"start_new_session": True}
 
         self._proc = subprocess.Popen(
             argv,
@@ -233,7 +230,11 @@ class LocalExecutor(Executor):
             errors="replace",
             bufsize=1,
             env=self._env,
-            **spawn_kwargs,
+            # New process group so a timeout can deliver Ctrl-Break to the child (and only
+            # the child) — console_ctrl=True keeps that working (see coworker/procutil.py):
+            # CREATE_NO_WINDOW would give the child its own console and silently break
+            # GenerateConsoleCtrlEvent delivery, so the window is hidden via SW_HIDE instead.
+            **procutil.popen_kwargs(group=True, console_ctrl=True, session=True),
         )
         self._queue: "queue.Queue[Optional[str]]" = queue.Queue()
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
@@ -444,6 +445,7 @@ class LocalExecutor(Executor):
                 ["pgrep", "-P", str(self._proc.pid)],
                 capture_output=True,
                 text=True,
+                **procutil.popen_kwargs(),
             )
             for pid in found.stdout.split():
                 try:
@@ -467,6 +469,7 @@ class LocalExecutor(Executor):
                 subprocess.run(
                     ["taskkill", "/F", "/T", "/PID", str(self._proc.pid)],
                     capture_output=True,
+                    **procutil.popen_kwargs(),
                 )
             except (OSError, subprocess.SubprocessError):
                 pass
