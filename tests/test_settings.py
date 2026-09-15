@@ -147,16 +147,17 @@ def test_scratch_base_setting_persists_and_drives_provisioning(tmp_path, monkeyp
     resp = client.post("/v1/settings/scratch-base", json={"path": str(base)}).json()
     assert resp["ok"] is True and resp["scratch_base"] == str(base)
     assert base.is_dir()  # created on set
-    assert (
-        client.post("/v1/settings/scratch-base", json={"path": " "}).json()["ok"]
-        is False
-    )
 
     # persists across a restart and actually drives where scratch dirs are provisioned
     reborn = SessionManager(data_dir=data_dir)
     assert reborn.get_settings()["scratch_base"] == str(base)
     scratch = reborn._provision_scratch("sess-xyz")
     assert Path(scratch) == (base / "sess-xyz").resolve() and Path(scratch).is_dir()
+
+    # item 6 decision: an empty/whitespace-only submission is not rejected — it restores
+    # the default, same as never having set one, and the Save button allows it.
+    reset = client.post("/v1/settings/scratch-base", json={"path": " "}).json()
+    assert reset["ok"] is True and reset["scratch_base"] == "~/OpenWorker"
 
 
 def test_ollama_models_gated_on_liveness(tmp_path, monkeypatch):

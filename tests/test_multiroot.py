@@ -367,6 +367,34 @@ def test_orphan_session_keeps_scratch_primary_single_scratch_root(tmp_path):
     assert Path(roots[0]["path"]) == (mgr.scratch_base() / sid).resolve()
 
 
+def test_scratch_root_short_circuits_directory_request(tmp_path):
+    """Item 6: the auto-provisioned scratch root needs no new grant machinery — it lands
+    in `roots` (get_roots' own output) before the agent ever asks, so `request_directory`
+    on it (or a path under it) short-circuits with no consent card."""
+    mgr = _cowork_manager(tmp_path)
+    sid = "sessScratchGrant"
+
+    async def requester(_args, tool_call_id=None):  # pragma: no cover - must not run
+        raise AssertionError("must not ask for the session's own scratch dir")
+
+    engine = mgr.get_engine(sid, agent="cowork", directory_requester=requester)
+    assert engine is not None
+    scratch = mgr.scratch_base() / sid
+    assert Path(mgr.get_roots(sid)[0]["path"]) == scratch.resolve()
+
+    tc = ToolCall(
+        id="c1",
+        name="request_directory",
+        arguments={"reason": "write a report", "path": str(scratch / "sub" / "..")},
+    )
+    events = asyncio.run(_collect(engine._handle_directory_request(tc)))
+    assert EventType.DIRECTORY_REQUESTED not in [e.type for e in events]
+    assert (
+        next(e for e in events if e.type == EventType.TOOL_FINISHED).data["status"]
+        == "ok"
+    )
+
+
 def test_gated_session_artifacts_list_scratch_not_repo(tmp_path):
     mgr = _cowork_manager(tmp_path)
     repo = _repo(tmp_path)

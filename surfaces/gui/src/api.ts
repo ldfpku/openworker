@@ -1035,6 +1035,14 @@ export interface ModelSettings {
   onboarded: boolean;
   surfaces: SurfaceVisibility;
   scratch_base: string;
+  // Real, resolved absolute path Settings should display and every session actually
+  // provisions under right now — may differ from `scratch_base` above when the configured
+  // value is unwritable (auto-degraded to the default; see `scratch_base_error`). Optional
+  // so the GUI is robust to an older backend that hasn't shipped item 6 yet.
+  scratch_base_effective?: string;
+  // Non-null when the configured (or even default) scratch base couldn't be created/written
+  // to — a human-readable (Chinese) reason to show as a warning. Null/absent = healthy.
+  scratch_base_error?: string | null;
   secrets_path: string;  // OS-native on-disk location the server reports (not hardcoded)
   // Sidebar layout preference (§7): "flat" = the persona accordions / today's list; "grouped" =
   // bounded per-persona cards. Defaults to "flat" (absent → flat) so the GUI is robust to an older
@@ -1194,7 +1202,13 @@ export async function setSessionsPeek(
 
 export async function setScratchBase(
   path: string,
-): Promise<{ ok: boolean; error?: string; scratch_base?: string }> {
+): Promise<{
+  ok: boolean;
+  error?: string;
+  scratch_base?: string;
+  scratch_base_effective?: string;
+  scratch_base_error?: string | null;
+}> {
   const res = await fetch(`${httpBase()}/v1/settings/scratch-base`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

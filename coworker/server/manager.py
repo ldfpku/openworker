@@ -300,6 +300,18 @@ class SessionManager:
         self._prefs = self._load_prefs()
         if self._prefs.get("default_model"):
             self.model = self._prefs["default_model"]
+        # Item 6: the scratch base used to be lazily created on the first session — Settings
+        # showed only a placeholder until then. Ensure it (and its writability) right at
+        # startup instead; never blocks construction (see `ensure_scratch_base` docstring).
+        self._scratch_base_error: Optional[str] = None
+        # Short-TTL cache for `_probe_writable_dir` results, keyed by resolved base path —
+        # `ensure_scratch_base()` is called on every `get_settings()` poll and every session
+        # provision, so without this a busy instance re-does a real mkdir+write+unlink on
+        # every call (review finding: also widens the window for concurrent probes to collide
+        # on the same base directory). See `_probe_writable_dir_cached`.
+        self._scratch_probe_cache: dict[str, tuple[float, Optional[str]]] = {}
+        self._scratch_probe_lock = threading.Lock()
+        self.ensure_scratch_base()
         # Live model-catalog cache (per provider: fetched_at / models / error / failed_at),
         # persisted under prefs["model_catalog"] so a restart doesn't lose an already-pulled
         # list. Malformed entries (wrong type, or a provider that no longer supports a
@@ -525,11 +537,129 @@ class SessionManager:
         )
         return Path(base).expanduser()
 
+    def scratch_base_raw(self) -> str:
+        """The scratch-base setting as configured (prefs, else the built-in default) — the
+        value `get_settings()` has always shown the user as "scratch_base". Deliberately
+        ignores `COWORKER_SCRATCH_BASE`: that env var only redirects tests/sandboxes away
+        from the real home dir and must not leak into what the UI displays as configured."""
+        return self._prefs.get("scratch_base") or self.DEFAULT_SCRATCH_BASE
+
+    @staticmethod
+    def _probe_writable_dir(base: Path) -> Optional[str]:
+        """mkdir + a write probe (touch-then-delete a marker file) for `base`. Returns None
+        on success, else a human-readable reason. Never raises.
+
+        The marker filename is unique per call (pid + thread id + a random suffix) rather
+        than a fixed name: two threads probing the same `base` concurrently (e.g. a
+        `get_settings()` poll racing a session's `_provision_scratch()` on another thread —
+        both run off the asyncio event loop, one via FastAPI's sync-route threadpool, the
+        other via `asyncio.to_thread`) must never touch-then-unlink the *same* file. With a
+        shared fixed name that raced under Windows as a spurious "unwritable" failure
+        ([WinError 32] the file is in use by another process) on a directory that was in
+        fact perfectly writable."""
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+            probe = base / f".ow-write-test.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}"
+            probe.write_text("", encoding="utf-8")
+            probe.unlink()
+        except OSError as exc:
+            return str(exc)
+        return None
+
+    _SCRATCH_PROBE_TTL_SECONDS = 3.0
+
+    def _probe_writable_dir_cached(self, base: Path, *, force: bool = False) -> Optional[str]:
+        """`_probe_writable_dir`, memoized per resolved `base` for `_SCRATCH_PROBE_TTL_SECONDS`.
+        `ensure_scratch_base()` is called on every `get_settings()` poll and every session
+        provision — without this, a busy instance re-does a real mkdir+write+unlink every
+        time, which also widens the window for the concurrent-probe race the unique filename
+        above already guards against. `force=True` always re-probes (used by
+        `_provision_scratch`'s one retry after an unexpected mkdir failure, so a stale cached
+        success — or failure — can't stop the retry from seeing the current, real state)."""
+        key = str(base)
+        now = time.monotonic()
+        if not force:
+            with self._scratch_probe_lock:
+                cached = self._scratch_probe_cache.get(key)
+            if cached is not None and now - cached[0] < self._SCRATCH_PROBE_TTL_SECONDS:
+                return cached[1]
+        err = self._probe_writable_dir(base)
+        with self._scratch_probe_lock:
+            self._scratch_probe_cache[key] = (now, err)
+        return err
+
+    def ensure_scratch_base(self, *, force: bool = False) -> tuple[Path, Optional[str]]:
+        """Make sure the configured scratch base exists and is writable, falling back to the
+        built-in default (~/OpenWorker) when it isn't. Idempotent and safe to call any
+        number of times (called once at startup so Settings shows a real path immediately,
+        and again from `_provision_scratch`/`get_settings` so a later fix — or breakage —
+        is picked up live, modulo the short cache in `_probe_writable_dir_cached`). Never
+        raises: failures are recorded on `self._scratch_base_error` (also returned) and
+        logged, per the "unset → auto-create; unwritable → degrade to the default and warn"
+        decision — this deliberately does NOT write anything to prefs. `force=True` bypasses
+        the probe cache (see `_probe_writable_dir_cached`)."""
+        base = self.scratch_base()
+        err = self._probe_writable_dir_cached(base, force=force)
+        if err is None:
+            self._scratch_base_error = None
+            return base.resolve(), None
+        default_base = Path(self.DEFAULT_SCRATCH_BASE).expanduser()
+        if base.expanduser() == default_base:
+            reason = f"默认目录 {default_base} 不可写：{err}"
+            self._scratch_base_error = reason
+            logger.warning("default scratch base %s unwritable: %s", default_base, err)
+            return default_base.resolve() if default_base.is_dir() else default_base, reason
+        err2 = self._probe_writable_dir_cached(default_base, force=force)
+        if err2 is None:
+            reason = f"「{base}」不可写（{err}），已改用默认目录 {default_base}"
+            self._scratch_base_error = reason
+            logger.warning(
+                "scratch base %s unwritable (%s); falling back to %s", base, err, default_base
+            )
+            return default_base.resolve(), reason
+        reason = f"「{base}」与默认目录 {default_base} 均不可写（{err} / {err2}）"
+        self._scratch_base_error = reason
+        logger.warning(
+            "scratch base %s AND default %s both unwritable: %s / %s",
+            base,
+            default_base,
+            err,
+            err2,
+        )
+        return default_base.resolve() if default_base.is_dir() else default_base, reason
+
     def _provision_scratch(self, session_id: str) -> str:
-        """Create (idempotently) and return this conversation's scratch directory."""
-        d = self.scratch_base() / session_id
-        d.mkdir(parents=True, exist_ok=True)
+        """Create (idempotently) and return this conversation's scratch directory, under
+        whichever base `ensure_scratch_base()` resolves to (falling back to the default when
+        the configured one is unwritable). Raises RuntimeError (Chinese message) only if
+        even a fresh re-resolution still fails — callers on non-fatal paths should use
+        `_provision_scratch_safe()` instead."""
+        base, _ = self.ensure_scratch_base()
+        d = base / session_id
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            # The base looked writable a moment ago (probe) but this particular mkdir still
+            # failed (race, permissions on this subpath, or the base vanished) — re-resolve
+            # (may now pick a working fallback) and retry once before giving up. force=True:
+            # a cached probe result (up to _SCRATCH_PROBE_TTL_SECONDS old) must not make this
+            # retry repeat the same stale verdict — it needs the real, current state.
+            base, _ = self.ensure_scratch_base(force=True)
+            d = base / session_id
+            try:
+                d.mkdir(parents=True, exist_ok=True)
+            except OSError as exc2:
+                raise RuntimeError(f"无法创建会话临时目录 {d}：{exc2}") from exc2
         return str(d.resolve())
+
+    def _provision_scratch_safe(self, session_id: str) -> Optional[str]:
+        """Same as `_provision_scratch`, but returns None instead of raising on failure — for
+        non-fatal call sites (`get_roots`, `add_root`) where a broken scratch dir shouldn't
+        break the whole request."""
+        try:
+            return self._provision_scratch(session_id)
+        except RuntimeError:
+            return None
 
     _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 
@@ -4266,6 +4396,7 @@ class SessionManager:
         from ..providers.matrix import model_context_windows, model_labels
 
         catalog_labels, catalog_windows = self._catalog_metadata()
+        scratch_effective, scratch_error = self.ensure_scratch_base()
 
         return {
             "provider": "openai",
@@ -4297,8 +4428,13 @@ class SessionManager:
             # Settings toggles and gate the composer's Auto-Approve mode entry.
             "auto_approve": self.auto_approve(),
             "auto_approve_shadow": self.auto_approve_shadow(),
-            "scratch_base": self._prefs.get("scratch_base")
-            or self.DEFAULT_SCRATCH_BASE,
+            "scratch_base": self.scratch_base_raw(),
+            # Real, resolved path Settings should display and every session actually
+            # provisions under right now — may differ from `scratch_base` above when the
+            # configured value is unwritable (auto-degraded to the default; see
+            # `scratch_base_error`).
+            "scratch_base_effective": str(scratch_effective),
+            "scratch_base_error": scratch_error,
             # Real on-disk secrets location, so the UI shows the OS-native path instead of a
             # hardcoded POSIX one (Windows -> %APPDATA%\coworker, macOS/Linux -> ~/.config).
             "secrets_path": str(self.secrets.path),
@@ -4578,19 +4714,25 @@ class SessionManager:
         return {"ok": True, "onboarded": bool(value)}
 
     def set_scratch_base(self, path: str) -> dict[str, Any]:
-        """Set + persist the common area where each Cowork conversation's scratch directory is
-        created (default ~/OpenWorker). The raw value is stored so the UI shows it as entered;
-        new conversations use it immediately (existing ones keep their provisioned dir).
+        """Set (or — given an empty string — clear back to the default) the common area
+        where each Cowork conversation's scratch directory is created (default
+        ~/OpenWorker). The raw value is stored so the UI shows it as entered; new
+        conversations use it immediately (existing ones keep their provisioned dir). An
+        empty submission is not an error: it restores the default, same as never having set
+        one (item 6 decision — the Save button no longer disables on a blank field).
         """
         path = (path or "").strip()
         if not path:
-            return {"ok": False, "error": "empty path"}
-        try:
-            Path(path).expanduser().mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            return {"ok": False, "error": str(exc)}
+            self._prefs.pop("scratch_base", None)
+            self._save_prefs()
+            self.ensure_scratch_base()
+            return {"ok": True, **self.get_settings()}
+        err = self._probe_writable_dir(Path(path).expanduser())
+        if err is not None:
+            return {"ok": False, "error": f"目录不可写：{err}"}
         self._prefs["scratch_base"] = path
         self._save_prefs()
+        self.ensure_scratch_base()
         return {"ok": True, **self.get_settings()}
 
     # -- gateway + connector allow-list (inbound messaging) ---------------------
@@ -5554,7 +5696,20 @@ class SessionManager:
         """
         # Serialised + off-loop (see ensure_engine): a DM arriving while the user's socket
         # is rebuilding the same session must share that engine, not build a rival one.
-        engine = await self.ensure_engine(session_id)
+        # Wrapped: an unexpected raise here (e.g. the scratch dir couldn't be provisioned)
+        # used to propagate straight out of deliver_to_session — for a channel delivery
+        # (weixin DM, self-wake) that meant an uncaught exception all the way up through
+        # `_dispatch_inbound`/`_on_inbound`, i.e. the inbound message vanished with no
+        # record anywhere. Record it like any other failed background turn instead.
+        try:
+            engine = await self.ensure_engine(session_id)
+        except Exception as exc:
+            logger.warning("could not build engine for %s: %s", session_id, exc)
+            self.unrouted.record(session_id, "-", message, reason=str(exc))
+            await self.broadcast_session(
+                session_id, {"type": "error", "data": {"error": str(exc)}}
+            )
+            return
         if engine is None:
             return
         if not self.try_mark_running(session_id):
@@ -6385,8 +6540,13 @@ class SessionManager:
         primary = (
             record.workspace
             if record and record.workspace
-            else self._provision_scratch(session_id)
+            else self._provision_scratch_safe(session_id)
         )
+        if primary is None:
+            # Non-fatal path (item 6): even the default scratch base is unwritable. No
+            # folder this session can touch — Settings surfaces `scratch_base_error`, but
+            # the Access panel just shows nothing rather than raising into the request.
+            return []
         extra = (record.extra_roots if record else []) or []
         primary_is_scratch = self.is_temp_workspace(primary)
         out = [
@@ -6489,10 +6649,16 @@ class SessionManager:
             # A brand-new conversation has no record yet (it's only saved after the first turn) —
             # create one now so set_extra_roots has a row to update and the folder survives.
             if self.session_store.load(session_id) is None:
+                workspace = self._provision_scratch_safe(session_id)
+                if workspace is None:
+                    return {
+                        "ok": False,
+                        "error": self._scratch_base_error or "无法创建会话临时目录",
+                    }
                 self.session_store.save(
                     SessionRecord(
                         session_id=session_id,
-                        workspace=self._provision_scratch(session_id),
+                        workspace=workspace,
                         model=self.model,
                         mode=self.mode.value,
                         messages=[],

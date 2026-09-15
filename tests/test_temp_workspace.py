@@ -112,3 +112,49 @@ def test_save_temp_as_project_guards(tmp_path, monkeypatch):
     (full / "occupied.txt").write_text("x", encoding="utf-8")
     res = client.post("/v1/sessions/s3/save-as-project", json={"path": str(full)}).json()
     assert res["ok"] is False and src.is_dir()
+
+
+# -- Item 6: scratch base created eagerly, not lazily on first session ----------
+
+
+def test_scratch_base_default_resolves_and_created_at_startup(tmp_path, monkeypatch):
+    """No prefs, no env override: the default (~/OpenWorker) is created immediately at
+    construction (not lazily on first session), and construction is idempotent — a second
+    manager over the same env doesn't fail or duplicate anything."""
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    # The conftest autouse fixture points every test at an isolated scratch dir so tests
+    # never touch the real ~/OpenWorker — this test is specifically about the *default*
+    # resolution path, so it must undo that override.
+    monkeypatch.delenv("COWORKER_SCRATCH_BASE", raising=False)
+
+    mgr = SessionManager(data_dir=tmp_path / "data")
+    expected = home / "OpenWorker"
+    assert expected.is_dir()  # created at construction, before any session exists
+    settings = mgr.get_settings()
+    assert settings["scratch_base"] == "~/OpenWorker"
+    assert Path(settings["scratch_base_effective"]) == expected.resolve()
+    assert settings["scratch_base_error"] is None
+
+    # Idempotent: a second manager over the same (already-provisioned) default doesn't
+    # error or complain either.
+    mgr2 = SessionManager(data_dir=tmp_path / "data2")
+    assert expected.is_dir()
+    assert mgr2.get_settings()["scratch_base_error"] is None
+
+
+def test_scratch_base_chinese_path_roundtrips(tmp_path, monkeypatch):
+    """Windows path handling (item 6 step 7): a non-ASCII scratch-base setting is created,
+    persisted, and provisions session dirs under it exactly like any other path."""
+    mgr = _mgr(tmp_path, monkeypatch)
+    client = TestClient(create_app(mgr))
+
+    base = tmp_path / "我的协作文件"
+    resp = client.post("/v1/settings/scratch-base", json={"path": str(base)}).json()
+    assert resp["ok"] is True and base.is_dir()
+
+    scratch = mgr._provision_scratch("会话一")
+    assert Path(scratch) == (base / "会话一").resolve() and Path(scratch).is_dir()

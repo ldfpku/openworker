@@ -1007,6 +1007,15 @@ function SidebarCard() {
 
 // -- Files (scratch location) — one card inside General (UX-021: a single option
 // doesn't earn its own tab) -----------------------------------------------------
+// Item 6: unset is a first-class, always-working state — not just a placeholder string
+// until the first session provisions it. The server creates + grants it eagerly at
+// startup (SessionManager.ensure_scratch_base) and degrades to this same default when a
+// configured location turns out to be unwritable, so the UI mirrors that: the input stays
+// blank (an actual value, not a display trick) while unset, its placeholder shows exactly
+// where files land (`scratch_base_effective`), and submitting blank is a valid "reset to
+// default" action rather than a disabled/rejected one.
+const DEFAULT_SCRATCH_BASE = "~/OpenWorker";
+
 function FilesCard() {
   const { t } = useTranslation();
   const [settings, setSettings] = useState<ModelSettings | null>(null);
@@ -1018,7 +1027,9 @@ function FilesCard() {
     getSettings()
       .then((s) => {
         setSettings(s);
-        setScratchDraft((d) => d || s.scratch_base || "");
+        setScratchDraft((d) =>
+          d || (s.scratch_base && s.scratch_base !== DEFAULT_SCRATCH_BASE ? s.scratch_base : ""),
+        );
       })
       .catch(() => setSettings(null));
   useEffect(() => {
@@ -1027,9 +1038,10 @@ function FilesCard() {
 
   const saveScratch = async () => {
     setScratchMsg(null);
-    const res = await setScratchBase(scratchDraft.trim());
+    const path = scratchDraft.trim();
+    const res = await setScratchBase(path);
     if (res.ok) {
-      setScratchMsg(t("settings.files_saved"));
+      setScratchMsg(path ? t("settings.files_saved") : t("settings.files_reset_done"));
       refresh();
     } else {
       setScratchMsg(res.error || t("settings.files_save_error"));
@@ -1042,6 +1054,11 @@ function FilesCard() {
 
   if (!settings) return null;
 
+  // Older backends don't send `scratch_base_effective` yet — fall back to the raw field
+  // (which was always a real, if unresolved, path) so the placeholder never renders blank.
+  const effectivePath = settings.scratch_base_effective || settings.scratch_base || DEFAULT_SCRATCH_BASE;
+  const isUnset = !settings.scratch_base || settings.scratch_base === DEFAULT_SCRATCH_BASE;
+
   return (
     <div className={CARD + " p-4 mb-4"}>
       <div className={FIELD_LABEL}>{t("settings.files_title")}</div>
@@ -1049,7 +1066,7 @@ function FilesCard() {
           <input
             className={INPUT}
             type="text"
-            placeholder={t("settings.scratch_placeholder")}
+            placeholder={effectivePath}
             value={scratchDraft}
             spellCheck={false}
             autoComplete="off"
@@ -1061,13 +1078,20 @@ function FilesCard() {
               {t("settings.files_browse")}
             </button>
           )}
-          <button className={BTN_ACCENT} onClick={saveScratch} disabled={!scratchDraft.trim()}>
+          <button className={BTN_ACCENT} onClick={saveScratch}>
             {t("settings.files_save")}
           </button>
         </div>
       <div className={FIELD_HELP}>
-        {t("settings.files_help")}
+        {t("settings.files_help")}{" "}
+        {t("settings.files_default_hint", { path: effectivePath })}
+        {isUnset && ` ${t("settings.files_unset_hint")}`}
       </div>
+      {settings.scratch_base_error && (
+        <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-[12px] text-red-700 mt-2.5">
+          {t("settings.files_unwritable", { error: settings.scratch_base_error })}
+        </div>
+      )}
       {scratchMsg && <div className="text-[13px] text-muted mt-2.5">{scratchMsg}</div>}
     </div>
   );
