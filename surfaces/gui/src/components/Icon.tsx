@@ -178,12 +178,14 @@ export function Icon({
         </svg>
       );
     case "stop":
-      // Filled square — enlarged to bbox height 18 (was 11, 46% of mic's 18) so the busy
+      // Filled square — bbox height 14 (78% of mic's 18, was 11/46%) so the busy
       // (enhance-cancel) and recording (dictation-stop) states read at the same weight as
-      // the mic glyph beside them (owner report 2026-09-16), same corner-radius ratio (~14%).
+      // the mic glyph beside them (owner report 2026-09-16); a filled shape reads visually
+      // heavier than an outlined one at equal bbox, so it is sized down from the outline
+      // glyphs to balance perceived weight. Same corner-radius ratio (~14%), centered at (12,12).
       return (
         <svg {...s} fill="currentColor" stroke="none">
-          <rect x="3" y="3" width="18" height="18" rx="2.5" />
+          <rect x="5" y="5" width="14" height="14" rx="2" />
         </svg>
       );
     case "x":

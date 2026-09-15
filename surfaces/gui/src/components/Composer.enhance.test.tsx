@@ -314,28 +314,31 @@ describe("Composer — enhance prompt", () => {
       const micBox = glyphBbox(micSvg);
       expect(micBox.h).toBeGreaterThan(0); // sanity: the parser actually found geometry
 
-      function expectSameWeightAsMic(svg: SVGSVGElement | null, label: string) {
+      function expectSameWeightAsMic(svg: SVGSVGElement | null, label: string, targetH = micBox.h) {
         expect(svg, `${label} <svg> missing`).toBeTruthy();
         expect(svg!.getAttribute("viewBox")).toBe(micSvg.getAttribute("viewBox"));
         expect(svg!.getAttribute("width")).toBe(micSvg.getAttribute("width"));
         expect(svg!.getAttribute("height")).toBe(micSvg.getAttribute("height"));
         const b = glyphBbox(svg!);
-        const diff = Math.abs(b.h - micBox.h) / micBox.h;
-        expect(diff, `${label} bbox height ${b.h.toFixed(2)} vs mic ${micBox.h.toFixed(2)} (${(diff * 100).toFixed(1)}% off)`).toBeLessThanOrEqual(0.05);
+        const diff = Math.abs(b.h - targetH) / targetH;
+        expect(diff, `${label} bbox height ${b.h.toFixed(2)} vs target ${targetH.toFixed(2)} (${(diff * 100).toFixed(1)}% off)`).toBeLessThanOrEqual(0.05);
       }
 
       // idle — sparkle
       expectSameWeightAsMic(enhanceBtn().querySelector("svg"), "sparkle");
       cleanup();
 
-      // busy — stop (a never-resolving fetch holds the button in the busy state)
+      // busy — stop (a never-resolving fetch holds the button in the busy state). The filled
+      // square is a special case: at equal bbox height a solid shape reads visually heavier
+      // than mic's outlined stroke, so it's deliberately sized to ~78% of mic's bbox height
+      // (14 of 18) rather than matching it 1:1 — checked against that target, not micBox.h.
       (globalThis as any).__TAURI__ = tauriGlobal();
       vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
       render(<Composer {...props()} />);
       fireEvent.change(box(), { target: { value: "help me plan a trip" } });
       fireEvent.click(enhanceBtn());
       await waitFor(() => expect(busyBtn()).toBeTruthy());
-      expectSameWeightAsMic(busyBtn().querySelector("svg"), "stop");
+      expectSameWeightAsMic(busyBtn().querySelector("svg"), "stop", 14);
       cleanup();
 
       // enhanced — refresh
