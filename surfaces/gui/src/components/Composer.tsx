@@ -1067,10 +1067,15 @@ export function Composer(props: Props) {
           {/* "Enhance prompt" — idle (sparkle) → busy (stop, click cancels) → enhanced
               (refresh, active — click restores the pre-enhance text). Session-agnostic
               (works on a draft), so it lives beside the model picker rather than gated on
-              props.sessionId. */}
+              props.sessionId. Same size config as the mic button below (small hit area +
+              explicit 16px glyph) — owner report 2026-09-16 read the sparkle as noticeably
+              smaller than mic even though both used IconButton's `small` default; pinning
+              the glyph size explicitly on both keeps them locked together instead of two call
+              sites quietly relying on the same implicit default. */}
           {!dictation?.recording && (
             <IconButton
               small
+              size={16}
               icon={enhanceBusy ? "stop" : enhanceOriginal !== null ? "refresh" : "sparkle"}
               className={enhanceBusy ? "animate-pulse" : undefined}
               active={enhanceOriginal !== null}
@@ -1144,10 +1149,13 @@ export function Composer(props: Props) {
             </span>
           )}
 
-          {/* mic — immediately before send (owner call, DMG #28 walkthrough) */}
+          {/* mic — immediately before send (owner call, DMG #28 walkthrough). Same size config
+              as the "Enhance prompt" button above (small hit area + explicit 16px glyph) —
+              keep the two pinned together, see the comment there. */}
           {isTauri() && (
             <IconButton
               small
+              size={16}
               icon={dictation?.recording ? "stop" : "mic"}
               className={
                 (dictation?.recording ? "recording" : "") +

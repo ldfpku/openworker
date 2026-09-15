@@ -158,4 +158,56 @@ describe("Composer — enhance prompt", () => {
     await waitFor(() => expect((enhanceBtn() as HTMLButtonElement).disabled).toBe(true));
     expect(screen.queryByRole("button", { name: "Restore original prompt" })).toBeNull();
   });
+
+  // Owner report 2026-09-16: the enhance/restore icon read noticeably smaller than the mic
+  // button beside it. Both go through IconButton's `small` hit area, but the mic only shows
+  // in the desktop app (isTauri() gate) — mock the injected __TAURI__ global, the same way
+  // Composer.voice.test.tsx does, so this test can render both buttons side by side and pin
+  // the regression: same hit-area class, same glyph <svg> width/height.
+  it("renders at the same size as the mic button", async () => {
+    (globalThis as any).__TAURI__ = {
+      core: {
+        invoke: vi.fn(async (cmd: string) =>
+          cmd === "get_dictation_status"
+            ? {
+                recording: false,
+                model_installed: true,
+                model_verified: true,
+                test_passed: true,
+                download_in_progress: false,
+                model_name: "test model",
+                model_bytes: 0,
+                engine: "test",
+                packs: [],
+                legacy_model_present: false,
+                supported: true,
+                device_summary: "test",
+                compatibility_reason: null,
+              }
+            : null,
+        ),
+      },
+      event: { listen: async () => () => {} },
+    };
+    try {
+      vi.stubGlobal("fetch", vi.fn());
+      render(<Composer {...props()} />);
+      fireEvent.change(box(), { target: { value: "help me plan a trip" } });
+      const enhance = enhanceBtn();
+      const mic = await screen.findByLabelText("Start dictation");
+
+      // Same hit-area variant (IconButton's `small` → `.icon-btn.sm`, 26×26).
+      expect(enhance.className.split(/\s+/)).toContain("sm");
+      expect(mic.className.split(/\s+/)).toContain("sm");
+
+      // Same glyph size — the actual pixels the eye compares.
+      const enhanceSvg = enhance.querySelector("svg");
+      const micSvg = mic.querySelector("svg");
+      expect(enhanceSvg?.getAttribute("width")).toBe(micSvg?.getAttribute("width"));
+      expect(enhanceSvg?.getAttribute("height")).toBe(micSvg?.getAttribute("height"));
+      expect(enhanceSvg?.getAttribute("width")).toBe("16");
+    } finally {
+      delete (globalThis as any).__TAURI__;
+    }
+  });
 });
