@@ -1021,6 +1021,7 @@ function FilesCard() {
   const [settings, setSettings] = useState<ModelSettings | null>(null);
   const [scratchDraft, setScratchDraft] = useState("");
   const [scratchMsg, setScratchMsg] = useState<string | null>(null);
+  const [scratchMsgError, setScratchMsgError] = useState(false);
   const desktop = isTauri();
 
   const refresh = () =>
@@ -1038,6 +1039,7 @@ function FilesCard() {
 
   const saveScratch = async () => {
     setScratchMsg(null);
+    setScratchMsgError(false);
     const path = scratchDraft.trim();
     const res = await setScratchBase(path);
     if (res.ok) {
@@ -1045,6 +1047,7 @@ function FilesCard() {
       refresh();
     } else {
       setScratchMsg(res.error || t("settings.files_save_error"));
+      setScratchMsgError(true);
     }
   };
   const browseScratch = async () => {
@@ -1092,7 +1095,14 @@ function FilesCard() {
           {t("settings.files_unwritable", { error: settings.scratch_base_error })}
         </div>
       )}
-      {scratchMsg && <div className="text-[13px] text-muted mt-2.5">{scratchMsg}</div>}
+      {scratchMsg &&
+        (scratchMsgError ? (
+          <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-[12px] text-red-700 mt-2.5">
+            {scratchMsg}
+          </div>
+        ) : (
+          <div className="text-[13px] text-muted mt-2.5">{scratchMsg}</div>
+        ))}
     </div>
   );
 }

@@ -57,7 +57,7 @@ describe("SettingsView — Files card (item 6: scratch-base default/degradation 
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("saves a custom path and shows the saved confirmation", async () => {
+  it("saves a custom path and shows the saved confirmation in the muted (non-alert) color", async () => {
     // Every card in the General tab (Sidebar/ContextBar/AutoApprove/Files) fetches
     // getSettings() independently on mount, so a single steady value (rather than
     // mockResolvedValueOnce sequencing) is what's actually deterministic here.
@@ -78,10 +78,15 @@ describe("SettingsView — Files card (item 6: scratch-base default/degradation 
     fireEvent.click(screen.getByText("Save"));
 
     await waitFor(() => expect(setScratchBase).toHaveBeenCalledWith("D:\\coworker-files"));
-    expect(await screen.findByText("Saved.")).toBeTruthy();
+    const confirmation = await screen.findByText("Saved.");
+    expect(confirmation).toBeTruthy();
+    // The success confirmation is not an alert and carries no red styling.
+    expect(confirmation.getAttribute("role")).not.toBe("alert");
+    expect(confirmation.className).not.toMatch(/red/);
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("shows the backend's error message inline when saving fails, without clearing the draft", async () => {
+  it("shows the backend's error message inline as a red alert when saving fails, without clearing the draft", async () => {
     getSettings.mockResolvedValue({
       ...BASE_SETTINGS,
       scratch_base: "~/OpenWorker",
@@ -98,7 +103,9 @@ describe("SettingsView — Files card (item 6: scratch-base default/degradation 
     fireEvent.change(input, { target: { value: "Z:\\no-access" } });
     fireEvent.click(screen.getByText("Save"));
 
-    expect(await screen.findByText("目录不可写：Permission denied")).toBeTruthy();
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("目录不可写：Permission denied");
+    expect(alert.className).toMatch(/red/);
     expect(input.value).toBe("Z:\\no-access"); // the draft survives a failed save
   });
 
