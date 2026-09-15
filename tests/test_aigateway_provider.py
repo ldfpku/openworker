@@ -41,7 +41,7 @@ from coworker.providers.anthropic_provider import (
 )
 from coworker.providers.errors import friendly_model_error, is_gateway_busy
 from coworker.providers.matrix import MATRIX
-from coworker.providers.openai_provider import OpenAIProvider
+from coworker.providers.openai_provider import DEFAULT_MAX_TOKENS, OpenAIProvider
 from coworker.providers.openai_responses import OpenAIResponsesProvider
 from coworker.providers.registry import (
     descriptor_configured,
@@ -458,12 +458,13 @@ def test_effort_is_pinned_whenever_either_end_of_the_route_is_an_openai_tier(
 def test_an_all_anthropic_route_would_carry_no_effort_knob():
     # No such pair exists in today's table (every route has an OpenAI end), so this pins
     # the RULE rather than a row: the knob is for OpenAI's Chat Completions refusal, and
-    # a route that can never land there should not carry it.
+    # a route that can never land there should not carry it. The max-tokens rename below
+    # is unconditional, though, so it still shows up here.
     assert AIGatewayProvider._retry_settings(
         "anthropic/claude-opus-5",
         _Route("ow-made-up", "anthropic/claude-sonnet-5"),
         {"temperature": 0.2},
-    ) == {"temperature": 0.2}
+    ) == {"temperature": 0.2, "max_completion_tokens": DEFAULT_MAX_TOKENS}
 
 
 def test_an_explicit_effort_setting_is_not_overwritten_by_the_resend():
@@ -475,6 +476,91 @@ def test_an_explicit_effort_setting_is_not_overwritten_by_the_resend():
     )
     p.complete(model="openai/gpt-5.6-sol", messages=[], reasoning_effort="low")
     assert chat.calls[0]["reasoning_effort"] == "low"
+
+
+# -- the resend's `max_tokens` → `max_completion_tokens` rename ---------------------
+#
+# `openai_provider.complete`/`stream` default `kwargs.setdefault("max_tokens", ...)`, and
+# EVERY dynamic resend goes out through that same `OpenAIProvider` on the `chat` wire
+# (`_client_for_wire("chat")`). GPT-5.6 on Chat Completions 400s on `max_tokens` ("use
+# max_completion_tokens"); Cloudflare's fallback edge cannot distinguish that 400 from any
+# other failure, so it just falls through to the route's Anthropic stand-in and answers
+# 200 — the caller's chosen model was silently never retried. Verified live 2026-09-16
+# that `/compat` accepts `max_completion_tokens` for an anthropic/* id too (a real
+# `usage.completion_tokens` came back), so the rename applies to every route, not only the
+# ones whose primary is OpenAI.
+
+
+def test_a_resend_renames_max_tokens_to_max_completion_tokens():
+    # OpenAI-primary route — the classic case (`ow-openai-gpt-5-6-terra`).
+    chat = _Spy()
+    p = AIGatewayProvider(
+        base_url=BASE,
+        access_token=SESSION,
+        clients={"responses": _Spy(error=_Busy()), "chat": chat},
+    )
+    p.complete(model="openai/gpt-5.6-terra", messages=[], max_tokens=4096)
+    assert chat.calls[0]["model"] == "dynamic/ow-openai-gpt-5-6-terra"
+    assert chat.calls[0]["max_completion_tokens"] == 4096
+    assert "max_tokens" not in chat.calls[0]
+
+
+def test_an_anthropic_primary_resend_also_renames_max_tokens():
+    # rename_universal: the client cannot know which end of the route actually answers
+    # (an Anthropic-primary route can still land on its OpenAI stand-in), and `/compat`
+    # accepts the renamed field for every author it fronts — so this is not conditioned on
+    # which end is OpenAI, unlike the reasoning_effort pin above.
+    chat = _Spy()
+    p = AIGatewayProvider(
+        base_url=BASE,
+        access_token=SESSION,
+        clients={"messages": _Spy(error=_Busy()), "chat": chat},
+    )
+    p.complete(model="anthropic/claude-opus-5", messages=[], max_tokens=4096)
+    assert chat.calls[0]["model"] == "dynamic/ow-anthropic-claude-opus-5"
+    assert chat.calls[0]["max_completion_tokens"] == 4096
+    assert "max_tokens" not in chat.calls[0]
+
+
+def test_a_resend_with_no_max_tokens_setting_still_gets_a_completion_ceiling():
+    # Without this, `OpenAIProvider.complete`'s own `setdefault("max_tokens", ...)` would
+    # re-add the very field the rename above removes.
+    chat = _Spy()
+    p = AIGatewayProvider(
+        base_url=BASE,
+        access_token=SESSION,
+        clients={"messages": _Spy(error=_Busy()), "chat": chat},
+    )
+    p.complete(model="anthropic/claude-sonnet-5", messages=[])
+    assert chat.calls[0]["max_completion_tokens"] == DEFAULT_MAX_TOKENS
+    assert "max_tokens" not in chat.calls[0]
+
+
+def test_an_already_renamed_setting_is_left_alone():
+    chat = _Spy()
+    p = AIGatewayProvider(
+        base_url=BASE,
+        access_token=SESSION,
+        clients={"responses": _Spy(error=_Busy()), "chat": chat},
+    )
+    p.complete(model="openai/gpt-5.6-terra", messages=[], max_completion_tokens=999)
+    assert chat.calls[0]["max_completion_tokens"] == 999
+    assert "max_tokens" not in chat.calls[0]
+
+
+def test_a_streamed_resend_also_renames_max_tokens():
+    chat = _Spy(chunks=["b"])
+    p = AIGatewayProvider(
+        base_url=BASE,
+        access_token=SESSION,
+        clients={"responses": _Spy(error=_Busy()), "chat": chat},
+    )
+    assert list(
+        p.stream(model="openai/gpt-5.6-terra", messages=[], max_tokens=2048)
+    ) == ["b"]
+    assert chat.calls[0]["model"] == "dynamic/ow-openai-gpt-5-6-terra"
+    assert chat.calls[0]["max_completion_tokens"] == 2048
+    assert "max_tokens" not in chat.calls[0]
 
 
 def test_only_a_busy_shared_pool_earns_a_resend():

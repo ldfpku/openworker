@@ -641,6 +641,55 @@ def test_default_max_tokens_injected_and_caller_setting_wins():
     assert client2.chat.completions.calls[0]["max_tokens"] == 512
 
 
+def test_max_completion_tokens_caller_setting_suppresses_the_max_tokens_default():
+    """`aigateway_provider`'s dynamic-routing retry now renames `max_tokens` to
+    `max_completion_tokens` itself (gpt-5.6 rejects `max_tokens` on `/compat`) before
+    calling in here — this default must not re-add the field the caller just removed."""
+    from coworker.providers.openai_provider import DEFAULT_MAX_TOKENS
+
+    client = _FakeClient(_response(content="ok"))
+    provider = OpenAIProvider(client=client)
+    provider.complete(model="dynamic/ow-openai-gpt-5-6-terra", messages=[], max_completion_tokens=4096)
+    calls = client.chat.completions.calls
+    assert calls[0]["max_completion_tokens"] == 4096
+    assert "max_tokens" not in calls[0]
+
+    # Absent both settings, the default still lands as `max_tokens` (unaffected callers —
+    # compat servers that only know `max_tokens` — see identical behavior to before).
+    client2 = _FakeClient(_response(content="ok"))
+    provider2 = OpenAIProvider(client=client2)
+    provider2.complete(model="kimi-k3", messages=[])
+    assert client2.chat.completions.calls[0]["max_tokens"] == DEFAULT_MAX_TOKENS
+    assert "max_completion_tokens" not in client2.chat.completions.calls[0]
+
+
+def test_max_completion_tokens_setting_suppresses_the_default_while_streaming():
+    class _RecordingStreamCompletions:
+        def __init__(self, chunks):
+            self._chunks = chunks
+            self.calls: list[dict] = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return iter(self._chunks)
+
+    chunks = [_chunk(content="ok"), _chunk(finish="stop")]
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=_RecordingStreamCompletions(chunks))
+    )
+    provider = OpenAIProvider(client=client)
+    list(
+        provider.stream(
+            model="dynamic/ow-openai-gpt-5-6-terra",
+            messages=[],
+            max_completion_tokens=2048,
+        )
+    )
+    calls = client.chat.completions.calls
+    assert calls[0]["max_completion_tokens"] == 2048
+    assert "max_tokens" not in calls[0]
+
+
 def test_over_limit_max_tokens_is_dropped_and_retried():
     """A model whose completion limit sits below our default must not surface the 400:
     drop the param, retry on the server's own default (yesterday's behavior, at worst)."""

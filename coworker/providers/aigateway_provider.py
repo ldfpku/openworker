@@ -576,11 +576,32 @@ class AIGatewayProvider(ProviderClient):
         what the vendor schema knows. That assumption was already load-bearing for the
         OpenAI-primary half of the table and is unchanged here — confirm it in the
         gateway's Logs the first time a real 429 exercises a route.
+
+        `max_tokens` → `max_completion_tokens`, UNCONDITIONALLY (every route, not just the
+        OpenAI-primary half). `openai_provider.complete`/`stream` default
+        `kwargs.setdefault("max_tokens", DEFAULT_MAX_TOKENS)`, and gpt-5.6 on Chat
+        Completions rejects that field outright — `400 unsupported_parameter: max_tokens
+        is not supported with this model. Use 'max_completion_tokens' instead.` — for
+        BOTH routes whose primary is an OpenAI tier (`ow-openai-gpt-5-6-sol`,
+        `ow-openai-gpt-5-6-terra`). Cloudflare's fallback edge only fires on error/timeout
+        — it cannot see "429 vs 400" — so that 400 just falls through to the route's
+        Anthropic stand-in, which answers 200. The caller never learns their primary was
+        never actually retried; only the response's `cf-aig-step`/model headers would show
+        it, and nothing here reads those. Verified live 2026-09-16: an anthropic/* gateway
+        id given `max_completion_tokens` alone (no `max_tokens`) still returns 200 with a
+        real `usage.completion_tokens`, i.e. `/compat` accepts the renamed field for every
+        author it fronts — so renaming for Anthropic-primary routes too is safe, not just
+        tolerated, and keeps one code path instead of branching on which end is OpenAI.
         """
-        if wire_for(model) != "responses" and wire_for(route.fallback) != "responses":
-            return settings
         out = dict(settings)
-        out.setdefault("reasoning_effort", "none")
+        if wire_for(model) == "responses" or wire_for(route.fallback) == "responses":
+            out.setdefault("reasoning_effort", "none")
+        if "max_tokens" in out:
+            out["max_completion_tokens"] = out.pop("max_tokens")
+        else:
+            from .openai_provider import DEFAULT_MAX_TOKENS
+
+            out.setdefault("max_completion_tokens", DEFAULT_MAX_TOKENS)
         return out
 
     @staticmethod

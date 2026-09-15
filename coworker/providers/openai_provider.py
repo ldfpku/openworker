@@ -292,7 +292,12 @@ class OpenAIProvider(ProviderClient):
         }
         if tools:
             kwargs["tools"] = tools
-        kwargs.setdefault("max_tokens", DEFAULT_MAX_TOKENS)
+        # A caller that already renamed to `max_completion_tokens` (the dynamic-routing
+        # retry in aigateway_provider does this unconditionally now — gpt-5.6 on Chat
+        # Completions 400s on `max_tokens`) must not have this default re-add the field it
+        # just removed.
+        if "max_completion_tokens" not in kwargs:
+            kwargs.setdefault("max_tokens", DEFAULT_MAX_TOKENS)
         _pin_reasoning_effort(kwargs)
 
         client = self._ensure_client()
@@ -342,7 +347,10 @@ class OpenAIProvider(ProviderClient):
         }
         if tools:
             kwargs["tools"] = tools
-        kwargs.setdefault("max_tokens", DEFAULT_MAX_TOKENS)
+        # See the matching note in `complete()`: don't re-add `max_tokens` when the
+        # caller already renamed it to `max_completion_tokens`.
+        if "max_completion_tokens" not in kwargs:
+            kwargs.setdefault("max_tokens", DEFAULT_MAX_TOKENS)
         _pin_reasoning_effort(kwargs)
         client = self._ensure_client()
 
