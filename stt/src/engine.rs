@@ -702,6 +702,14 @@ impl Session {
     }
 
     fn feed(&mut self, samples: &[f32]) {
+        // Nothing left to feed once live text has been given up, and running the filter anyway
+        // would put back exactly the cost the degrade was there to remove — a polyphase FIR over
+        // every sample of the rest of the recording, thrown away on the next line. The final pass
+        // does not depend on it either: `final_transcript` resamples the whole recording itself,
+        // from the capture-rate buffer, and this resampler's state is never read again.
+        if self.live_asr.is_none() {
+            return;
+        }
         let ready = match self.resampler.as_mut() {
             Some(resampler) => Cow::Owned(resampler.process(samples)),
             None => Cow::Borrowed(samples),
@@ -1134,6 +1142,37 @@ pub(crate) fn probe_streaming(
     }
     session.flush(audio);
     Ok((session.boundaries.clone(), session.committed_text()))
+}
+
+/// Feeds a session that is in exactly the state a degrade leaves behind — live text given up,
+/// resampler still installed — and reports how many samples the resampler took.
+///
+/// Needs no model, which is the point: what is being pinned is that nothing downstream of the
+/// resampler exists any more, so the filter must not run. The answer is `(accepted before,
+/// accepted after)`; both have to be zero.
+#[cfg(test)]
+pub(crate) fn probe_degraded_feed(sample_rate: u32, samples: &[f32]) -> (u64, u64) {
+    let resampler = Resampler::for_rate(sample_rate).expect("a resampler for the probe's rate");
+    let mut session = Session {
+        live_asr: None,
+        live: Arc::new(Mutex::new(Vec::new())),
+        sample_rate,
+        resampler: Some(resampler),
+        fed_rate: MODEL_RATE,
+        consumed: 0,
+        committed: Vec::new(),
+        boundaries: Vec::new(),
+        accumulator: PartialAccumulator::new(),
+        degrade: Degrade {
+            degraded: true,
+            ..Degrade::default()
+        },
+        sink: None,
+    };
+    let before = session.resampler.as_ref().expect("installed").accepted();
+    session.feed(samples);
+    let after = session.resampler.as_ref().expect("still installed").accepted();
+    (before, after)
 }
 
 /// The final pass, with its working shown: the spans it chose, what each one decoded to before

@@ -461,8 +461,8 @@ mod tests {
         engine::{
             assemble_transcript, carries_speech, clean_transcript, is_only_non_speech_markers,
             join_segment_texts, peak_window_rms, probe_final, probe_streaming, segment_spans,
-            silence_samples, Degrade, PartialAccumulator, TailDrain, FINAL_TAIL_PAD_MS,
-            TAIL_MAX_MS, TAIL_MIN_MS, TAIL_SETTLED_MS, TAIL_STEP_MS,
+            probe_degraded_feed, silence_samples, Degrade, PartialAccumulator, TailDrain,
+            FINAL_TAIL_PAD_MS, TAIL_MAX_MS, TAIL_MIN_MS, TAIL_SETTLED_MS, TAIL_STEP_MS,
         },
         err_key,
         models::{
@@ -1157,6 +1157,32 @@ mod tests {
         assert!(!degrade.announce);
         // Never recovers inside one recording: flapping is worse than settling.
         assert!(degrade.degraded);
+    }
+
+    /// Giving up live text has to give up its cost too — all of it.
+    ///
+    /// The degrade exists because the machine cannot keep up, so everything the feed path does
+    /// after it has to stop: the streaming decode, and the polyphase FIR in front of it. Those
+    /// are separate steps and the filter runs first, so it is entirely possible to keep paying
+    /// for a 48 kHz -> 16 kHz conversion over every remaining second of a long recording and
+    /// throw every sample of it away on the next line. Nothing downstream wants it either — the
+    /// final pass resamples the whole recording itself, out of the capture-rate buffer.
+    #[test]
+    fn a_degraded_session_stops_resampling_too() {
+        let samples = tone(48_000, 440.0, 48_000);
+
+        // The counter has to be able to move, or the assertion below proves nothing.
+        let mut reference = Resampler::for_rate(48_000).expect("48 kHz needs a resampler");
+        assert_eq!(reference.accepted(), 0);
+        reference.process(&samples);
+        assert_eq!(reference.accepted(), samples.len() as u64);
+
+        let (before, after) = probe_degraded_feed(48_000, &samples);
+        assert_eq!(before, 0);
+        assert_eq!(
+            after, 0,
+            "a session that has given up live text still ran {after} samples through the filter"
+        );
     }
 
     // -- capture rate -> model rate ----------------------------------------------------------

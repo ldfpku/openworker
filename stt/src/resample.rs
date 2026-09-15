@@ -179,6 +179,13 @@ impl Resampler {
         (self.up, self.down)
     }
 
+    /// Total input samples ever handed to [`Self::process`]. Read only by the guard test that
+    /// pins "a session that has given up live text stops paying for the filter".
+    #[cfg(test)]
+    pub(crate) fn accepted(&self) -> u64 {
+        self.accepted
+    }
+
     /// The filter's delay, in input samples. The first output sample cannot be produced until
     /// this many input samples have arrived, and the same amount is left inside the filter at the
     /// end — which is what [`Self::finish`] pushes out.
