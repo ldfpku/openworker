@@ -68,6 +68,15 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Fetch sherpa-onnx archive (${{ matrix.slug }})
+        # The voice-input engine (stt/) statically links sherpa-onnx; its build.rs downloads
+        # a prebuilt archive per platform unless SHERPA_ONNX_ARCHIVE_DIR already has it. We
+        # fetch + sha256-verify it ourselves first (build.rs does not check the hash) so a
+        # corrupted/tampered download fails loudly here instead of inside `cargo build`.
+        run: |
+          DIR="$(scripts/fetch-sherpa-archive.sh "${{ matrix.slug }}" "$RUNNER_TEMP/sherpa")"
+          echo "SHERPA_ONNX_ARCHIVE_DIR=$DIR" >> "$GITHUB_ENV"
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: surfaces/gui/src-tauri

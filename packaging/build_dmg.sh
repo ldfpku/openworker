@@ -16,6 +16,11 @@
 #     `typer` is needed only at BUILD time: PyInstaller walks the `mcp` package and
 #     `mcp.cli` calls sys.exit() at import if typer is absent, which aborts the freeze.
 #     (aisuite installs like any other dependency — git-pinned in pyproject.toml.)
+#   - NEW: network reachable to GitHub Releases (stt/'s sherpa-onnx crate downloads a
+#     prebuilt static archive during `cargo build`, invoked from tauri build below), OR set
+#     SHERPA_ONNX_ARCHIVE_DIR to a local directory already holding it — get one with
+#     scripts/fetch-sherpa-archive.sh. Statically linked, so unlike the old whisper.cpp
+#     engine there is no separate onnxruntime dylib to codesign into the sidecar below.
 #
 # SIGNING: set APPLE_SIGNING_IDENTITY to a "Developer ID Application: … (TEAMID)" identity and
 # `tauri build` signs the .app + the bundled sidecar with it. Left unset → UNSIGNED (first launch
@@ -49,6 +54,37 @@ APP="OpenWorker"
 VERSION="$(node -p "require('$GUI/src-tauri/tauri.conf.json').version")"
 TRIPLE="$(rustc -vV | sed -n 's/host: //p')"   # e.g. aarch64-apple-darwin
 ARCH="${TRIPLE%%-*}"
+
+# If SHERPA_ONNX_ARCHIVE_DIR points at a pre-fetched local cache, verify it against
+# packaging/sherpa-onnx-archives.sha256 before handing it to sherpa-onnx-sys's build.rs
+# (which does not check the hash itself). Unset -> skipped; build.rs downloads and the
+# network prerequisite in the header above applies.
+if [ -n "${SHERPA_ONNX_ARCHIVE_DIR:-}" ]; then
+  case "$ARCH" in
+    arm64)  SHERPA_SLUG="osx-arm64-static" ;;
+    x86_64) SHERPA_SLUG="osx-x64-static" ;;
+    *) SHERPA_SLUG="" ;;
+  esac
+  if [ -n "$SHERPA_SLUG" ]; then
+    SHERPA_LINE="$(grep -v '^[[:space:]]*#' "$PLATFORM/packaging/sherpa-onnx-archives.sha256" | grep -- "$SHERPA_SLUG" || true)"
+    if [ -n "$SHERPA_LINE" ]; then
+      SHERPA_EXPECTED="$(echo "$SHERPA_LINE" | awk '{print $1}')"
+      SHERPA_NAME="$(echo "$SHERPA_LINE" | awk '{print $2}')"
+      SHERPA_ARCHIVE="$SHERPA_ONNX_ARCHIVE_DIR/$SHERPA_NAME"
+      if [ -f "$SHERPA_ARCHIVE" ]; then
+        SHERPA_ACTUAL="$(shasum -a 256 "$SHERPA_ARCHIVE" | awk '{print $1}')"
+        if [ "$SHERPA_ACTUAL" != "$SHERPA_EXPECTED" ]; then
+          echo "ERROR: sherpa-onnx archive checksum mismatch: $SHERPA_ARCHIVE" >&2
+          echo "  expected $SHERPA_EXPECTED, got $SHERPA_ACTUAL" >&2
+          exit 1
+        fi
+        echo "==> sherpa-onnx archive verified: $SHERPA_NAME"
+      else
+        echo "    NOTE: SHERPA_ONNX_ARCHIVE_DIR is set but $SHERPA_NAME isn't in it yet - build.rs will download it."
+      fi
+    fi
+  fi
+fi
 
 # CI keychain bootstrap: on a fresh runner the Developer ID cert exists only as the
 # APPLE_CERTIFICATE secret (base64 .p12) — import it into a throwaway keychain so the
@@ -114,6 +150,10 @@ chmod +x "$GUI/src-tauri/binaries/sidecar/openworker-server"
 # Mach-Os there fail notarization. Hardened runtime + timestamp on every one, same identity,
 # entitlements on the executable (disable-library-validation: the bundled python dylibs carry
 # other Team IDs). externalBin used to get this from tauri itself.
+#
+# Nothing here needs to account for the voice-input engine (stt/): sherpa-onnx links
+# statically into the src-tauri binary itself (no onnxruntime.dylib/.so ships separately),
+# so there is no extra dylib for this loop to find and sign, and no rpath to fix up.
 if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
   echo "    signing sidecar binaries"
   SIDECAR="$GUI/src-tauri/binaries/sidecar"

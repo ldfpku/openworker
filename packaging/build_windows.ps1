@@ -16,6 +16,9 @@
       `typer` is needed only at build time: PyInstaller walks the `mcp` package and `mcp.cli`
       calls sys.exit() at import if typer is absent, which aborts the freeze.
         py -m venv .venv ; .\.venv\Scripts\pip install -e ".[bedrock]" pyinstaller tzdata typer
+    - NEW: network reachable to GitHub Releases (stt/'s sherpa-onnx crate downloads a
+      prebuilt static archive during `cargo build`), OR set SHERPA_ONNX_ARCHIVE_DIR to a
+      local directory already holding it — get one with scripts\fetch-sherpa-archive.sh.
 
   The result is UNSIGNED — first launch shows a SmartScreen warning ("More info" -> "Run anyway").
   Authenticode signing is a later step.
@@ -54,6 +57,29 @@ if (-not $env:TAURI_BUNDLER_TOOLS_GITHUB_MIRROR) {
 }
 if (-not (Test-Path $PyInst)) {
     throw "PyInstaller not found at $PyInst. Create the venv and install deps (see header)."
+}
+
+# If SHERPA_ONNX_ARCHIVE_DIR points at a pre-fetched local cache, verify it against
+# packaging\sherpa-onnx-archives.sha256 before handing it to sherpa-onnx-sys's build.rs
+# (which does not check the hash itself). Not set -> skipped; build.rs downloads and the
+# network prerequisite above applies.
+if ($env:SHERPA_ONNX_ARCHIVE_DIR) {
+    $ChecksumFile = Join-Path $Platform "packaging\sherpa-onnx-archives.sha256"
+    $Line = Get-Content $ChecksumFile | Where-Object { $_ -match 'win-x64-static-MT-Release' -and $_ -notmatch '^\s*#' }
+    if ($Line) {
+        $Parts = -split $Line
+        $Expected, $Name = $Parts[0], $Parts[1]
+        $ArchivePath = Join-Path $env:SHERPA_ONNX_ARCHIVE_DIR $Name
+        if (Test-Path $ArchivePath) {
+            $Actual = (Get-FileHash -Algorithm SHA256 -Path $ArchivePath).Hash
+            if ($Actual.ToLower() -ne $Expected.ToLower()) {
+                throw "sherpa-onnx archive checksum mismatch: $ArchivePath (expected $Expected, got $Actual)"
+            }
+            Write-Host "==> sherpa-onnx archive verified: $Name" -ForegroundColor Cyan
+        } else {
+            Write-Host "    NOTE: SHERPA_ONNX_ARCHIVE_DIR is set but $Name isn't in it yet - build.rs will download it." -ForegroundColor Yellow
+        }
+    }
 }
 
 # Host target triple, e.g. x86_64-pc-windows-msvc — Tauri's externalBin suffix.

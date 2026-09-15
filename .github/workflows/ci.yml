@@ -39,6 +39,28 @@ jobs:
         working-directory: surfaces/gui
         run: npm test
 
+  rust-unit:
+    # First time Rust unit tests run in CI — the stt/ crate (voice input engine). Only
+    # linked to cpal (ALSA on Linux) and sherpa-onnx (prebuilt static archive, fetched and
+    # sha256-verified below); no GUI/Tauri build here, so no Node/npm step.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install ALSA dev headers (cpal)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config
+      - name: Fetch sherpa-onnx archive (linux-x64)
+        run: |
+          DIR="$(scripts/fetch-sherpa-archive.sh linux-x64 "$RUNNER_TEMP/sherpa")"
+          echo "SHERPA_ONNX_ARCHIVE_DIR=$DIR" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: stt
+      - name: cargo test
+        run: cargo test --manifest-path stt/Cargo.toml
+
   gui-e2e:
     runs-on: ubuntu-latest
     steps:
