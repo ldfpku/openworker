@@ -7,7 +7,9 @@
 //!
 //! Everything here is shaped by what the engine actually does, measured rather than assumed:
 //!
-//!   * `accept_waveform` resamples internally, so microphone audio is fed at its own rate.
+//!   * `accept_waveform` will resample internally, but its filter aliases badly enough to cost a
+//!     word on 48 kHz audio — which is what a Windows microphone gives you — so everything is
+//!     brought to 16 kHz here first (see [`crate::resample`]) and handed over at that rate.
 //!   * The streaming result's `segment`, `start_time` and `timestamps` fields are always empty on
 //!     this model — only `text` is usable — so the timeline for splitting the final pass is kept
 //!     here, by counting the samples we fed.
@@ -22,6 +24,7 @@
 //!     already found.
 
 use std::{
+    borrow::Cow,
     path::{Path, PathBuf},
     sync::{
         mpsc::{self, Receiver, RecvTimeoutError, Sender},
@@ -37,7 +40,11 @@ use sherpa_onnx::{
     OnlineRecognizerConfig, OnlineStream,
 };
 
-use crate::{models, DictationError};
+use crate::{
+    models,
+    resample::{self, Resampler, MODEL_RATE},
+    DictationError,
+};
 
 /// How often the engine takes whatever the microphone callback has appended. 100 ms costs only
 /// 60 ms more first-word latency than 20 ms chunks while doing a sixth of the work; the model
@@ -522,8 +529,16 @@ struct Session {
     live_asr: Option<LiveAsr>,
     live: Arc<Mutex<Vec<f32>>>,
     sample_rate: u32,
-    /// Samples taken from the live buffer so far. Doubles as the timeline for endpoints, since
-    /// the model reports none.
+    /// Brings the microphone's rate down to the recognizers' 16 kHz. `None` when the microphone
+    /// is already there, or when the ratio is one the resampler declines. Stateful, so the chunk
+    /// boundaries the feed loop happens to land on cannot show up in the audio.
+    resampler: Option<Resampler>,
+    /// The rate the recognizer is actually handed audio at: 16 kHz once the resampler is in the
+    /// way, the capture rate when there is none and the engine has to do it after all.
+    fed_rate: u32,
+    /// Samples taken from the live buffer so far, at the CAPTURE rate — the same units as the
+    /// recording the final pass is handed. Doubles as the timeline for endpoints, since the
+    /// model reports none.
     consumed: usize,
     committed: Vec<String>,
     boundaries: Vec<usize>,
@@ -612,12 +627,19 @@ impl Session {
     }
 
     fn feed(&mut self, samples: &[f32]) {
+        let ready = match self.resampler.as_mut() {
+            Some(resampler) => Cow::Owned(resampler.process(samples)),
+            None => Cow::Borrowed(samples),
+        };
+        // Only while the resampler is still filling its filter, a few milliseconds in.
+        if ready.is_empty() {
+            return;
+        }
         let segment = {
             let Some(asr) = self.live_asr.as_ref() else {
                 return;
             };
-            asr.stream
-                .accept_waveform(self.sample_rate as i32, samples);
+            asr.stream.accept_waveform(self.fed_rate as i32, &ready);
             while asr.recognizer.is_ready(&asr.stream) {
                 asr.recognizer.decode(&asr.stream);
             }
@@ -656,6 +678,10 @@ impl Session {
             self.consumed = audio.len();
             self.feed(&chunk);
         }
+        // The drain owns the resampler from here on: its silence has to go through the same
+        // filter the speech went through, or the last few milliseconds of speech would still be
+        // sitting inside it. Nothing else in this session feeds anything after a flush.
+        let mut resampler = self.resampler.take();
         let tail = {
             // After a degrade there is no streaming recognizer left to drain — and nothing that
             // would read its answer either.
@@ -673,8 +699,13 @@ impl Session {
             let mut drain = TailDrain::default();
             while let Some(step_ms) = drain.next_step() {
                 let silence = vec![0.0_f32; silence_samples(self.sample_rate, step_ms)];
-                asr.stream
-                    .accept_waveform(self.sample_rate as i32, &silence);
+                let ready = match resampler.as_mut() {
+                    Some(resampler) => Cow::Owned(resampler.process(&silence)),
+                    None => Cow::Borrowed(&silence[..]),
+                };
+                if !ready.is_empty() {
+                    asr.stream.accept_waveform(self.fed_rate as i32, &ready);
+                }
                 while asr.recognizer.is_ready(&asr.stream) {
                     asr.recognizer.decode(&asr.stream);
                 }
@@ -838,10 +869,18 @@ fn load_session(
         )
     })?;
     let stream = recognizer.create_stream();
+    let resampler = Resampler::for_rate(sample_rate);
+    let fed_rate = if resampler.is_some() {
+        MODEL_RATE
+    } else {
+        sample_rate
+    };
     Ok(Session {
         live_asr: Some(LiveAsr { recognizer, stream }),
         live,
         sample_rate,
+        resampler,
+        fed_rate,
         consumed: 0,
         committed: Vec::new(),
         boundaries: Vec::new(),
@@ -894,17 +933,26 @@ fn final_transcript(
         return Ok(String::new());
     }
     let recognizer = ensure_offline(model_dir, slot)?;
+    // The final pass gets the same treatment as the live one: resampled here rather than inside
+    // `accept_waveform`, in one piece rather than per segment so no segment boundary sits in the
+    // middle of a filter. The pause offsets the streaming pass collected are in capture-rate
+    // samples, so they move with it.
+    let (audio, fed_rate) = resample::to_model_rate(audio, sample_rate);
+    let boundaries: Vec<usize> = boundaries
+        .iter()
+        .map(|offset| resample::scale_offset(*offset, sample_rate, fed_rate))
+        .collect();
     let spans = segment_spans(
         audio.len(),
-        sample_rate,
-        boundaries,
+        fed_rate,
+        &boundaries,
         MAX_SEGMENT_SECS,
         MIN_SEGMENT_SECS,
     );
     let mut segments = Vec::with_capacity(spans.len());
     for (start, end) in spans {
         let stream = recognizer.create_stream();
-        stream.accept_waveform(sample_rate as i32, &audio[start..end]);
+        stream.accept_waveform(fed_rate as i32, &audio[start..end]);
         recognizer.decode(&stream);
         if let Some(result) = stream.get_result() {
             segments.push(clean_transcript(&result.text));

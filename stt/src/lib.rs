@@ -11,6 +11,7 @@
 mod audio;
 mod engine;
 pub mod models;
+mod resample;
 
 use std::{
     fs,
@@ -467,6 +468,7 @@ mod tests {
             self, marker_matches, place_pack_dir, resume_plan, write_marker, ModelFile, ModelPack,
             ResumePlan,
         },
+        resample::{scale_offset, to_model_rate, Resampler, MODEL_RATE},
         Dictation, DictationError, PartialSink, PartialTranscript,
     };
 
@@ -587,6 +589,101 @@ mod tests {
         println!("live at stop : {at_stop_text:?}");
         println!("live flushed : {live:?}");
         println!("final        : {final_text:?}");
+    }
+
+    /// Levenshtein distance over spoken characters, as a fraction of the truth's length.
+    fn error_rate(truth: &str, candidate: &str) -> f64 {
+        let truth = spoken(truth);
+        let candidate = spoken(candidate);
+        if truth.is_empty() {
+            return 0.0;
+        }
+        let mut previous: Vec<usize> = (0..=candidate.len()).collect();
+        let mut current = vec![0_usize; candidate.len() + 1];
+        for (row, expected) in truth.iter().enumerate() {
+            current[0] = row + 1;
+            for (column, got) in candidate.iter().enumerate() {
+                current[column + 1] = (previous[column] + usize::from(expected != got))
+                    .min(previous[column + 1] + 1)
+                    .min(current[column] + 1);
+            }
+            std::mem::swap(&mut previous, &mut current);
+        }
+        previous[candidate.len()] as f64 / truth.len() as f64
+    }
+
+    /// Replays one recording through the whole public path and returns (live text the stop left
+    /// behind, final transcript).
+    fn dictate(dictation: &Dictation, path: &Path) -> (String, String) {
+        let (samples, rate) = read_wav(path);
+        let updates: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink_updates = updates.clone();
+        let sink: PartialSink = Arc::new(move |partial: PartialTranscript| {
+            sink_updates.lock().unwrap().push(partial.text);
+        });
+        let final_text = dictation
+            .transcribe_samples(&samples, rate, true, Some(sink), || {})
+            .expect("transcribe");
+        let live = updates.lock().unwrap().last().cloned().unwrap_or_default();
+        (live, final_text)
+    }
+
+    /// Windows opens a WASAPI microphone at the device's shared-mode rate, which is 48 kHz on
+    /// essentially every machine, and both models want 16 kHz. Left to `accept_waveform`, that
+    /// conversion folds everything a microphone hears between 8 and 10 kHz straight back into the
+    /// speech band at -7 to -17 dB, and the transcript pays for it: with the out-of-band energy of
+    /// a real recording added on top of a sentence that transcribes perfectly at 16 kHz, the final
+    /// pass went from no errors to one duplicated syllable, then two, as that energy rose from
+    /// -43 dB to -24 dB. `resample` converts it here instead, and the transcript stops caring.
+    ///
+    /// The two recordings have to hold the SAME speech and differ only above 8 kHz, or this
+    /// measures the corpus. Build the 48 kHz one from the 16 kHz one:
+    ///
+    /// ```python
+    /// wide = scipy.signal.resample_poly(master16k, 3, 1, window=("kaiser", 8.0))
+    /// # ... plus real >8 kHz energy, e.g. the high-passed band of a native 48 kHz take
+    /// ```
+    ///
+    ///   OCW_STT_MODEL_DIR=%APPDATA%\coworker\models \
+    ///   OCW_STT_AUDIO_16=...\master_16k.wav OCW_STT_AUDIO_48=...\same_48k_with_hf.wav \
+    ///   OCW_STT_TRUTH=... \
+    ///   cargo test --manifest-path stt/Cargo.toml -- --ignored
+    #[test]
+    #[ignore = "needs the real 450 MB model packs and about a minute of wall clock"]
+    fn a_48_khz_recording_transcribes_as_well_as_the_same_take_at_16_khz() {
+        let Ok(model_dir) = std::env::var("OCW_STT_MODEL_DIR") else {
+            panic!("set OCW_STT_MODEL_DIR, OCW_STT_AUDIO_48, OCW_STT_AUDIO_16 and OCW_STT_TRUTH");
+        };
+        let at_48 = std::env::var("OCW_STT_AUDIO_48").expect("set OCW_STT_AUDIO_48");
+        let at_16 = std::env::var("OCW_STT_AUDIO_16").expect("set OCW_STT_AUDIO_16");
+        let truth = std::env::var("OCW_STT_TRUTH").expect("set OCW_STT_TRUTH");
+
+        let dictation = Dictation::new(PathBuf::from(model_dir));
+        assert!(
+            dictation.status().model_verified,
+            "the packs under OCW_STT_MODEL_DIR are not verified"
+        );
+        let (live_48, final_48) = dictate(&dictation, Path::new(&at_48));
+        let (live_16, final_16) = dictate(&dictation, Path::new(&at_16));
+
+        println!("48 kHz live  : {live_48:?}");
+        println!("16 kHz live  : {live_16:?}");
+        println!("48 kHz final : {final_48:?}");
+        println!("16 kHz final : {final_16:?}");
+
+        // Half a character on a short sentence: enough room for the two passes to disagree about
+        // a rendering, not enough for a dropped word to hide in.
+        let tolerance = 0.5 / spoken(&truth).len().max(1) as f64;
+        let live = error_rate(&truth, &live_48) - error_rate(&truth, &live_16);
+        let last = error_rate(&truth, &final_48) - error_rate(&truth, &final_16);
+        assert!(
+            live <= tolerance,
+            "48 kHz live text is {live:.4} worse than 16 kHz (tolerance {tolerance:.4})"
+        );
+        assert!(
+            last <= tolerance,
+            "48 kHz final text is {last:.4} worse than 16 kHz (tolerance {tolerance:.4})"
+        );
     }
 
     // A stand-in for a real pack: same shape, bytes small enough to write in a test. The hash is
@@ -897,6 +994,167 @@ mod tests {
         assert!(degrade.degraded);
     }
 
+    // -- capture rate -> model rate ----------------------------------------------------------
+
+    /// Power at `hz`, by Goertzel. No FFT dependency, and the only question these tests ask is
+    /// where the energy of a single tone ended up.
+    fn tone_power(samples: &[f32], rate: f32, hz: f32) -> f32 {
+        let omega = 2.0 * std::f32::consts::PI * hz / rate;
+        let coefficient = 2.0 * omega.cos();
+        let (mut previous, mut older) = (0.0_f32, 0.0_f32);
+        for sample in samples {
+            let current = sample + coefficient * previous - older;
+            older = previous;
+            previous = current;
+        }
+        (previous * previous + older * older - coefficient * previous * older).max(0.0)
+    }
+
+    /// One second of a Hann-windowed tone.
+    ///
+    /// The phase is reduced to a fraction of a cycle in f64 before the sine is taken. Writing it
+    /// the obvious way — `(2π · hz · index / rate) as f32` — spends the whole f32 mantissa on the
+    /// integer part of the angle by the end of a second, and the resulting phase noise is a
+    /// broadband floor around -56 dB: enough to hide the entire stopband of any decent filter
+    /// and make every resampler look identically mediocre.
+    fn tone(rate: u32, hz: f32, count: usize) -> Vec<f32> {
+        (0..count)
+            .map(|index| {
+                let cycles = (index as f64 * hz as f64 / rate as f64).fract();
+                let window = 0.5
+                    - 0.5 * (2.0 * std::f64::consts::PI * index as f64 / count as f64).cos();
+                (window * (2.0 * std::f64::consts::PI * cycles).sin()) as f32
+            })
+            .collect()
+    }
+
+    /// Sends one second of a windowed `hz` tone at `rate` through the resampler and reports how
+    /// much of it survived, in dB, and which 100 Hz bin of the output it came out in.
+    fn tone_through(rate: u32, hz: f32) -> (f32, f32) {
+        let count = rate as usize;
+        let input = tone(rate, hz, count);
+        let (output, out_rate) = to_model_rate(&input, rate);
+        assert_eq!(out_rate, MODEL_RATE);
+        let rms = |samples: &[f32]| {
+            (samples.iter().map(|s| s * s).sum::<f32>() / samples.len().max(1) as f32).sqrt()
+        };
+        let gain =
+            20.0 * (rms(&output).max(1e-12) / rms(&input).max(1e-12)).log10();
+        let mut loudest = (0.0_f32, 0.0_f32);
+        for step in 1..(MODEL_RATE / 2 / 100) {
+            let bin = step as f32 * 100.0;
+            let power = tone_power(&output, MODEL_RATE as f32, bin);
+            if power > loudest.1 {
+                loudest = (bin, power);
+            }
+        }
+        (gain, loudest.0)
+    }
+
+    #[test]
+    fn every_capture_rate_becomes_the_model_rate_without_changing_the_duration() {
+        // At the model rate there is nothing to do, and the samples are handed on as they are.
+        assert!(Resampler::for_rate(MODEL_RATE).is_none());
+        let samples = vec![0.25_f32; 1_000];
+        let (passed, rate) = to_model_rate(&samples, MODEL_RATE);
+        assert_eq!(rate, MODEL_RATE);
+        assert!(matches!(passed, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(&*passed, &samples[..]);
+
+        // One second in, one second out, at every rate a sound card actually reports.
+        for rate in [8_000_u32, 11_025, 22_050, 32_000, 44_100, 48_000, 96_000, 192_000] {
+            let input = vec![0.0_f32; rate as usize];
+            let (output, out_rate) = to_model_rate(&input, rate);
+            assert_eq!(out_rate, MODEL_RATE, "{rate} Hz");
+            assert_eq!(output.len(), MODEL_RATE as usize, "one second at {rate} Hz");
+        }
+
+        // The two rates that matter reduce to the ratios they should.
+        assert_eq!(Resampler::for_rate(48_000).unwrap().ratio(), (1, 3));
+        assert_eq!(Resampler::for_rate(44_100).unwrap().ratio(), (160, 441));
+
+        // A rate whose ratio would need a kernel the size of the model is declined rather than
+        // built, and then the audio has to reach the engine untouched and at its own rate — the
+        // offsets the streaming pass collected must not be rescaled as if it had been converted.
+        let odd = 16_001_u32;
+        assert!(Resampler::for_rate(odd).is_none());
+        let (passed, rate) = to_model_rate(&samples, odd);
+        assert_eq!(rate, odd);
+        assert!(matches!(passed, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(scale_offset(4_800, odd, rate), 4_800);
+        assert_eq!(scale_offset(4_800, 48_000, MODEL_RATE), 1_600);
+    }
+
+    #[test]
+    fn resampling_keeps_the_speech_band_and_throws_the_rest_away() {
+        // The whole reason this module exists. sherpa-onnx's own resampler, measured on this
+        // machine by `examples/resampler_probe.rs`, is 1.8 dB down at 7 kHz and lets an 8.5 kHz
+        // tone back in at 7.5 kHz at -10.8 dB and a 9 kHz tone at 7 kHz at -16.8 dB. Everything a
+        // 48 kHz microphone hears between 8 and 10 kHz lands on top of the band the features are
+        // computed from, and it cost a whole word on measured audio.
+        // Flat all the way to 7.5 kHz, not just to where a lazier filter would give up: the
+        // models were trained on full-band 16 kHz audio, and a first attempt that rolled off from
+        // 7.2 kHz cost the closing character of an utterance.
+        for hz in [200.0_f32, 1_000.0, 4_000.0, 7_000.0, 7_500.0] {
+            let (gain, landed) = tone_through(48_000, hz);
+            assert!(gain.abs() < 0.5, "{hz} Hz lost {gain:.2} dB in the passband");
+            assert!(
+                (landed - hz).abs() < 100.0,
+                "{hz} Hz came out at {landed} Hz"
+            );
+        }
+        // Above the 8 kHz fold there must be nothing left to fold.
+        for hz in [8_500.0_f32, 9_000.0, 12_000.0, 20_000.0] {
+            let (gain, _) = tone_through(48_000, hz);
+            assert!(gain < -60.0, "{hz} Hz survived at {gain:.2} dB");
+        }
+        // 44.1 kHz is the other rate a machine hands over, and it is not an integer ratio.
+        let (gain, landed) = tone_through(44_100, 1_000.0);
+        assert!(gain.abs() < 0.5, "1 kHz at 44.1 kHz lost {gain:.2} dB");
+        assert!((landed - 1_000.0).abs() < 100.0);
+        let (gain, _) = tone_through(44_100, 12_000.0);
+        assert!(gain < -60.0, "12 kHz at 44.1 kHz survived at {gain:.2} dB");
+    }
+
+    #[test]
+    fn a_resampler_does_not_care_how_the_audio_is_chunked() {
+        // The live pass hands over whatever the microphone callback appended since the last
+        // round, which is a different number of samples every time. A resampler that restarted
+        // per chunk would put a discontinuity at every one of those boundaries.
+        let rate = 48_000_u32;
+        let input: Vec<f32> = (0..rate as usize * 2)
+            .map(|index| {
+                let seconds = index as f32 / rate as f32;
+                0.3 * (2.0 * std::f32::consts::PI * 440.0 * seconds).sin()
+                    + 0.2 * (2.0 * std::f32::consts::PI * 3_100.0 * seconds).sin()
+            })
+            .collect();
+        let (whole, _) = to_model_rate(&input, rate);
+
+        let mut resampler = Resampler::for_rate(rate).unwrap();
+        let mut streamed = Vec::new();
+        // Uneven chunks, the way a real feed loop arrives.
+        let mut offset = 0;
+        for size in [4_800_usize, 1_037, 9_600, 233, 6_400].iter().cycle() {
+            if offset >= input.len() {
+                break;
+            }
+            let end = (offset + size).min(input.len());
+            streamed.extend(resampler.process(&input[offset..end]));
+            offset = end;
+        }
+        streamed.extend(resampler.finish());
+        streamed.truncate(whole.len());
+
+        assert_eq!(streamed.len(), whole.len());
+        for (index, (one, many)) in whole.iter().zip(&streamed).enumerate() {
+            assert!(
+                (one - many).abs() < 1e-6,
+                "sample {index} differs: {one} vs {many}"
+            );
+        }
+    }
+
     #[test]
     fn silence_is_counted_at_the_capture_rate() {
         assert_eq!(silence_samples(16_000, TAIL_STEP_MS), 3_200);
@@ -1063,6 +1321,7 @@ mod tests {
             ("audio.rs", include_str!("audio.rs")),
             ("engine.rs", include_str!("engine.rs")),
             ("models.rs", include_str!("models.rs")),
+            ("resample.rs", include_str!("resample.rs")),
         ];
         for (file, text) in sources {
             assert!(
