@@ -7,6 +7,10 @@ build/
 dist/
 .coverage
 
+# Generated at packaging time by packaging/write_version.py (stamped from
+# surfaces/gui/src-tauri/tauri.conf.json) — never hand-edited, never committed.
+coworker/_version.py
+
 # Local secrets (live-smoke BYO keys) — never committed
 .env
 # The real relay roster: colleagues' names and personal mailboxes. This fork is PUBLIC,

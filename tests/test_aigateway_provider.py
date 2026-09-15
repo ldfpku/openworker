@@ -11,6 +11,8 @@ rejects. Those are what these cover.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from coworker.providers import capabilities_for
@@ -130,6 +132,13 @@ def test_the_sdk_user_agent_is_replaced_on_every_wire():
         ua = p._client_for(model)._default_headers["User-Agent"]
         assert ua.startswith("openworker/")
         assert "/Python" not in ua
+        # coworker/__init__.py used to hardcode __version__ = "0.0.0", which made
+        # every packaged build's gateway log entry look identical and impossible to
+        # tell apart by version. It must now come from the real app version (a
+        # semver stamped in at packaging time by packaging/write_version.py) or,
+        # in an unpackaged checkout with no coworker/_version.py, the literal "dev".
+        assert ua != "openworker/0.0.0"
+        assert re.fullmatch(r"openworker/(dev|\d+\.\d+\.\d+\S*)", ua)
 
 
 @pytest.mark.parametrize(

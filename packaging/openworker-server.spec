@@ -21,7 +21,9 @@ hides the window while keeping stdio intact.
 """
 
 import os
+import runpy
 import sys
+from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
 
@@ -29,6 +31,17 @@ from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_sub
 # (<repo>/packaging). Derive everything else from it — no hardcoded paths.
 PACKAGING = SPECPATH
 ROOT = os.path.dirname(PACKAGING)
+
+# coworker/__init__.py reports its own version (used in the `openworker/<version>`
+# User-Agent sent to Cloudflare AI Gateway) by importing the generated, gitignored
+# coworker/_version.py — falling back to "dev" if it's absent. Stamp it here, from this
+# spec's own path (not cwd, which PyInstaller may invoke from anywhere), so it exists
+# before Analysis walks coworker/__init__.py — collect_submodules("coworker") below then
+# picks up _version.py like any other module.
+_write_version_ns = runpy.run_path(os.path.join(PACKAGING, "write_version.py"))
+_tauri_conf = Path(ROOT) / "surfaces" / "gui" / "src-tauri" / "tauri.conf.json"
+_app_version = _write_version_ns["read_app_version"](_tauri_conf)
+_write_version_ns["write_version_module"](_app_version, Path(ROOT) / "coworker" / "_version.py")
 
 IS_WINDOWS = sys.platform == "win32"
 
