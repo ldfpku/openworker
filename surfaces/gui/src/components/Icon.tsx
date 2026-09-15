@@ -83,10 +83,14 @@ export function Icon({
         </svg>
       );
     case "sparkle":
-      // Filled 4-point twinkle — crisp at small sizes.
+      // Filled 4-point twinkle — crisp at small sizes. Same pinwheel curve as before, just
+      // recentered on (12,12) and scaled 1.25x (owner report 2026-09-16: against the mic
+      // glyph the old twinkle sat high in its box — center (12,9.6), bbox height 14.4 of 24
+      // — and read visibly smaller/off-center; this version spans y3-21 like mic's y3.5-21.5,
+      // bbox height 18 vs mic's 18, matching within the composer's ±5% same-size test).
       return (
         <svg {...s} fill="currentColor" stroke="none">
-          <path d="M12 2.4c.5 4.7 2.5 6.7 7.2 7.2-4.7.5-6.7 2.5-7.2 7.2-.5-4.7-2.5-6.7-7.2-7.2 4.7-.5 6.7-2.5 7.2-7.2z" />
+          <path d="M12 3c.63 5.88 3.13 8.38 9 9-5.88.63-8.38 3.13-9 9-.63-5.88-3.13-8.38-9-9 5.88-.63 8.38-3.13 9-9z" />
         </svg>
       );
     case "logo":
@@ -174,9 +178,12 @@ export function Icon({
         </svg>
       );
     case "stop":
+      // Filled square — enlarged to bbox height 18 (was 11, 46% of mic's 18) so the busy
+      // (enhance-cancel) and recording (dictation-stop) states read at the same weight as
+      // the mic glyph beside them (owner report 2026-09-16), same corner-radius ratio (~14%).
       return (
         <svg {...s} fill="currentColor" stroke="none">
-          <rect x="6.5" y="6.5" width="11" height="11" rx="1.5" />
+          <rect x="3" y="3" width="18" height="18" rx="2.5" />
         </svg>
       );
     case "x":
