@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 from urllib.parse import urlsplit
 
+from . import procutil
 from .gitprobe import TTLCache
 
 # Tool categories whose results carry content from outside this machine. Keyed on the
@@ -162,6 +163,7 @@ def _git_remotes_uncached(cwd: Path) -> tuple[tuple[str, str], ...]:
             errors="replace",
             timeout=5,
             check=False,
+            **procutil.popen_kwargs(),
         )
     except (OSError, subprocess.SubprocessError):
         return ()

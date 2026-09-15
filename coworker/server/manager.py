@@ -24,6 +24,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Optional
 
+from .. import procutil
 from ..agent import build_engine
 from ..agents import get_agent
 from ..connections import (
@@ -704,6 +705,7 @@ class SessionManager:
                     capture_output=True,
                     timeout=10,
                     check=False,
+                    **procutil.popen_kwargs(),
                 )
             except (OSError, subprocess.SubprocessError):
                 pass  # no git on PATH → still a usable folder, just not a repo
@@ -3426,17 +3428,23 @@ class SessionManager:
                     if mode == "reveal" and not is_dir
                     else ["open", str(target)]
                 )
+                # procutil-exempt: shows the file to the user (Finder reveal/open) — not a
+                # console-subsystem program, no window-flash risk.
                 subprocess.Popen(
                     args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
                 )
             elif sys.platform == "win32":
                 if mode == "reveal" and not is_dir:
                     # Explorer wants the path glued to the switch: /select,<path>
+                    # procutil-exempt: explorer.exe is a GUI program, not console-subsystem —
+                    # no console gets allocated for it either way.
                     subprocess.Popen(["explorer", f"/select,{target}"])
                 else:
                     os.startfile(str(target))  # type: ignore[attr-defined]  # open in default app
             else:  # Linux/BSD
                 tgt = str(target.parent) if mode == "reveal" and not is_dir else str(target)
+                # procutil-exempt: xdg-open hands off to the user's file manager — a
+                # deliberately visible action, not a hidden helper process.
                 subprocess.Popen(
                     ["xdg-open", tgt],
                     stdout=subprocess.DEVNULL,
@@ -7418,6 +7426,8 @@ class SessionManager:
             return {"ok": False, "error": str(exc)}
         try:
             if sys.platform == "darwin":
+                # procutil-exempt: shows the folder to the user (Finder open) — not a
+                # console-subsystem program, no window-flash risk.
                 subprocess.Popen(
                     ["open", str(folder)],
                     stdout=subprocess.DEVNULL,
@@ -7428,6 +7438,8 @@ class SessionManager:
 
                 os.startfile(str(folder))  # type: ignore[attr-defined]
             else:
+                # procutil-exempt: xdg-open hands off to the user's file manager — a
+                # deliberately visible action, not a hidden helper process.
                 subprocess.Popen(
                     ["xdg-open", str(folder)],
                     stdout=subprocess.DEVNULL,
@@ -7892,6 +7904,7 @@ def _git_branch(path: Path) -> Optional[str]:
             encoding="utf-8",
             errors="replace",
             timeout=3,
+            **procutil.popen_kwargs(),
         )
         branch = (result.stdout or "").strip()
         return branch or None

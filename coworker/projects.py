@@ -15,6 +15,7 @@ import threading
 from pathlib import Path
 from typing import Any, Optional
 
+from . import procutil
 from .gitprobe import TTLCache
 
 NAME_KINDS = ("memory", "board")
@@ -42,6 +43,7 @@ def _git_common_dir_uncached(workspace: Path) -> Optional[Path]:
             # name came back as mojibake, and this path feeds project_key(), so the memory
             # and board bindings keyed off it silently pointed at a garbled identity.
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
+            **procutil.popen_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return None

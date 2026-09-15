@@ -454,6 +454,8 @@ def _run_git(
     auth material (git never echoes header values)."""
     import subprocess
 
+    from .. import procutil
+
     try:
         proc = subprocess.run(
             ["git", *args],
@@ -465,6 +467,7 @@ def _run_git(
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
+            **procutil.popen_kwargs(),
         )
     except FileNotFoundError:
         return "", "git is not installed"

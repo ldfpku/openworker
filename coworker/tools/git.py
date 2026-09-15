@@ -13,6 +13,8 @@ from typing import Any, Optional
 
 import aisuite as ai
 
+from .. import procutil
+
 _SEP = "\x1f"
 
 _SCHEMA = {
@@ -67,6 +69,7 @@ def git_tools(workspace: str) -> list:
                 encoding="utf-8",
                 errors="replace",
                 timeout=15,
+                **procutil.popen_kwargs(),
             )
         except Exception as exc:
             return {"error": f"git log failed: {exc}"}

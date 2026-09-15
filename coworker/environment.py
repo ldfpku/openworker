@@ -27,6 +27,7 @@ from datetime import date
 from pathlib import Path
 from typing import Optional
 
+from . import procutil
 from .gitprobe import TTLCache
 
 # One rendered block per resolved workspace. The picker rebuilds the engine on every
@@ -55,6 +56,7 @@ def _run(workspace: Path, *args: str) -> Optional[tuple[int, str, str]]:
             # Pin the message locale so an ordinary non-repo folder cannot read as a
             # tooling failure. LANGUAGE too: it overrides LC_ALL for gettext.
             env={**os.environ, "LC_ALL": "C", "LANG": "C", "LANGUAGE": ""},
+            **procutil.popen_kwargs(),
         )
     except (OSError, subprocess.SubprocessError):
         return None

@@ -19,6 +19,7 @@ from typing import Any, Optional
 
 import aisuite as ai
 
+from .. import procutil
 from ..roots import resolved_paths
 
 # Per-OS application data directories. These are not build noise: on macOS 14+ merely
@@ -165,6 +166,7 @@ def search_tools(workspace: str, roots: Optional[list] = None) -> list:
                     errors="replace",
                     timeout=30,
                     cwd=str(cwd),
+                    **procutil.popen_kwargs(),
                 )
             except Exception as exc:
                 return {"error": f"grep failed: {exc}"}

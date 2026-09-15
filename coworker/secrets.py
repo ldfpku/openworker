@@ -21,6 +21,8 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from . import procutil
+
 _REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _IS_WINDOWS = sys.platform == "win32"
 
@@ -82,6 +84,7 @@ def _restrict_to_user(path: Path, *, is_dir: bool) -> None:
                 ["icacls", str(path), "/inheritance:r", "/grant:r", grant],
                 capture_output=True,
                 check=False,
+                **procutil.popen_kwargs(),
             )
         except OSError:
             pass
