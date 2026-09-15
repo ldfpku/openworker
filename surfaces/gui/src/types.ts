@@ -26,6 +26,10 @@ export type EventType =
   // TRANSCRIPT channel — the two are deliberately separate events.
   | "mode_changed"
   | "mode_notice"
+  // A pending gate (approval / ask_user / directory / plan / tool install) was answered from
+  // another surface — today the WeChat mirror of the same Inbox item. The agent is already
+  // released server-side; this only tells an open view to stop asking.
+  | "prompt_resolved"
   | "memory_saved"
   | "compacting"
   | "compacted"

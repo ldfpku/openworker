@@ -16,7 +16,7 @@ import re
 import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 
 DEFAULT_INBOX = "default"
 # Embeds the item id in a delivered message. Emitted as [ow:…] since the bot's rebrand
@@ -124,11 +124,32 @@ def deliver(item, binding: InboxBinding, sender: Optional[Sender]) -> bool:
 # first, executed the declined action. Leading-word intent keeps "Yes, go ahead" /
 # "No." / "👍" working; everything else is a free-text answer, which the approval path
 # already maps to deny — the safe default for an approval gate.
-_ALLOW_WORDS = frozenset({"approve", "approved", "allow", "allowed", "yes"})
-_DENY_WORDS = frozenset({"deny", "denied", "reject", "rejected", "no"})
+#
+# The Chinese entries carry the same leading-word semantics: a WeChat reply arrives as a bare
+# word ("同意", "拒绝。") with no spaces, so the whole message IS the leading token.
+_ALLOW_WORDS = frozenset(
+    {
+        "approve",
+        "approved",
+        "allow",
+        "allowed",
+        "yes",
+        "同意",
+        "允许",
+        "批准",
+        "好",
+        "好的",
+        "可以",
+    }
+)
+_DENY_WORDS = frozenset(
+    {"deny", "denied", "reject", "rejected", "no", "拒绝", "不行", "取消", "否"}
+)
 _ALLOW_EMOJI = ("👍", "✅")
 _DENY_EMOJI = ("👎", "❌")
-_TOKEN_TRIM = ".,!?:;'\"()"
+# CJK punctuation included: "同意。" and "拒绝！" have to trim to the bare word the way
+# their ASCII counterparts already do.
+_TOKEN_TRIM = ".,!?:;'\"()" + "。，！？：；、“”‘’（）"
 
 
 def _reply_intent(text: str) -> Optional[str]:
@@ -162,3 +183,65 @@ def resolve_from_reply(
     text = _ID_TOKEN.sub("", reply).strip()
     resolution = _reply_intent(text) or text  # free-text answer to a question
     return resolve(item_id, resolution)
+
+
+# -- numbered replies (the WeChat card) -----------------------------------------
+# Personal WeChat has no buttons, so a mirrored prompt is a NUMBERED plain-text card and the
+# answer comes back as a digit. Phone keyboards happily produce full-width digits ("１"), and
+# people prefix them ("回复 2"), so both are normalized before matching.
+_CHOICE_NUMBER = re.compile(r"^(?:回复)?\s*([1-9])[.、,:：)）]?$")
+
+
+def to_halfwidth(text: str) -> str:
+    """Full-width ASCII (and the ideographic space) folded to their half-width forms."""
+    out = []
+    for ch in text:
+        code = ord(ch)
+        if code == 0x3000:
+            out.append(" ")
+        elif 0xFF01 <= code <= 0xFF5E:
+            out.append(chr(code - 0xFEE0))
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def is_choice_number(text: str) -> bool:
+    """True when a reply is nothing but a choice number — the shape that means "I am
+    answering a card", so an expired prompt can say so instead of silently starting a turn."""
+    return _CHOICE_NUMBER.match(to_halfwidth(str(text or "")).strip()) is not None
+
+
+def choice_from_reply(
+    text: str, choices: Sequence[Any], allow_text: bool = False
+) -> Optional[str]:
+    """The resolution a plain-text reply selects, or None when nothing matched.
+
+    Pure: `choices` is any sequence of objects carrying ``label`` / ``resolution`` /
+    ``intent`` (``interactions.Choice``, or the dicts-turned-Choices persisted in
+    ``item.data["wx"]``). Order of precedence — the card's own numbering, then an
+    allow/deny keyword, then an option typed out verbatim, then (only when the prompt
+    accepts one) the whole message as a free-text answer.
+    """
+    norm = to_halfwidth(str(text or "")).strip()
+    if not norm:
+        return None
+    m = _CHOICE_NUMBER.match(norm)
+    if m:
+        index = int(m.group(1)) - 1
+        # A number the card never offered is NOT a free-text answer: "5" against a
+        # two-option prompt is a miss, and answering the agent with "5" would be worse
+        # than asking again.
+        if 0 <= index < len(choices):
+            return getattr(choices[index], "resolution", None)
+        return None
+    intent = _reply_intent(norm)
+    if intent is not None:
+        for choice in choices:
+            if getattr(choice, "intent", None) == intent:
+                return getattr(choice, "resolution", None)
+    for choice in choices:
+        label = str(getattr(choice, "label", "") or "").strip()
+        if label and label.lower() == norm.lower():
+            return getattr(choice, "resolution", None)
+    return norm if allow_text else None

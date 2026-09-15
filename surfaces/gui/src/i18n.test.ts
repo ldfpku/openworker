@@ -39,6 +39,22 @@ const IMPORTANT_KEYS = [
   "manage.subscriptions_load_failed",
   "manage.listening_title_uncounted",
   "settings.trust_load_failed",
+  // Parked-prompt dress: the kind chip used to look up a bare English word (nowhere to
+  // resolve for directory/plan/tool), and the two fixed server titles had no key at all.
+  "inbox.kind.approval",
+  "inbox.kind.question",
+  "inbox.kind.notification",
+  "inbox.kind.directory",
+  "inbox.kind.plan",
+  "inbox.kind.tool",
+  "inbox.title_directory",
+  "inbox.title_plan",
+  // Says which surface answered a gate when it wasn't this app — by then the inline card is
+  // already gone (it renders only while unresolved), so this line is the whole explanation.
+  "transcript.resolved_via_weixin",
+  "transcript.resolved_timed_out",
+  "transcript.resolved_outcome_allow",
+  "transcript.resolved_outcome_deny",
 ] as const;
 
 const values: Record<string, Record<string, string | number>> = {
@@ -58,6 +74,7 @@ const values: Record<string, Record<string, string | number>> = {
   "composer.attach_skipped": { names: "LICENSE, notes" },
   "composer.listening_sr": { time: "0:12" },
   "manage.listening_title_uncounted": { title: "Slack" },
+  "transcript.resolved_via_weixin": { outcome: "同意" },
 };
 
 function flatten(tree: LocaleTree, prefix = "", result: Record<string, string> = {}) {

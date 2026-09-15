@@ -6,9 +6,13 @@ from coworker.inbox import InboxStore
 from coworker.inbox_routing import (
     DEFAULT_INBOX,
     InboxRouting,
+    choice_from_reply,
     deliver,
+    is_choice_number,
     resolve_from_reply,
+    to_halfwidth,
 )
+from coworker.interactions import Choice
 
 
 def test_route_precedence(tmp_path):
@@ -169,3 +173,59 @@ def test_emoji_reactions_still_resolve(tmp_path):
     resolve_from_reply(f"❌ [ow:{b.id}]", store.resolve)
     assert store.get(a.id).resolution == "allow"
     assert store.get(b.id).resolution == "deny"
+
+
+# -- numbered replies (the WeChat card) -----------------------------------------
+_APPROVAL_CHOICES = [
+    Choice("Approve", "allow", "allow"),
+    Choice("Deny", "deny", "deny"),
+]
+
+
+def test_choice_number_selects_by_position():
+    assert choice_from_reply("1", _APPROVAL_CHOICES) == "allow"
+    assert choice_from_reply("2", _APPROVAL_CHOICES) == "deny"
+    assert choice_from_reply("回复 2", _APPROVAL_CHOICES) == "deny"
+    assert choice_from_reply("1.", _APPROVAL_CHOICES) == "allow"
+    assert choice_from_reply("2、", _APPROVAL_CHOICES) == "deny"
+
+
+def test_fullwidth_digits_from_a_phone_keyboard_still_select():
+    assert choice_from_reply("１", _APPROVAL_CHOICES) == "allow"
+    assert choice_from_reply("２", _APPROVAL_CHOICES) == "deny"
+    assert to_halfwidth("１２３") == "123"
+
+
+def test_chinese_decision_words_map_to_the_matching_choice():
+    for reply in ("同意", "允许", "批准", "可以", "同意。"):
+        assert choice_from_reply(reply, _APPROVAL_CHOICES) == "allow", reply
+    for reply in ("拒绝", "不行", "取消", "否", "拒绝！"):
+        assert choice_from_reply(reply, _APPROVAL_CHOICES) == "deny", reply
+
+
+def test_number_outside_the_offered_range_is_not_an_answer():
+    """"5" against a two-option card is a miss, not a free-text answer — handing the agent a
+    bare 5 would be worse than asking again."""
+    assert choice_from_reply("5", _APPROVAL_CHOICES) is None
+    assert choice_from_reply("5", [Choice("A", "A")], allow_text=True) is None
+
+
+def test_freetext_is_an_answer_only_where_the_prompt_accepts_one():
+    options = [Choice("us-east-1", "us-east-1"), Choice("eu-west-1", "eu-west-1")]
+    assert choice_from_reply("tokyo please", options) is None
+    assert choice_from_reply("tokyo please", options, allow_text=True) == "tokyo please"
+    # An option typed out verbatim selects it even without the number.
+    assert choice_from_reply("eu-west-1", options) == "eu-west-1"
+
+
+def test_unreadable_reply_to_a_gate_is_none():
+    assert choice_from_reply("这是什么？", _APPROVAL_CHOICES) is None
+    assert choice_from_reply("", _APPROVAL_CHOICES) is None
+    assert choice_from_reply("   ", _APPROVAL_CHOICES) is None
+
+
+def test_is_choice_number_spots_a_bare_digit_reply():
+    assert is_choice_number("1") and is_choice_number("２") and is_choice_number("回复 1")
+    assert not is_choice_number("1 同意")
+    assert not is_choice_number("同意")
+    assert not is_choice_number("")

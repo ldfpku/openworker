@@ -208,6 +208,10 @@
     },
     "dir_declined": "Declined folder access",
     "dir_granted": "Granted folder access",
+    "resolved_via_weixin": "Answered on WeChat: {{outcome}}",
+    "resolved_timed_out": "No answer in time — declined.",
+    "resolved_outcome_allow": "approved",
+    "resolved_outcome_deny": "declined",
     "plan_approved": "Plan approved",
     "plan_proposed": "proposed plan",
     "plan_rejected": "Sent back with feedback",
@@ -837,7 +841,17 @@
     "previous_question": "Previous question",
     "question_n": "Question {{n}}",
     "question_label": "question",
-    "step_of": "{{step}} of {{total}}"
+    "step_of": "{{step}} of {{total}}",
+    "kind": {
+      "approval": "Approval",
+      "question": "Question",
+      "notification": "Notification",
+      "directory": "Directory",
+      "plan": "Plan",
+      "tool": "Tool"
+    },
+    "title_directory": "Grant access to a folder?",
+    "title_plan": "Approve the plan?"
   },
   "audit": {
     "title": "Activity",

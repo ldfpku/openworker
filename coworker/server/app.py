@@ -387,6 +387,7 @@ def create_app(manager: SessionManager) -> FastAPI:
                 # started closing their items): an orphaned prompt can never be answered.
                 # A LIVE engine without a record yet (brand-new session, first turn still
                 # running) is NOT an orphan — hence the engine guard.
+                manager.cancel_weixin_watchdogs_for_session(i.session_id)
                 manager.inbox.resolve_session(i.session_id)
                 continue
             d["session_title"] = (rec.title if rec else None) or i.session_id
@@ -2332,7 +2333,10 @@ def create_app(manager: SessionManager) -> FastAPI:
             )
 
         async def _mirror(item) -> None:
-            # Unattended items mirror to a bound channel as buttons (see mirror_inbox_item).
+            # Called for EVERY parked prompt, attended or not — `mirror_inbox_item` owns the
+            # per-transport visibility rule now: the bound channel still takes unattended items
+            # only, while a WeChat peer bound to this session gets the card either way (they are
+            # on their phone, where the inline card this socket just drew is invisible).
             await manager.mirror_inbox_item(item)
 
         def _route() -> str:
@@ -2365,8 +2369,7 @@ def create_app(manager: SessionManager) -> FastAPI:
                 manager.persist_session(
                     session_id
                 )  # the pending tool call is now on disk
-                if item.visibility == VIS_INBOX:
-                    await _mirror(item)
+                await _mirror(item)
             resolution = await manager.inbox.wait(item.id)
             # Accept every vocabulary: the live card sends once/always_tool/always_command/
             # always_task/deny; the Inbox / a channel send allow/always/deny.
@@ -2388,9 +2391,8 @@ def create_app(manager: SessionManager) -> FastAPI:
             )
             if item.state == "pending":
                 manager.persist_session(session_id)
-                if item.visibility == VIS_INBOX:
-                    await _mirror(item)
-                else:
+                await _mirror(item)
+                if item.visibility != VIS_INBOX:
                     await ws.send_json(
                         {
                             "type": "question_requested",
@@ -2448,8 +2450,7 @@ def create_app(manager: SessionManager) -> FastAPI:
             )
             if item.state == "pending":
                 manager.persist_session(session_id)
-                if item.visibility == VIS_INBOX:
-                    await _mirror(item)
+                await _mirror(item)
             resp = _parse_json(await manager.inbox.wait(item.id))  # {approved}
             if not resp.get("approved"):
                 return {
@@ -2484,8 +2485,7 @@ def create_app(manager: SessionManager) -> FastAPI:
             )
             if item.state == "pending":
                 manager.persist_session(session_id)
-                if item.visibility == VIS_INBOX:
-                    await _mirror(item)
+                await _mirror(item)
             resp = _parse_json(
                 await manager.inbox.wait(item.id)
             )  # {granted, path, writable}
@@ -2562,8 +2562,7 @@ def create_app(manager: SessionManager) -> FastAPI:
             )
             if item.state == "pending":
                 manager.persist_session(session_id)
-                if item.visibility == VIS_INBOX:
-                    await _mirror(item)
+                await _mirror(item)
             resp = _parse_json(
                 await manager.inbox.wait(item.id)
             )  # {approved, mode, feedback}
@@ -2597,8 +2596,7 @@ def create_app(manager: SessionManager) -> FastAPI:
             )
             if item.state == "pending":
                 manager.persist_session(session_id)
-                if item.visibility == VIS_INBOX:
-                    await _mirror(item)
+                await _mirror(item)
             resp = _parse_json(await manager.inbox.wait(item.id))
             if not resp.get("approved"):
                 return {
@@ -2637,8 +2635,7 @@ def create_app(manager: SessionManager) -> FastAPI:
             )
             if item.state == "pending":
                 manager.persist_session(session_id)
-                if item.visibility == VIS_INBOX:
-                    await _mirror(item)
+                await _mirror(item)
             resp = _parse_json(await manager.inbox.wait(item.id))
             if not resp.get("approved"):
                 return {
@@ -2698,8 +2695,11 @@ def create_app(manager: SessionManager) -> FastAPI:
             # Live WS responses resolve THE session's single pending prompt (one at a time, since the
             # agent blocks). Reconnect / Inbox resolve by id via REST instead.
             pend = manager.inbox.pending(session_id)
-            if pend:
-                manager.inbox.resolve(pend[0].id, resolution)
+            if pend and manager.inbox.resolve(pend[0].id, resolution):
+                # Answered here, so any WeChat mirror of the same prompt is stale: cancel its
+                # expiry watchdog and tell the phone it was handled on the computer.
+                manager.cancel_weixin_watchdog(pend[0].id)
+                manager.notify_prompt_resolved(pend[0], resolution, via="app")
 
         workspace = ws.query_params.get("workspace")
         # An engine-build crash must never take the raw ASGI exit: the socket would just

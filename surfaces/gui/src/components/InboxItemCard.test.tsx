@@ -112,3 +112,33 @@ describe("InboxItemCard — 2+ questions still get the stepper", () => {
     expect(screen.getByText(/1 of 2/)).toBeTruthy();
   });
 });
+
+describe("InboxItemCard — parked directory/plan prompts wear translated dress", () => {
+  afterEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  it("names the kind and the fixed server title in Chinese", async () => {
+    await i18n.changeLanguage("zh");
+    render(
+      <InboxItemCard
+        item={base({ kind: "directory", title: "Grant access to a folder?", body: "for the logs" })}
+        onResolve={vi.fn()}
+      />,
+    );
+    // Both used to render their raw English: the chip looked up the bare word "directory"
+    // (no such key) and the title had no key at all.
+    expect(screen.getByText("文件夹")).toBeTruthy();
+    expect(screen.getByText("授权访问某个文件夹？")).toBeTruthy();
+    expect(screen.queryByText("Grant access to a folder?")).toBeNull();
+  });
+
+  it("leaves the OTHER plan-kind gates (team, work items) on their own titles", async () => {
+    await i18n.changeLanguage("zh");
+    render(
+      <InboxItemCard item={base({ kind: "plan", title: "Create this team?" })} onResolve={vi.fn()} />,
+    );
+    expect(screen.getByText("计划")).toBeTruthy();
+    expect(screen.getByText("Create this team?")).toBeTruthy();
+  });
+});

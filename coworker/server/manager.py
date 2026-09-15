@@ -121,6 +121,14 @@ from ..skills import (
 
 _SCOPES = {s.value for s in Scope}
 
+# How long a prompt mirrored to WeChat stays answerable from the phone. `InboxStore.wait` has
+# no timeout of its own, so an unanswered mirror would park the turn forever; the watchdog
+# closes it as a decline instead (the safe default for every gate it can carry).
+WX_PROMPT_TTL_MIN = 30
+# Prompt kinds whose choices a numbered WeChat card can express. A notification asks nothing,
+# so it is not mirrored as a prompt.
+WX_PROMPT_KINDS = ("approval", "question", "directory", "plan", "tool")
+
 logger = logging.getLogger("coworker.manager")
 
 
@@ -295,6 +303,11 @@ class SessionManager:
         # True while a confirmed QR login is committing (profile write + gateway
         # reload) — weixin_qr_start must not cancel the task in that window.
         self._weixin_qr_committing = False
+        # Live tasks spawned from the SYNCHRONOUS WeChat reply path (outbound receipts) and
+        # the per-prompt expiry watchdogs, keyed by item id. Held so the loop keeps a strong
+        # reference — a bare create_task() can be garbage-collected mid-flight.
+        self._wx_tasks: set[asyncio.Task] = set()
+        self._wx_watchdogs: dict[str, asyncio.Task] = {}
         self._data_base = base
         # Desktop/UI prefs (default model, onboarding state) — not secrets; a plain JSON file.
         self._prefs = self._load_prefs()
@@ -1575,18 +1588,71 @@ class SessionManager:
         if engine is not None:
             self.save(session_id, engine)
 
-    async def resolve_inbox(self, item_id: str, resolution: str) -> bool:
+    async def resolve_inbox(
+        self, item_id: str, resolution: str, *, via: str = "app"
+    ) -> bool:
         """Resolve an Inbox item from any surface (REST / Slack button / channel reply). If the
         asking agent is still suspended live, that await handles it. Otherwise the process restarted
         (or the engine was evicted) while blocked → durably resume: rebuild the engine from the
-        saved thread and continue the turn."""
+        saved thread and continue the turn.
+
+        `via` names the surface that answered, so the OTHER surfaces can be told: a prompt also
+        mirrored to WeChat gets a "handled on the computer" receipt, and a live session view gets
+        a `prompt_resolved` event. Announced BEFORE the durable resume, which can occupy this
+        coroutine for the length of a whole turn."""
         item = self.inbox.get(item_id)
         ok = self.inbox.resolve(item_id, resolution)
         if not ok or item is None:
             return ok
+        self.cancel_weixin_watchdog(item_id)
+        self.notify_prompt_resolved(item, resolution, via=via)
         if not self.is_running(item.session_id):
             await self._durable_resume(item)
         return ok
+
+    # -- cross-surface resolution fan-out ---------------------------------------
+    def notify_prompt_resolved(self, item, resolution: str, *, via: str = "app") -> None:
+        """Tell the surfaces that did NOT answer this prompt that it is answered.
+
+        Sync on purpose: the WeChat reply path (`_resolve_inbox_reply`) is a synchronous
+        callback on the gateway's inbound hop, so it can only schedule this. Called from
+        outside an event loop (tests, threads) it is a no-op — the resolution itself has
+        already landed in the store either way."""
+        if item is None:
+            return
+        self._spawn_weixin_task(self._announce_prompt_resolved(item, resolution, via))
+
+    async def _announce_prompt_resolved(self, item, resolution: str, via: str) -> None:
+        from ..interactions import (
+            WX_ACK,
+            WX_RESOLVED_ELSEWHERE,
+            outcome_text,
+        )
+
+        if via != "app":
+            # The app resolves its own card locally the moment the user clicks; every other
+            # surface has to push the outcome into the open session view.
+            try:
+                await self.broadcast_session(
+                    item.session_id,
+                    {
+                        "type": "prompt_resolved",
+                        "data": {
+                            "kind": item.kind,
+                            "via": via,
+                            "resolution": resolution,
+                        },
+                    },
+                )
+            except Exception:
+                logger.debug("prompt_resolved broadcast failed", exc_info=True)
+        wx = (getattr(item, "data", None) or {}).get("wx") or {}
+        if not wx.get("target") or via == "timeout":
+            return  # the watchdog already told WeChat why it closed
+        text = (WX_ACK if via == "weixin" else WX_RESOLVED_ELSEWHERE).format(
+            outcome=outcome_text(item, resolution)
+        )
+        await self._weixin_say(wx["target"], text)
 
     async def _durable_resume(self, item) -> None:
         if not getattr(item, "tool_call_id", None):
@@ -5511,9 +5577,20 @@ class SessionManager:
         """Mirror an Inbox item to its bound channel. Discrete choices (approve/deny, ask_user
         options) render as BUTTONS — the item id rides in each, so a click resolves it
         unambiguously. Free-text answers aren't offered over messaging (open the app).
+
+        Two independent mirrors, two different visibility rules. The bound-channel mirror is the
+        Inbox's own transport, so it stays UNATTENDED-only (`visibility == inbox`) exactly as it
+        has always been — the callers used to carry that test and now it lives here, since the WS
+        handler calls this unconditionally. The WeChat mirror is the opposite case: the person is
+        on their phone, away from the computer where the inline card renders, and an attended
+        session's prompt is precisely the one they cannot see. It fires either way.
         """
+        from ..inbox import VIS_INBOX
         from ..interactions import buttons_for
 
+        await self._mirror_to_weixin(item)
+        if getattr(item, "visibility", VIS_INBOX) != VIS_INBOX:
+            return
         binding = self.inbox_routing.binding_for(item.inbox)
         if not (binding.channel and self.gateway is not None):
             return
@@ -5536,6 +5613,139 @@ class SessionManager:
                 )
         except Exception:
             pass
+
+    # -- mirroring prompts to personal WeChat -----------------------------------
+    def _weixin_peer_for_session(self, session_id: str) -> str:
+        """The WeChat peer this session answers to, or "".
+
+        The §31 mention-thread map already means "this session owns replies to this target",
+        and the DM path writes `weixin:<peer> → session` into it on every inbound message
+        (`_dispatch_inbound`). Reading it back is the whole binding — no second registry, no
+        new setting, and it is bidirectional: `mention_sessions.get(target)` is what the reply
+        path uses to find the session again.
+        """
+        for target in self.mention_sessions.targets_for(session_id):
+            if target.startswith("weixin:"):
+                return target
+        return ""
+
+    def _spawn_weixin_task(self, coro) -> None:
+        """Run `coro` on the live loop, keeping a strong reference. No loop (tests, threads) →
+        close the coroutine rather than leak an un-awaited warning."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            coro.close()
+            return
+        task = loop.create_task(coro)
+        self._wx_tasks.add(task)
+        task.add_done_callback(self._wx_tasks.discard)
+
+    async def _weixin_say(self, target: str, text: str) -> None:
+        if not target or self.gateway is None:
+            return
+        try:
+            await self.gateway.deliver(target, text)
+        except Exception:
+            logger.debug("weixin notice to %s failed", target, exc_info=True)
+
+    def _weixin_say_soon(self, target: str, text: str) -> None:
+        """`_weixin_say` from the synchronous reply path."""
+        self._spawn_weixin_task(self._weixin_say(target, text))
+
+    async def _mirror_to_weixin(self, item) -> None:
+        """Mirror a pending prompt to the WeChat peer bound to its session, as a numbered
+        plain-text card. Records what was offered in `item.data["wx"]` so a reply can be scored
+        against exactly that (and survive a restart), then arms the expiry watchdog."""
+        from ..interactions import choice_payloads, choices_for, weixin_prompt
+
+        if self.gateway is None or getattr(item, "state", "pending") != "pending":
+            return
+        if item.kind not in WX_PROMPT_KINDS:
+            return
+        data = getattr(item, "data", None)
+        if data is None or data.get("wx"):
+            return  # already mirrored (a durable-resume re-raise reuses the same item)
+        target = self._weixin_peer_for_session(item.session_id)
+        if not target:
+            return
+        choices = choices_for(item)
+        grouped = len(getattr(item, "questions", None) or []) > 1
+        # A grouped ask_user form can't be answered by one reply; the card says so and is NOT
+        # registered, so whatever the person types next reaches the agent as an ordinary message.
+        answerable = not grouped and (
+            bool(choices) or (item.kind == "question" and item.allow_text)
+        )
+        try:
+            sent = await self.gateway.deliver(
+                target, weixin_prompt(item, WX_PROMPT_TTL_MIN)
+            )
+        except Exception:
+            logger.debug("weixin prompt mirror failed", exc_info=True)
+            return
+        # The binding outlives the connection (it is just the mention-thread entry the last DM
+        # wrote), so a disconnected WeChat still resolves to a target and `deliver` answers
+        # "no adapter". Registering the card then would arm a watchdog for a prompt NOBODY was
+        # shown, and quietly decline it half an hour later.
+        if not getattr(sent, "ok", False) or not answerable:
+            return
+        data["wx"] = {
+            "target": target,
+            "expires_at": _epoch() + WX_PROMPT_TTL_MIN * 60,
+            "choices": choice_payloads(choices),
+        }
+        self.inbox._save()
+        self._arm_weixin_watchdog(item.id)
+
+    def _arm_weixin_watchdog(self, item_id: str) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        old = self._wx_watchdogs.pop(item_id, None)
+        if old is not None:
+            old.cancel()
+        self._wx_watchdogs[item_id] = loop.create_task(
+            self._expire_weixin_prompt(item_id)
+        )
+
+    def cancel_weixin_watchdog(self, item_id: str) -> None:
+        task = self._wx_watchdogs.pop(item_id, None)
+        if task is not None:
+            task.cancel()
+
+    def cancel_weixin_watchdogs_for_session(self, session_id: str) -> None:
+        """Disarm the expiry tasks of a session's still-pending prompts.
+
+        `InboxStore.resolve_session` closes a deleted session's items in bulk — the one
+        resolution path that doesn't run through `resolve_inbox`, so without this its
+        watchdogs would idle for the rest of the TTL holding a dead item. Call it BEFORE
+        the bulk resolve, while the items are still pending and listed."""
+        for item in self.inbox.pending(session_id):
+            self.cancel_weixin_watchdog(item.id)
+
+    async def _expire_weixin_prompt(self, item_id: str) -> None:
+        """Close a WeChat-mirrored prompt that nobody answered. `InboxStore.wait` has no
+        timeout, so without this the suspended turn would wait forever on a phone the person
+        put down."""
+        from ..interactions import WX_TIMED_OUT, deny_resolution
+
+        try:
+            await asyncio.sleep(WX_PROMPT_TTL_MIN * 60)
+        except asyncio.CancelledError:
+            raise
+        self._wx_watchdogs.pop(item_id, None)
+        item = self.inbox.get(item_id)
+        if item is None or item.state != "pending":
+            return
+        resolution = deny_resolution(item)
+        if not self.inbox.resolve(item_id, resolution):
+            return
+        wx = (getattr(item, "data", None) or {}).get("wx") or {}
+        await self._weixin_say(wx.get("target", ""), WX_TIMED_OUT)
+        self.notify_prompt_resolved(item, resolution, via="timeout")
+        if not self.is_running(item.session_id):
+            await self._durable_resume(item)
 
     # -- interactive prompt buttons (Slack/Telegram) ----------------------------
     async def _on_interaction(self, event) -> None:
@@ -5586,21 +5796,29 @@ class SessionManager:
 
     # -- inbox replies over messaging connectors --------------------------------
     def _resolve_inbox_reply(self, event) -> bool:
-        """Try to handle an inbound Slack/Telegram message as an Inbox reply. Returns True if the
-        message carried an `[ow:<id>]` token (so it's consumed here, not routed as a new turn) —
-        resolving the item also releases any agent suspended on it."""
+        """Try to handle an inbound Slack/Telegram/WeChat message as an Inbox reply. Returns True
+        if the message is consumed here (not routed as a new turn) — resolving the item also
+        releases any agent suspended on it.
+
+        Runs on the gateway's inbound hop BEFORE `_dispatch_inbound`, which is exactly why an
+        answer never reaches the agent as a fresh instruction. Synchronous by contract
+        (`Gateway._reply_resolver`), so everything with an await — the outbound receipt, the
+        durable resume — is scheduled rather than awaited."""
         from ..inbox_routing import resolve_from_reply
 
         text = getattr(event, "text", "") or ""
+        source = getattr(event, "source", None)
+        if source is not None and getattr(source, "platform", "") == "weixin":
+            handled = self._resolve_weixin_prompt_reply(source, text)
+            if handled is not None:
+                return handled
 
         def _resolve(item_id: str, resolution: str) -> bool:
             item = self.inbox.get(item_id)
             if item is None:
                 return False
-            if (
-                getattr(event.source, "platform", "") == "slack"
-                and item.kind in {"approval", "directory", "plan"}
-            ):
+            platform = getattr(event.source, "platform", "")
+            if platform == "slack" and item.kind in {"approval", "directory", "plan"}:
                 actor_id = str(getattr(event.source, "user_id", "") or "")
                 if not self._slack_actor_owns_item(
                     item,
@@ -5609,9 +5827,133 @@ class SessionManager:
                     team_id=getattr(event.source, "team_id", None),
                 ):
                     return False
-            return self.inbox.resolve(item_id, resolution)
+            if platform == "weixin":
+                # A quoted card carries the `[ow:id]` token, which by itself would let ANY
+                # allow-listed WeChat sender resolve ANY session's prompt. The peer must own
+                # the item's session — the same binding the numbered-reply path requires.
+                if getattr(event.source, "chat_type", "dm") in ("channel", "group"):
+                    return False
+                if self.mention_sessions.get(
+                    getattr(event.source, "target", "") or ""
+                ) != item.session_id:
+                    return False
+            ok = self.inbox.resolve(item_id, resolution)
+            if ok:
+                self.cancel_weixin_watchdog(item_id)
+                self.notify_prompt_resolved(
+                    item, resolution, via="weixin" if platform == "weixin" else "app"
+                )
+                if platform == "weixin":
+                    self._resume_after_reply(item)
+            return ok
 
         return resolve_from_reply(text, _resolve) is not None
+
+    def _resume_after_reply(self, item) -> None:
+        """A connector reply resolves the item synchronously; if the asking turn is NOT live
+        (restart, evicted engine) the agent has to be resumed the way `resolve_inbox` would."""
+        if self.is_running(item.session_id):
+            return  # the live `inbox.wait` was already released by resolve()
+        self._spawn_weixin_task(self._durable_resume(item))
+
+    def _resolve_weixin_prompt_reply(self, src, text: str) -> Optional[bool]:
+        """A WeChat reply to a numbered prompt card.
+
+        Returns True when the message is consumed here, False when it is an unrecognized
+        answer that should ALSO reach the agent (it gets a nudge and keeps its turn), and None
+        when this peer has no pending card at all — the caller then falls through to the
+        `[ow:id]` token path and, failing that, to a normal turn.
+        """
+        from ..inbox_routing import choice_from_reply, is_choice_number
+        from ..interactions import (
+            WX_ALREADY_DONE,
+            WX_BAD_PATH,
+            WX_NUDGE,
+            Choice,
+        )
+
+        # Group/channel traffic never answers a prompt: the binding is a 1:1 reply handle, and
+        # anyone in a group could otherwise approve on the owner's behalf.
+        if getattr(src, "chat_type", "dm") in ("channel", "group"):
+            return None
+        target = getattr(src, "target", "") or ""
+        session_id = self.mention_sessions.get(target)
+        if not session_id:
+            return None
+        pending = [
+            i
+            for i in self.inbox.pending(session_id)
+            if ((getattr(i, "data", None) or {}).get("wx") or {}).get("target") == target
+        ]
+        if not pending:
+            # A bare "1" is unmistakably an answer to a card. Saying so beats starting a turn
+            # whose entire prompt is the digit 1.
+            if is_choice_number(text):
+                self._weixin_say_soon(target, WX_ALREADY_DONE)
+                return True
+            return None
+        item = pending[-1]  # newest first: the card they are looking at
+        wx = item.data["wx"]
+        choices = [Choice(**c) for c in wx.get("choices", [])]
+        allow_text = item.kind == "question" and bool(item.allow_text)
+        resolution = choice_from_reply(text, choices, allow_text=allow_text)
+        if resolution is None and item.kind == "directory":
+            # There is no folder picker on a phone, so a typed absolute path IS the grant.
+            looks_like_path, payload = self._weixin_directory_path(text, item)
+            if looks_like_path:
+                if payload is None:
+                    # Don't consume the item — they can try again with a real path.
+                    self._weixin_say_soon(target, WX_BAD_PATH)
+                    return True
+                resolution = payload
+        if resolution is None:
+            # Not an answer we can read. The message still belongs to the agent (it may well
+            # be a question about the request), so it is steered in as usual — with a reminder
+            # that the gate is still open.
+            self._weixin_say_soon(target, WX_NUDGE)
+            return False
+        if not self.inbox.resolve(item.id, resolution):
+            self._weixin_say_soon(target, WX_ALREADY_DONE)
+            return True
+        self.cancel_weixin_watchdog(item.id)
+        self.notify_prompt_resolved(item, resolution, via="weixin")
+        self._resume_after_reply(item)
+        return True
+
+    @staticmethod
+    def _weixin_directory_path(text: str, item) -> tuple[bool, Optional[str]]:
+        """`(looks like a path, the grant resolution)` for a typed directory reply.
+
+        The second element is None when it looked like a path but isn't a real absolute
+        directory — the caller then re-prompts instead of granting nothing."""
+        import json as _json
+
+        from ..inbox_routing import to_halfwidth
+
+        raw = to_halfwidth(str(text or "")).strip().strip("\"'")
+        if not raw or "\n" in raw:
+            return False, None
+        looks_like_path = (
+            raw.startswith(("/", "~", "\\\\"))
+            or re.match(r"^[A-Za-z]:[\\/]", raw) is not None
+        )
+        if not looks_like_path:
+            return False, None
+        try:
+            path = Path(raw).expanduser()
+            if not (path.is_absolute() and path.is_dir()):
+                return True, None
+            resolved = str(path.resolve())
+        except Exception:
+            return True, None
+        return True, _json.dumps(
+            {
+                "granted": True,
+                "path": resolved,
+                "writable": bool((item.data or {}).get("writable", False)),
+            },
+            ensure_ascii=False,
+        )
 
     # -- self-wake resumption ---------------------------------------------------
     async def _scheduler_tick(self) -> None:
@@ -6824,7 +7166,9 @@ class SessionManager:
         # ...and its per-session skill mutes (SKILLS-SPEC §3 — mutes die with the session).
         self.session_skills.remove_session(session_id)
         # ...and closes its pending Inbox items — an orphaned approval/question can never be
-        # meaningfully answered (owner call, 2026-07-03).
+        # meaningfully answered (owner call, 2026-07-03). Their WeChat expiry tasks go first,
+        # while the items are still listed as pending.
+        self.cancel_weixin_watchdogs_for_session(session_id)
         self.inbox.resolve_session(session_id)
         # ...and its scratch dir. STRICTLY scoped: only a directory inside scratch_base is
         # removed — a real project folder the user picked is never touched.

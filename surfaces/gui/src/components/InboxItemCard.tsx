@@ -23,6 +23,13 @@ import { BTN_ACCENT, BTN_BORDERED, BTN_OUTLINE, BTN_QUIET } from "./buttons";
 
 // Shared styles (mock parity — same language as SourcesDrawer/PersonaView).
 const SEC = "text-[11px] uppercase tracking-[0.05em] text-faint font-semibold";
+// The two parked-prompt titles the server writes as fixed English sentences (`add_directory` /
+// `inbox_plan_approver`). Keyed on the exact sentence so the other `plan` gates — the team and
+// work-item proposals, which share the kind — keep their own wording.
+const PARKED_TITLE_KEYS: Record<string, string> = {
+  "Grant access to a folder?": "inbox.title_directory",
+  "Approve the plan?": "inbox.title_plan",
+};
 const OPT_BASE =
   "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-[13px] transition-colors";
 const OPT_OFF = "border-line bg-paper text-ink hover:border-accent hover:bg-accentSoft/50";
@@ -336,8 +343,16 @@ export function InboxItemCard({
         </div>
       ) : isQuestion ? null : ( // QuestionCard owns its header + title (stepper needs them)
         <>
-          <div className={SEC}>{t(item.kind)}</div>
-          <div className="text-[14px] font-semibold mt-0.5 leading-snug">{item.title}</div>
+          {/* `t(item.kind)` looked up a bare English word, so "directory" / "plan" / "tool"
+              had nowhere to resolve and the chip rendered the kind itself. Namespaced keys
+              give all six a home in both catalogs. */}
+          <div className={SEC}>{t(`inbox.kind.${item.kind}`)}</div>
+          <div className="text-[14px] font-semibold mt-0.5 leading-snug">
+            {/* Server-authored English sentences with no key of their own, so the card shipped
+                them verbatim. Matched on the exact title rather than the kind: `plan` also
+                carries the team and work-item gates, which say something else entirely. */}
+            {PARKED_TITLE_KEYS[item.title] ? t(PARKED_TITLE_KEYS[item.title]) : item.title}
+          </div>
         </>
       )}
       {item.kind === "approval" && item.data?.tool === "save_skill" ? (

@@ -54,6 +54,7 @@ import { fullPersonaName, isProjectScoped } from "./personaScope";
 import { baseName } from "./paths";
 import { sessionDisplayTitle } from "./sessionTitle";
 import { compactionText, modelSwitchText, modeNoticeBody, modeOnText, reviewerPausedText } from "./modeNotice";
+import { promptResolvedNotice } from "./promptResolved";
 import { itemsFromMessages } from "./itemsFromMessages";
 import { hasConversation } from "./draft";
 import { normalizeMode } from "./modes";
@@ -1024,6 +1025,42 @@ export function App() {
             },
           ]);
           break;
+        case "prompt_resolved": {
+          // Someone answered this session's pending gate somewhere else — today that means
+          // WeChat, where the same prompt is mirrored as a numbered card, or the expiry
+          // watchdog behind it. The agent is already released server-side; here the gate has
+          // to stop asking AND say where the answer came from. It can't say it on the card:
+          // every one of these cards renders only while unresolved, so resolving makes it
+          // vanish. The transcript keeps the record instead.
+          const via = String(d.via || "");
+          const kind = String(d.kind || "");
+          const res = String(d.resolution ?? "");
+          const verdict = parseResolution(res);
+          setItems((p) => {
+            const next = (() => {
+              switch (kind) {
+                case "approval":
+                  return resolveLastApproval(p, res === "allow" ? "once" : "deny");
+                case "directory":
+                  return resolveLastDirReq(p, verdict.granted ? "granted" : "denied");
+                case "plan":
+                  return resolveLastPlan(p, verdict.approved ? "approved" : "rejected");
+                case "tool":
+                  return resolveLastToolReq(p, verdict.approved ? "installed" : "skipped");
+                case "question":
+                  return resolveLastQuestion(p, res);
+                default:
+                  return p;
+              }
+            })();
+            // Nothing in this view was waiting on it (already answered here, or never
+            // loaded) — then there is nothing to explain either.
+            if (!next.some((it, n) => it !== p[n])) return p;
+            const note = promptResolvedNotice(kind, via, res);
+            return note ? [...next, note] : next;
+          });
+          break;
+        }
         case "tool_finished":
           setItems((p) =>
             updateLastTool(
@@ -2652,6 +2689,16 @@ function updateLastTool(
     }
   }
   return copy;
+}
+
+/** A structured resolution (directory/plan/tool carry theirs as a JSON string). */
+function parseResolution(text: string): { granted?: boolean; approved?: boolean } {
+  try {
+    const v = JSON.parse(text);
+    return v && typeof v === "object" ? v : {};
+  } catch {
+    return {};
+  }
 }
 
 function resolveLastApproval(items: Item[], decision: ApprovalDecision): Item[] {
