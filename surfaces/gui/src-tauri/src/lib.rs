@@ -216,6 +216,21 @@ fn sidecar_env() -> std::collections::HashMap<String, String> {
             parts.push((*dir).to_string());
         }
     }
+    // HOME-relative CLI homes that KNOWN_TOOL_DIRS (a plain `&[&str]`) can't spell verbatim.
+    // Mirrors coworker/toolchain.py's `_KNOWN_DIRS` (same "keep the two in step" comment
+    // there) — rustup/cargo and Go's install dirs are just as invisible to a Finder/Dock
+    // launch's minimal PATH as the Homebrew/MacPorts dirs above.
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = std::path::PathBuf::from(home);
+        for rel in [".local/bin", ".cargo/bin", "go/bin"] {
+            let dir = home.join(rel);
+            if let Some(s) = dir.to_str() {
+                if !parts.iter().any(|p| p == s) && dir.is_dir() {
+                    parts.push(s.to_string());
+                }
+            }
+        }
+    }
     out.insert("PATH".to_string(), parts.join(":"));
     out
 }
