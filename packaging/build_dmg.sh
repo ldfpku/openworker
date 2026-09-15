@@ -40,10 +40,23 @@
 # Experimental (use-at-your-own-risk) connectors are EXCLUDED from this build by default —
 # the spec strips coworker.connectors.experimental. Self-builders can opt in with:
 #   COWORKER_EXPERIMENTAL=1 ./build_dmg.sh
-# VENV PREREQS (a fresh worktree's venv, discovered the hard way 2026-08-21):
-#   .venv/bin/pip install -e ".[dev,messaging,browser,bedrock]" pyinstaller typer
-# (`typer` because PyInstaller's submodule collection imports mcp.cli, which
-# sys.exit(1)s without it.)
+#
+# EXTRAS: the Prerequisites block above (`.[bedrock]`) is the one to follow — reconciled
+# 2026-09-16, replacing an earlier "discovered the hard way 2026-08-21" note here that had
+# drifted to `.[dev,messaging,browser,bedrock]` and disagreed with it. Checked against
+# packaging/openworker-server.spec, which is the actual authority on what a build needs:
+#   - [bedrock] IS worth installing — the spec's `collect_all("boto3"/"botocore")` step
+#     only finds it if it's present in the build venv, and desktop builds intentionally
+#     bundle it (pip users opt in separately).
+#   - [messaging] is picked up best-effort (the spec's collect_submodules calls are wrapped
+#     in try/except) — present or absent, the build still succeeds either way.
+#   - [dev] (pytest) is for running the test suite, not for building the frozen binary.
+#   - [browser] (playwright) is NOT needed and, if installed, is NOT bundled either way:
+#     the spec has no collect step for it, so PyInstaller never picks it up from the build
+#     venv. `browser_automation.py` imports it lazily at runtime with its own
+#     `pip install playwright` prompt — meaning Interactive Cowork browser automation is
+#     effectively unavailable in this DMG. Bundling it (a real Chromium binary) is a
+#     separate, not-yet-done piece of work, not a build-instructions typo.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
