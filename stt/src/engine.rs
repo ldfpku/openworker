@@ -22,6 +22,11 @@
 //!   * SenseVoice cost grows faster than linearly with duration (180 s takes 20x what 30 s takes
 //!     and peaks over 1.4 GiB), so the final pass is split at the endpoints the streaming pass
 //!     already found.
+//!   * Those endpoints are 1.2 s into a pause, so a recording stopped a few seconds after the
+//!     last word leaves a segment made entirely of quiet — and SenseVoice answers a segment of
+//!     quiet with invented text. Segments are checked for speech before they are decoded.
+//!   * SenseVoice also mis-decodes the closing syllable of a recording that ends on a transient
+//!     rather than on silence, so the segment that ends at the Stop is padded with silence first.
 
 use std::{
     borrow::Cow,
@@ -75,6 +80,27 @@ pub(crate) const TAIL_MAX_MS: u32 = 2_000;
 const MAX_SEGMENT_SECS: f32 = 25.0;
 /// Shortest segment worth decoding on its own.
 const MIN_SEGMENT_SECS: f32 = 1.0;
+/// Silence appended to the one final-pass segment that ends where the user pressed Stop.
+///
+/// SenseVoice mis-decodes the last syllable of a recording that ends on a transient instead of on
+/// silence — the closing `CI` came back as `ciI`, `GitHub` as `gitthub` — and the recording of
+/// someone who stops the instant they finish talking ends on exactly that. Measured on the offset
+/// sweep (`a_hard_cut_offsets_do_not_grow_extra_characters`): the doubled character is there with
+/// 0, 50 and 100 ms of trailing silence and gone from 200 ms on, and a closing `main` that was
+/// truncated to `ma` comes back whole at 400 ms. 500 ms is past every threshold measured, and
+/// more silence never took anything away.
+pub(crate) const FINAL_TAIL_PAD_MS: u32 = 500;
+/// Window for the loudness measurement that decides whether a segment contains speech at all.
+const LOUDNESS_WINDOW_MS: u32 = 20;
+/// How far below the recording's own loudest moment a segment has to be before it counts as
+/// silence rather than speech.
+///
+/// Relative, because a microphone's silence is room tone rather than zeros, and how loud that
+/// room tone is says nothing about whether anyone spoke. Measured on the pause fixtures: room
+/// tone sits at 0.8% of the same recording's speech peak and a segment containing speech at 98%
+/// or more, so 5% is two orders of magnitude clear of the false positive that would matter —
+/// dropping a real, quietly spoken closing word.
+const SPEECH_FLOOR_RATIO: f32 = 0.05;
 /// The final recognizer holds about 230 MB; keep it warm for repeated dictation, then let it go.
 const OFFLINE_IDLE_UNLOAD: Duration = Duration::from_secs(120);
 /// Streaming uses one thread (a single thread's worst chunk still fits in a third of its 100 ms
@@ -394,6 +420,35 @@ pub(crate) fn join_segment_texts(segments: &[String]) -> String {
     out
 }
 
+/// Loudest [`LOUDNESS_WINDOW_MS`] of `samples`, as RMS. 0.0 for anything shorter than a window.
+pub(crate) fn peak_window_rms(samples: &[f32], sample_rate: u32) -> f32 {
+    let window = silence_samples(sample_rate, LOUDNESS_WINDOW_MS).max(1);
+    let mut peak = 0.0_f32;
+    for block in samples.chunks_exact(window) {
+        let mean_square: f32 =
+            block.iter().map(|sample| sample * sample).sum::<f32>() / window as f32;
+        peak = peak.max(mean_square.sqrt());
+    }
+    peak
+}
+
+/// Whether a final-pass segment has anything in it worth decoding, judged against the loudest
+/// moment of the whole recording.
+///
+/// A segment made only of the quiet after the last word is not a transcript waiting to be read
+/// out: handed one, SenseVoice invents. The one that started this was a recording stopped three
+/// seconds after the speaker finished, which came back with a Korean `그.` welded onto the end of
+/// an otherwise perfect Chinese paragraph — not in the live text, only in the final pass, which
+/// is exactly where a user notices it. The segment exists because the streaming pass declares an
+/// endpoint 1.2 s into a pause, leaving everything after that as a segment of its own; anything
+/// over about 2.2 s of trailing quiet clears [`MIN_SEGMENT_SECS`] and is decoded on its own.
+/// Both figures come from [`peak_window_rms`].
+pub(crate) fn carries_speech(span_peak: f32, recording_peak: f32) -> bool {
+    // Digital zeros are not speech whatever the rest of the recording looks like — including a
+    // recording that is nothing but zeros, where every ratio comes out as 1.
+    span_peak > 0.0 && span_peak >= recording_peak * SPEECH_FLOOR_RATIO
+}
+
 /// Recognizers label stretches with no speech — `[BLANK_AUDIO]`, `(音乐)`, `<|Speech|>`. Those
 /// are not a transcript: pasting one into the composer, or accepting one as a passing microphone
 /// test, is worse than reporting nothing at all.
@@ -410,6 +465,26 @@ pub(crate) fn is_only_non_speech_markers(text: &str) -> bool {
         }
     }
     spoken.trim().is_empty()
+}
+
+/// Turns what the final pass decoded, segment by segment, into the transcript a host receives.
+///
+/// Per-segment rather than only over the join: a segment that decoded to nothing but a non-speech
+/// label used to survive simply because the segments around it had real words in them, and the
+/// whole-transcript check then saw a transcript that plainly was speech. That is how a label ends
+/// up welded to the end of someone's sentence.
+pub(crate) fn assemble_transcript(raw_segments: &[String]) -> String {
+    let kept: Vec<String> = raw_segments
+        .iter()
+        .map(|raw| clean_transcript(raw))
+        .filter(|text| !text.is_empty() && !is_only_non_speech_markers(text))
+        .collect();
+    // Cleaned once more after joining: a duplicate can also straddle two segments.
+    let text = clean_transcript(&join_segment_texts(&kept));
+    if is_only_non_speech_markers(&text) {
+        return String::new();
+    }
+    text
 }
 
 fn thread_count(default: i32) -> i32 {
@@ -922,6 +997,80 @@ fn ensure_offline<'a>(
     Ok(&entry.0)
 }
 
+/// What one final-pass segment decoded to, before any cleaning. Everything but `raw` is read
+/// only by the offset-sweep test, which is what the extra fields are carried for.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct DecodedSpan {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    /// Loudest 20 ms in the span, against which [`SPEECH_FLOOR_RATIO`] is applied.
+    pub(crate) peak: f32,
+    /// True when the span was never handed to the model because nothing in it was loud enough
+    /// to be speech.
+    pub(crate) silent: bool,
+    pub(crate) raw: String,
+    pub(crate) tokens: Vec<String>,
+}
+
+/// Runs SenseVoice over each span. Split out from [`final_transcript`] so the offset-sweep test
+/// can see what every segment produced before cleaning, rather than only the joined result.
+///
+/// Two things happen here that are not "hand the model the audio":
+///
+///   * a span with no speech in it is not decoded at all — see [`carries_speech`];
+///   * the span that ends where the user pressed Stop gets [`FINAL_TAIL_PAD_MS`] of silence, so
+///     the model is not asked to decide what the last syllable was while the recording is still
+///     mid-syllable.
+fn decode_spans(
+    recognizer: &OfflineRecognizer,
+    audio: &[f32],
+    sample_rate: u32,
+    spans: &[(usize, usize)],
+) -> Vec<DecodedSpan> {
+    let recording_peak = peak_window_rms(audio, sample_rate);
+    let mut decoded = Vec::with_capacity(spans.len());
+    for &(start, end) in spans {
+        let samples = &audio[start..end];
+        let peak = peak_window_rms(samples, sample_rate);
+        if !carries_speech(peak, recording_peak) {
+            decoded.push(DecodedSpan {
+                start,
+                end,
+                peak,
+                silent: true,
+                raw: String::new(),
+                tokens: Vec::new(),
+            });
+            continue;
+        }
+        let stream = recognizer.create_stream();
+        // The span that ends at the Stop is the only one that can end mid-syllable; every other
+        // one ends at a pause the streaming pass found and has real silence after it already.
+        if end == audio.len() {
+            let mut padded = samples.to_vec();
+            padded.resize(
+                samples.len() + silence_samples(sample_rate, FINAL_TAIL_PAD_MS),
+                0.0,
+            );
+            stream.accept_waveform(sample_rate as i32, &padded);
+        } else {
+            stream.accept_waveform(sample_rate as i32, samples);
+        }
+        recognizer.decode(&stream);
+        if let Some(result) = stream.get_result() {
+            decoded.push(DecodedSpan {
+                start,
+                end,
+                peak,
+                silent: false,
+                raw: result.text,
+                tokens: result.tokens,
+            });
+        }
+    }
+    decoded
+}
+
 fn final_transcript(
     model_dir: &Path,
     slot: &mut Option<(OfflineRecognizer, Instant)>,
@@ -949,19 +1098,72 @@ fn final_transcript(
         MAX_SEGMENT_SECS,
         MIN_SEGMENT_SECS,
     );
-    let mut segments = Vec::with_capacity(spans.len());
-    for (start, end) in spans {
-        let stream = recognizer.create_stream();
-        stream.accept_waveform(fed_rate as i32, &audio[start..end]);
-        recognizer.decode(&stream);
-        if let Some(result) = stream.get_result() {
-            segments.push(clean_transcript(&result.text));
+    // Spans, silence padding and the loudness measurement all live on the 16 kHz timeline the
+    // audio was just moved onto, so `fed_rate` is the rate every one of them is told about.
+    let decoded = decode_spans(recognizer, &audio, fed_rate, &spans);
+    let raw: Vec<String> = decoded.into_iter().map(|span| span.raw).collect();
+    Ok(assemble_transcript(&raw))
+}
+
+// -- test hooks ------------------------------------------------------------------------------
+//
+// The tail bug lives in the seam between the two models: the streaming pass decides where the
+// final pass is cut, and the final pass is what the user ends up reading. Reproducing it needs
+// both halves separately — the boundaries the live pass found, and what each final-pass segment
+// decoded to before cleaning — which the public API deliberately does not expose.
+
+/// Feeds `audio` through a real [`Session`] in microphone-sized chunks and returns the pause
+/// boundaries the streaming pass found plus the live text the stop leaves behind.
+///
+/// Endpointing depends on the audio, not on the wall clock, so this is the same answer a
+/// real-time replay gives — deterministically and in a fraction of the time.
+#[cfg(test)]
+pub(crate) fn probe_streaming(
+    model_dir: &Path,
+    audio: &[f32],
+    sample_rate: u32,
+) -> Result<(Vec<usize>, String), DictationError> {
+    let live = Arc::new(Mutex::new(Vec::new()));
+    let mut session = load_session(model_dir, live.clone(), sample_rate, None)?;
+    let chunk = (sample_rate as usize / 10).max(1);
+    for window in audio.chunks(chunk) {
+        if let Ok(mut guard) = live.lock() {
+            guard.extend_from_slice(window);
         }
+        session.pump();
     }
-    // Cleaned once more after joining: a duplicate can also straddle two segments.
-    let text = clean_transcript(&join_segment_texts(&segments));
-    if is_only_non_speech_markers(&text) {
-        return Ok(String::new());
-    }
-    Ok(text)
+    session.flush(audio);
+    Ok((session.boundaries.clone(), session.committed_text()))
+}
+
+/// The final pass, with its working shown: the spans it chose, what each one decoded to before
+/// cleaning, and the joined transcript the host would receive.
+///
+/// Resamples exactly as [`final_transcript`] does, so a 48 kHz fixture exercises the path a 48 kHz
+/// microphone actually takes. The third element of the answer is the rate the returned spans are
+/// measured in — 16 kHz whenever the resampler was used, not the capture rate the caller passed.
+#[cfg(test)]
+pub(crate) fn probe_final(
+    model_dir: &Path,
+    slot: &mut Option<(OfflineRecognizer, Instant)>,
+    audio: &[f32],
+    sample_rate: u32,
+    boundaries: &[usize],
+) -> Result<(String, Vec<DecodedSpan>, u32), DictationError> {
+    let recognizer = ensure_offline(model_dir, slot)?;
+    let (audio, fed_rate) = resample::to_model_rate(audio, sample_rate);
+    let boundaries: Vec<usize> = boundaries
+        .iter()
+        .map(|offset| resample::scale_offset(*offset, sample_rate, fed_rate))
+        .collect();
+    let spans = segment_spans(
+        audio.len(),
+        fed_rate,
+        &boundaries,
+        MAX_SEGMENT_SECS,
+        MIN_SEGMENT_SECS,
+    );
+    let decoded = decode_spans(recognizer, &audio, fed_rate, &spans);
+    let raw: Vec<String> = decoded.iter().map(|span| span.raw.clone()).collect();
+    Ok((assemble_transcript(&raw), decoded, fed_rate))
 }

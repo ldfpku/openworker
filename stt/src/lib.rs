@@ -459,9 +459,10 @@ mod tests {
 
     use super::{
         engine::{
-            clean_transcript, is_only_non_speech_markers, join_segment_texts, segment_spans,
-            silence_samples, Degrade, PartialAccumulator, TailDrain, TAIL_MAX_MS, TAIL_MIN_MS,
-            TAIL_SETTLED_MS, TAIL_STEP_MS,
+            assemble_transcript, carries_speech, clean_transcript, is_only_non_speech_markers,
+            join_segment_texts, peak_window_rms, probe_final, probe_streaming, segment_spans,
+            silence_samples, Degrade, PartialAccumulator, TailDrain, FINAL_TAIL_PAD_MS,
+            TAIL_MAX_MS, TAIL_MIN_MS, TAIL_SETTLED_MS, TAIL_STEP_MS,
         },
         err_key,
         models::{
@@ -683,6 +684,170 @@ mod tests {
         assert!(
             last <= tolerance,
             "48 kHz final text is {last:.4} worse than 16 kHz (tolerance {tolerance:.4})"
+        );
+    }
+
+    /// How much of the truth's tail the final transcript has to end on. Four characters is enough
+    /// that ending on them is not a coincidence, and short enough that a substitution earlier in
+    /// the sentence is not this test's business.
+    const TAIL_ANCHOR: usize = 4;
+
+    /// Reads `truth.tsv` out of a sweep directory: one `prefix<TAB>transcript` line per base
+    /// recording, matched against the start of each wav's file name.
+    fn sweep_truths(dir: &Path) -> Vec<(String, String)> {
+        let text = fs::read_to_string(dir.join("truth.tsv")).expect("sweep dir needs truth.tsv");
+        text.lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                let (prefix, truth) = line.split_once('\t').expect("truth.tsv is prefix<TAB>text");
+                (prefix.trim().to_owned(), truth.trim().to_owned())
+            })
+            .collect()
+    }
+
+    /// The hard-cut offset sweep: does the final transcript end where the speaker did?
+    ///
+    /// Two ways it did not. Someone who stops the instant they finish a word hands the final pass
+    /// a recording that ends on a transient instead of on silence, and SenseVoice answers that
+    /// with a repeated closing character — `CI` came back as `ciI`, `GitHub` as `gitthub`.
+    /// Someone who stops a few seconds later hands it a segment made entirely of the quiet after
+    /// the last word, and SenseVoice answers that by inventing — a Korean `그.` welded onto the
+    /// end of a Chinese paragraph. Both show up only in the final pass, after the live text the
+    /// user was watching has already been replaced.
+    ///
+    /// The fixtures are the same sentences cut at offsets around the last syllable and stopped
+    /// at a range of delays afterwards, at both capture rates, because which offsets misfire is
+    /// not something reasoning predicts. What is asserted is the tail and only the tail: the
+    /// transcript has to END on what was said last, with nothing after it.
+    ///
+    ///   OCW_STT_MODEL_DIR=%APPDATA%\coworker\models \
+    ///   OCW_STT_SWEEP_DIR=...\sweep \
+    ///   cargo test --release --manifest-path stt/Cargo.toml -- --ignored --nocapture sweep
+    ///
+    /// `OCW_STT_SWEEP_DIR` is a directory of mono 16-bit wavs plus a `truth.tsv` of
+    /// `prefix<TAB>what was said` lines, matched against the start of each file name. Build one
+    /// from any recordings: trim each so the last sample is the last sample of SPEECH, then write
+    /// `<base>_pNNNN.wav` with NNNN ms of silence appended (0, 50, 100, 200, 400, 800 — the range
+    /// the doubling appears and disappears across), `<base>_mNNN.wav` with NNN ms taken OFF the
+    /// end (a stop landing mid-syllable), and `<base>_sNNNN.wav` / `<base>_nNNNN.wav` with that
+    /// much trailing digital silence or room-tone noise (a stop landing seconds after the last
+    /// word — past about 2200 ms is where the invented segment appears). `_m` in the name is what
+    /// tells the test the closing syllable is not intact.
+    #[test]
+    #[ignore = "needs the real 450 MB model packs and the generated sweep fixtures"]
+    fn a_hard_cut_offsets_do_not_grow_extra_characters() {
+        let Ok(model_dir) = std::env::var("OCW_STT_MODEL_DIR") else {
+            panic!("set OCW_STT_MODEL_DIR and OCW_STT_SWEEP_DIR to run this");
+        };
+        let model_dir = PathBuf::from(model_dir);
+        let sweep = PathBuf::from(std::env::var("OCW_STT_SWEEP_DIR").expect("OCW_STT_SWEEP_DIR"));
+        let truths = sweep_truths(&sweep);
+
+        let mut wavs: Vec<PathBuf> = fs::read_dir(&sweep)
+            .expect("read OCW_STT_SWEEP_DIR")
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| path.extension().is_some_and(|ext| ext == "wav"))
+            .collect();
+        wavs.sort();
+        assert!(!wavs.is_empty(), "no wavs in {}", sweep.display());
+
+        let mut offline = None;
+        let mut failures: Vec<String> = Vec::new();
+        for wav in wavs {
+            let name = wav.file_stem().unwrap().to_string_lossy().into_owned();
+            let truth = truths
+                .iter()
+                .find(|(prefix, _)| name.starts_with(prefix.as_str()))
+                .map(|(_, truth)| truth.clone())
+                .unwrap_or_else(|| panic!("no truth.tsv prefix matches {name}"));
+            let (samples, rate) = read_wav(&wav);
+            let (boundaries, live) =
+                probe_streaming(&model_dir, &samples, rate).expect("streaming probe");
+            // `span_rate` is 16 kHz whenever the capture rate was not: the final pass resamples
+            // the whole recording before it cuts it, so the spans are on that timeline, not the
+            // file's.
+            let (final_text, spans, span_rate) =
+                probe_final(&model_dir, &mut offline, &samples, rate, &boundaries).expect("final");
+
+            println!(
+                "\n== {name}  {:.4}s @ {rate} Hz ({} samples)",
+                samples.len() as f32 / rate as f32,
+                samples.len()
+            );
+            println!("   truth : {truth:?}");
+            println!(
+                "   pauses: {:?}",
+                boundaries
+                    .iter()
+                    .map(|offset| format!("{:.3}s", *offset as f32 / rate as f32))
+                    .collect::<Vec<_>>()
+            );
+            for span in &spans {
+                println!(
+                    "   span  {:7.3}..{:7.3}s ({:5.3}s) peak={:.5}{} raw={:?}",
+                    span.start as f32 / span_rate as f32,
+                    span.end as f32 / span_rate as f32,
+                    (span.end - span.start) as f32 / span_rate as f32,
+                    span.peak,
+                    if span.silent { " SILENT" } else { "" },
+                    span.raw
+                );
+                if span.raw.contains('<') || span.raw.contains('|') {
+                    println!("         !! markers leaked into text: {:?}", span.tokens);
+                }
+            }
+            println!("   live  : {live:?}");
+            println!("   final : {final_text:?}");
+
+            let truth_spoken = spoken(&truth);
+            let got = spoken(&final_text);
+            // Two different questions, because the fixtures ask two different ones.
+            //
+            // A recording cut in the middle of its closing syllable (`_m`) no longer contains
+            // that syllable, so what it should say is genuinely undefined — `main` with 100 ms
+            // taken off it is heard as 妹, and no recognizer owes us better. What is still
+            // defined, and is exactly the defect, is that the transcript must not GROW: the
+            // doubled closing character showed up here as `github` → `gitthub` and `CI` → `ciI`.
+            //
+            // Every other fixture ends on a whole syllable, so the transcript has to end on it.
+            let complaint = if name.contains("_m") {
+                (got.len() > truth_spoken.len()).then(|| {
+                    format!(
+                        "grew {} characters past what was said\n     truth: {:?}\n     final: {:?}",
+                        got.len() - truth_spoken.len(),
+                        truth_spoken.iter().collect::<String>(),
+                        got.iter().collect::<String>()
+                    )
+                })
+            } else {
+                let anchor: String = truth_spoken[truth_spoken.len().saturating_sub(TAIL_ANCHOR)..]
+                    .iter()
+                    .collect();
+                (!got.iter().collect::<String>().ends_with(&anchor)).then(|| {
+                    format!(
+                        "does not end on what was said\n     truth: {:?}\n     final: {:?}",
+                        truth_spoken.iter().collect::<String>(),
+                        got.iter().collect::<String>()
+                    )
+                })
+            };
+            if let Some(complaint) = complaint {
+                println!("   FAIL  : {complaint}");
+                failures.push(format!("{name}: {complaint}"));
+            } else if got != truth_spoken {
+                // Not this test's business, but worth seeing in the log: SenseVoice is unstable
+                // on Latin words embedded in Chinese anywhere in the sentence, tail or not.
+                println!(
+                    "   note  : differs away from the tail: {:?}",
+                    got.iter().collect::<String>()
+                );
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "\n{} of the hard-cut offsets produced a wrong transcript:\n  {}",
+            failures.len(),
+            failures.join("\n  ")
         );
     }
 
@@ -1304,6 +1469,96 @@ mod tests {
         assert!(is_only_non_speech_markers("<|zh|><|NEUTRAL|><|BGM|>"));
         assert!(!is_only_non_speech_markers("你好，这是一次测试。"));
         assert!(!is_only_non_speech_markers("[BLANK_AUDIO] 你好"));
+    }
+
+    #[test]
+    fn a_label_beside_real_speech_is_dropped_rather_than_joined_onto_it() {
+        // The shape of the bug: a segment that decoded to nothing but a label used to survive
+        // because the OTHER segments were obviously speech, so the whole-transcript check passed.
+        assert_eq!(
+            assemble_transcript(&[
+                "请大家准备材料。".to_owned(),
+                "[BLANK_AUDIO]".to_owned(),
+            ]),
+            "请大家准备材料。"
+        );
+        assert_eq!(
+            assemble_transcript(&["（音乐）".to_owned(), "今天开会。".to_owned()]),
+            "今天开会。"
+        );
+        // Markers still strip, duplicates across the join still collapse, and Latin words at a
+        // join still get their space.
+        assert_eq!(
+            assemble_transcript(&[
+                "<|zh|><|NEUTRAL|>确定发布时间。".to_owned(),
+                "。请大家准备材料。".to_owned(),
+            ]),
+            "确定发布时间。请大家准备材料。"
+        );
+        assert_eq!(
+            assemble_transcript(&["merge to main".to_owned(), "then deploy".to_owned()]),
+            "merge to main then deploy"
+        );
+        // Nothing but labels is still nothing at all.
+        assert_eq!(
+            assemble_transcript(&["[BLANK_AUDIO]".to_owned(), "（音乐）".to_owned()]),
+            ""
+        );
+        assert_eq!(assemble_transcript(&[]), "");
+    }
+
+    /// A tone at `level`, long enough to fill several loudness windows.
+    fn level_tone(level: f32, samples: usize) -> Vec<f32> {
+        (0..samples)
+            .map(|index| level * (index as f32 * 0.3).sin())
+            .collect()
+    }
+
+    #[test]
+    fn a_segment_with_nothing_but_room_tone_is_never_decoded() {
+        let rate = 16_000_u32;
+        let speech = level_tone(0.34, rate as usize);
+        let recording_peak = peak_window_rms(&speech, rate);
+        assert!(recording_peak > 0.2, "peak was {recording_peak}");
+
+        let span = |samples: &[f32]| carries_speech(peak_window_rms(samples, rate), recording_peak);
+
+        // Measured on the pause fixtures: a quiet room sits at about 0.8% of the same
+        // recording's speech peak, and a segment containing speech at 98% or more.
+        assert!(!span(&level_tone(0.0034, rate as usize)));
+        assert!(!span(&vec![0.0; rate as usize]));
+        assert!(span(&speech));
+        // A closing word said much more quietly than the loudest moment is still speech: the
+        // floor has an order of magnitude of headroom under it.
+        assert!(span(&level_tone(0.034, rate as usize)));
+
+        // The measurement is a peak over short windows, not an average, so one word inside a
+        // long quiet segment still counts.
+        let mut mostly_quiet = vec![0.0_f32; rate as usize * 3];
+        mostly_quiet.splice(0..rate as usize / 2, level_tone(0.34, rate as usize / 2));
+        assert!(span(&mostly_quiet));
+
+        // Rate-independent: the window is milliseconds, not samples.
+        let rate48 = 48_000_u32;
+        assert!(!carries_speech(
+            peak_window_rms(&level_tone(0.0034, rate48 as usize), rate48),
+            peak_window_rms(&level_tone(0.34, rate48 as usize), rate48),
+        ));
+        // Too short to measure at all is not speech.
+        assert_eq!(peak_window_rms(&[0.5, -0.5], rate), 0.0);
+        // A recording of nothing but digital zeros makes every ratio come out as 1; zeros are
+        // still not speech.
+        assert!(!carries_speech(0.0, 0.0));
+    }
+
+    #[test]
+    fn the_stop_pad_is_half_a_second_at_any_capture_rate() {
+        assert_eq!(silence_samples(16_000, FINAL_TAIL_PAD_MS), 8_000);
+        assert_eq!(silence_samples(48_000, FINAL_TAIL_PAD_MS), 24_000);
+        assert_eq!(silence_samples(44_100, FINAL_TAIL_PAD_MS), 22_050);
+        // Past every threshold the offset sweep measured: the doubled closing character is gone
+        // from 200 ms on, and a truncated closing word comes back whole at 400 ms.
+        assert!(FINAL_TAIL_PAD_MS >= 400);
     }
 
     /// Regression guard, prompted by a Windows console-flash bug found elsewhere in the app (a
