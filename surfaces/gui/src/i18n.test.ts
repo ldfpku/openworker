@@ -8,9 +8,27 @@ interface LocaleTree {
 }
 
 const IMPORTANT_KEYS = [
-  "settings.voice_dl_progress",
   "settings.voice_installed",
   "settings.voice_not_installed",
+  // Voice Input ships two model packs (streaming live text + the final pass that replaces it);
+  // every string the pack cards and the composer's live row render is load-bearing copy.
+  "settings.voice_pack_streaming",
+  "settings.voice_pack_final",
+  "settings.voice_pack_streaming_detail",
+  "settings.voice_pack_final_detail",
+  "settings.voice_pack_download_all",
+  "settings.voice_pack_resume",
+  "settings.voice_pack_progress",
+  "settings.voice_pack_files_missing",
+  "settings.voice_pack_verify",
+  "settings.voice_pack_total_progress",
+  "settings.voice_engine_title",
+  "settings.voice_engine_detail",
+  "settings.voice_legacy_present",
+  "settings.voice_legacy_cleaned",
+  "composer.voice.live_status",
+  "composer.voice.realtime_degraded",
+  "composer.err_dictation_engine",
   "personas.installed_other",
   "personas.disable_warning_other",
   "personas.tools_label",
@@ -59,9 +77,15 @@ const IMPORTANT_KEYS = [
 ] as const;
 
 const values: Record<string, Record<string, string | number>> = {
-  "settings.voice_dl_progress": { done: "1 MiB", total: "2 MiB" },
-  "settings.voice_installed": { size: "141 MiB" },
-  "settings.voice_not_installed": { size: "141 MiB" },
+  // Sizes come from `ocw-stt`'s pack manifests at runtime, never from this file — these are
+  // stand-ins shaped like what formatBytes produces for the streaming pack and for both packs.
+  "settings.voice_installed": { size: "226 MiB" },
+  "settings.voice_not_installed": { size: "226 MiB" },
+  "settings.voice_pack_download_all": { size: "455 MiB" },
+  "settings.voice_pack_progress": { done: "12 MiB", total: "226 MiB", index: 2, count: 3 },
+  "settings.voice_pack_files_missing": { missing: 1, total: 3 },
+  "settings.voice_pack_total_progress": { done: "120 MiB", total: "455 MiB" },
+  "settings.voice_engine_detail": { engine: "sherpa-onnx 1.13.7" },
   "personas.installed_other": { count: 2 },
   "personas.disable_warning_other": { count: 2 },
   "personas.tools_label": { tools: "read_file" },

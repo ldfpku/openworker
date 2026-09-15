@@ -20,7 +20,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use ocw_stt::{Dictation, DownloadProgress};
+use ocw_stt::{Dictation, DownloadProgress, PackStatus, PartialTranscript};
 use serde::Serialize;
 use tauri::{
     menu::{Menu, MenuItem},
@@ -436,6 +436,9 @@ fn start_window_drag(window: tauri::WebviewWindow) -> bool {
 // The actual microphone/model code lives in the Tauri-free `ocw-stt` crate. This shell owns the
 // macOS permission prompt and translates the reusable API into React-friendly Tauri commands.
 
+/// What Settings and the composer render. `model_installed` / `model_verified` are derived by
+/// `ocw-stt` from `packs` — every pack has to be ready before either turns true — so the SPA
+/// keeps its single "is voice usable" test while still showing the packs one card each.
 #[derive(Clone, Serialize)]
 struct VoiceInputStatus {
     recording: bool,
@@ -445,6 +448,9 @@ struct VoiceInputStatus {
     download_in_progress: bool,
     model_name: &'static str,
     model_bytes: u64,
+    engine: &'static str,
+    packs: Vec<PackStatus>,
+    legacy_model_present: bool,
     supported: bool,
     device_summary: String,
     compatibility_reason: Option<String>,
@@ -461,6 +467,9 @@ fn voice_input_status(dictation: &Dictation) -> VoiceInputStatus {
         download_in_progress: status.download_in_progress,
         model_name: status.model_name,
         model_bytes: status.model_bytes,
+        engine: status.engine,
+        packs: status.packs,
+        legacy_model_present: status.legacy_model_present,
         supported,
         device_summary,
         compatibility_reason,
@@ -544,13 +553,19 @@ fn get_dictation_status(state: tauri::State<Arc<Dictation>>) -> VoiceInputStatus
     voice_input_status(&state)
 }
 
+/// `language` is the SPA's current interface language. SenseVoice runs in `auto` and needs no
+/// hint, so nothing reads it today; it rides along so a future "always transcribe as <lang>"
+/// override is a one-line engine change instead of a protocol change.
 #[tauri::command]
 async fn start_dictation(
+    app: tauri::AppHandle,
     state: tauri::State<'_, Arc<Dictation>>,
+    language: Option<String>,
 ) -> Result<VoiceInputStatus, String> {
     // Off the main thread: opening the input device blocks on macOS's one-time microphone
     // permission dialog (and CoreAudio device setup) — a sync command would freeze the UI
     // behind the system prompt.
+    let _ = language;
     let (supported, _, reason) = voice_input_compatibility();
     if !supported {
         return Err(
@@ -559,39 +574,48 @@ async fn start_dictation(
     }
     let dictation = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        dictation.start()?;
+        // The sink runs on the engine thread, so it only hands the update to Tauri's event bus
+        // and returns. `text` is always the WHOLE live transcript (committed segments plus the
+        // in-flight one), never a delta — the composer replaces its span with it.
+        let sink: ocw_stt::PartialSink = Arc::new(move |partial: PartialTranscript| {
+            let _ = app.emit("dictation-partial-transcript", partial);
+        });
+        dictation.start(Some(sink))?;
         Ok::<VoiceInputStatus, String>(voice_input_status(&dictation))
     })
     .await
     .map_err(|e| format!("Dictation failed to start: {e}"))?
 }
 
-/// `language` is the SPA's current interface language; the engine recognises speech in it
-/// instead of guessing, which is what makes short Chinese utterances come out as Chinese.
 #[tauri::command]
-async fn stop_dictation(
-    state: tauri::State<'_, Arc<Dictation>>,
-    language: Option<String>,
-) -> Result<String, String> {
+async fn stop_dictation(state: tauri::State<'_, Arc<Dictation>>) -> Result<String, String> {
     let dictation = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || dictation.stop_and_transcribe(language.as_deref()))
-        .await
-        .map_err(|e| format!("Dictation stopped unexpectedly: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        dictation.stop_and_transcribe().map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Dictation stopped unexpectedly: {e}"))?
 }
 
+/// Drops the in-flight recording. `Dictation::cancel` stops the engine thread's session as well
+/// as the capture thread, so no further `dictation-partial-transcript` can arrive afterwards.
 #[tauri::command]
 fn cancel_dictation(state: tauri::State<Arc<Dictation>>) {
     state.cancel();
 }
 
+/// `pack` names one model pack ("streaming" / "final"); `None` means "bring every pack up to
+/// date", which is what the Download-all button sends. Progress events carry the pack they belong
+/// to, so the SPA drives a per-card bar and one aggregate bar from the same stream.
 #[tauri::command]
 async fn download_dictation_model(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<Dictation>>,
+    pack: Option<String>,
 ) -> Result<VoiceInputStatus, String> {
     let dictation = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        dictation.install_default_model_with_progress(|progress: DownloadProgress| {
+        dictation.install_models_with_progress(pack.as_deref(), |progress: DownloadProgress| {
             let _ = app.emit("dictation-download-progress", progress);
         })?;
         Ok::<VoiceInputStatus, String>(voice_input_status(&dictation))
@@ -608,10 +632,11 @@ fn cancel_dictation_model_download(state: tauri::State<Arc<Dictation>>) {
 #[tauri::command]
 async fn verify_dictation_model(
     state: tauri::State<'_, Arc<Dictation>>,
+    pack: Option<String>,
 ) -> Result<VoiceInputStatus, String> {
     let dictation = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        dictation.verify_default_model()?;
+        dictation.verify_models(pack.as_deref())?;
         Ok::<VoiceInputStatus, String>(voice_input_status(&dictation))
     })
     .await
@@ -627,9 +652,22 @@ fn mark_dictation_test_passed(
 }
 
 #[tauri::command]
-fn delete_dictation_model(state: tauri::State<Arc<Dictation>>) -> Result<VoiceInputStatus, String> {
-    state.delete_default_model()?;
+fn delete_dictation_model(
+    state: tauri::State<Arc<Dictation>>,
+    pack: Option<String>,
+) -> Result<VoiceInputStatus, String> {
+    state.delete_models(pack.as_deref())?;
     Ok(voice_input_status(&state))
+}
+
+/// Removes the whisper-era `ggml-base.bin` and its markers, and reports what went. `ocw-stt`
+/// refuses until BOTH new packs verify, so a half-migrated install keeps the old model until the
+/// replacement is genuinely usable. Returns an empty list when there was nothing to remove.
+#[tauri::command]
+fn cleanup_legacy_dictation_models(
+    state: tauri::State<Arc<Dictation>>,
+) -> Result<Vec<String>, String> {
+    Ok(state.cleanup_legacy_models()?)
 }
 
 /// Instantaneous mic loudness (0..1) while a dictation is recording — the composer polls
@@ -785,6 +823,7 @@ pub fn run() {
             verify_dictation_model,
             mark_dictation_test_passed,
             delete_dictation_model,
+            cleanup_legacy_dictation_models,
             dictation_level,
             check_for_update,
             download_update,
@@ -853,8 +892,9 @@ pub fn run() {
             };
             app.manage(KeepAwake(Mutex::new(ka)));
             app.manage(PendingUpdate(Mutex::new(None)));
-            // Voice recordings are transient; only the explicitly installed local Whisper model
-            // lives in the existing application state directory.
+            // Voice recordings are transient; only the two explicitly installed model packs (the
+            // streaming one behind live text and the final transcription pass) live in the
+            // existing application state directory.
             app.manage(Arc::new(Dictation::new(state_dir().join("models"))));
 
             // 2. Build the window, injecting the sidecar endpoints before the SPA loads.

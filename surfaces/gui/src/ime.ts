@@ -59,9 +59,17 @@ type AnyKeyEvent =
 /**
  * True when this keydown belongs to an in-flight input-method composition and the app should
  * keep its hands off it. Guard every Enter/Escape/Arrow shortcut that reads from a text field.
+ *
+ * The event is optional: "is an input method composing right now?" is also a question without a
+ * keystroke behind it. Live dictation asks it that way — a transcript update that lands mid
+ * composition would rewrite the textarea out from under the candidate list, so it waits for
+ * compositionend instead. With no event there is nothing to look at but the document-level
+ * state, and nothing to preventDefault.
  */
-export function isComposing(e: AnyKeyEvent): boolean {
-  const native = ("nativeEvent" in e && e.nativeEvent ? e.nativeEvent : e) as KeyboardEvent;
+export function isComposing(e?: AnyKeyEvent): boolean {
+  const native = (e && "nativeEvent" in e && e.nativeEvent ? e.nativeEvent : e) as
+    | KeyboardEvent
+    | undefined;
   if (native?.isComposing) return true;
   if (native?.keyCode === 229) return true;
   if (composing) return true;
@@ -74,7 +82,7 @@ export function isComposing(e: AnyKeyEvent): boolean {
   // cost at "press Enter again" rather than "a blank line appeared in your message".
   // Deliberately NOT done in the branches above: while composition is genuinely in flight the
   // input method still needs the key, and cancelling the default action can break the commit.
-  (e as { preventDefault?: () => void }).preventDefault?.();
+  (e as { preventDefault?: () => void } | undefined)?.preventDefault?.();
   return true;
 }
 

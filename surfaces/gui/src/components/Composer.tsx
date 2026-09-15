@@ -18,10 +18,21 @@ import {
   getDictationLevel,
   getDictationStatus,
   isTauri,
+  listenDictationPartialTranscript,
   startDictation,
   stopDictation,
   type DictationStatus,
 } from "../tauri";
+import {
+  applyPartial,
+  beginSpan,
+  cancelSpan,
+  finalizeSpan,
+  reconcileUserEdit,
+  spanCaret,
+  spanValue,
+  type DictationSpan,
+} from "../dictationSpan";
 
 // Plan + Custom hidden for this release (owner ask 2026-07-22): Plan's approval flow isn't
 // polished enough to ship, and Custom (config.toml auto-allow rules) is a power-user mode
@@ -235,6 +246,20 @@ export function Composer(props: Props) {
   const [dictation, setDictation] = useState<DictationStatus | null>(null);
   const [dictationBusy, setDictationBusy] = useState<string | null>(null);
   const [dictationError, setDictationError] = useState<string | null>(null);
+  // Live-dictation bookkeeping, all in refs: none of it should re-render on its own, and the
+  // partial listener has to read the CURRENT values rather than the ones its closure captured.
+  // `span` is the stretch of the draft dictation owns (see dictationSpan.ts); `seq` drops
+  // out-of-order updates; `pendingPartial` parks an update that arrived while an input method
+  // was mid-composition; `degradedNotified` keeps the "live text gave up" line to one showing.
+  const dictationSpanRef = useRef<DictationSpan | null>(null);
+  const partialSeqRef = useRef(0);
+  const pendingPartialRef = useRef<string | null>(null);
+  const degradedNotifiedRef = useRef(false);
+  // Where the caret should land after the NEXT programmatic setText. Assigning textarea.value
+  // through React drops the selection to the end, which would drag the view away from a
+  // mid-draft dictation on every update.
+  const caretRef = useRef<number | null>(null);
+  const [dictationNotice, setDictationNotice] = useState<string | null>(null);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   // "Enhance prompt" (composer toolbar, idle → busy → enhanced): busy while the one-shot
   // rewrite is in flight (click again to cancel); enhanced (enhanceOriginal set) once the
@@ -270,6 +295,18 @@ export function Composer(props: Props) {
     const next = Math.min(el.scrollHeight, max);
     el.style.height = `${Math.max(next, 24)}px`;
     el.style.overflowY = el.scrollHeight > max ? "auto" : "hidden";
+  }, [text]);
+
+  // Put the caret back where dictation wants it after a programmatic rewrite. Only a value the
+  // dictation path set is honoured (caretRef is cleared on use), so ordinary typing is untouched.
+  useLayoutEffect(() => {
+    const at = caretRef.current;
+    if (at === null) return;
+    caretRef.current = null;
+    const el = textareaRef.current;
+    if (!el) return;
+    const position = Math.max(0, Math.min(at, el.value.length));
+    el.setSelectionRange(position, position);
   }, [text]);
 
   // Clear the draft when the conversation changes, so a half-typed message / picked file doesn't
@@ -381,11 +418,83 @@ export function Composer(props: Props) {
     return () => window.clearInterval(timer);
   }, [dictation?.recording]);
 
+  // Rewrite the dictation span and move the caret with it. Used by every live update.
+  const writeSpan = (next: DictationSpan) => {
+    dictationSpanRef.current = next;
+    caretRef.current = spanCaret(next);
+    setText(spanValue(next));
+  };
+
+  // Live transcript. Every update carries the WHOLE transcript so far, so the span is replaced
+  // rather than extended, and a lower `seq` than the last one seen is a straggler to drop.
+  useEffect(() => {
+    if (!dictation?.recording) return;
+    let active = true;
+    let unlisten = () => {};
+    const apply = (live: string) => {
+      const span = dictationSpanRef.current;
+      // A detached span is the user's text now: writing to it would both revert their edit and
+      // yank the caret to the end of the draft on every update.
+      if (!span || span.detached) return;
+      writeSpan(applyPartial(span, live));
+    };
+    // An update that lands mid-composition would rewrite the textarea under the candidate list
+    // and cancel the word being typed. Park it and write it once the input method is done.
+    const flushPending = () => {
+      const pending = pendingPartialRef.current;
+      if (pending === null) return;
+      pendingPartialRef.current = null;
+      apply(pending);
+    };
+    void listenDictationPartialTranscript((partial) => {
+      if (!active) return;
+      if (partial.seq <= partialSeqRef.current) return;
+      partialSeqRef.current = partial.seq;
+      if (partial.degraded && !degradedNotifiedRef.current) {
+        degradedNotifiedRef.current = true;
+        setDictationNotice(t("composer.voice.realtime_degraded"));
+      }
+      if (isComposing()) {
+        pendingPartialRef.current = partial.text;
+        return;
+      }
+      // Drop any parked update before writing this one. Partials are whole transcripts, so a
+      // newer one supersedes a parked older one outright — and a parked one left behind would be
+      // flushed by the NEXT compositionend and rewind the live text to where it was two updates
+      // ago. (Reachable without composing at all: `isComposing()` also guards the 50 ms after
+      // compositionend, so an update can be parked with no compositionend left to flush it.)
+      pendingPartialRef.current = null;
+      apply(partial.text);
+    }).then((stop) => {
+      if (active) unlisten = stop;
+      else stop();
+    });
+    document.addEventListener("compositionend", flushPending);
+    return () => {
+      active = false;
+      unlisten();
+      document.removeEventListener("compositionend", flushPending);
+      pendingPartialRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dictation?.recording]);
+
   useEffect(() => {
     if (!dictation?.recording) return;
     const cancelOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      // Escape is also how an input method cancels its candidate list. Without this guard,
+      // backing out of a half-typed Chinese word threw away the whole recording with it.
+      if (isComposing(event)) return;
       event.preventDefault();
+      const span = dictationSpanRef.current;
+      if (span) {
+        const restored = cancelSpan(span);
+        caretRef.current = restored.caret;
+        setText(restored.value);
+      }
+      dictationSpanRef.current = null;
+      setDictationNotice(null);
       void cancelDictation()
         .catch(() => undefined)
         .finally(() => {
@@ -394,6 +503,7 @@ export function Composer(props: Props) {
     };
     window.addEventListener("keydown", cancelOnEscape);
     return () => window.removeEventListener("keydown", cancelOnEscape);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dictation?.recording]);
 
   const voiceReady = !!dictation?.supported && !!dictation?.model_verified && !!dictation?.test_passed;
@@ -600,11 +710,32 @@ export function Composer(props: Props) {
     try {
       if (dictation?.recording) {
         setDictationBusy(t("composer.starting_transcribe"));
-        const transcript = await stopDictation();
+        let transcript: string;
+        try {
+          transcript = await stopDictation();
+        } catch (stopError) {
+          // The live text is the only record of what was said — leave it in the draft and let
+          // the user keep or edit it. Only the span bookkeeping is torn down.
+          dictationSpanRef.current = null;
+          throw stopError;
+        }
         if (transcript === null) throw new Error(t("composer.err_transcribe"));
-        if (transcript.trim()) {
+        // Read the span only now: transcribing a long recording takes seconds, and the user can
+        // keep typing through it. A snapshot taken before the await would write their edits away.
+        const span = dictationSpanRef.current;
+        // The final transcript is a fresh pass over the whole recording, not a continuation of
+        // the live text: it REPLACES the span. An empty one leaves the live text standing.
+        if (span) {
+          const done = finalizeSpan(span, transcript);
+          caretRef.current = done.caret;
+          setText(done.value);
+        } else if (transcript.trim()) {
           setText((draft) => (draft.trim() ? `${draft.trimEnd()} ${transcript.trim()}` : transcript.trim()));
         }
+        dictationSpanRef.current = null;
+        // "Live text gave up" describes a recording that is now over and whose final transcript is
+        // already in the box — leaving the notice up would have it outlive what it talks about.
+        setDictationNotice(null);
         setDictation(await getDictationStatus());
         textareaRef.current?.focus();
         return;
@@ -620,12 +751,26 @@ export function Composer(props: Props) {
       // whatever the mic has since transcribed into the box, so starting a recording drops
       // any enhance state first (2nd item's design owes the 1st item this call).
       resetEnhance();
+      // Read the caret BEFORE the await: opening the microphone can take a moment, and the
+      // textarea may lose focus (and with it selectionStart) while the permission prompt is up.
+      const box = textareaRef.current;
+      const caret = box ? (box.selectionStart ?? box.value.length) : text.length;
       setDictationBusy(t("composer.starting_mic"));
       const recording = await startDictation();
       if (!recording?.recording) throw new Error(t("composer.err_mic_start"));
+      partialSeqRef.current = 0;
+      pendingPartialRef.current = null;
+      degradedNotifiedRef.current = false;
+      setDictationNotice(null);
+      // Reserve the span before the recording flag flips: the partial listener starts with it.
+      dictationSpanRef.current = beginSpan(text, caret);
       setDictation(recording);
     } catch (error) {
-      setDictationError(error instanceof Error ? error.message : t("composer.err_dictation_unavailable"));
+      const message =
+        error instanceof Error ? error.message.trim() : typeof error === "string" ? error.trim() : "";
+      // No readable message means the native side failed before it had anything to say — almost
+      // always the recogniser refusing to load, which is a "re-verify the model packs" problem.
+      setDictationError(message || t("composer.err_dictation_engine"));
       const status = await getDictationStatus();
       if (status) setDictation(status);
     } finally {
@@ -690,6 +835,15 @@ export function Composer(props: Props) {
           {enhanceError}
         </div>
       )}
+
+      {/* Live text gave up (weak machine, or the streaming model would not load). Not an error:
+          the recording and the final transcript are unaffected, so this stays quiet. */}
+      {dictationNotice && (
+        <div className="max-w-3xl mx-auto mb-2 px-1 text-[12px] text-muted" role="status">
+          {dictationNotice}
+        </div>
+      )}
+
 
       {/* Rejected-attachment notice (PDF over the user's Token-savings thresholds). */}
       {attachNotice && (
@@ -789,7 +943,14 @@ export function Composer(props: Props) {
               : props.placeholder || t("composer.placeholder")
           }
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            const next = e.target.value;
+            setText(next);
+            // Keep the dictation span pointed at the right stretch of the draft: an edit beside
+            // it moves the boundary, an edit inside it detaches the span for good.
+            const span = dictationSpanRef.current;
+            if (span) dictationSpanRef.current = reconcileUserEdit(span, next);
+          }}
           onKeyDown={onKey}
           onPaste={onPaste}
           rows={1}
@@ -877,6 +1038,12 @@ export function Composer(props: Props) {
                 })}
               </span>
               <span className="text-[12px] text-muted tabular-nums">{recordingTime}</span>
+              {/* Live text is a preview from the streaming model; the final pass is more
+                  accurate and replaces it wholesale, which the user should know BEFORE they
+                  start correcting words that are about to be rewritten. */}
+              <span className="text-[11px] text-faint truncate hidden sm:inline">
+                {t("composer.voice.live_status")}
+              </span>
             </div>
           ) : props.workspace !== undefined ? (
             <ModeMenu

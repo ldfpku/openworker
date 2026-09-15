@@ -21,6 +21,7 @@ import {
 } from "../api";
 import {
   cancelDictationModelDownload,
+  cleanupLegacyDictationModels,
   deleteDictationModel,
   downloadDictationModel,
   getAutostart,
@@ -38,6 +39,7 @@ import {
   stopDictation,
   verifyDictationModel,
   type DictationDownloadProgress,
+  type DictationPack,
   type DictationStatus,
 } from "../tauri";
 import { useThemePref } from "../theme";
@@ -171,12 +173,19 @@ const formatBytes = (bytes: number) => {
   return `${Math.round(bytes / 1024 / 1024)} MiB`;
 };
 
+/** `busyPack` sentinel for an action covering every pack — a pack id can never collide with it. */
+const ALL_PACKS = "*";
+
 function VoiceInputSection() {
   const { t } = useTranslation();
   const [status, setStatus] = useState<DictationStatus | null>(null);
-  const [progress, setProgress] = useState<DictationDownloadProgress | null>(null);
+  // Progress arrives per pack, so "Download both" and a single card's bar read the same stream.
+  const [progress, setProgress] = useState<Record<string, DictationDownloadProgress>>({});
+  // Which pack an action is running against; ALL_PACKS while "Download both" is in flight.
+  const [busyPack, setBusyPack] = useState<string | null>(null);
   const [phase, setPhase] = useState<"idle" | "downloading" | "verifying" | "testing" | "transcribing">("idle");
   const [error, setError] = useState<string | null>(null);
+  const [legacyCleaned, setLegacyCleaned] = useState(false);
   const [testTranscript, setTestTranscript] = useState("");
   const desktop = isTauri();
 
@@ -185,28 +194,44 @@ function VoiceInputSection() {
     window.dispatchEvent(new CustomEvent("coworker:voice-input-changed", { detail: next }));
   };
 
+  // The whisper-era model is dead weight once both packs verify, and `ocw-stt` refuses to remove
+  // it before that — so this is safe to call after anything that could have completed the set.
+  const sweepLegacy = async (next: DictationStatus) => {
+    if (!next.legacy_model_present || !next.model_verified) return next;
+    const removed = await cleanupLegacyDictationModels().catch(() => [] as string[]);
+    if (!removed.length) return next;
+    setLegacyCleaned(true);
+    return (await getDictationStatus()) ?? next;
+  };
+
   useEffect(() => {
     if (!desktop) return;
     let active = true;
     let unlisten = () => {};
     void listenDictationDownloadProgress((next) => {
-      if (active) setProgress(next);
+      if (active) setProgress((current) => ({ ...current, [next.pack]: next }));
     }).then((stop) => {
       unlisten = stop;
     });
     void getDictationStatus().then(async (initial) => {
       if (!active || !initial) return;
-      publish(initial);
-      // One-time migration for models installed by the first STT cut, before verification markers.
+      publish(await sweepLegacy(initial));
+      // Every file is on disk at the right length but the verification marker no longer matches
+      // (an interrupted upgrade, a touched file). Re-hash once, unprompted, rather than leaving
+      // the user staring at a full set of packs the microphone still refuses to use.
       if (initial.model_installed && !initial.model_verified) {
         setPhase("verifying");
+        setBusyPack(ALL_PACKS);
         try {
           const verified = await verifyDictationModel();
-          if (active) publish(verified);
+          if (active) publish(await sweepLegacy(verified));
         } catch (verifyError) {
           if (active) setError(voiceError(verifyError));
         } finally {
-          if (active) setPhase("idle");
+          if (active) {
+            setPhase("idle");
+            setBusyPack(null);
+          }
         }
       }
     });
@@ -217,18 +242,21 @@ function VoiceInputSection() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [desktop]);
 
-  const download = async () => {
+  /** One download run. `pack` undefined means every pack, in order. */
+  const download = async (pack?: string) => {
     setError(null);
-    setProgress({ downloaded_bytes: 0, total_bytes: status?.model_bytes || 0 });
+    setBusyPack(pack ?? ALL_PACKS);
     setPhase("downloading");
     try {
-      publish(await downloadDictationModel());
+      publish(await sweepLegacy(await downloadDictationModel(pack)));
     } catch (downloadError) {
       setError(voiceError(downloadError));
       const latest = await getDictationStatus();
       if (latest) publish(latest);
     } finally {
       setPhase("idle");
+      setBusyPack(null);
+      setProgress({});
     }
   };
 
@@ -236,23 +264,33 @@ function VoiceInputSection() {
     await cancelDictationModelDownload().catch(() => undefined);
   };
 
-  const repair = async () => {
+  const verify = async (pack?: string) => {
     setError(null);
+    setBusyPack(pack ?? ALL_PACKS);
+    setPhase("verifying");
     try {
-      publish(await deleteDictationModel());
-      await download();
-    } catch (repairError) {
-      setError(voiceError(repairError));
+      publish(await sweepLegacy(await verifyDictationModel(pack)));
+    } catch (verifyError) {
+      setError(voiceError(verifyError));
+      const latest = await getDictationStatus();
+      if (latest) publish(latest);
+    } finally {
+      setPhase("idle");
+      setBusyPack(null);
     }
   };
 
-  const remove = async () => {
+  const remove = async (pack: string) => {
     if (!window.confirm(t("settings.voice_delete_confirm"))) return;
     setError(null);
     try {
-      publish(await deleteDictationModel());
+      publish(await deleteDictationModel(pack));
       setTestTranscript("");
-      setProgress(null);
+      setProgress((current) => {
+        const next = { ...current };
+        delete next[pack];
+        return next;
+      });
     } catch (deleteError) {
       setError(voiceError(deleteError));
     }
@@ -282,10 +320,112 @@ function VoiceInputSection() {
     }
   };
 
+  // Every branch below reads from `packs` — the Rust side is the only place that knows what the
+  // packs are, how big they are, or whether they are whole.
+  const packs = status?.packs ?? [];
   const downloading = phase === "downloading" || !!status?.download_in_progress;
-  const progressTotal = progress?.total_bytes || status?.model_bytes || 1;
-  const progressPercent = Math.min(100, Math.round(((progress?.downloaded_bytes || 0) / progressTotal) * 100));
+  const totalBytes = packs.reduce((sum, pack) => sum + pack.total_bytes, 0);
+  const onDisk = packs.reduce(
+    (sum, pack) => sum + (progress[pack.id]?.downloaded_bytes ?? pack.downloaded_bytes),
+    0,
+  );
+  const allVerified = packs.length > 0 && packs.every((pack) => pack.verified);
+  const anyMissing = packs.some((pack) => !pack.verified);
   const ready = !!status?.supported && !!status?.model_verified && !!status?.test_passed;
+
+  const packCard = (pack: DictationPack) => {
+    const live = progress[pack.id];
+    const packBusy = busyPack === pack.id || busyPack === ALL_PACKS;
+    // During "Download both" the packs are fetched one after another, so only the one actually
+    // receiving bytes shows a bar. A queued pack sitting at 0% "file 1 of 2" reads as stuck.
+    const packDownloading =
+      downloading && (busyPack === pack.id || (busyPack === ALL_PACKS && !!live));
+    const done = live?.downloaded_bytes ?? pack.downloaded_bytes;
+    const percent = Math.min(100, Math.round((done / Math.max(pack.total_bytes, 1)) * 100));
+    // Partly on disk but not whole: the button should say "resume", not "download", or a user who
+    // stopped a 226 MiB download at 60% will assume they are starting over.
+    const partial = !pack.installed && done > 0;
+    return (
+      <div className={CARD} key={pack.id} data-testid={`voice-pack-${pack.id}`}>
+        <div className="p-4 flex items-center gap-3">
+          <Icon name="mic" size={18} className={pack.verified ? "text-green-600 mt-0.5" : "text-muted mt-0.5"} />
+          <div className="min-w-0 flex-1">
+            <div className="text-[13px] font-medium">{t(pack.label_key)}</div>
+            <div className="text-[12px] text-muted mt-0.5">
+              {pack.verified
+                ? t("settings.voice_installed", { size: formatBytes(pack.total_bytes) })
+                : t("settings.voice_not_installed", { size: formatBytes(pack.total_bytes) })}
+            </div>
+            <div className="text-[12px] text-faint mt-0.5">
+              {t(`settings.voice_pack_${pack.id}_detail`)}
+            </div>
+            {!pack.verified && pack.missing_files.length > 0 && (
+              <div className="text-[12px] text-warnInk mt-0.5">
+                {t("settings.voice_pack_files_missing", {
+                  missing: pack.missing_files.length,
+                  total: pack.file_count,
+                })}
+              </div>
+            )}
+          </div>
+          {pack.verified ? (
+            <>
+              <span className="text-[12px] px-2 py-1 rounded-full bg-green-50 text-green-700">
+                {t("settings.voice_verified")}
+              </span>
+              {/* No "Repair" here on purpose. Repair means "fetch the files that are missing or
+                  wrong", and a verified pack has none — the engine skips a verified pack outright,
+                  so the button would spin up nothing: no download, no progress bar, no error. If
+                  the files go bad later, "Verify" is what notices, and the card flips to the
+                  un-verified branch below, which offers Repair for real. */}
+              <button className={BTN_BORDERED} disabled={!!busyPack} onClick={() => void verify(pack.id)}>
+                {t("settings.voice_pack_verify")}
+              </button>
+              <button className="text-[12px] text-red-600 px-2 py-2" disabled={!!busyPack} onClick={() => void remove(pack.id)}>
+                {t("settings.voice_delete")}
+              </button>
+            </>
+          ) : packDownloading ? (
+            <button className={BTN_BORDERED} onClick={() => void cancelDownload()}>{t("common.stop")}</button>
+          ) : phase === "verifying" && packBusy ? (
+            <span className="text-[12px] text-muted">{t("settings.voice_verifying")}</span>
+          ) : (
+            <>
+              {pack.installed && (
+                <button className={BTN_BORDERED} disabled={!!busyPack} onClick={() => void verify(pack.id)}>
+                  {t("settings.voice_pack_verify")}
+                </button>
+              )}
+              {/* Same call for all three labels: repair re-fetches only what is missing or the
+                  wrong length — the pack directory is kept, so a single damaged file costs one
+                  file, not the whole pack. */}
+              <button className={BTN_ACCENT} disabled={!status?.supported || !!busyPack} onClick={() => void download(pack.id)}>
+                {partial ? t("settings.voice_pack_resume") : pack.installed ? t("settings.voice_repair") : t("settings.voice_download")}
+              </button>
+            </>
+          )}
+        </div>
+        {packDownloading && (
+          <div className="border-t border-line px-4 py-3">
+            <div className="h-1.5 rounded-full bg-line overflow-hidden">
+              <div className="h-full bg-accent transition-all" style={{ width: `${percent}%` }} />
+            </div>
+            <div className="mt-1.5 text-[12px] text-muted flex">
+              <span>
+                {t("settings.voice_pack_progress", {
+                  done: formatBytes(done),
+                  total: formatBytes(pack.total_bytes),
+                  index: live?.file_index ?? 1,
+                  count: live?.file_count ?? pack.file_count,
+                })}
+              </span>
+              <span className="ml-auto">{percent}%</span>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <section>
@@ -325,38 +465,56 @@ function VoiceInputSection() {
             </div>
           </div>
 
-          <div className={CARD}>
-            <div className="p-4 flex items-center gap-3">
-              <div className="w-9 h-9 rounded-lg bg-accentSoft text-accent grid place-items-center font-semibold">W</div>
-              <div className="min-w-0 flex-1">
-                <div className="text-[13px] font-medium">{t("settings.voice_whisper_title")}</div>
-                <div className="text-[12px] text-muted mt-0.5">
-                  {status?.model_verified
-                    ? t("settings.voice_installed", { size: formatBytes(status.model_bytes) })
-                    : t("settings.voice_not_installed", { size: formatBytes(status?.model_bytes || 147_964_211) })}
-                </div>
-              </div>
-              {status?.model_verified ? (
-                <>
-                  <span className="text-[12px] px-2 py-1 rounded-full bg-green-50 text-green-700">{t("settings.voice_verified")}</span>
-                  <button className={BTN_BORDERED} onClick={() => void repair()}>{t("settings.voice_repair")}</button>
-                  <button className="text-[12px] text-red-600 px-2 py-2" onClick={() => void remove()}>{t("settings.voice_delete")}</button>
-                </>
-              ) : downloading ? (
-                <button className={BTN_BORDERED} onClick={() => void cancelDownload()}>{t("common.stop")}</button>
-              ) : phase === "verifying" ? (
-                <span className="text-[12px] text-muted">{t("settings.voice_verifying")}</span>
-              ) : (
-                <button className={BTN_ACCENT} disabled={!status?.supported} onClick={() => void download()}>{t("settings.voice_download")}</button>
-              )}
+          {/* Two engines, two downloads: live text while you speak, and the pass that replaces it.
+              Saying so here is what stops the streaming model's rough output reading as a bug. */}
+          <div className={CARD + " p-4"}>
+            <div className="text-[13px] font-medium">{t("settings.voice_engine_title")}</div>
+            <div className="text-[12px] text-muted mt-1">
+              {t("settings.voice_engine_detail", { engine: status?.engine || "" })}
             </div>
-            {downloading && (
-              <div className="border-t border-line px-4 py-3">
-                <div className="h-1.5 rounded-full bg-line overflow-hidden"><div className="h-full bg-accent transition-all" style={{ width: `${progressPercent}%` }} /></div>
-                <div className="mt-1.5 text-[12px] text-muted flex"><span>{t("settings.voice_dl_progress", { done: formatBytes(progress?.downloaded_bytes || 0), total: formatBytes(progressTotal) })}</span><span className="ml-auto">{progressPercent}%</span></div>
-              </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <div className="text-[13px] font-medium flex-1">{t("settings.voice_whisper_title")}</div>
+            {anyMissing && (
+              <button
+                className={BTN_ACCENT}
+                disabled={!status?.supported || !!busyPack || !packs.length}
+                onClick={() => void download()}
+              >
+                {t("settings.voice_pack_download_all", { size: formatBytes(totalBytes) })}
+              </button>
             )}
           </div>
+
+          {busyPack === ALL_PACKS && downloading && (
+            <div className={CARD + " px-4 py-3"} data-testid="voice-total-progress">
+              <div className="h-1.5 rounded-full bg-line overflow-hidden">
+                <div
+                  className="h-full bg-accent transition-all"
+                  style={{ width: `${Math.min(100, Math.round((onDisk / Math.max(totalBytes, 1)) * 100))}%` }}
+                />
+              </div>
+              <div className="mt-1.5 text-[12px] text-muted">
+                {t("settings.voice_pack_total_progress", {
+                  done: formatBytes(onDisk),
+                  total: formatBytes(totalBytes),
+                })}
+              </div>
+            </div>
+          )}
+
+          {packs.map(packCard)}
+
+          {legacyCleaned ? (
+            <div className="rounded-lg border border-line bg-paper/50 px-3 py-2.5 text-[12px] text-muted" role="status">
+              {t("settings.voice_legacy_cleaned")}
+            </div>
+          ) : status?.legacy_model_present ? (
+            <div className="rounded-lg border border-line bg-paper/50 px-3 py-2.5 text-[12px] text-muted">
+              {t("settings.voice_legacy_present")}
+            </div>
+          ) : null}
 
           <div className={CARD}>
             <div className="p-4 flex items-center gap-3">
@@ -368,7 +526,7 @@ function VoiceInputSection() {
                 </div>
               </div>
               {ready && <span className="text-[12px] px-2 py-1 rounded-full bg-green-50 text-green-700">● {t("settings.voice_ready_badge")}</span>}
-              <button className={BTN_BORDERED} disabled={!status?.supported || !status?.model_verified || phase === "transcribing"} onClick={() => void toggleTest()}>
+              <button className={BTN_BORDERED} disabled={!status?.supported || !allVerified || phase === "transcribing"} onClick={() => void toggleTest()}>
                 {status?.recording
                   ? t("settings.voice_stop_check")
                   : phase === "transcribing"

@@ -96,6 +96,28 @@ describe("isComposing", () => {
     expect(later.preventDefault).not.toHaveBeenCalled();
   });
 
+  it("answers the no-event form — the one live dictation asks", () => {
+    // A transcript update has no keystroke behind it: it asks "is an input method composing
+    // right now?" so it can park the text instead of rewriting the textarea under a candidate
+    // list. With no event there is nothing but the document-level flag to go on.
+    expect(isComposing()).toBe(false);
+    compositionEvent("compositionstart");
+    expect(isComposing()).toBe(true);
+    compositionEvent("compositionend");
+  });
+
+  it("the no-event form keeps guarding through the tail too", async () => {
+    // Deliberate, and the asymmetry at the top of ime.ts decides it: on WebKit the commit is
+    // still on its way into the textarea during this window, so a transcript written now could
+    // overwrite a word the user just typed. Holding an update back costs nothing — partials are
+    // whole transcripts, so the next one (or the final pass at stop) says the same thing again.
+    compositionEvent("compositionstart");
+    compositionEvent("compositionend");
+    expect(isComposing()).toBe(true);
+    await new Promise((r) => setTimeout(r, 80));
+    expect(isComposing()).toBe(false);
+  });
+
   it("is inert before any composition has ever happened", () => {
     // endedAt starts at 0; a naive `now - endedAt < TAIL` would be false here anyway, but a
     // sign-flip or a clock at the epoch must not make every keystroke look like an IME commit.

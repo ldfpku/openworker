@@ -18,22 +18,64 @@ export const platformOS = (): string => {
   return /mac/i.test(navigator.userAgent) ? "macos" : /win/i.test(navigator.userAgent) ? "windows" : "linux";
 };
 
+/** One downloadable model pack. `label_key` is an i18n key owned by the Rust side, so the two
+ * cards in Settings are whatever `ocw-stt` says the packs are — the SPA never hard-codes the
+ * list, the sizes, or the names. */
+export type DictationPack = {
+  id: string;
+  label_key: string;
+  repo: string;
+  revision: string;
+  installed: boolean;
+  verified: boolean;
+  total_bytes: number;
+  /** Bytes already on disk, complete files and resumable parts alike — drives "resume". */
+  downloaded_bytes: number;
+  file_count: number;
+  /** Files absent or the wrong length: exactly what "Repair" would re-fetch. */
+  missing_files: string[];
+};
+
 export type DictationStatus = {
   recording: boolean;
+  /** Derived: true only when EVERY pack is installed / verified. */
   model_installed: boolean;
   model_verified: boolean;
   test_passed: boolean;
   download_in_progress: boolean;
   model_name: string;
   model_bytes: number;
+  /** Recognition stack, for display ("sherpa-onnx 1.13.7"). */
+  engine: string;
+  packs: DictationPack[];
+  /** A whisper-era ggml-base.bin is still on disk; removed once both packs verify. */
+  legacy_model_present: boolean;
   supported: boolean;
   device_summary: string;
   compatibility_reason: string | null;
 };
 
+/** Per-pack progress. Aggregate across packs in the UI when the user asked for everything. */
 export type DictationDownloadProgress = {
+  pack: string;
   downloaded_bytes: number;
   total_bytes: number;
+  /** 1-based index of the file being fetched, for "2 / 3" style detail. */
+  file_index: number;
+  file_count: number;
+};
+
+/** A live transcript update while recording. `text` is the WHOLE live transcript so far, never a
+ * delta: the composer replaces its dictation span with it. `seq` is monotonic per recording —
+ * drop anything not greater than the last one seen. `committed_chars` is the prefix the engine
+ * will no longer revise. `degraded` means live text has been given up on for this recording
+ * (the machine cannot keep up, or the streaming model failed to load); the recording and the
+ * final transcript are unaffected. */
+export type DictationPartial = {
+  seq: number;
+  text: string;
+  committed_chars: number;
+  degraded: boolean;
 };
 
 const invoke = async <T>(cmd: string, args?: Record<string, unknown>): Promise<T | null> => {
@@ -85,18 +127,28 @@ export const getDictationStatus = () => invoke<DictationStatus>("get_dictation_s
 /** Instantaneous mic loudness 0..1 while recording (0 otherwise) — drives the composer's
  * live waveform. Cheap; poll at ~10Hz. */
 export const getDictationLevel = () => invoke<number>("dictation_level");
-export const startDictation = () => invokeStrict<DictationStatus>("start_dictation");
-/** Stops recording and returns the local transcript. The engine recognises speech in the
- * interface language rather than auto-detecting it — on the base model that is the difference
- * between a Chinese sentence coming back in Chinese and coming back as something else. */
-export const stopDictation = () =>
-  invokeStrict<string>("stop_dictation", { language: i18n.language });
+/** The interface language rides along unused: SenseVoice transcribes in `auto`, and a future
+ * "always transcribe as <lang>" override should not need a protocol change to turn on. */
+export const startDictation = () =>
+  invokeStrict<DictationStatus>("start_dictation", { language: i18n.language });
+/** Stops recording and returns the final transcript: the whole recording re-transcribed with
+ * punctuation. It REPLACES the live text the composer has been showing rather than extending
+ * it, so callers must overwrite, not append. */
+export const stopDictation = () => invokeStrict<string>("stop_dictation");
 export const cancelDictation = () => invokeStrict<void>("cancel_dictation");
-export const downloadDictationModel = () => invokeStrict<DictationStatus>("download_dictation_model");
+/** `pack` names one model pack; omit it to bring every pack up to date in order. */
+export const downloadDictationModel = (pack?: string) =>
+  invokeStrict<DictationStatus>("download_dictation_model", { pack: pack ?? null });
 export const cancelDictationModelDownload = () => invokeStrict<void>("cancel_dictation_model_download");
-export const verifyDictationModel = () => invokeStrict<DictationStatus>("verify_dictation_model");
+export const verifyDictationModel = (pack?: string) =>
+  invokeStrict<DictationStatus>("verify_dictation_model", { pack: pack ?? null });
 export const markDictationTestPassed = () => invokeStrict<DictationStatus>("mark_dictation_test_passed");
-export const deleteDictationModel = () => invokeStrict<DictationStatus>("delete_dictation_model");
+export const deleteDictationModel = (pack?: string) =>
+  invokeStrict<DictationStatus>("delete_dictation_model", { pack: pack ?? null });
+/** Removes the whisper-era model once both new packs verify; returns what was removed (empty
+ * when there was nothing to remove, or the packs are not both ready yet). */
+export const cleanupLegacyDictationModels = () =>
+  invokeStrict<string[]>("cleanup_legacy_dictation_models");
 
 export async function listenDictationDownloadProgress(
   handler: (progress: DictationDownloadProgress) => void,
@@ -104,6 +156,17 @@ export async function listenDictationDownloadProgress(
   const listen = (globalThis as any).__TAURI__?.event?.listen;
   if (!listen) return () => {};
   return (await listen("dictation-download-progress", (event: { payload: DictationDownloadProgress }) => {
+    handler(event.payload);
+  })) as () => void;
+}
+
+/** Live transcript updates while recording. Unsubscribe when the recording ends. */
+export async function listenDictationPartialTranscript(
+  handler: (partial: DictationPartial) => void,
+): Promise<() => void> {
+  const listen = (globalThis as any).__TAURI__?.event?.listen;
+  if (!listen) return () => {};
+  return (await listen("dictation-partial-transcript", (event: { payload: DictationPartial }) => {
     handler(event.payload);
   })) as () => void;
 }
