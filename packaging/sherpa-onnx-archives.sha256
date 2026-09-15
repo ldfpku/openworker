@@ -1,0 +1,22 @@
+# sherpa-onnx v1.13.7 prebuilt static-link archives (k2-fsa/sherpa-onnx GitHub Releases:
+# https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.7/<filename>).
+#
+# sherpa-onnx-sys's build.rs does NOT verify these hashes itself (Step 0 finding, 2026-09) —
+# this file is our own supply-chain check. Consumed by scripts/fetch-sherpa-archive.sh, which
+# .github/workflows/release.yml, ci.yml, and packaging/build_windows.ps1 / build_dmg.sh all
+# call before pointing SHERPA_ONNX_ARCHIVE_DIR at the download.
+#
+# Bump this file together with the `sherpa-onnx = "=X.Y.Z"` pin in stt/Cargo.toml — a minor
+# version drift changes build.rs's download URL and swaps the whole prebuilt archive set.
+#
+# The size column is informational (it is what a caller should expect to download; note the
+# Windows archive is six times the others, because its ONNX Runtime static lib alone is 916 MB).
+# It is a third field on purpose: fetch-sherpa-archive.sh reads fields with awk and only looks
+# at the first two. (`sha256sum -c` would take the rest of the line as the file name, so strip
+# the size first: awk '!/^#/ && NF {print $1 "  " $2}' … | sha256sum -c -)
+#
+# <sha256>  <filename>  <bytes>
+04734146fb3a21a297604c586ea826346dbb167c19b9ccc79c1f85d39f490395  sherpa-onnx-v1.13.7-win-x64-static-MT-Release-lib.tar.bz2  120228352
+126daa2e8c09a4c5d54dc985722c43bd22f598adc56445905b377454b1b27e38  sherpa-onnx-v1.13.7-osx-arm64-static-lib.tar.bz2  20339537
+8d8db6199af0119b16f6e2b01c5548b90c4392a462388dd59491e8c471283cca  sherpa-onnx-v1.13.7-osx-x64-static-lib.tar.bz2  20017522
+d1be7a69ac2b30120058d8302e624239a3064085383cfa47994a14fdc44c32d6  sherpa-onnx-v1.13.7-linux-x64-static-lib.tar.bz2  22455793

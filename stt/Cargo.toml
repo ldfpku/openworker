@@ -11,7 +11,12 @@ cpal = "0.15.3"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 ureq = "2.12"
-# Keep the v1 engine compatible with macOS releases that predate newer Metal
-# APIs. We can add an opt-in Metal build once the packaged app has a verified
-# minimum macOS target.
-whisper-rs = "0.16"
+# Pinned exactly: the -sys build script builds the prebuilt-archive URL out of CARGO_PKG_VERSION,
+# so a minor bump silently swaps the entire native library (and its ONNX Runtime) underneath us.
+# The default `static` feature links sherpa-onnx and ONNX Runtime into our binary, which is what
+# keeps the installer free of loose DLLs and the macOS bundle free of per-dylib signing.
+sherpa-onnx = "=1.13.7"
+
+[dev-dependencies]
+# Examples only: `voice_probe wav <file>` replays a recording through the real engine path.
+hound = "3.5"
