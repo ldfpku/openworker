@@ -13,6 +13,7 @@ import subprocess
 from pathlib import Path
 from typing import Callable, Optional
 
+from .. import procutil
 from .manifest import PersonaManifest
 
 
@@ -78,6 +79,13 @@ def git_clone(
         ["git", "clone", "--depth", "1", url, str(dest)],
         check=True,
         capture_output=True,
+        # The only git invocation in coworker/ that previously had no timeout at all — a
+        # network stall here hangs the calling thread indefinitely instead of surfacing an
+        # error. 300s is generous for a shallow clone even on a slow connection; the caller
+        # (persona install) is already a foreground, user-initiated action with its own
+        # progress UI.
+        timeout=300,
+        **procutil.popen_kwargs(),
     )
 
 
