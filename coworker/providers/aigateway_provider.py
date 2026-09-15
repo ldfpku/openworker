@@ -61,7 +61,8 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Callable, NamedTuple, Optional
+import re
+from typing import Any, Callable, Iterable, NamedTuple, Optional
 
 from ..compaction import estimate_tokens
 from .base import ModelCapabilities, ProviderClient
@@ -382,6 +383,40 @@ def blocked_model_ids(policy: Optional[dict[str, Any]]) -> frozenset[str]:
     return frozenset(
         str(m).strip().lower() for m in blocked if isinstance(m, str) and str(m).strip()
     )
+
+
+# A blocked base id also covers its dated/tagged variants — the same shape
+# gateway-guard's canonicalModels() strips server-side before its own equality check.
+# Keep this pattern text-identical to that one.
+_VARIANT_SUFFIX_RE = re.compile(r"^(?:-\d{8}|-latest|@\d{8})?(?::batch|:beta)?$")
+
+
+def is_blocked_model(model_id: str, blocked: Iterable[str]) -> bool:
+    """True when `model_id` — a bare "author/model" id, or one prefixed "aigw:" — is
+    exactly one of `blocked`'s entries, or a known dated/tagged variant of one: same
+    base id followed by an optional `-YYYYMMDD` / `-latest` / `@YYYYMMDD` date suffix
+    and an optional `:batch` / `:beta` tag suffix, in that order. Mirrors the server's
+    matching exactly so the picker hides what the gateway would 403 on anyway — a miss
+    here is only ever cosmetic, enforcement stays server-side.
+
+    Deliberately NOT a regex built from `r`: `r` is untrusted-shaped free text from the
+    gate policy response, so it is compared with plain string ops (`==`, `startswith`)
+    and only the fixed, pre-compiled suffix pattern above is ever matched against.
+    """
+    m = str(model_id or "").strip().lower()
+    if m.startswith("aigw:"):
+        m = m[len("aigw:") :]
+    if not m:
+        return False
+    for r in blocked:
+        r = str(r or "").strip().lower()
+        if not r:
+            continue  # an empty blocked entry must never match everything
+        if m == r:
+            return True
+        if m.startswith(r) and _VARIANT_SUFFIX_RE.match(m[len(r) :]):
+            return True
+    return False
 
 
 class AIGatewayProvider(ProviderClient):

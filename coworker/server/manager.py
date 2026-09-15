@@ -3926,9 +3926,12 @@ class SessionManager:
             )
         if name == "aigw":
             # Mirror the picker filter (`_curated_models`): a gate-blocked model must
-            # not resurface as an "add model" suggestion either.
+            # not resurface as an "add model" suggestion either. Same variant-aware
+            # match as the guard's own 403 check, not bare equality.
+            from ..providers.aigateway_provider import is_blocked_model
+
             blocked = self._aigw_blocked()
-            out = [m for m in out if m.strip().lower() not in blocked]
+            out = [m for m in out if not is_blocked_model(m, blocked)]
         return out
 
     def set_provider(
@@ -4376,11 +4379,20 @@ class SessionManager:
         user = user if isinstance(user, list) else []
         hidden = set(self._prefs.get("hidden_models") or [])
         # Gateway-guard's per-user gate: blocked aigw models disappear from the picker
-        # (server-side 403 backs this up; hiding just spares the failed attempt). The
-        # active default stays selectable below, matching the hidden_models behaviour.
-        blocked = {f"aigw:{m}" for m in self._aigw_blocked()}
+        # (server-side 403 backs this up; hiding just spares the failed attempt), using
+        # the same variant-aware match the guard applies server-side — not bare
+        # equality. `is_blocked_model` itself strips the "aigw:" prefix, so `blocked`
+        # stays the bare ids `_aigw_blocked` already returns; a non-aigw id (e.g.
+        # "anthropic:claude-fable-5") never has that prefix to strip and so never
+        # matches. The active default stays selectable below, matching the
+        # hidden_models behaviour.
+        from ..providers.aigateway_provider import is_blocked_model
+
+        blocked = self._aigw_blocked()
         models = [
-            m for m in [*effective, *user] if m not in hidden and m not in blocked
+            m
+            for m in [*effective, *user]
+            if m not in hidden and not is_blocked_model(m, blocked)
         ]
         return list(dict.fromkeys([self.model, *models]))
 

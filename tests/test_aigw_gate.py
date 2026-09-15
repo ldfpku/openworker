@@ -13,11 +13,13 @@ from __future__ import annotations
 import time
 
 import httpx
+import pytest
 
 from coworker.providers.aigateway_provider import (
     DEFAULT_BASE_URL,
     blocked_model_ids,
     fetch_gate_policy,
+    is_blocked_model,
 )
 from coworker.server.manager import SessionManager as Manager
 
@@ -96,6 +98,66 @@ def test_blocked_model_ids_normalizes_and_tolerates_junk():
     ) == frozenset({"openai/gpt-5.6-sol", "anthropic/claude-fable-5"})
 
 
+# -- is_blocked_model ---------------------------------------------------------------------
+# Mirrors gateway-guard's own server-side match exactly: exact id, or the same base id
+# plus one optional dated/tagged suffix in a fixed shape. A miss here is only ever
+# cosmetic (the server still 403s), but it must not drift from the server's shape.
+_BLOCKED = frozenset({"anthropic/claude-fable-5", "openai/gpt-5.6-sol"})
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        "anthropic/claude-fable-5",
+        "aigw:anthropic/claude-fable-5",
+        "anthropic/claude-fable-5-20260901",
+        "anthropic/claude-fable-5-latest",
+        "anthropic/claude-fable-5@20260901",
+        "anthropic/claude-fable-5:batch",
+        "anthropic/claude-fable-5:beta",
+        "anthropic/claude-fable-5-20260901:batch",
+        "openai/gpt-5.6-sol-20260709",
+        "openai/gpt-5.6-sol:batch",
+        # case / whitespace variants
+        " Anthropic/Claude-Fable-5 ",
+        "AIGW:ANTHROPIC/CLAUDE-FABLE-5-LATEST",
+    ],
+)
+def test_is_blocked_model_matches_known_variant_shapes(model_id):
+    assert is_blocked_model(model_id, _BLOCKED) is True
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        "anthropic/claude-fable-5-1",  # 5.1's hyphen spelling: a distinct major version
+        "anthropic/claude-fable-5.1",
+        "anthropic/claude-fable-50",
+        "anthropic/claude-fable-5-preview",
+        "anthropic/claude-fable-5-2026090",  # 7 digits, not a full YYYYMMDD date
+        "anthropic/claude-haiku-4-5",  # probe model, never restricted
+        "openai/gpt-5.6-terra",
+        "",
+    ],
+)
+def test_is_blocked_model_rejects_lookalikes(model_id):
+    assert is_blocked_model(model_id, _BLOCKED) is False
+
+
+def test_is_blocked_model_empty_blocked_entry_matches_nothing():
+    assert is_blocked_model("anthropic/claude-fable-5", frozenset({""})) is False
+    assert is_blocked_model("anything-at-all", frozenset({"", " "})) is False
+
+
+def test_is_blocked_model_strips_the_aigw_prefix_but_only_that_one():
+    # A bare id and its "aigw:"-prefixed spelling are the same model to the gate.
+    assert is_blocked_model("aigw:openai/gpt-5.6-sol", _BLOCKED) is True
+    assert is_blocked_model("openai/gpt-5.6-sol", _BLOCKED) is True
+    # A direct-provider id never carries "aigw:" and must not accidentally match a
+    # differently-shaped blocked entry.
+    assert is_blocked_model("anthropic:claude-fable-5", _BLOCKED) is False
+
+
 # -- manager-side filtering --------------------------------------------------------------
 def _bare_manager(blocked: set[str]) -> Manager:
     """A Manager shell with just the attributes the model-list paths touch — the cache is
@@ -145,3 +207,38 @@ def test_empty_gate_filters_nothing():
     models = Manager._curated_models(m)
     assert "aigw:anthropic/claude-fable-5" in models
     assert "aigw:openai/gpt-5.6-sol" in models
+
+
+def test_curated_models_hide_gate_blocked_aigw_model_variants():
+    # A user-added custom id that is a dated/tagged variant of a blocked base id must be
+    # hidden too — the picker filter now matches the same shape the guard does server-
+    # side, not just bare equality. 5.1's hyphen spelling is a distinct model and stays.
+    m = _bare_manager({"anthropic/claude-fable-5"})
+    m._prefs = {
+        "models": [
+            "aigw:anthropic/claude-fable-5-20260901",
+            "aigw:anthropic/claude-fable-5:batch",
+            "aigw:anthropic/claude-fable-5-1",
+        ]
+    }
+    models = Manager._curated_models(m)
+    assert "aigw:anthropic/claude-fable-5-20260901" not in models
+    assert "aigw:anthropic/claude-fable-5:batch" not in models
+    assert "aigw:anthropic/claude-fable-5-1" in models
+
+
+def test_suggested_models_hide_blocked_variants_for_aigw():
+    m = _bare_manager({"openai/gpt-5.6-sol"})
+    # Instance override of the class-level suggestion table — real matrix ids never
+    # carry a date/tag suffix, so inject some to exercise the variant match.
+    m.COMPAT_MODELS = {
+        "aigw": [
+            "openai/gpt-5.6-sol-20260709",
+            "openai/gpt-5.6-sol:batch",
+            "openai/gpt-5.6-terra",
+        ]
+    }
+    sugg = Manager._suggested_models(m, "aigw")
+    assert "openai/gpt-5.6-sol-20260709" not in sugg
+    assert "openai/gpt-5.6-sol:batch" not in sugg
+    assert "openai/gpt-5.6-terra" in sugg
