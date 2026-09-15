@@ -13,8 +13,10 @@
 //!     here, by counting the samples we fed.
 //!   * Within one segment the streaming text only ever grows; already-shown characters are never
 //!     rewritten. The one reset is the endpoint, which is a segment boundary, not a rewrite.
-//!   * `input_finished()` flushes nothing. The last word of an utterance is only recovered by
-//!     feeding at least 660 ms of silence and decoding again.
+//!   * `input_finished()` flushes nothing. The last word of an utterance comes back only by
+//!     feeding silence and decoding again — and how much silence depends on where the closing
+//!     syllable fell relative to the decode schedule, so the stop drains the recognizer until
+//!     the text settles rather than padding it by a fixed amount (see `TailDrain`).
 //!   * SenseVoice cost grows faster than linearly with duration (180 s takes 20x what 30 s takes
 //!     and peaks over 1.4 GiB), so the final pass is split at the endpoints the streaming pass
 //!     already found.
@@ -47,9 +49,21 @@ const SLOW_FEED_INTERVAL: Duration = Duration::from_millis(300);
 const BACKLOG_SLOW_SECS: f32 = 2.0;
 /// Backlog at which live text is abandoned for the rest of the recording.
 const BACKLOG_GIVE_UP_SECS: f32 = 5.0;
-/// Silence appended on stop. 660 ms is the measured floor at which the last word comes back;
-/// 100 ms and 300 ms do nothing at all. The extra margin costs about 30 ms of decoding.
-pub(crate) const TAIL_SILENCE_MS: u32 = 700;
+/// One step of the tail drain (see [`TailDrain`]), in milliseconds of silence.
+pub(crate) const TAIL_STEP_MS: u32 = 200;
+/// Silence the drain always feeds before it is allowed to conclude anything. Nothing at all comes
+/// out of this model for the first several hundred milliseconds of silence, so a drain that
+/// stopped as soon as it saw no growth would stop before the closing word had any chance to
+/// appear. Measured first emission: 700 ms on one recording, 800 ms on the same sentence stopped
+/// 30 ms earlier. 1200 ms is half again as much.
+pub(crate) const TAIL_MIN_MS: u32 = 1_200;
+/// Silence with no new text that ends the drain once past the floor: one full decode cadence.
+/// The model decodes on a fixed 600 ms schedule, so a whole cadence that produced nothing is the
+/// point at which more silence has stopped being able to produce anything.
+pub(crate) const TAIL_SETTLED_MS: u32 = 600;
+/// Ceiling on the drain, for audio the model will not settle on. Verified not to invent words:
+/// 1500 ms and 2000 ms of silence produce exactly the same text as 800 ms.
+pub(crate) const TAIL_MAX_MS: u32 = 2_000;
 /// Hard ceiling for one final-pass segment.
 const MAX_SEGMENT_SECS: f32 = 25.0;
 /// Shortest segment worth decoding on its own.
@@ -158,9 +172,69 @@ impl Degrade {
     }
 }
 
-/// Samples of silence to append on stop, at the capture rate.
-pub(crate) fn tail_silence_samples(sample_rate: u32) -> usize {
-    (sample_rate as u64 * TAIL_SILENCE_MS as u64 / 1000) as usize
+/// Samples for `ms` of silence at the capture rate.
+pub(crate) fn silence_samples(sample_rate: u32, ms: u32) -> usize {
+    (sample_rate as u64 * ms as u64 / 1000) as usize
+}
+
+/// How much silence the stop has to push through the streaming model before the last word comes
+/// out, decided by watching rather than by guessing.
+///
+/// `input_finished()` flushes nothing on this model: the closing word only appears once enough
+/// silence has followed it for the decoder to run out its lookahead. A single fixed pad was the
+/// first shape of this and it does not hold. 660 ms recovered the last word of one recording, so
+/// 700 ms looked like a safe margin — but how much silence is needed depends on where the last
+/// syllable falls relative to the 600 ms decode schedule, and 700 ms is less than one step past
+/// the floor. Measured on the same eight-second sentence, stopped 30 ms earlier so that the last
+/// sample of the file is the last sample of speech: at 660 ms and at 700 ms the closing 会 is
+/// lost, and it comes back at 800 ms. Any fixed number is one recording away from being the
+/// wrong one — and "stopped on the last syllable" is exactly what a user who has finished
+/// talking does.
+///
+/// So silence goes in a step at a time and the transcript is read after each one. Past
+/// [`TAIL_MIN_MS`] — before which nothing has come out of this model yet, so an absence of
+/// growth would mean nothing — growth says there may be more to come, and a full decode cadence
+/// that produced nothing says there is not. Padding is then a function of the audio: a recording
+/// the user already paused on costs the floor and no more, one stopped mid-breath keeps going
+/// until it settles or hits [`TAIL_MAX_MS`]. Either way the whole drain is a few tens of
+/// milliseconds of decoding.
+///
+/// Safe because the streaming pass is strictly prefix-monotonic inside a segment — text only
+/// ever grows — so "did not grow" is a real signal and not a rewrite in disguise.
+#[derive(Debug, Default)]
+pub(crate) struct TailDrain {
+    fed_ms: u32,
+    quiet_ms: u32,
+    longest: usize,
+}
+
+impl TailDrain {
+    /// Milliseconds of silence for the next step, or `None` once the tail has settled.
+    pub(crate) fn next_step(&mut self) -> Option<u32> {
+        let settled = self.fed_ms >= TAIL_MIN_MS && self.quiet_ms >= TAIL_SETTLED_MS;
+        if settled || self.fed_ms >= TAIL_MAX_MS {
+            return None;
+        }
+        let step = TAIL_STEP_MS.min(TAIL_MAX_MS - self.fed_ms);
+        self.fed_ms += step;
+        Some(step)
+    }
+
+    /// Records the transcript length the recognizer reported after that step.
+    pub(crate) fn observe(&mut self, step_ms: u32, chars: usize) {
+        if chars > self.longest {
+            self.longest = chars;
+            self.quiet_ms = 0;
+        } else {
+            self.quiet_ms += step_ms;
+        }
+    }
+
+    /// Total silence fed so far. The drain itself never asks; the policy tests do.
+    #[cfg(test)]
+    pub(crate) fn fed_ms(&self) -> u32 {
+        self.fed_ms
+    }
 }
 
 /// Splits a recording into final-pass segments at every pause the streaming pass found.
@@ -569,8 +643,13 @@ impl Session {
         self.emit(false);
     }
 
-    /// Feeds whatever the microphone captured after the last pump, then the tail silence that is
-    /// the only way to get the final word out of this model, and commits what is left in flight.
+    /// Feeds whatever the microphone captured after the last pump, drains the last word out of
+    /// the recognizer (see [`TailDrain`] — silence is the only thing that gets it), and commits
+    /// what is left in flight.
+    ///
+    /// The update this ends with is the whole point: at the instant the user pressed Stop the
+    /// live text was still a word or so behind them, and this is where it catches up. It goes out
+    /// before the final pass starts, so the closing words are on screen while SenseVoice works.
     fn flush(&mut self, audio: &[f32]) {
         if audio.len() > self.consumed {
             let chunk = audio[self.consumed..].to_vec();
@@ -583,22 +662,30 @@ impl Session {
             let Some(asr) = self.live_asr.as_ref() else {
                 return;
             };
-            let silence = vec![0.0_f32; tail_silence_samples(self.sample_rate)];
-            asr.stream
-                .accept_waveform(self.sample_rate as i32, &silence);
-            while asr.recognizer.is_ready(&asr.stream) {
-                asr.recognizer.decode(&asr.stream);
+            let read = |asr: &LiveAsr| {
+                asr.recognizer
+                    .get_result(&asr.stream)
+                    .map(|result| result.text)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned()
+            };
+            let mut drain = TailDrain::default();
+            while let Some(step_ms) = drain.next_step() {
+                let silence = vec![0.0_f32; silence_samples(self.sample_rate, step_ms)];
+                asr.stream
+                    .accept_waveform(self.sample_rate as i32, &silence);
+                while asr.recognizer.is_ready(&asr.stream) {
+                    asr.recognizer.decode(&asr.stream);
+                }
+                drain.observe(step_ms, read(asr).chars().count());
             }
+            // Costs nothing and settles the stream; it is not what produced the tail above.
             asr.stream.input_finished();
             while asr.recognizer.is_ready(&asr.stream) {
                 asr.recognizer.decode(&asr.stream);
             }
-            asr.recognizer
-                .get_result(&asr.stream)
-                .map(|result| result.text)
-                .unwrap_or_default()
-                .trim()
-                .to_owned()
+            read(asr)
         };
         if !tail.is_empty() {
             self.committed.push(tail);

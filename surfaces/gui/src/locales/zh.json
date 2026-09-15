@@ -125,7 +125,7 @@
       "stop_dictation": "停止听写",
       "start_dictation_btn": "开始听写",
       "configure": "在设置中配置语音输入",
-      "live_status": "实时预览 · 停止后会被替换",
+      "live_status": "实时预览 · 末尾几个字停止后才补上，随后整体重写",
       "realtime_degraded": "本机暂时出不了实时文字。录音不受影响，停止后仍会给出完整转写。"
     },
     "err_transcribe": "无法转写你的录音。",

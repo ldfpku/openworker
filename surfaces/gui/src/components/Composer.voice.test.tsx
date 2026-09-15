@@ -194,6 +194,38 @@ describe("Composer voice input (§37)", () => {
     expect(composerBox().value).toBe("你好，世界。");
   });
 
+  // The engine cannot show the closing word while the user is still saying it: this model gives
+  // up its last characters only once silence has followed them, so at the instant Stop is pressed
+  // the live text is a word or so behind (measured: three characters on an eight-second
+  // sentence). Stopping is what recovers them — the engine drains the recognizer and sends ONE
+  // more update, which lands while `stop_dictation` is still off transcribing. If the composer
+  // stopped listening the moment the button was pressed, the user would watch their last words
+  // never arrive and the recording would look truncated until the final transcript replaced it a
+  // second or more later. So that update has to land, and the final still replaces it.
+  it("the tail the stop recovers lands in the box before the final transcript does", async () => {
+    render(<Composer {...props()} />);
+    const stop = await startRecording();
+    await firePartial({ seq: 1, text: "明天下午三", committed_chars: 0, degraded: false });
+
+    let finish = (_transcript: string) => {};
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "stop_dictation") return new Promise<string>((resolve) => (finish = resolve));
+      if (cmd === "get_dictation_status") return READY;
+      return null;
+    });
+    fireEvent.click(stop);
+
+    // The recording is still open as far as the shell is concerned; the drained tail arrives here.
+    await firePartial({ seq: 2, text: "明天下午三点开会", committed_chars: 0, degraded: false });
+    expect(composerBox().value).toBe("明天下午三点开会");
+
+    await act(async () => {
+      finish("明天下午3点开会。");
+    });
+    await screen.findByLabelText("Start dictation");
+    expect(composerBox().value).toBe("明天下午3点开会。");
+  });
+
   it("dictating mid-draft replaces only the span the caret opened", async () => {
     render(<Composer {...props()} />);
     const box = composerBox();

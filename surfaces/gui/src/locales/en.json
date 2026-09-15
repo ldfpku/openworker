@@ -127,7 +127,7 @@
       "stop_dictation": "Stop dictation",
       "start_dictation_btn": "Start dictation",
       "configure": "Configure Voice Input in Settings",
-      "live_status": "Live preview · replaced when you stop",
+      "live_status": "Live preview · the last words land when you stop, then it's rewritten",
       "realtime_degraded": "Live text is unavailable on this machine. The recording is unaffected — the full transcript still arrives when you stop."
     },
     "err_transcribe": "Could not transcribe your recording.",

@@ -191,6 +191,7 @@ fn wav(path: &str) {
         spec.sample_rate,
         realtime,
         Some(printing_sink()),
+        || {},
     ) {
         Ok(text) => println!(
             "final in {:?} (realtime={realtime}) -> {text:?}",

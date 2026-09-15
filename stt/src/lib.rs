@@ -379,12 +379,18 @@ impl Dictation {
     /// Runs pre-recorded audio through the exact path the microphone uses, live updates included.
     /// Diagnostics only — see `examples/voice_probe.rs`. `realtime` paces the feed as if it were
     /// being spoken, which is what makes live updates meaningful.
+    ///
+    /// `on_stop` fires the instant the last sample has been handed over and before the final pass
+    /// begins — the same instant a user's click on Stop lands. Everything a host has shown by
+    /// then is what the user saw at the moment they stopped; `examples/tail_probe.rs` uses it to
+    /// separate live text from what the stop itself recovers.
     pub fn transcribe_samples(
         &self,
         samples: &[f32],
         sample_rate: u32,
         realtime: bool,
         partials: Option<PartialSink>,
+        on_stop: impl FnOnce(),
     ) -> Result<String, DictationError> {
         let live = Arc::new(Mutex::new(Vec::new()));
         self.engine.start(live.clone(), sample_rate, partials)?;
@@ -399,6 +405,7 @@ impl Dictation {
                 ));
             }
         }
+        on_stop();
         self.engine.finalize(samples.to_vec(), sample_rate)
     }
 
@@ -444,21 +451,23 @@ impl Dictation {
 mod tests {
     use std::{
         fs,
-        path::PathBuf,
+        path::{Path, PathBuf},
+        sync::{Arc, Mutex},
         time::{SystemTime, UNIX_EPOCH},
     };
 
     use super::{
         engine::{
             clean_transcript, is_only_non_speech_markers, join_segment_texts, segment_spans,
-            tail_silence_samples, Degrade, PartialAccumulator,
+            silence_samples, Degrade, PartialAccumulator, TailDrain, TAIL_MAX_MS, TAIL_MIN_MS,
+            TAIL_SETTLED_MS, TAIL_STEP_MS,
         },
         err_key,
         models::{
             self, marker_matches, place_pack_dir, resume_plan, write_marker, ModelFile, ModelPack,
             ResumePlan,
         },
-        Dictation, DictationError,
+        Dictation, DictationError, PartialSink, PartialTranscript,
     };
 
     fn temp_dir(label: &str) -> PathBuf {
@@ -469,6 +478,115 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ocw-stt-{label}-{unique}"));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    // -- the one test that needs the real models ---------------------------------------------
+    //
+    // 450 MB of model and half a minute of wall clock, so it is `#[ignore]`d and never runs in
+    // CI. On a machine that has the packs:
+    //
+    //   OCW_STT_MODEL_DIR=%APPDATA%\coworker\models \
+    //   OCW_STT_AUDIO=...\b_cut.wav \
+    //   OCW_STT_TRUTH=...明天下午3点开会 \
+    //   cargo test --manifest-path stt/Cargo.toml -- --ignored
+
+    /// Spoken characters only. The tail is a question about words: the streaming pass writes no
+    /// punctuation where the final pass does, and inverse text normalisation writes "3点" where
+    /// the streaming pass writes "三点".
+    fn spoken(text: &str) -> Vec<char> {
+        const DIGITS: [char; 10] = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
+        text.chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .map(|c| match c.to_digit(10) {
+                Some(value) if c.is_ascii_digit() => DIGITS[value as usize],
+                _ => c,
+            })
+            .collect()
+    }
+
+    /// True when `candidate` ends on the last `count` spoken characters of `truth`.
+    fn ends_with_tail(truth: &str, candidate: &str, count: usize) -> bool {
+        let truth = spoken(truth);
+        let candidate = spoken(candidate);
+        let tail = &truth[truth.len().saturating_sub(count)..];
+        candidate.len() >= tail.len() && candidate[candidate.len() - tail.len()..] == *tail
+    }
+
+    fn read_wav(path: &Path) -> (Vec<f32>, u32) {
+        let mut reader = hound::WavReader::open(path).expect("open OCW_STT_AUDIO");
+        let spec = reader.spec();
+        let channels = spec.channels.max(1) as usize;
+        let raw: Vec<f32> = match spec.sample_format {
+            hound::SampleFormat::Float => {
+                reader.samples::<f32>().map(|s| s.expect("sample")).collect()
+            }
+            hound::SampleFormat::Int => reader
+                .samples::<i16>()
+                .map(|s| s.expect("sample") as f32 / i16::MAX as f32)
+                .collect(),
+        };
+        let mono = raw
+            .chunks(channels)
+            .map(|frame| frame.iter().sum::<f32>() / frame.len() as f32)
+            .collect();
+        (mono, spec.sample_rate)
+    }
+
+    /// The bug this whole tail drain exists for: a recording whose last sample is the last sample
+    /// of SPEECH — someone who stopped the instant they finished talking — used to lose its
+    /// closing character, because the stop fed one fixed pad of silence that was less than one
+    /// decode step past the floor. Both the live text the stop leaves behind and the final
+    /// transcript have to carry the whole tail.
+    #[test]
+    #[ignore = "needs the real 450 MB model packs and about a minute of wall clock"]
+    fn a_stop_on_the_last_syllable_still_recovers_the_tail() {
+        let Ok(model_dir) = std::env::var("OCW_STT_MODEL_DIR") else {
+            panic!("set OCW_STT_MODEL_DIR, OCW_STT_AUDIO and OCW_STT_TRUTH to run this");
+        };
+        let audio = std::env::var("OCW_STT_AUDIO").expect("set OCW_STT_AUDIO to a 16-bit wav");
+        let truth = std::env::var("OCW_STT_TRUTH").expect("set OCW_STT_TRUTH");
+        let (samples, rate) = read_wav(Path::new(&audio));
+
+        let dictation = Dictation::new(PathBuf::from(model_dir));
+        assert!(
+            dictation.status().model_verified,
+            "the packs under OCW_STT_MODEL_DIR are not verified"
+        );
+
+        let updates: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let stopped: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+        let sink_updates = updates.clone();
+        let sink: PartialSink = Arc::new(move |partial: PartialTranscript| {
+            sink_updates.lock().unwrap().push(partial.text);
+        });
+        let mark = stopped.clone();
+        let seen = updates.clone();
+        let final_text = dictation
+            .transcribe_samples(&samples, rate, true, Some(sink), move || {
+                *mark.lock().unwrap() = seen.lock().unwrap().len();
+            })
+            .expect("transcribe");
+
+        let updates = updates.lock().unwrap();
+        let at_stop = *stopped.lock().unwrap();
+        let live = updates.last().cloned().unwrap_or_default();
+        // Four characters: enough to be the tail rather than a coincidence, short enough that a
+        // substitution earlier in the sentence is not this test's business.
+        assert!(
+            ends_with_tail(&truth, &live, 4),
+            "live text after the stop lost the tail\n  truth: {truth:?}\n   live: {live:?}"
+        );
+        assert!(
+            ends_with_tail(&truth, &final_text, 4),
+            "final transcript lost the tail\n  truth: {truth:?}\n  final: {final_text:?}"
+        );
+        // The stop is what recovers it: the text on screen when the button was pressed is not
+        // yet complete, which is exactly why the flushed update has to be sent to the host.
+        let at_stop_text = updates[..at_stop].last().cloned().unwrap_or_default();
+        println!("live at stop : {at_stop_text:?}");
+        println!("live flushed : {live:?}");
+        println!("final        : {final_text:?}");
     }
 
     // A stand-in for a real pack: same shape, bytes small enough to write in a test. The hash is
@@ -780,11 +898,64 @@ mod tests {
     }
 
     #[test]
-    fn stopping_appends_enough_silence_to_recover_the_last_word() {
-        // 660 ms is the measured floor; 300 ms recovers nothing at all.
-        assert!(tail_silence_samples(16_000) >= 16_000 * 660 / 1000);
-        assert!(tail_silence_samples(48_000) >= 48_000 * 660 / 1000);
-        assert_eq!(tail_silence_samples(16_000), 11_200);
+    fn silence_is_counted_at_the_capture_rate() {
+        assert_eq!(silence_samples(16_000, TAIL_STEP_MS), 3_200);
+        assert_eq!(silence_samples(48_000, TAIL_STEP_MS), 9_600);
+        assert_eq!(silence_samples(16_000, 0), 0);
+    }
+
+    /// Drives a drain against a script of "the transcript had grown to N characters by the time
+    /// this much silence had gone in", which is the only thing the policy looks at. Returns the
+    /// silence the drain ended up feeding.
+    fn drain_until(growth: &[(u32, usize)]) -> u32 {
+        let mut drain = TailDrain::default();
+        let mut chars = 0_usize;
+        while let Some(step_ms) = drain.next_step() {
+            if let Some((_, grown)) = growth.iter().find(|(at, _)| *at == drain.fed_ms()) {
+                chars = *grown;
+            }
+            drain.observe(step_ms, chars);
+        }
+        drain.fed_ms()
+    }
+
+    #[test]
+    fn the_tail_drain_stops_one_decode_cadence_after_the_text_settles() {
+        // Nothing ever comes out — the user had already paused — and the drain costs the floor.
+        assert_eq!(drain_until(&[]), TAIL_MIN_MS);
+        // The measured case this policy exists for: an utterance stopped on its last sample of
+        // speech loses its closing character at 660 ms and at 700 ms of silence, and gets it back
+        // at 800 ms. A fixed pad had to guess which. The drain is past the floor before it will
+        // conclude anything, so it SEES the growth at 800 ms, and then stops a cadence later.
+        assert_eq!(drain_until(&[(800, 12)]), 800 + TAIL_SETTLED_MS);
+        // Growth after the floor moves the finish line with it — but never past the ceiling.
+        assert_eq!(drain_until(&[(400, 9), (1_200, 12)]), 1_200 + TAIL_SETTLED_MS);
+        // Text that keeps trickling out stops at the ceiling rather than following it forever.
+        assert_eq!(drain_until(&[(400, 9), (1_000, 10), (1_600, 11)]), TAIL_MAX_MS);
+        // Growth inside the floor does not make the drain stop any earlier than the floor — and
+        // a drain that saw nothing by the floor stops there, so silence past it is never wasted
+        // on a recording that had nothing left to give.
+        assert_eq!(drain_until(&[(200, 12)]), TAIL_MIN_MS);
+        assert_eq!(drain_until(&[(1_800, 12)]), TAIL_MIN_MS);
+    }
+
+    #[test]
+    fn the_tail_drain_never_runs_away() {
+        // Text that grows on every single step still has to stop at the ceiling.
+        let mut drain = TailDrain::default();
+        let mut chars = 0_usize;
+        let mut steps = 0_u32;
+        while let Some(step_ms) = drain.next_step() {
+            chars += 1;
+            drain.observe(step_ms, chars);
+            steps += 1;
+            assert!(steps < 1_000, "the drain has to terminate");
+        }
+        assert_eq!(drain.fed_ms(), TAIL_MAX_MS);
+        // The ceiling is landed on exactly rather than overshot on the last step.
+        assert_eq!(steps, TAIL_MAX_MS / TAIL_STEP_MS);
+        // Settling has to be cheaper than the ceiling, or the drain could never stop early.
+        assert!(TAIL_SETTLED_MS < TAIL_MAX_MS);
     }
 
     #[test]

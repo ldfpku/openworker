@@ -1040,7 +1040,12 @@ export function Composer(props: Props) {
               <span className="text-[12px] text-muted tabular-nums">{recordingTime}</span>
               {/* Live text is a preview from the streaming model; the final pass is more
                   accurate and replaces it wholesale, which the user should know BEFORE they
-                  start correcting words that are about to be rewritten. */}
+                  start correcting words that are about to be rewritten. It also runs BEHIND the
+                  speaker by design — this model will not give up a word until silence has
+                  followed it, so at the moment Stop is pressed the last few characters are
+                  still missing (measured: three, on an eight-second sentence) and the stop is
+                  what fetches them. Saying so is the difference between "it cut off my ending"
+                  and "the ending is on its way". */}
               <span className="text-[11px] text-faint truncate hidden sm:inline">
                 {t("composer.voice.live_status")}
               </span>
