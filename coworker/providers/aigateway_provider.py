@@ -61,15 +61,23 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Callable, Optional
+from typing import Any, Callable, NamedTuple, Optional
 
+from ..compaction import estimate_tokens
 from .base import ModelCapabilities, ProviderClient
 from .capabilities import capabilities_for
+from .errors import is_gateway_busy
+from .matrix import MATRIX
 
 logger = logging.getLogger(__name__)
 
 ENV_BASE_URL = "CLOUDFLARE_AIGW_BASE_URL"
 ENV_ACCESS_TOKEN = "CLOUDFLARE_AIGW_ACCESS_TOKEN"
+# Rollback switch for the dynamic-routing retry below (`0`/`off`/`false`/`no` turn it
+# off). Env-only on purpose, same shape as `ENV_BASE_URL`: this is an operational escape
+# hatch for the day a Cloudflare-side route is broken or deleted, not a preference —
+# nothing in Settings should invite people to toggle it.
+ENV_DYNAMIC_ROUTING = "CLOUDFLARE_AIGW_DYNAMIC_ROUTING"
 
 # The company gateway, the address of last resort in `resolve_settings` — which is what
 # lets the settings pane drop the address field entirely. Publishing the host is fine:
@@ -204,6 +212,119 @@ def upstream_model(model: str, wire: str) -> str:
         return model
     _author, _, bare = model.partition("/")
     return bare or model
+
+
+class _Route(NamedTuple):
+    """One Cloudflare Dynamic Route, from this client's point of view."""
+
+    name: str  # the route id on the gateway — sent as `dynamic/<name>` on `/compat`
+    fallback: str  # the same-tier stand-in that route falls back to, gateway id
+
+
+# Model → its dynamic route, for the handful of models the shared wholesale pool actually
+# rate-limits. A Dynamic Route is a tiny graph on the gateway (start → primary model →
+# fallback model → end); addressing it means POSTing `model: "dynamic/<name>"` to
+# `/compat`, and the gateway picks the live one. Cloudflare's fallback edge fires on
+# "error or timeout" only — it cannot be told "429 specifically" — which is why the
+# decision to reach for a route at all is made HERE, on a 429/402-busy body, rather than
+# routing every request through the graph and losing the provider-native wires.
+#
+# Two rules the table has to keep:
+#   * **Same tier, and never up.** A fallback must not be a model the guard restricts more
+#     tightly than the primary, or a 429 would quietly hand someone a model they are not
+#     cleared for. Today's restricted set is exactly {claude-fable-5, gpt-5.6-sol}, and
+#     each of those is only ever a fallback for a peer that is itself restricted.
+#   * **It mirrors gateway-guard's `ROUTE_MODELS`.** The guard has to resolve
+#     `dynamic/<name>` back to BOTH endpoints to keep the gate honest; the two tables ship
+#     together or the gate is bypassable.
+#
+# Not routed: the utility tier (haiku / luna — the limiter never fires there) and every
+# `google-ai-studio/*` id, which reaches `/compat` unchanged.
+_ROUTES: dict[str, _Route] = {
+    "anthropic/claude-fable-5": _Route(
+        "ow-anthropic-claude-fable-5", "openai/gpt-5.6-sol"
+    ),
+    "openai/gpt-5.6-sol": _Route("ow-openai-gpt-5-6-sol", "anthropic/claude-opus-5"),
+    "anthropic/claude-opus-5": _Route(
+        "ow-anthropic-claude-opus-5", "openai/gpt-5.6-terra"
+    ),
+    "anthropic/claude-sonnet-5": _Route(
+        "ow-anthropic-claude-sonnet-5", "openai/gpt-5.6-terra"
+    ),
+    "openai/gpt-5.6-terra": _Route(
+        "ow-openai-gpt-5-6-terra", "anthropic/claude-sonnet-5"
+    ),
+}
+
+
+def _bare_gateway_id(model: str) -> str:
+    """`aigw:anthropic/claude-opus-5` / `anthropic/claude-opus-5` → the latter, lowercased.
+
+    The provider is handed the bare gateway id (the router strips `aigw:`), but the matrix
+    and everything shipped to the GUI are keyed on the routed id — so both spellings reach
+    the lookups below.
+    """
+    ident = (model or "").strip().lower()
+    return ident[len("aigw:") :] if ident.startswith("aigw:") else ident
+
+
+def route_for(model: str) -> Optional[str]:
+    """The dynamic route serving this model, or None when it has no stand-in.
+
+    Pure table lookup — the rollback switch is checked separately by the caller
+    (`dynamic_routing_enabled`), so this stays usable for "does a stand-in exist at all"
+    questions like the picker badge.
+    """
+    entry = _ROUTES.get(_bare_gateway_id(model))
+    return entry.name if entry else None
+
+
+def fallback_for(model: str) -> Optional[str]:
+    """The same-tier stand-in this model's route falls back to (gateway id), or None."""
+    entry = _ROUTES.get(_bare_gateway_id(model))
+    return entry.fallback if entry else None
+
+
+def dynamic_routing_enabled() -> bool:
+    """False only when the env switch says so — absent means on."""
+    raw = os.environ.get(ENV_DYNAMIC_ROUTING, "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+# How full the stand-in's window a turn may be before a re-send stops being worth trying.
+# `estimate_tokens` counts the outbound prompt only — the reply needs room too — and it is
+# a chars/4 approximation that runs light on CJK text. 10% covers both.
+_STAND_IN_HEADROOM = 0.9
+
+
+def context_window(model: str) -> Optional[int]:
+    """The matrix's context window for a gateway id, or None when it carries no number."""
+    entry = MATRIX.get(f"aigw:{_bare_gateway_id(model)}")
+    return entry.context_window if entry else None
+
+
+def fits_the_stand_in(route: _Route, messages: list[dict[str, Any]]) -> bool:
+    """Would the stand-in even accept this turn?
+
+    **Same tier does not mean same window.** `claude-opus-5` and `claude-sonnet-5` carry
+    1,000,000 and both fail over to `gpt-5.6-terra`, whose 400,000 is smaller *and* is
+    itself the one unverified number in the table. Re-sending a turn that cannot fit buys
+    a guaranteed second failure, and — because `complete`/`stream` deliberately surface
+    the ORIGINAL 429 when the route fails too — the user would be told "the shared pool is
+    busy" about a context overflow. Better to let the 429 stand: it is at least the error
+    that actually happened first.
+
+    Auto-compaction normally keeps a turn far below this (it fires at
+    min(0.8 × window, 250k)), so this is a backstop for what it does not catch: one
+    uncompacted tool loop, a giant paste, a window shrunk by a matrix correction.
+
+    No matrix number for the stand-in → no ceiling to test against, so allow the re-send;
+    inventing a limit would be the worse guess.
+    """
+    window = context_window(route.fallback)
+    if not window:
+        return True
+    return estimate_tokens(messages) <= int(window * _STAND_IN_HEADROOM)
 
 
 def fetch_gate_policy(
@@ -371,7 +492,13 @@ class AIGatewayProvider(ProviderClient):
         )
 
     def _client_for(self, model: str) -> ProviderClient:
-        wire = wire_for(model)
+        return self._client_for_wire(wire_for(model))
+
+    def _client_for_wire(self, wire: str) -> ProviderClient:
+        # Keyed on the wire rather than the model so the dynamic-routing retry can ask for
+        # the `chat` sub-client directly: `dynamic/<route>` is not a model id anything
+        # should be running `wire_for` on, it is an address on `/compat`.
+        #
         # Resolved once per call and threaded into `_build`: asking twice would double
         # every silent-refresh check on the request path.
         kind, credential = self._credential()
@@ -392,6 +519,83 @@ class AIGatewayProvider(ProviderClient):
             self._clients[wire] = client
         return client
 
+    # -- dynamic routing --------------------------------------------------------
+    def _retry_route(
+        self, model: str, exc: Exception, messages: list[dict[str, Any]]
+    ) -> Optional[_Route]:
+        """The route to re-send this failed call on, or None to let the error stand.
+
+        Two gates, both of which mean "a second request would fail too, so don't pay for
+        it":
+
+        * Only "the shared pool is busy right now" earns a re-send (`is_gateway_busy`
+          covers both spellings — the 429 `Wholesale Rate limited` body and the older 402
+          `wholesale rate limit exceeded`). A bad id, a restricted model, an
+          out-of-credits account would all fail identically on the stand-in.
+        * The turn has to fit the stand-in's context window (`fits_the_stand_in`) — the
+          two 1M Claude tiers fail over to a 400k model.
+        """
+        if not dynamic_routing_enabled() or not is_gateway_busy(exc):
+            return None
+        route = _ROUTES.get(_bare_gateway_id(model))
+        if route is None:
+            return None
+        if not fits_the_stand_in(route, messages):
+            logger.warning(
+                "aigw: %s is rate-limited, but this turn (~%d tokens) does not fit the "
+                "stand-in %s (window %s) — letting the 429 stand rather than re-sending",
+                model,
+                estimate_tokens(messages),
+                route.fallback,
+                context_window(route.fallback),
+            )
+            return None
+        return route
+
+    @staticmethod
+    def _retry_settings(
+        model: str, route: _Route, settings: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Settings for the re-send, which always goes out on `/compat`.
+
+        `openai_provider._pin_reasoning_effort` pins effort to `none` for `gpt-5.6*` ids
+        because Chat Completions refuses function tools at any other effort — and it
+        matches on the model string, which is now `dynamic/ow-…` and misses. So pin it
+        here instead.
+
+        Pinned when EITHER end of the route is an OpenAI tier, because the whole point of
+        a route is that the client does not know which end answers. Half the table is
+        Anthropic-primary with an OpenAI stand-in (`claude-opus-5` → `gpt-5.6-terra`); if
+        this only looked at the primary, those re-sends would reach Chat Completions
+        unpinned and lean on `openai_provider`'s `_param_fix_retry` to self-heal — correct
+        in the end, but at the cost of a third round-trip on a turn that is already two
+        requests deep.
+
+        Sending it the other way (an Anthropic end receiving `reasoning_effort`) is the
+        risk this accepts in exchange: `/compat` is a translation layer and only forwards
+        what the vendor schema knows. That assumption was already load-bearing for the
+        OpenAI-primary half of the table and is unchanged here — confirm it in the
+        gateway's Logs the first time a real 429 exercises a route.
+        """
+        if wire_for(model) != "responses" and wire_for(route.fallback) != "responses":
+            return settings
+        out = dict(settings)
+        out.setdefault("reasoning_effort", "none")
+        return out
+
+    @staticmethod
+    def _mark_route(exc: Exception, route: _Route) -> None:
+        """Tag the error with the route that was tried, for `errors.friendly_model_error`.
+
+        Best-effort: an exception type that refuses attributes just stays untagged and the
+        message falls back to its routeless wording.
+        """
+        try:
+            exc.aigw_route = route.name  # type: ignore[attr-defined]
+            exc.aigw_fallback = route.fallback  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001 - cosmetic; never mask the real failure
+            logger.debug("aigw: could not tag %r with its route", type(exc).__name__)
+
     # -- ProviderClient ---------------------------------------------------------
     def complete(
         self,
@@ -402,9 +606,36 @@ class AIGatewayProvider(ProviderClient):
         **settings: Any,
     ):
         wire = wire_for(model)
-        return self._client_for(model).complete(
-            model=upstream_model(model, wire), messages=messages, tools=tools, **settings
-        )
+        try:
+            return self._client_for(model).complete(
+                model=upstream_model(model, wire),
+                messages=messages,
+                tools=tools,
+                **settings,
+            )
+        except Exception as exc:
+            route = self._retry_route(model, exc, messages)
+            if route is None:
+                raise
+            logger.warning(
+                "aigw: %s is rate-limited, retrying on route %s (stand-in %s)",
+                model,
+                route.name,
+                route.fallback,
+            )
+            try:
+                return self._client_for_wire("chat").complete(
+                    model=f"dynamic/{route.name}",
+                    messages=messages,
+                    tools=tools,
+                    **self._retry_settings(model, route, settings),
+                )
+            except Exception:  # noqa: BLE001 - the ORIGINAL error is the true diagnosis
+                # Re-raise the 429, not whatever the route answered: a missing route or a
+                # busy stand-in both mean "the tier is unavailable right now", and only
+                # the original body carries the marker `errors.py` reads.
+                self._mark_route(exc, route)
+                raise exc
 
     def stream(
         self,
@@ -414,10 +645,66 @@ class AIGatewayProvider(ProviderClient):
         tools: Optional[list[dict[str, Any]]] = None,
         **settings: Any,
     ):
+        """Generator, deliberately — this used to hand the sub-client's iterator straight
+        back, which meant the SDK call (and its exception) happened at `stream()` call
+        time. Retrying needs to catch that exception, so the whole thing moved inside a
+        generator body and now raises on the first `next()` instead.
+
+        The one consumer that matters, `engine._astream`'s producer thread, calls and
+        iterates inside the same `try`, so the move is invisible there; `router.stream`
+        only passes the iterator along.
+
+        A re-send is only honest before the first chunk has been handed out: once the
+        caller has seen text, replaying the turn on another model would duplicate it.
+
+        **Known limitation, accepted.** If the *re-send* dies after emitting some of its
+        own chunks, the caller keeps the partial text and still gets the original 429 —
+        so the message says "the same-tier stand-in was busy too" even when the route's
+        real failure was something else (a network blip, the stand-in's own limiter). The
+        alternative is a second diagnosis that contradicts the text already on screen; the
+        gateway's Logs are where a mid-stream route failure is actually diagnosed.
+        """
         wire = wire_for(model)
-        return self._client_for(model).stream(
-            model=upstream_model(model, wire), messages=messages, tools=tools, **settings
-        )
+        started = False
+        retry: Optional[_Route] = None
+        first_error: Exception = RuntimeError("unreachable")
+        try:
+            for event in self._client_for(model).stream(
+                model=upstream_model(model, wire),
+                messages=messages,
+                tools=tools,
+                **settings,
+            ):
+                started = True
+                yield event
+        except Exception as exc:
+            route = None if started else self._retry_route(model, exc, messages)
+            if route is None:
+                raise
+            logger.warning(
+                "aigw: %s is rate-limited mid-stream (nothing emitted yet), retrying on "
+                "route %s (stand-in %s)",
+                model,
+                route.name,
+                route.fallback,
+            )
+            retry = route
+            first_error = exc
+        if retry is None:
+            return
+        try:
+            for event in self._client_for_wire("chat").stream(
+                model=f"dynamic/{retry.name}",
+                messages=messages,
+                tools=tools,
+                **self._retry_settings(model, retry, settings),
+            ):
+                yield event
+        except Exception:  # noqa: BLE001 - same contract as `complete`
+            # Including when the route had already emitted chunks of its own — see the
+            # "known limitation" note above.
+            self._mark_route(first_error, retry)
+            raise first_error
 
     def capabilities(self, model: str) -> ModelCapabilities:
         # The router strips the `aigw:` prefix before delegating, but the matrix is keyed on

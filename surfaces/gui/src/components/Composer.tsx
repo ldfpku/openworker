@@ -99,6 +99,9 @@ interface Props {
   model: string;
   models?: string[];
   modelLabels?: Record<string, string>; // curated display names (raw id when absent)
+  // {model id → the display label of the same-tier model the AI Gateway falls back to when
+  // the shared pool rate-limits this one}. Absent off-gateway and on older backends.
+  modelFallbacks?: Record<string, string>;
   // The model is FIXED once the session has history (§17): the picker renders ONLY on a fresh
   // session; after the first turn the fact lives in the topbar subtitle (§22) — no
   // interactive-then-disabled control.
@@ -642,14 +645,29 @@ export function Composer(props: Props) {
   }, [modelsLoaded, openOnLoad]);
   const modelOptions: Option[] = Array.from(
     new Set([props.model, ...(props.models || [])]),
-  ).map((m) => ({
-    value: m,
-    label: props.modelLabels?.[m] || shortModel(m),
-    // Which line costs nothing per token has to be visible where the choice is made.
-    ...(isFreeModel(m)
-      ? { badge: t("Free"), badgeTitle: t("Runs on the company NVIDIA relay or your own machine — no model bill") }
-      : {}),
-  }));
+  ).map((m) => {
+    // An Option carries ONE badge slot, and two facts compete for it: "free" and "has a
+    // same-tier stand-in when the shared gateway pool is busy". Free wins the slot —
+    // it's the one that changes what a turn costs — and the stand-in, which only ever
+    // matters on a paid gateway model, joins the tooltip instead of inventing a second
+    // chip the dropdown has no room for.
+    const free = isFreeModel(m);
+    // "GPT-5.6 Sol · via Cloudflare" → "GPT-5.6 Sol": inside a sentence about a fallback,
+    // the routing suffix is noise (same trim the topbar subtitle does).
+    const standIn = props.modelFallbacks?.[m]?.split(" · ")[0];
+    const standInTip = standIn ? t("composer.fallback_badge_tip", { model: standIn }) : "";
+    const freeTip = t("Runs on the company NVIDIA relay or your own machine — no model bill");
+    const badge = free
+      ? { badge: t("Free"), badgeTitle: [freeTip, standInTip].filter(Boolean).join(" · ") }
+      : standIn
+        ? { badge: t("composer.fallback_badge"), badgeTitle: standInTip }
+        : {};
+    return {
+      value: m,
+      label: props.modelLabels?.[m] || shortModel(m),
+      ...badge,
+    };
+  });
 
   // The send button is accent only when there's something to send — subtle grey otherwise, so the
   // composer isn't carrying a constant blue dot.

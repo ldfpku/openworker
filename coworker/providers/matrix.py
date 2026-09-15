@@ -338,23 +338,31 @@ MATRIX: dict[str, ModelEntry] = {
     # The GPT-5.6 tiers only answer on the Responses wire. On chat/completions OpenAI
     # itself refuses: "Function tools with reasoning_effort are not supported for
     # gpt-5.6-sol in /v1/chat/completions." That is why `wire_for` exists.
+    #
+    # Context windows come from Cloudflare's own model pages (read 2026-09-15). The
+    # gateway is the host, so its catalog is the authority on what it will accept —
+    # Sol and Luna are documented at 1,050,000, not the 400,000 carried here before.
     "aigw:openai/gpt-5.6-sol": ModelEntry(
-        "GPT-5.6 Sol · via Cloudflare", _AGENTIC_IMAGE, 400_000
+        "GPT-5.6 Sol · via Cloudflare", _AGENTIC_IMAGE, 1_050_000
     ),
+    # Terra publishes no window on the model page and the docs search finds none, so the
+    # older unverified 400,000 stays. Under-stating a window only makes the fill meter
+    # pessimistic and auto-compaction early; inheriting 1,050,000 from its siblings on a
+    # hunch would risk the opposite, which costs a failed turn.
     "aigw:openai/gpt-5.6-terra": ModelEntry(
         "GPT-5.6 Terra · via Cloudflare", _AGENTIC_IMAGE, 400_000
     ),
     "aigw:openai/gpt-5.6-luna": ModelEntry(
-        "GPT-5.6 Luna · via Cloudflare", _AGENTIC_IMAGE, 400_000
+        "GPT-5.6 Luna · via Cloudflare", _AGENTIC_IMAGE, 1_050_000
     ),
     # Opus 5 and Sonnet 5 exist only on the gateway — the direct `anthropic:` rows above
-    # are still on the 4.x line. No vendor page was read for their context windows, so
-    # they stay None and the GUI's fill meter hides rather than inventing a denominator.
+    # are still on the 4.x line. Cloudflare's model pages give both a 1,000,000 window
+    # (read 2026-09-15); they used to carry None, which hid the GUI's fill meter.
     "aigw:anthropic/claude-opus-5": ModelEntry(
-        "Claude Opus 5 · via Cloudflare", _AGENTIC_IMAGE
+        "Claude Opus 5 · via Cloudflare", _AGENTIC_IMAGE, 1_000_000
     ),
     "aigw:anthropic/claude-sonnet-5": ModelEntry(
-        "Claude Sonnet 5 · via Cloudflare", _AGENTIC_IMAGE
+        "Claude Sonnet 5 · via Cloudflare", _AGENTIC_IMAGE, 1_000_000
     ),
     "aigw:anthropic/claude-fable-5": ModelEntry(
         "Claude Fable 5 · via Cloudflare", _AGENTIC_IMAGE, 1_000_000

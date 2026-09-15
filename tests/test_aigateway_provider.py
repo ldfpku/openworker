@@ -17,9 +17,17 @@ from coworker.providers import capabilities_for
 from coworker.providers.aigateway_provider import (
     AIGatewayProvider,
     DEFAULT_BASE_URL,
+    ENV_DYNAMIC_ROUTING,
+    _ROUTES,
+    _Route,
     access_headers,
+    context_window,
+    dynamic_routing_enabled,
+    fallback_for,
+    fits_the_stand_in,
     normalise_base,
     resolve_settings,
+    route_for,
     upstream_model,
     wire_for,
     wire_url,
@@ -29,7 +37,7 @@ from coworker.providers.anthropic_provider import (
     _needs_refusal_fallback,
     _uses_budget_thinking,
 )
-from coworker.providers.errors import friendly_model_error
+from coworker.providers.errors import friendly_model_error, is_gateway_busy
 from coworker.providers.matrix import MATRIX
 from coworker.providers.openai_provider import OpenAIProvider
 from coworker.providers.openai_responses import OpenAIResponsesProvider
@@ -277,6 +285,7 @@ def test_the_transformed_id_is_what_reaches_the_sub_client():
 
         def stream(self, *, model, messages, tools=None, **kw):
             seen["stream"] = model
+            return iter(())
 
     p = AIGatewayProvider(
         base_url=BASE,
@@ -284,9 +293,465 @@ def test_the_transformed_id_is_what_reaches_the_sub_client():
         clients={"messages": Spy(), "chat": Spy()},
     )
     p.complete(model="anthropic/claude-haiku-4-5", messages=[])
-    p.stream(model="google-ai-studio/gemini-3.6-flash", messages=[])
+    # `stream` is a generator now (dynamic routing has to catch the sub-client's error),
+    # so nothing reaches the sub-client until it is iterated.
+    list(p.stream(model="google-ai-studio/gemini-3.6-flash", messages=[]))
     assert seen["complete"] == "claude-haiku-4-5"
     assert seen["stream"] == "google-ai-studio/gemini-3.6-flash"
+
+
+# -- dynamic routing (429 → the same-tier stand-in) ---------------------------------
+#
+# The gateway's per-model wholesale limiter refuses a second in-flight request for the
+# same model with 429 `Wholesale Rate limited` — every 429 this gateway has produced so
+# far. Cloudflare's own Dynamic Route can fail over to a same-tier model, but its fallback
+# edge fires on "error or timeout" and cannot be told "429 specifically", so the decision
+# to reach for the route lives here. These cover the decision, not the route graph.
+
+
+class _Busy(Exception):
+    """What the OpenAI SDK raises for the gateway's 429 (body is plain `Rate limited`)."""
+
+    status_code = 429
+
+    def __init__(self):
+        super().__init__(
+            "Error code: 429 - {'code': 2018, 'message': 'Wholesale Rate limited'}"
+        )
+
+
+class _Spy:
+    """A sub-client that records what it was asked for, and optionally fails."""
+
+    def __init__(self, error: Exception | None = None, chunks=()):
+        self.calls: list[dict[str, Any]] = []
+        self.error = error
+        self.chunks = list(chunks)
+
+    def complete(self, *, model, messages, tools=None, **kw):
+        self.calls.append({"model": model, **kw})
+        if self.error is not None:
+            raise self.error
+        return {"model": model}
+
+    def stream(self, *, model, messages, tools=None, **kw):
+        self.calls.append({"model": model, **kw})
+        if self.error is not None:
+            raise self.error
+        return iter(self.chunks)
+
+
+def test_every_routed_model_and_stand_in_is_a_curated_gateway_row():
+    # A route naming an id the picker cannot offer is dead weight; a route naming an id
+    # the matrix spells differently is worse — the retry would 404 on a live 429.
+    assert _ROUTES, "the routing table lost its entries"
+    for bare, route in _ROUTES.items():
+        assert f"aigw:{bare}" in MATRIX, bare
+        assert f"aigw:{route.fallback}" in MATRIX, route.fallback
+        assert route.fallback != bare, bare
+        # `ow-<vendor>-<model>`, dots flattened — the spelling gateway-guard's
+        # ROUTE_MODELS is keyed on.
+        assert route.name == "ow-" + bare.replace("/", "-").replace(".", "-")
+
+
+def test_a_stand_in_is_never_more_restricted_than_the_model_it_stands_in_for():
+    # The guard restricts the top tier to certain roles. If a 429 could hand someone the
+    # restricted model as a fallback, the gate would be bypassed by waiting for a busy
+    # moment — so a restricted stand-in is only ever paired with a restricted primary.
+    restricted = {"anthropic/claude-fable-5", "openai/gpt-5.6-sol"}
+    for bare, route in _ROUTES.items():
+        if route.fallback in restricted:
+            assert bare in restricted, f"{bare} could escalate into {route.fallback}"
+
+
+def test_the_utility_tier_is_deliberately_unrouted():
+    # Haiku and Luna are the probe/summariser models; the limiter has never fired there,
+    # and a route on the probe model would make "the probe never fails" harder to reason
+    # about. Adding one should be a decision, not a drift.
+    assert route_for("anthropic/claude-haiku-4-5") is None
+    assert route_for("openai/gpt-5.6-luna") is None
+    assert route_for("google-ai-studio/gemini-3.6-flash") is None
+
+
+def test_route_lookups_accept_the_routed_id_as_well_as_the_bare_one():
+    # The provider is handed the bare id; the GUI settings payload is keyed on `aigw:`.
+    assert route_for("anthropic/claude-opus-5") == "ow-anthropic-claude-opus-5"
+    assert route_for("aigw:anthropic/claude-opus-5") == "ow-anthropic-claude-opus-5"
+    assert fallback_for("AIGW:Anthropic/Claude-Opus-5") == "openai/gpt-5.6-terra"
+    assert route_for("openai/gpt-4o") is None and fallback_for("nonsense") is None
+
+
+@pytest.mark.parametrize("value,on", [("0", False), ("off", False), ("no", False),
+                                      ("false", False), ("1", True), ("", True)])
+def test_the_env_switch_is_the_rollback_lever(monkeypatch, value, on):
+    monkeypatch.setenv(ENV_DYNAMIC_ROUTING, value)
+    assert dynamic_routing_enabled() is on
+    monkeypatch.delenv(ENV_DYNAMIC_ROUTING, raising=False)
+    assert dynamic_routing_enabled() is True  # absent = on
+
+
+def test_a_dynamic_route_addresses_compat_with_its_prefix_intact():
+    # The retry's whole URL contract: `/compat`, and the `dynamic/` prefix survives —
+    # strip it and the gateway answers `2008 Invalid provider` like any other bare id.
+    assert wire_for("dynamic/ow-anthropic-claude-opus-5") == "chat"
+    assert (
+        upstream_model("dynamic/ow-anthropic-claude-opus-5", "chat")
+        == "dynamic/ow-anthropic-claude-opus-5"
+    )
+    assert wire_url(BASE, "chat") == BASE + "/compat"
+
+
+def test_a_rate_limited_completion_is_resent_on_the_models_route():
+    chat = _Spy()
+    p = AIGatewayProvider(
+        base_url=BASE,
+        access_token=SESSION,
+        clients={"messages": _Spy(error=_Busy()), "chat": chat},
+    )
+    out = p.complete(model="anthropic/claude-opus-5", messages=[], tools=[{"x": 1}])
+    assert out == {"model": "dynamic/ow-anthropic-claude-opus-5"}
+    assert chat.calls[0]["model"] == "dynamic/ow-anthropic-claude-opus-5"
+
+
+@pytest.mark.parametrize(
+    "model,route",
+    [
+        # OpenAI primary — the classic case.
+        ("openai/gpt-5.6-sol", "dynamic/ow-openai-gpt-5-6-sol"),
+        # Anthropic primary whose STAND-IN is an OpenAI tier. The client cannot know which
+        # end the gateway picks, so the pin has to be there either way; without it this
+        # re-send reaches Chat Completions unpinned and only recovers via
+        # `openai_provider._param_fix_retry` — a third round-trip on a turn already two
+        # requests deep.
+        ("anthropic/claude-opus-5", "dynamic/ow-anthropic-claude-opus-5"),
+    ],
+)
+def test_effort_is_pinned_whenever_either_end_of_the_route_is_an_openai_tier(
+    model, route
+):
+    # `_pin_reasoning_effort` matches on a `gpt-5.6…` model string and the resend's is
+    # `dynamic/ow-…`, so without this the retry would hit Chat Completions' refusal of
+    # function tools at any effort other than "none".
+    chat = _Spy()
+    p = AIGatewayProvider(
+        base_url=BASE,
+        access_token=SESSION,
+        clients={
+            wire_for(model): _Spy(error=_Busy()),
+            "chat": chat,
+        },
+    )
+    p.complete(model=model, messages=[], tools=[{"x": 1}])
+    assert chat.calls[0]["model"] == route
+    assert chat.calls[0]["reasoning_effort"] == "none"
+
+
+def test_an_all_anthropic_route_would_carry_no_effort_knob():
+    # No such pair exists in today's table (every route has an OpenAI end), so this pins
+    # the RULE rather than a row: the knob is for OpenAI's Chat Completions refusal, and
+    # a route that can never land there should not carry it.
+    assert AIGatewayProvider._retry_settings(
+        "anthropic/claude-opus-5",
+        _Route("ow-made-up", "anthropic/claude-sonnet-5"),
+        {"temperature": 0.2},
+    ) == {"temperature": 0.2}
+
+
+def test_an_explicit_effort_setting_is_not_overwritten_by_the_resend():
+    chat = _Spy()
+    p = AIGatewayProvider(
+        base_url=BASE,
+        access_token=SESSION,
+        clients={"responses": _Spy(error=_Busy()), "chat": chat},
+    )
+    p.complete(model="openai/gpt-5.6-sol", messages=[], reasoning_effort="low")
+    assert chat.calls[0]["reasoning_effort"] == "low"
+
+
+def test_only_a_busy_shared_pool_earns_a_resend():
+    # A bad id, a restricted model or an empty balance would fail identically on the
+    # stand-in; retrying those only buys a second round-trip and a second bill.
+    chat = _Spy()
+    p = AIGatewayProvider(
+        base_url=BASE,
+        access_token=SESSION,
+        clients={
+            "messages": _Spy(error=RuntimeError("Error code: 404 - model not found")),
+            "chat": chat,
+        },
+    )
+    with pytest.raises(RuntimeError):
+        p.complete(model="anthropic/claude-opus-5", messages=[])
+    assert chat.calls == []
+
+
+def test_an_unrouted_model_keeps_its_429():
+    chat = _Spy()
+    p = AIGatewayProvider(
+        base_url=BASE,
+        access_token=SESSION,
+        clients={"messages": _Spy(error=_Busy()), "chat": chat},
+    )
+    with pytest.raises(_Busy):
+        p.complete(model="anthropic/claude-haiku-4-5", messages=[])
+    assert chat.calls == []
+
+
+def test_the_env_switch_off_restores_the_old_behaviour(monkeypatch):
+    monkeypatch.setenv(ENV_DYNAMIC_ROUTING, "0")
+    chat = _Spy()
+    p = AIGatewayProvider(
+        base_url=BASE,
+        access_token=SESSION,
+        clients={"messages": _Spy(error=_Busy()), "chat": chat},
+    )
+    with pytest.raises(_Busy):
+        p.complete(model="anthropic/claude-opus-5", messages=[])
+    assert chat.calls == []
+
+
+def test_when_the_route_fails_too_the_original_429_is_what_surfaces():
+    # Not the route's error: a missing route (the Cloudflare side not deployed yet) and a
+    # busy stand-in both mean "this tier is unavailable right now", and only the original
+    # body carries the marker `errors.py` reads.
+    p = AIGatewayProvider(
+        base_url=BASE,
+        access_token=SESSION,
+        clients={
+            "messages": _Spy(error=_Busy()),
+            "chat": _Spy(error=RuntimeError("Error code: 404 - route not found")),
+        },
+    )
+    with pytest.raises(_Busy) as caught:
+        p.complete(model="anthropic/claude-fable-5", messages=[])
+    assert caught.value.aigw_route == "ow-anthropic-claude-fable-5"
+    assert caught.value.aigw_fallback == "openai/gpt-5.6-sol"
+    # …and the tag is what turns the message from "go configure BYOK" into "wait".
+    friendly = friendly_model_error("aigw:anthropic/claude-fable-5", caught.value)
+    assert friendly and "ow-anthropic-claude-fable-5" in friendly
+    assert "BYOK" not in friendly
+
+
+# -- the stand-in's window ----------------------------------------------------------
+#
+# Same tier is not the same window. Both 1M Claude tiers fail over to gpt-5.6-terra, whose
+# 400k is the one unverified number in the matrix — so a long session's 429 must not be
+# re-sent into a context overflow. The user would then be told "the shared pool is busy"
+# (the original 429 is what surfaces), which is the wrong diagnosis entirely.
+
+
+def _turn_of(tokens: int) -> list[dict[str, Any]]:
+    """A message list `estimate_tokens` scores at roughly `tokens` (chars/4, + JSON)."""
+    return [{"role": "user", "content": "x" * (tokens * 4)}]
+
+
+def test_a_turn_too_big_for_the_stand_in_is_not_resent():
+    chat = _Spy()
+    p = AIGatewayProvider(
+        base_url=BASE,
+        access_token=SESSION,
+        clients={"messages": _Spy(error=_Busy()), "chat": chat},
+    )
+    # Opus 5 (1,000,000) falls back to Terra (400,000). A 500k turn fits the primary and
+    # cannot fit the stand-in; re-sending it buys a guaranteed second failure.
+    with pytest.raises(_Busy):
+        p.complete(model="anthropic/claude-opus-5", messages=_turn_of(500_000))
+    assert chat.calls == []
+
+
+def test_a_turn_that_fits_the_stand_in_is_still_resent():
+    # The other side of the same gate — the guard must not swallow ordinary turns.
+    chat = _Spy()
+    p = AIGatewayProvider(
+        base_url=BASE,
+        access_token=SESSION,
+        clients={"messages": _Spy(error=_Busy()), "chat": chat},
+    )
+    p.complete(model="anthropic/claude-opus-5", messages=_turn_of(50_000))
+    assert chat.calls[0]["model"] == "dynamic/ow-anthropic-claude-opus-5"
+
+
+def test_the_window_gate_reserves_headroom_for_the_reply():
+    # `estimate_tokens` counts the prompt only, so filling the stand-in to the brim would
+    # leave nowhere for the answer to go. Terra is 400,000; the ceiling is 90% of it.
+    terra = _Route("ow-anthropic-claude-opus-5", "openai/gpt-5.6-terra")
+    assert context_window("openai/gpt-5.6-terra") == 400_000
+    assert fits_the_stand_in(terra, _turn_of(359_000))
+    assert not fits_the_stand_in(terra, _turn_of(361_000))
+
+
+def test_a_stand_in_with_no_published_window_is_not_second_guessed():
+    # No matrix number means no ceiling to test against; inventing one would be the worse
+    # guess (it would silently disable the re-send for that route).
+    unknown = _Route("ow-made-up", "openai/gpt-7-unpublished")
+    assert context_window("openai/gpt-7-unpublished") is None
+    assert fits_the_stand_in(unknown, _turn_of(5_000_000))
+
+
+def test_a_stream_that_has_emitted_nothing_is_resent_on_the_route():
+    chat = _Spy(chunks=["b"])
+    p = AIGatewayProvider(
+        base_url=BASE,
+        access_token=SESSION,
+        clients={"messages": _Spy(error=_Busy()), "chat": chat},
+    )
+    assert list(p.stream(model="anthropic/claude-sonnet-5", messages=[])) == ["b"]
+    assert chat.calls[0]["model"] == "dynamic/ow-anthropic-claude-sonnet-5"
+
+
+def test_a_stream_that_already_emitted_is_never_replayed():
+    # Re-sending after the user has watched text arrive would duplicate the turn.
+    chat = _Spy(chunks=["never"])
+
+    class _HalfWay:
+        def stream(self, *, model, messages, tools=None, **kw):
+            yield "a"
+            raise _Busy()
+
+    p = AIGatewayProvider(
+        base_url=BASE,
+        access_token=SESSION,
+        clients={"messages": _HalfWay(), "chat": chat},
+    )
+    out = p.stream(model="anthropic/claude-sonnet-5", messages=[])
+    assert next(out) == "a"
+    with pytest.raises(_Busy):
+        next(out)
+    assert chat.calls == []
+
+
+def test_when_a_streamed_route_fails_too_the_original_429_is_what_surfaces():
+    # `complete`'s twin, and the more fragile half: the retry lives in a second `try`
+    # AFTER the generator's `except`, so `first_error` has to survive the hand-off.
+    p = AIGatewayProvider(
+        base_url=BASE,
+        access_token=SESSION,
+        clients={
+            "messages": _Spy(error=_Busy()),
+            "chat": _Spy(error=RuntimeError("Error code: 404 - route not found")),
+        },
+    )
+    with pytest.raises(_Busy) as caught:
+        list(p.stream(model="anthropic/claude-sonnet-5", messages=[]))
+    assert caught.value.aigw_route == "ow-anthropic-claude-sonnet-5"
+    assert caught.value.aigw_fallback == "openai/gpt-5.6-terra"
+    friendly = friendly_model_error("aigw:anthropic/claude-sonnet-5", caught.value)
+    assert friendly and "ow-anthropic-claude-sonnet-5" in friendly
+
+
+def test_a_route_that_dies_mid_stream_keeps_its_text_and_blames_the_first_error():
+    # The accepted limitation, pinned so nobody debugs it twice: the chunks the STAND-IN
+    # already handed out stay handed out, and the error the caller finally sees is still
+    # the original 429 — so the copy says "the stand-in was busy too" even when the route
+    # actually died of something else. Diagnosing that needs the gateway's Logs.
+    class _DiesLate:
+        def stream(self, *, model, messages, tools=None, **kw):
+            yield "half an answer"
+            raise RuntimeError("connection reset")
+
+    p = AIGatewayProvider(
+        base_url=BASE,
+        access_token=SESSION,
+        clients={"messages": _Spy(error=_Busy()), "chat": _DiesLate()},
+    )
+    out = p.stream(model="anthropic/claude-sonnet-5", messages=[])
+    assert next(out) == "half an answer"
+    with pytest.raises(_Busy) as caught:
+        next(out)
+    assert caught.value.aigw_route == "ow-anthropic-claude-sonnet-5"
+
+
+def test_the_window_gate_applies_to_streams_as_well():
+    chat = _Spy(chunks=["never"])
+    p = AIGatewayProvider(
+        base_url=BASE,
+        access_token=SESSION,
+        clients={"messages": _Spy(error=_Busy()), "chat": chat},
+    )
+    with pytest.raises(_Busy):
+        list(p.stream(model="anthropic/claude-sonnet-5", messages=_turn_of(500_000)))
+    assert chat.calls == []
+
+
+def test_stream_raises_on_the_first_next_not_at_call_time():
+    # The consequence of making `stream` a generator, pinned deliberately: `engine._astream`
+    # calls and iterates inside one `try`, so this is invisible there — but a future caller
+    # that only calls `stream()` and inspects the result would silently see no error.
+    p = AIGatewayProvider(
+        base_url=BASE,
+        access_token=SESSION,
+        clients={"messages": _Spy(error=RuntimeError("nope")), "chat": _Spy()},
+    )
+    it = p.stream(model="anthropic/claude-haiku-4-5", messages=[])
+    with pytest.raises(RuntimeError):
+        next(it)
+
+
+@pytest.mark.parametrize(
+    "text,status,busy",
+    [
+        # The 429 as the SDK renders it, and the bare body the gateway actually sends.
+        ("Error code: 429 - {'code': 2018, 'message': 'Wholesale Rate limited'}", 429, True),
+        ("Error code: 429 - Rate limited", 429, True),
+        # The older 402 spelling of the same condition.
+        ("Error code: 402 - wholesale rate limit exceeded for this gateway", 402, True),
+        # No status attribute at all — the rendered "429" is the only evidence, and it
+        # counts: the SDKs' `str(exc)` always carries it.
+        ("Error code: 429 - you are being rate limited", None, True),
+        # `rate limited` without a 429 is not this condition.
+        ("Error code: 400 - rate limited", 400, False),
+        # The permanent 402 must never be read as busy.
+        ("Error code: 402 - This model is not available via unified billing.", 402, False),
+        ("Error code: 500 - internal error", 500, False),
+    ],
+)
+def test_is_gateway_busy_reads_the_body_not_just_the_status(text, status, busy):
+    exc = RuntimeError(text)
+    if status is not None:
+        exc.status_code = status
+    assert is_gateway_busy(exc) is busy
+
+
+def test_the_429_copy_never_tells_people_to_go_set_up_byok():
+    # 402-permanent says "store your own key"; 429-busy says "wait". Conflating the two
+    # is exactly how three good models were cut from the matrix once already.
+    busy = friendly_model_error("aigw:openai/gpt-5.6-sol", _Busy())
+    assert busy and "BYOK" not in busy
+    permanent = friendly_model_error(
+        "aigw:openai/gpt-5.6-sol",
+        RuntimeError("Error code: 402 - This model is not available via unified billing."),
+    )
+    assert permanent and "BYOK" in permanent
+
+
+def test_another_vendors_own_429_is_not_dressed_up_as_the_shared_pool():
+    # `rate limited` is a loose phrase; a direct OpenAI/Anthropic 429 saying it is that
+    # account's own limiter, which no same-tier stand-in on our gateway would fix. It has
+    # to keep its raw message rather than gain a sentence about Cloudflare.
+    direct = RuntimeError("Error code: 429 - you are being rate limited")
+    assert friendly_model_error("gpt-5.6-sol", direct) is None
+    # The same body on a gateway-routed id IS ours, and says so.
+    assert "Cloudflare" in (friendly_model_error("aigw:openai/gpt-5.6-sol", direct) or "")
+
+
+def test_the_picker_badge_map_is_labels_for_routed_models_only():
+    from coworker.server.manager import SessionManager
+
+    labels = {mid: e.label for mid, e in MATRIX.items()}
+    out = SessionManager._model_fallbacks(labels)
+    assert out["aigw:anthropic/claude-fable-5"] == "GPT-5.6 Sol · via Cloudflare"
+    assert out["aigw:openai/gpt-5.6-sol"] == "Claude Opus 5 · via Cloudflare"
+    assert set(out) == {f"aigw:{m}" for m in _ROUTES}
+    # A stand-in the matrix has no label for is dropped rather than shown as a raw id.
+    assert SessionManager._model_fallbacks({}) == {}
+
+
+def test_the_picker_badge_map_respects_the_rollback_switch(monkeypatch):
+    from coworker.server.manager import SessionManager
+
+    monkeypatch.setenv(ENV_DYNAMIC_ROUTING, "off")
+    labels = {mid: e.label for mid, e in MATRIX.items()}
+    assert SessionManager._model_fallbacks(labels) == {}
 
 
 # -- model ids ----------------------------------------------------------------------

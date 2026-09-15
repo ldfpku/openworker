@@ -240,6 +240,9 @@ export function App() {
   // {full model id → context window in tokens} from the curated matrix (verified only);
   // drives the composer usage chip's context-fill meter.
   const [modelContextWindows, setModelContextWindows] = useState<Record<string, number>>({});
+  // {full model id → the label of the same-tier model the AI Gateway falls back to when the
+  // shared pool is busy}; drives the composer picker's stand-in badge. Empty off-gateway.
+  const [modelFallbacks, setModelFallbacks] = useState<Record<string, string>>({});
   // Settings: show the composer's context-window fill bar. OFF by default (owner ask),
   // so an older backend without the field also shows the session total.
   const [contextBar, setContextBar] = useState(false);
@@ -732,6 +735,7 @@ export function App() {
         setModels(s.models || []);
         setModelLabels(s.model_labels || {});
         setModelContextWindows(s.model_context_windows || {});
+        setModelFallbacks(s.model_fallbacks || {});
         setContextBar(s.context_bar === true);
         setModelReady(s.model_ready);
         if (s.surfaces) setSurfaces(s.surfaces);
@@ -2421,6 +2425,7 @@ export function App() {
               model={model}
               models={models}
               modelLabels={modelLabels}
+              modelFallbacks={modelFallbacks}
               running={running}
               gateOpen={!unattended && (!!pendingTeam || !!pendingItemsReq)}
               connected={connected}

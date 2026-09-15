@@ -1063,6 +1063,10 @@ export interface ModelSettings {
   // {full id → context window in tokens}, verified matrix entries only — drives the
   // composer's context-fill meter (absent id → the meter hides). Optional for older backends.
   model_context_windows?: Record<string, number>;
+  // {full id → the display label of the same-tier model the AI Gateway falls back to when
+  // the shared pool rate-limits this one}. Only gateway models with a Dynamic Route appear;
+  // absent on older backends and while the rollback switch is off.
+  model_fallbacks?: Record<string, string>;
   // Token savings (PDF attachments): fallback for models without native PDF support,
   // and attach-time thresholds. Optional so the GUI is robust to an older backend.
   pdf_fallback?: "text" | "images";

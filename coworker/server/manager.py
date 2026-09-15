@@ -4439,6 +4439,27 @@ class SessionManager:
                     windows[full_id] = context_window
         return labels, windows
 
+    @staticmethod
+    def _model_fallbacks(labels: dict[str, str]) -> dict[str, str]:
+        """{routed id → the stand-in's display label} for AI Gateway models with a
+        Dynamic Route, so the picker can say which models survive a busy shared pool.
+
+        Labels, not ids: this is display copy. Routes whose stand-in has no curated label
+        are dropped rather than shown as a raw `openai/gpt-5.6-sol` — a badge tooltip is
+        not the place to leak wire spellings. Returns {} when the rollback switch is off,
+        because the retry the badge describes would not happen.
+        """
+        from ..providers.aigateway_provider import _ROUTES, dynamic_routing_enabled
+
+        if not dynamic_routing_enabled():
+            return {}
+        out: dict[str, str] = {}
+        for bare, route in _ROUTES.items():
+            label = labels.get(f"aigw:{route.fallback}")
+            if label:
+                out[f"aigw:{bare}"] = label
+        return out
+
     def get_settings(self) -> dict[str, Any]:
         """Model-access + UI status. Never returns the key; `source` says where it comes from."""
         import os
@@ -4463,6 +4484,7 @@ class SessionManager:
 
         catalog_labels, catalog_windows = self._catalog_metadata()
         scratch_effective, scratch_error = self.ensure_scratch_base()
+        labels = {**catalog_labels, **model_labels()}
 
         return {
             "provider": "openai",
@@ -4473,11 +4495,17 @@ class SessionManager:
             # Live-catalog labels fill in ids the static matrix doesn't carry (any
             # configured catalog provider's non-curated models); the matrix always wins on
             # overlap — it's the vetted, owner-reviewed name.
-            "model_labels": {**catalog_labels, **model_labels()},
+            "model_labels": labels,
             # {full id → context window in tokens}, verified matrix entries only, topped up
             # by live-catalog windows for everything else — drives the composer's
             # context-fill meter (absent id → meter hides).
             "model_context_windows": {**catalog_windows, **model_context_windows()},
+            # {full id → the label of the same-tier stand-in the AI Gateway falls back to
+            # when the shared wholesale pool refuses this model}. Only the handful of
+            # gateway models that have a Dynamic Route appear, and only while the rollback
+            # switch is on — the composer badge must promise nothing the client wouldn't
+            # actually do. Empty on every non-gateway install.
+            "model_fallbacks": self._model_fallbacks(labels),
             "has_key": env_key or stored,
             # Provider-agnostic "can this default model actually run?" — true when the default
             # model's provider is configured (any provider, not just OpenAI). Drives the GUI's

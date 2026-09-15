@@ -162,7 +162,9 @@
       "restore": "Restore original prompt",
       "busy": "Enhancing… click to cancel",
       "failed": "Couldn't enhance the prompt. Please try again."
-    }
+    },
+    "fallback_badge": "Has stand-in",
+    "fallback_badge_tip": "Switches to {{model}} automatically when the shared quota is busy"
   },
   "transcript": {
     "copy_message": "Copy message",

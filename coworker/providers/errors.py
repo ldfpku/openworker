@@ -50,6 +50,38 @@ _NO_QUOTA = (
 _GATEWAY_BUSY = ("wholesale rate limit exceeded",)
 _NEEDS_BYOK = ("not available via unified billing",)
 
+# The same pool, the same meaning, a different status code: the gateway's per-model
+# wholesale concurrency limiter answers **429** with a plain-text body `Rate limited`
+# (the OpenAI SDK renders it as `Error code: 429 - {'code': 2018, 'message': 'Wholesale
+# Rate limited'}`). Every 429 seen on this gateway so far has been this — a second
+# request for a model whose previous slow call was still in flight, refused within
+# 200–500 ms. It is transient by construction, which is why it earns the retry in
+# `aigateway_provider` and why its copy must never say "go configure BYOK" the way a
+# permanent 402 does.
+#
+# "rate limited" alone is too common a phrase to trust on its own (any vendor's own
+# per-key limiter says it too, and that one is NOT fixed by a same-tier stand-in), so the
+# status has to agree — hence the 429 half of the test below. `wholesale rate limited`
+# contains the shorter marker, so one string covers both spellings.
+_RATE_LIMITED = "rate limited"
+
+
+def is_gateway_busy(exc: Exception) -> bool:
+    """True when the failure is "Cloudflare's shared pool for this model is busy".
+
+    Both spellings count: the 429 concurrency refusal above, and the older 402
+    `wholesale rate limit exceeded`. Anything else — including a vendor's own 429 that
+    arrived without the gateway's marker — is False, because retrying it on a same-tier
+    stand-in would only buy a second failure.
+    """
+    text = str(exc).lower()
+    if any(marker in text for marker in _GATEWAY_BUSY):
+        return True
+    if _RATE_LIMITED not in text:
+        return False
+    status = getattr(exc, "status_code", None)
+    return status == 429 or "429" in text
+
 # The company gateway's guard Worker (gateway-guard) refuses restricted models with
 # {"error": {"code": "model_restricted", "message": "<Chinese sentence ending in
 # [gateway-guard]>"}}. That message is already the right thing to show verbatim — it names
@@ -81,6 +113,33 @@ def friendly_model_error(model: str, exc: Exception) -> Optional[str]:
         "gradually or require a plan upgrade. Pick a different model, or check "
         "the provider's console for availability."
     )
+    # The 429 concurrency refusal FIRST, and with its own sentence: by the time this is
+    # read, `aigateway_provider` has already re-sent the turn on the model's dynamic route
+    # and that failed too, so "try again in a moment" is the whole advice. Telling someone
+    # to go set up BYOK — right for a permanent 402 — would be wrong here twice over.
+    route = str(getattr(exc, "aigw_route", "") or "").strip()
+    if (
+        is_gateway_busy(exc)
+        and not any(marker in text for marker in _GATEWAY_BUSY)
+        # `rate limited` is loose enough that some other vendor's own 429 could say it,
+        # and that one is NOT the shared Cloudflare pool — so only claim it is when the
+        # evidence says gateway: the body's own `wholesale`, a route we just tried, or a
+        # gateway-routed model id. Anything else keeps its raw message, as before.
+        and (route or "wholesale" in text or model.lower().startswith("aigw:"))
+    ):
+        stand_in = str(getattr(exc, "aigw_fallback", "") or "").strip()
+        if route:
+            return (
+                f"Cloudflare's shared capacity for {model} is busy right now, and the "
+                f"same-tier stand-in was busy too — try again in a moment. "
+                f"(route {route}"
+                + (f" → {stand_in}" if stand_in else "")
+                + ")"
+            )
+        return (
+            f"Cloudflare's shared capacity for {model} is busy right now — try again in "
+            "a moment."
+        )
     if any(marker in text for marker in _GATEWAY_BUSY):
         return (
             f"Cloudflare's shared capacity for {model} is busy right now — try again in "

@@ -232,11 +232,11 @@ cloudflared access token -app=https://gateway.smjtools.com
 
 | 模型 | 网关 id | 上下文 |
 | --- | --- | --- |
-| GPT-5.6 Sol | `openai/gpt-5.6-sol` | 400k |
+| GPT-5.6 Sol | `openai/gpt-5.6-sol` | 1.05M |
 | GPT-5.6 Terra | `openai/gpt-5.6-terra` | 400k |
-| GPT-5.6 Luna | `openai/gpt-5.6-luna` | 400k |
-| Claude Opus 5 | `anthropic/claude-opus-5` | — |
-| Claude Sonnet 5 | `anthropic/claude-sonnet-5` | — |
+| GPT-5.6 Luna | `openai/gpt-5.6-luna` | 1.05M |
+| Claude Opus 5 | `anthropic/claude-opus-5` | 1M |
+| Claude Sonnet 5 | `anthropic/claude-sonnet-5` | 1M |
 | Claude Fable 5 | `anthropic/claude-fable-5` | 1M |
 | Claude Haiku 4.5 | `anthropic/claude-haiku-4-5` | 200k |
 | Gemini 3.6 Flash | `google-ai-studio/gemini-3.6-flash` | 1M |
@@ -246,8 +246,10 @@ cloudflared access token -app=https://gateway.smjtools.com
 
 全部支持看图。PDF 走本地转图片的老路（`pdf_support.py`），能看图就能读 PDF。
 
-Opus 5 和 Sonnet 5 的上下文留空，是因为没去核对厂商文档——宁可让界面上的上下文进度条
-隐藏，也不编一个分母出来。
+上下文一列在 2026-09-15 对着 Cloudflare 自己的模型页核过一遍：Opus 5 和 Sonnet 5 都是
+1M（此前留空），Sol 和 Luna 是 1.05M（此前照抄的 400k 偏小）。**只有 Terra 两边都查不到**
+——模型页和文档搜索都没有这个数——所以它仍留着没核实的 400k。分母偏小只会让进度条早一点
+变红、自动压缩早一点触发；照着兄弟型号猜一个大的，代价是一整轮对话直接失败。
 
 **Gemini 只有四个，而且比直连那条少。** 统一计费在网关这条路上只覆盖 Gemini 的一部分：
 `gemini-3.7-flash`、`3.5-flash`、`3.5-flash-lite`、`3-flash`、`3.1-pro`（不带 `-preview`
@@ -348,9 +350,138 @@ Gemini 那句 `Missing or invalid Authorization header` 就是这么来的——
 | 测试报「额度用完了」 | 去 Billing 充值 |
 | `403 Your request was blocked.` | 边缘的「阻止 AI 机器人」打的，不是 Access。见 1.5 |
 | 报「共享容量忙」 | 临时的，等几秒重试；天天撞就配 BYOK 独占一个池子 |
+| 报「共享容量忙，同档备选也忙」 | 动态路由已经自动重发过一次还是没成——等几秒重试。括号里的路由名拿去第 8 节排错 |
 | 模型报缺 Authorization | 这个模型不在统一计费覆盖里，见第 5 节 |
 | 「用户洞察」是空的 | 流量没走自定义域，或者用的是 service token（它的身份是空的） |
 | 调用成功但日志里没有 | 走到账号的 `default` 网关去了——只有自己拿 `CLOUDFLARE_AIGW_BASE_URL` 覆盖过地址才会发生 |
+
+---
+
+## 8 · 动态路由：429 的时候自动换同档的另一家
+
+### 8.1 要解决的是什么
+
+网关对**每个模型**按并发限流：同一个模型上一条慢请求还在路上，新请求会在 200～500 毫秒
+内被拒，HTTP 429，正文就一句 `Rate limited`（SDK 转述成
+`{'code': 2018, 'message': 'Wholesale Rate limited'}`）。到目前为止这个网关的 429 全部
+集中在 `openai/gpt-5.6-sol`——两个人同时按回车就够了。
+
+这不是额度用完，等几秒就好；但一轮对话已经失败了。动态路由的作用是：撞上这一下的时候，
+把同一轮请求原样改发到**同档的另一家**，用户看到的是回答，不是「错误：429」。
+
+### 8.2 档位对照
+
+跨家配对的前提是两边能力相当。同档的两个模型互为备选：
+
+| 档位 | anthropic | openai | 备注 |
+| --- | --- | --- | --- |
+| 旗舰·长上下文 | `anthropic/claude-fable-5`（1M） | `openai/gpt-5.6-sol`（1.05M） | Fable 的对家本来想用 `gpt-6-astra`，见 8.6 |
+| 旗舰 | `anthropic/claude-opus-5`（1M） | `openai/gpt-5.6-sol`（1.05M） | 两个都在门禁的受限名单里 |
+| 高阶/均衡 | `anthropic/claude-sonnet-5`（1M） | `openai/gpt-5.6-terra`（400k） | |
+| 轻量 | `anthropic/claude-haiku-4-5`（200k） | `openai/gpt-5.6-luna`（1.05M） | **不建路由**，见 8.3 |
+
+### 8.3 五条路由
+
+路由名一律 `ow-<厂商>-<模型>`：点改横杠、全小写。每条路由在网关侧是一个小图：
+Start → 主选模型（retries 1、timeout 20000）→ 成功就 End，出错或超时就走 fallback 模型 → End。
+
+| 路由名 | 主选 | 备选 |
+| --- | --- | --- |
+| `ow-anthropic-claude-fable-5` | `anthropic/claude-fable-5` | `openai/gpt-5.6-sol` |
+| `ow-openai-gpt-5-6-sol` | `openai/gpt-5.6-sol` | `anthropic/claude-opus-5` |
+| `ow-anthropic-claude-opus-5` | `anthropic/claude-opus-5` | `openai/gpt-5.6-terra` |
+| `ow-anthropic-claude-sonnet-5` | `anthropic/claude-sonnet-5` | `openai/gpt-5.6-terra` |
+| `ow-openai-gpt-5-6-terra` | `openai/gpt-5.6-terra` | `anthropic/claude-sonnet-5` |
+
+**轻量档（Haiku / Luna）故意不建。** 限流只发生在顶级池；而且 Haiku 是「测试」按钮的探测
+模型和摘要模型，给它加一条路由会让「探测永远不失败」这件事更难讲清楚。
+
+**备选的受限等级不得高于主选。** gateway-guard 把最贵的几个模型限定给特定角色；如果 429
+能把一个人送到他本来没权限的模型上，那门禁就等于「挑个忙的时候再试一次」就能绕过。现在受限
+的只有 `claude-fable-5` 和 `gpt-5.6-sol`，而这两个只在它们自己也受限的主选下面出现。
+
+**这张表和 gateway-guard 的 `ROUTE_MODELS` 必须同日上线。** 门禁要能把
+`dynamic/<路由名>` 还原成「主选 + 备选」两个模型才能继续判断权限；两张表哪一张先走一步，
+中间那段时间要么门禁误拒，要么门禁形同虚设。
+
+### 8.4 判 429 的责任在客户端
+
+Cloudflare 的 fallback 边只有「出错或超时」一种语义，**没法指定只在 429 触发**。所以顺序
+是反过来的：应用照常走各自的原生通道（Anthropic 走 `/anthropic`、GPT-5.6 走
+`/openai/v1`），**只有**在收到「共享池忙」的错误时，才把这一轮改发到 `/compat`，模型写成
+`dynamic/<路由名>`，由网关去挑活着的那个。
+
+判定见 `coworker/providers/errors.py` 的 `is_gateway_busy()`：HTTP 429 且正文含
+`rate limited`，或旧的 402 `wholesale rate limit exceeded`。别的错误一律不重发——模型 id
+写错、被门禁拒、余额为零，在备选上会一模一样地失败，白搭一次往返。
+
+**装不下对家的窗口就不重发。** 同档不等于同窗口：`claude-opus-5` 和 `claude-sonnet-5` 都是
+1M，它们的对家 `gpt-5.6-terra` 只有 400k，而且 400k 是全表唯一一个没核实的数（见 8.2）。一轮
+50 万 token 的会话在主选上放得下、在对家上必然溢出，重发只是买一次注定失败的往返——更糟的是
+下面「抛第一次那个 429」的规矩会让用户看到「共享额度繁忙」，而真实原因是上下文超了，指向完全
+错的方向。所以 `aigateway_provider.fits_the_stand_in()` 先用 `compaction.estimate_tokens()`
+（chars/4）估一下这一轮，超过对家窗口的 90%（留 10% 给回复，以及中文字符的估算误差）就直接抛
+原始 429、一次都不重发，日志里写明「装不下」。矩阵里查不到窗口的对家不设上限——没数就不臆造。
+
+自动压缩本来就把会话压在 min(0.8 × 窗口, 25 万) 以下，所以这道闸平时不触发；它防的是压缩没
+覆盖到的情况：一轮没压过的工具循环、一次巨大的粘贴、或者哪天矩阵把某个窗口改小。
+
+**代价：重发那一次只能走 `/compat`。** 那是个 OpenAI 兼容翻译层，不是原生通道——
+Responses 那条线独有的东西（比如 GPT-5.6 的推理强度档位）在这一轮拿不到。而且
+chat/completions 拒绝「函数工具 + 非 none 的 reasoning_effort」，所以**只要路由的任意一端是
+openai 档**（不只是主选），重发都会补一个 `reasoning_effort: "none"`。理由是客户端根本不知道
+网关最后挑了哪一端：表里有一半是 anthropic 主选配 openai 对家（`claude-opus-5` →
+`gpt-5.6-terra`），只看主选的话这些重发会不带 pin 打到 chat/completions 上，靠
+`openai_provider` 的 `_param_fix_retry` 自愈——结果虽然对，却要在已经两次请求的这一轮上再加
+第三次往返。反方向（anthropic 那端收到一个 `reasoning_effort`）依赖的是「兼容层只转发厂商
+schema 认识的字段」，这个假设本来就撑着表里 openai 主选的那一半，并非新增风险；第一次真实
+429 打到路由上之后，去网关 Logs 里确认一眼。
+
+**流式已经吐出内容之后绝不重发。** 用户已经看到的文字不能再来一遍——`stream()` 因此改成了
+生成器，只在「一个 chunk 都还没吐」的时候才换路由。
+
+**两次都失败，抛出来的是第一次那个 429**，不是路由返回的错误：路由没建好和备选也忙，对用户
+都是「这一档现在用不了」，而只有原始的 429 正文带着上面那个标记。错误文案里会附上试过的
+路由名和对家。
+
+> **已知局限（有意为之）**：如果重发那一路已经吐出几段文字才失败，那几段会留在屏幕上，而最后
+> 抛的仍然是第一次那个 429——文案会说「同档备选也忙」，哪怕路由真正的死因是别的（网络抖动、
+> 对家自己的限流）。换成报告第二个错，等于跟屏幕上已有的文字自相矛盾。碰到这种情况去网关
+> Logs 里看那一轮的 `response_head`，不要信这句文案。
+
+### 8.5 回滚开关
+
+环境变量 `CLOUDFLARE_AIGW_DYNAMIC_ROUTING`：设成 `0`、`off`、`false`、`no` 就关掉重发，
+回到「429 直接报错」的老行为；不设或设别的值都是开。**设置页里没有这一项**，它是运维用的
+应急闸（比如某条路由被误删），不是偏好。
+
+关掉之后，模型选择器上的「有备选」徽标也会一起消失——徽标承诺的行为不发生，就不该显示。
+
+### 8.6 为什么没有 gpt-6-astra
+
+`gpt-6-astra` 出现在网关的 `/compat/models` 清单里，但**没有接入统一计费**：直接探测
+`/compat` 会返回 401「未提供 API key」，官方模型目录里也查不到它的文档页。清单里有 ≠ 能用。
+所以本期不把它写进 `matrix.py`，Fable 的对家改用 `openai/gpt-5.6-sol`。等它真的接入统一
+计费，再补一行矩阵和一条 `ow-openai-gpt-6-astra`。
+
+### 8.7 验证与排错
+
+- **网关侧建完先回读**：先建一条，`GET` 回来核对字段名，再批量建其余四条。
+- **直连验一次**：`POST https://gateway.smjtools.com/compat/chat/completions`，
+  头里带 `cf-access-token`（`cloudflared access token` 取）和 `cf-aig-skip-cache: true`
+  （不加这个，网关会拿缓存里的旧答案糊弄你），body 里 `model` 写
+  `dynamic/ow-anthropic-claude-fable-5`。看响应头 `cf-aig-model` / `cf-aig-provider`
+  告诉你实际落到了谁身上。
+- **人为触发一次回退**：把主选那个 Model 节点临时改成一个不存在的 id，再打一次，
+  `cf-aig-model` 应该显示对家；或者给主选设一个 0 额度的 Spend Limit。
+- **应用侧**：`CLOUDFLARE_AIGW_DYNAMIC_ROUTING=1` 时那一轮应该正常出回答；
+  `=0` 时应该恢复成「错误：429」。
+- **长会话撞 429 却没有重发**，先别当 bug：日志里如果有
+  `does not fit the stand-in … (window …)`，那是 8.4 的窗口闸按设计拦下的——这一轮装不进
+  对家。要么等主选空出来，要么先让会话压缩一次。
+- **网关当前的限流配置**（2026-09 实测）：rate limiting 200 次/60 秒、spend limit
+  $20/86400 秒、网关到上游 `retry_max_attempts=3` 指数退避。这些是网关到上游的重试，
+  和这里说的客户端重发是两码事。
 
 ---
 

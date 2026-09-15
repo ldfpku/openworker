@@ -25,6 +25,7 @@ const IMPORTANT_KEYS = [
   "composer.attach_skipped",
   "composer.folder_drop_unsupported",
   "composer.listening_sr",
+  "composer.fallback_badge_tip",
   // Load-failure copy (fetch rejected ≠ genuinely empty) + the shared Retry label; each
   // section that can fail to load has its own key, and the listening header drops its
   // count while the subscription list is unknown.
@@ -73,6 +74,7 @@ const values: Record<string, Record<string, string | number>> = {
   "composer.pdf_unreadable": { name: "report.pdf", error: "invalid PDF" },
   "composer.attach_skipped": { names: "LICENSE, notes" },
   "composer.listening_sr": { time: "0:12" },
+  "composer.fallback_badge_tip": { model: "GPT-5.6 Sol" },
   "manage.listening_title_uncounted": { title: "Slack" },
   "transcript.resolved_via_weixin": { outcome: "同意" },
 };
