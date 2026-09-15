@@ -638,7 +638,15 @@ mod tests {
     /// -43 dB to -24 dB. `resample` converts it here instead, and the transcript stops caring.
     ///
     /// The two recordings have to hold the SAME speech and differ only above 8 kHz, or this
-    /// measures the corpus. Build the 48 kHz one from the 16 kHz one:
+    /// measures the corpus. They also have to hold speech this model decodes STABLY, or it
+    /// measures the model: SenseVoice is not stable on a Latin word embedded in Chinese, and
+    /// flips between `merge` and `mergege`, `main` and `ma`, on an input-length change of a few
+    /// tens of milliseconds — which the stop pad ([`FINAL_TAIL_PAD_MS`]) is. Measured on the
+    /// dose ladder with `examples/rate_probe.rs`, mixed-language fixtures flip in both directions
+    /// at every rate, while Chinese-only fixtures score IDENTICALLY at 16 kHz and at 48 kHz with
+    /// out-of-band energy all the way up to -24 dB. Use a Chinese-only pair.
+    ///
+    /// Build the 48 kHz one from the 16 kHz one:
     ///
     /// ```python
     /// wide = scipy.signal.resample_poly(master16k, 3, 1, window=("kaiser", 8.0))
