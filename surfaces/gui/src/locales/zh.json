@@ -154,7 +154,13 @@
     "bind_board": "看板",
     "reviewer_paused_tip": "本回合暂停 —— 审查器连续拦截了多个操作，将改为向你请求批准",
     "paused": "已暂停",
-    "skills_load_failed": "技能列表加载失败。"
+    "skills_load_failed": "技能列表加载失败。",
+    "enhance": {
+      "enhance": "增强提示词",
+      "restore": "恢复原文提示词",
+      "busy": "增强中…点击取消",
+      "failed": "增强提示词失败，请重试。"
+    }
   },
   "transcript": {
     "copy_message": "复制消息",

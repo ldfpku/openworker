@@ -1116,6 +1116,31 @@ export async function inspectPdf(
   return res.json();
 }
 
+export interface EnhancePromptResult {
+  ok: boolean;
+  text?: string;
+  error?: string;
+}
+
+/** Composer "Enhance prompt" button — one one-shot, session-agnostic rewrite (rides the same
+ * provider-proxy channel as autotitle, so it works even on a still-unsaved draft session).
+ * Deliberately NOT try/caught: an AbortError (the user cancelled) and network errors are left
+ * to propagate to the caller, which is how it tells them apart from a backend `ok:false`
+ * (still an HTTP 200 — see the caller's `!r.ok` check). */
+export async function enhancePrompt(
+  text: string,
+  model?: string,
+  signal?: AbortSignal,
+): Promise<EnhancePromptResult> {
+  const res = await fetch(`${httpBase()}/v1/prompt/enhance`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, model }),
+    signal,
+  });
+  return res.json();
+}
+
 /** Persist whether the composer shows the context-window fill bar. */
 export async function setContextBar(
   shown: boolean,

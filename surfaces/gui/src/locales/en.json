@@ -156,7 +156,13 @@
     "bind_board": "Board",
     "reviewer_paused_tip": "paused for this turn — the reviewer blocked several actions in a row, approvals come to you",
     "paused": "paused",
-    "skills_load_failed": "Could not load skills."
+    "skills_load_failed": "Could not load skills.",
+    "enhance": {
+      "enhance": "Enhance prompt",
+      "restore": "Restore original prompt",
+      "busy": "Enhancing… click to cancel",
+      "failed": "Couldn't enhance the prompt. Please try again."
+    }
   },
   "transcript": {
     "copy_message": "Copy message",

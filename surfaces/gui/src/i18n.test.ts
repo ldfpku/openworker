@@ -35,6 +35,7 @@ const IMPORTANT_KEYS = [
   "memory.load_failed",
   "skills.load_failed",
   "composer.skills_load_failed",
+  "composer.enhance.failed",
   "manage.subscriptions_load_failed",
   "manage.listening_title_uncounted",
   "settings.trust_load_failed",

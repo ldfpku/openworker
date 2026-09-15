@@ -1318,6 +1318,11 @@ def create_app(manager: SessionManager) -> FastAPI:
         )
         return _openai_response(model, turn)
 
+    @app.post("/v1/prompt/enhance")
+    def enhance_prompt(body: dict) -> dict[str, Any]:
+        body = body or {}
+        return manager.enhance_prompt(body.get("text", ""), body.get("model"))
+
     # -- MCP servers ------------------------------------------------------------
     @app.get("/v1/mcp")
     def mcp_list() -> dict[str, Any]:

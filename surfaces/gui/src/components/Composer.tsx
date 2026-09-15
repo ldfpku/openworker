@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import type { Attachment, SessionUsage } from "../types";
 import { isPdfFile, readFile, splitDataTransfer } from "../attach";
 import { ProjectBindMenu } from "./ProjectBindMenu";
-import { getSettings, inspectPdf, sessionSkills, type SessionSkillRow } from "../api";
+import { enhancePrompt, getSettings, inspectPdf, sessionSkills, type SessionSkillRow } from "../api";
 import { formatTokens, totalTokens } from "../usage";
 import { Dropdown, type Option } from "./Dropdown";
 import { isFreeModel } from "../providers/logos";
@@ -233,6 +233,13 @@ export function Composer(props: Props) {
   const [dictationBusy, setDictationBusy] = useState<string | null>(null);
   const [dictationError, setDictationError] = useState<string | null>(null);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
+  // "Enhance prompt" (composer toolbar, idle → busy → enhanced): busy while the one-shot
+  // rewrite is in flight (click again to cancel); enhanced (enhanceOriginal set) once the
+  // draft has been replaced, offering "restore" back to the pre-enhance text.
+  const [enhanceBusy, setEnhanceBusy] = useState(false);
+  const [enhanceOriginal, setEnhanceOriginal] = useState<string | null>(null);
+  const [enhanceError, setEnhanceError] = useState<string | null>(null);
+  const enhanceAbortRef = useRef<AbortController | null>(null);
   const [attachNotice, setAttachNotice] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -277,8 +284,25 @@ export function Composer(props: Props) {
     setText("");
     setAttachments([]);
     setPendingSkill(null);
+    resetEnhance();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.resetKey]);
+
+  // Abort any in-flight enhance call when the composer itself unmounts (surface switch).
+  useEffect(() => {
+    return () => {
+      enhanceAbortRef.current?.abort();
+    };
+  }, []);
+
+  // A manual edit doesn't clear the "restore" backup (you can keep tweaking the enhanced
+  // text and still get the original back) — EXCEPT emptying the box entirely, which drops
+  // whatever enhance state was in progress rather than leaving a stale busy/restore control
+  // pointed at nothing.
+  useEffect(() => {
+    if (!text.trim() && (enhanceBusy || enhanceOriginal !== null)) resetEnhance();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [text]);
 
   // Report the unsent draft up so it survives an unmount (Settings and friends are other
   // surfaces). Through a ref: the handler identity changes every render, and the draft is
@@ -469,6 +493,58 @@ export function Composer(props: Props) {
     setText("");
     setAttachments([]);
     setPendingSkill(null);
+    resetEnhance();
+  };
+
+  // Composer "Enhance prompt" button — idle → busy → enhanced, per props.model, without
+  // touching a session (POST /v1/prompt/enhance is session-agnostic, so it works on a draft
+  // session too). Cancelling the AbortController is also how a stale response is discarded:
+  // the catch below treats an aborted signal as "nothing to report", never as a failure.
+  const resetEnhance = () => {
+    enhanceAbortRef.current?.abort();
+    enhanceAbortRef.current = null;
+    setEnhanceBusy(false);
+    setEnhanceOriginal(null);
+    setEnhanceError(null);
+  };
+
+  const toggleEnhance = async () => {
+    if (enhanceBusy) {
+      // Busy → click cancels: abort only, the finally below resets enhanceBusy.
+      enhanceAbortRef.current?.abort();
+      return;
+    }
+    if (enhanceOriginal !== null) {
+      // Enhanced → click restores the pre-enhance text and drops back to idle.
+      setText(enhanceOriginal);
+      setEnhanceOriginal(null);
+      setEnhanceError(null);
+      return;
+    }
+    if (!text.trim()) return;
+    setEnhanceError(null);
+    setEnhanceBusy(true);
+    const controller = new AbortController();
+    enhanceAbortRef.current = controller;
+    try {
+      const r = await enhancePrompt(text, props.model, controller.signal);
+      if (controller.signal.aborted) return; // cancelled while the request was in flight
+      // ok:false still arrives as an HTTP 200 (never a thrown error) — the empty-text guard
+      // above catches most, but a provider failure or an empty completion still needs this
+      // check, or `undefined` would land in the textarea.
+      if (!r.ok || !r.text?.trim()) {
+        setEnhanceError(t("composer.enhance.failed"));
+        return;
+      }
+      setEnhanceOriginal(text);
+      setText(r.text);
+    } catch {
+      if (controller.signal.aborted) return; // AbortError from the cancel above — not a failure
+      setEnhanceError(t("composer.enhance.failed"));
+    } finally {
+      if (enhanceAbortRef.current === controller) enhanceAbortRef.current = null;
+      setEnhanceBusy(false);
+    }
   };
 
   const onKey = (e: React.KeyboardEvent) => {
@@ -537,6 +613,10 @@ export function Composer(props: Props) {
         props.onConfigureVoiceInput?.();
         return;
       }
+      // Coordination with "Enhance prompt": a "restore" landing mid-dictation would wipe
+      // whatever the mic has since transcribed into the box, so starting a recording drops
+      // any enhance state first (2nd item's design owes the 1st item this call).
+      resetEnhance();
       setDictationBusy(t("composer.starting_mic"));
       const recording = await startDictation();
       if (!recording?.recording) throw new Error(t("composer.err_mic_start"));
@@ -584,6 +664,12 @@ export function Composer(props: Props) {
       {dictationError && (
         <div className="max-w-3xl mx-auto mb-2 px-1 text-[12px] text-red-600" role="alert">
           {dictationError}
+        </div>
+      )}
+
+      {enhanceError && (
+        <div className="max-w-3xl mx-auto mb-2 px-1 text-[12px] text-red-600" role="alert">
+          {enhanceError}
         </div>
       )}
 
@@ -788,6 +874,28 @@ export function Composer(props: Props) {
 
           <span className="ml-auto" />
 
+          {/* "Enhance prompt" — idle (sparkle) → busy (stop, click cancels) → enhanced
+              (refresh, active — click restores the pre-enhance text). Session-agnostic
+              (works on a draft), so it lives beside the model picker rather than gated on
+              props.sessionId. */}
+          {!dictation?.recording && (
+            <IconButton
+              small
+              icon={enhanceBusy ? "stop" : enhanceOriginal !== null ? "refresh" : "sparkle"}
+              className={enhanceBusy ? "animate-pulse" : undefined}
+              active={enhanceOriginal !== null}
+              disabled={!enhanceBusy && !text.trim()}
+              label={
+                enhanceBusy
+                  ? t("composer.enhance.busy")
+                  : enhanceOriginal !== null
+                    ? t("composer.enhance.restore")
+                    : t("composer.enhance.enhance")
+              }
+              onClick={() => void toggleEnhance()}
+            />
+          )}
+
           {/* token usage (OPE-42) — a quiet chip; hidden until the server reports usage.
               Shows the context-window fill bar alone (the session total lives in the
               popover), or the session total when there's no window / the bar is off. */}
@@ -896,7 +1004,9 @@ export function Composer(props: Props) {
         </div>
       </div>
       <span className="sr-only" role="status" aria-live="polite">
-        {dictation?.recording ? t("composer.listening_sr", { time: recordingTime }) : dictationBusy || ""}
+        {dictation?.recording
+          ? t("composer.listening_sr", { time: recordingTime })
+          : dictationBusy || (enhanceBusy ? t("composer.enhance.busy") : "")}
       </span>
     </div>
   );
