@@ -86,12 +86,32 @@ if ($env:SHERPA_ONNX_ARCHIVE_DIR) {
 $Triple = (& rustc -vV | Select-String '^host:').ToString().Split()[-1]
 $Arch   = $Triple.Split('-')[0]
 
-# A running openworker-server.exe (e.g. a prior sidecar/smoke test) locks the output exe and
-# makes PyInstaller's overwrite fail with Access-is-denied. Stop any before bundling.
-$running = Get-Process -Name "openworker-server" -ErrorAction SilentlyContinue
-if ($running) {
-    Write-Host "==> stopping $($running.Count) running openworker-server process(es) holding the output exe"
-    $running | Stop-Process -Force
+# A running openworker-server.exe (e.g. a prior sidecar/smoke test launched from THIS repo's
+# own build output) locks the output exe and makes PyInstaller's overwrite fail with
+# Access-is-denied. Stop only processes whose executable path is under this repo checkout;
+# an already-installed copy (e.g. %LOCALAPPDATA%\OpenWorker\...) must be left running
+# untouched. A process whose Path can't be read (permission) is left alone too.
+$RepoRoot = Split-Path -Parent $Here
+$candidates = Get-Process -Name "openworker-server" -ErrorAction SilentlyContinue
+$toStop = @()
+foreach ($p in $candidates) {
+    try {
+        $path = $p.Path
+    } catch {
+        Write-Warning "openworker-server PID $($p.Id): could not read executable Path (access denied) - not stopping it."
+        continue
+    }
+    if (-not $path) {
+        Write-Warning "openworker-server PID $($p.Id): executable Path unavailable - not stopping it."
+        continue
+    }
+    if ($path -like "$RepoRoot\*") {
+        $toStop += $p
+    }
+}
+if ($toStop) {
+    Write-Host "==> stopping $($toStop.Count) running openworker-server process(es) under $RepoRoot holding the output exe"
+    $toStop | Stop-Process -Force
     Start-Sleep -Seconds 1
 }
 
