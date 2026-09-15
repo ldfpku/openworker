@@ -3848,10 +3848,14 @@ class SessionManager:
         import sys
 
         if sys.platform == "darwin":
+            # No "System Events" activate step: that Apple Event needs Automation TCC
+            # permission (a one-time consent prompt the FIRST time it fires, and a denial
+            # is silent — the dialog just never appears). `choose folder` is StandardAdditions
+            # — osascript's own built-in dialog primitive — and never crosses into another
+            # app's automation, so it needs no such grant. Trade-off: the dialog may not
+            # steal focus from whatever app the user was last in.
             cmd = [
                 "osascript",
-                "-e",
-                'tell application "System Events" to activate',
                 "-e",
                 'POSIX path of (choose folder with prompt "Give the coworker access to a folder")',
             ]
@@ -3871,7 +3875,12 @@ class SessionManager:
             cmd = ["zenity", "--file-selection", "--directory"]
         try:
             out = subprocess.run(
-                cmd, capture_output=True, text=True, errors="replace", timeout=300
+                cmd,
+                capture_output=True,
+                text=True,
+                errors="replace",
+                timeout=300,
+                **procutil.popen_kwargs(),
             )
         except (OSError, subprocess.TimeoutExpired):
             return {"ok": False, "error": "no native folder picker available"}
