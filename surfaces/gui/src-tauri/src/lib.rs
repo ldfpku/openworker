@@ -30,6 +30,29 @@ use tauri::{
 use tauri_plugin_autostart::ManagerExt;
 use uuid::Uuid;
 
+/// Build a `Command` for every process this app spawns, GUI-subsystem or not.
+///
+/// This app builds with `windows_subsystem = "windows"` on release, so it has no console of its
+/// own — but a *child* that is itself a console-subsystem binary (`cmd.exe`, our Python sidecar,
+/// …) still allocates and briefly flashes a fresh console window on Windows unless the process is
+/// created with `CREATE_NO_WINDOW`. That flash is exactly what field reports called "黑框闪烁":
+/// every dictation status refresh (on start/stop, during model download, on every status poll)
+/// shelled out to `cmd /C ver` for the Windows-version check, and each call flashed a window.
+///
+/// Fix once, here: every spawn in this file MUST go through `new_command` instead of
+/// `Command::new` directly, so no future call site can reintroduce the flash.
+/// `window_flash_regression_tests::only_new_command_calls_command_new` statically enforces
+/// that invariant.
+fn new_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
+    let mut cmd = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    cmd
+}
+
 /// The sidecar server child — killed on exit (orphaned servers have bitten us before).
 struct ServerProcess(Mutex<Option<Child>>);
 /// The active keep-awake guard while keep-awake is on (None when off). Dropping the guard
@@ -128,7 +151,7 @@ fn sidecar_env() -> std::collections::HashMap<String, String> {
 
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let script = format!("echo {START}; env; echo {END}");
-    let spawned = Command::new(&shell)
+    let spawned = new_command(&shell)
         .args(["-ilc", &script])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -316,7 +339,7 @@ impl Drop for KeepAwakeGuard {
 
 #[cfg(target_os = "macos")]
 fn start_keep_awake() -> Option<KeepAwakeGuard> {
-    Command::new("caffeinate")
+    new_command("caffeinate")
         .args(["-i", "-s"])
         .spawn()
         .ok()
@@ -478,7 +501,7 @@ fn voice_input_status(dictation: &Dictation) -> VoiceInputStatus {
 
 #[cfg(target_os = "macos")]
 fn voice_input_compatibility() -> (bool, String, Option<String>) {
-    let version = Command::new("/usr/bin/sw_vers")
+    let version = new_command("/usr/bin/sw_vers")
         .arg("-productVersion")
         .output()
         .ok()
@@ -510,7 +533,7 @@ fn voice_input_compatibility() -> (bool, String, Option<String>) {
 
 #[cfg(target_os = "windows")]
 fn voice_input_compatibility() -> (bool, String, Option<String>) {
-    let version = Command::new("cmd")
+    let version = new_command("cmd")
         .args(["/C", "ver"])
         .output()
         .ok()
@@ -832,7 +855,7 @@ pub fn run() {
         ])
         .setup(move |app| {
             // 1. Start the Python server sidecar on the chosen port (inherits our env).
-            let mut server_cmd = Command::new(server_bin());
+            let mut server_cmd = new_command(server_bin());
             server_cmd
                 .args(["--host", "127.0.0.1", "--port", &port.to_string()])
                 // The user's real shell environment (PATH to their tools, AWS_PROFILE,
@@ -868,13 +891,7 @@ pub fn run() {
                     server_cmd.stdout(Stdio::null()).stderr(Stdio::null());
                 }
             }
-            // CREATE_NO_WINDOW: the sidecar is a console binary; without this a console window
-            // would flash when the GUI app spawns it on Windows.
-            #[cfg(windows)]
-            {
-                use std::os::windows::process::CommandExt;
-                server_cmd.creation_flags(0x0800_0000);
-            }
+            // CREATE_NO_WINDOW is already applied by new_command() above.
             let child = match server_cmd.spawn() {
                 Ok(child) => Some(child),
                 Err(e) => {
@@ -992,4 +1009,41 @@ pub fn run() {
                 }
             }
         });
+}
+
+/// Regression coverage for the console-flash bug reported while testing local dictation: on
+/// Windows, `voice_input_compatibility()` shelled out to `cmd /C ver` without CREATE_NO_WINDOW,
+/// so every dictation status refresh — on start/stop, on every model download/verify step, on
+/// mount — flashed a visible console window. Fixed by routing every spawn in this file through
+/// `new_command`, which always applies CREATE_NO_WINDOW on Windows; `only_new_command_calls_
+/// command_new` below statically pins that down so a future call site can't reintroduce a raw,
+/// unflagged spawn without the test failing first.
+#[cfg(test)]
+mod window_flash_regression_tests {
+    #[test]
+    fn only_new_command_calls_command_new() {
+        let source = include_str!("lib.rs");
+        // Built at runtime, not written as one contiguous literal: this very file (via
+        // include_str! above) contains its own source, so a literal needle here would inflate
+        // its own count by one and the assertion below could never pass.
+        let needle = format!("{}{}", "Command", "::new(");
+        let occurrences = source.matches(needle.as_str()).count();
+        assert_eq!(
+            occurrences, 1,
+            "found {occurrences} raw Command::new call site(s) in lib.rs, expected exactly 1 \
+             (inside new_command itself); every process this app spawns must go through \
+             new_command so a Windows child never flashes a console window — route the new \
+             call site through new_command instead of Command::new directly"
+        );
+    }
+
+    #[test]
+    fn new_command_builds_a_runnable_command_without_spawning() {
+        // Constructing and configuring a Command must never itself spawn a process — only
+        // .spawn()/.output()/.status() do, and this test deliberately calls none of them. This
+        // exercises new_command on whatever platform the test runs on (including the
+        // Windows-only creation_flags branch when run on Windows CI/dev machines).
+        let mut cmd = super::new_command("definitely-not-a-real-ocw-test-binary");
+        cmd.arg("--noop");
+    }
 }

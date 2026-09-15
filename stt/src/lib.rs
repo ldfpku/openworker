@@ -876,4 +876,32 @@ mod tests {
         assert!(!is_only_non_speech_markers("你好，这是一次测试。"));
         assert!(!is_only_non_speech_markers("[BLANK_AUDIO] 你好"));
     }
+
+    /// Regression guard, prompted by a Windows console-flash bug found elsewhere in the app (a
+    /// child process spawned without CREATE_NO_WINDOW flashes a visible window — see
+    /// `new_command` in `surfaces/gui/src-tauri/src/lib.rs`). stt has never had that bug because
+    /// it never spawns a process at all: model downloads go through ureq, hashing through sha2,
+    /// microphone access through cpal. Pin that down so a future "just shell out to <tool>"
+    /// change here — e.g. hashing via `certutil`, or a version check via `cmd`/`powershell` —
+    /// gets caught by this test instead of shipping a new flash. Scanned files are exactly the
+    /// three implementation files that do real I/O (download, recognition, capture); `lib.rs`
+    /// is skipped because this test's own source lives there and would trip its own check.
+    #[test]
+    fn stt_never_spawns_a_process() {
+        let sources: &[(&str, &str)] = &[
+            ("audio.rs", include_str!("audio.rs")),
+            ("engine.rs", include_str!("engine.rs")),
+            ("models.rs", include_str!("models.rs")),
+        ];
+        for (file, text) in sources {
+            assert!(
+                !text.contains("std::process") && !text.contains("Command::new"),
+                "{file} appears to spawn an OS process, but stt must stay spawn-free (downloads \
+                 via ureq, hashing via sha2, mic access via cpal); on Windows an unflagged spawn \
+                 flashes a visible console window, so if a real need for a subprocess ever \
+                 arises here, route it through a CREATE_NO_WINDOW-safe helper and update this \
+                 guard deliberately"
+            );
+        }
+    }
 }
