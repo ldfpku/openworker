@@ -201,6 +201,25 @@ describe("Composer — enhance prompt", () => {
     expect(enhanceBtn()).toBeTruthy(); // back to idle, not stuck busy
   });
 
+  it("a timeout reason gets its own copy — the generic line just invites another 60s wait", async () => {
+    // The backend names the failure (`reason: "timeout"`) because that is the one the user
+    // can act on: retrying the same slow model arrives at the same place a minute later.
+    vi.stubGlobal("fetch", okJson({ ok: false, reason: "timeout", error: "server-side wording" }));
+    render(<Composer {...props()} />);
+    fireEvent.change(box(), { target: { value: "help me" } });
+    fireEvent.click(enhanceBtn());
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toBe(
+        "That model took too long to answer. Pick a faster one, or try again later.",
+      ),
+    );
+    // The backend's own `error` string is never rendered — it is one language and can carry
+    // a base URL or stack text.
+    expect(screen.getByRole("alert").textContent).not.toContain("server-side wording");
+    expect(box().value).toBe("help me");
+    expect(enhanceBtn()).toBeTruthy();
+  });
+
   it("a network/JSON error also shows the failure copy without overwriting the draft", async () => {
     vi.stubGlobal(
       "fetch",

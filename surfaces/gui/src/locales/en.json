@@ -164,7 +164,8 @@
       "enhance": "Enhance prompt",
       "restore": "Restore original prompt",
       "busy": "Enhancing… click to cancel",
-      "failed": "Couldn't enhance the prompt. Please try again."
+      "failed": "Couldn't enhance the prompt. Please try again.",
+      "timed_out": "That model took too long to answer. Pick a faster one, or try again later."
     },
     "fallback_badge": "Has stand-in",
     "fallback_badge_tip": "Switches to {{model}} automatically when the shared quota is busy"

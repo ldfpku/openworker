@@ -9,10 +9,16 @@ check on the HTTP response can never be the thing that catches a backend failure
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
 from coworker.server import SessionManager, create_app
+from coworker.server.manager import (
+    _ONESHOT_TIMEOUT_DEFAULT,
+    _ONESHOT_TIMEOUT_ENV,
+    _oneshot_timeout,
+)
 
 
 class RecordingProvider(ProviderClient):
@@ -157,3 +163,78 @@ def test_settings_passed_to_provider(tmp_path):
     assert call["temperature"] == 0.3
     assert call["max_tokens"] == 2000
     assert call["reasoning_effort"] == "none"
+
+
+# -- the one-shot deadline ------------------------------------------------------------
+# Nobody was watching the clock on this call: with no timeout the OpenAI SDK waits 600s and
+# then retries twice, so a slow model left the button spinning with no error ever shown
+# (2026-09-16, a NIM-hosted model behind the relay). The budget below is what turns that
+# hang into a message the user can act on.
+
+
+class _Timeout(Exception):
+    """Shaped like an SDK timeout: the classifier matches on the class NAME, because
+    importing every vendor's APITimeoutError here would defeat the provider layer."""
+
+
+def test_enhance_sends_a_timeout(tmp_path):
+    client, provider = _client(tmp_path, [_text("x")])
+    client.post("/v1/prompt/enhance", json={"text": "hi"})
+    assert provider.calls[0]["timeout"] == _ONESHOT_TIMEOUT_DEFAULT
+
+
+def test_timeout_reports_a_readable_reason(tmp_path):
+    client, _ = _client(tmp_path, [_Timeout("Request timed out.")])
+    resp = client.post("/v1/prompt/enhance", json={"text": "hi"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+    # `reason` is what the composer keys its copy off; the message must be the readable
+    # Chinese line, never the raw exception (stack frames / a base URL on screen).
+    assert body["reason"] == "timeout"
+    assert body["error"] == "增强提示词超时，请换个更快的模型或稍后重试。"
+    assert "Request timed out" not in body["error"]
+
+
+def test_gateway_524_counts_as_a_timeout(tmp_path):
+    """The relay can give up before we do — Cloudflare answers 524 and the SDK raises a
+    plain InternalServerError, which is the same user-visible fact and must read the same."""
+    client, _ = _client(
+        tmp_path,
+        [RuntimeError("Error code: 524 - {'error': {'message': 'error code: 524'}}")],
+    )
+    body = client.post("/v1/prompt/enhance", json={"text": "hi"}).json()
+    assert body["ok"] is False and body["reason"] == "timeout"
+
+
+def test_other_provider_errors_keep_their_own_message(tmp_path):
+    """Only timeouts get the special copy — a 401 or a bad model id must still surface
+    what actually went wrong, and must NOT claim to be a timeout."""
+    client, _ = _client(tmp_path, [RuntimeError("Error code: 401 - invalid api key")])
+    body = client.post("/v1/prompt/enhance", json={"text": "hi"}).json()
+    assert body["ok"] is False
+    assert "reason" not in body
+    assert "401" in body["error"]
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("90", 90.0),
+        ("12.5", 12.5),
+        # A bad or non-positive override falls back — "0" must not mean "wait forever",
+        # which is the exact failure the budget exists to prevent.
+        ("0", _ONESHOT_TIMEOUT_DEFAULT),
+        ("-5", _ONESHOT_TIMEOUT_DEFAULT),
+        ("soon", _ONESHOT_TIMEOUT_DEFAULT),
+        ("", _ONESHOT_TIMEOUT_DEFAULT),
+    ],
+)
+def test_timeout_env_override(monkeypatch, raw, expected):
+    monkeypatch.setenv(_ONESHOT_TIMEOUT_ENV, raw)
+    assert _oneshot_timeout() == expected
+
+
+def test_timeout_default_without_env(monkeypatch):
+    monkeypatch.delenv(_ONESHOT_TIMEOUT_ENV, raising=False)
+    assert _oneshot_timeout() == 60.0

@@ -162,7 +162,8 @@
       "enhance": "增强提示词",
       "restore": "恢复原文提示词",
       "busy": "增强中…点击取消",
-      "failed": "增强提示词失败，请重试。"
+      "failed": "增强提示词失败，请重试。",
+      "timed_out": "增强提示词超时，请换个更快的模型或稍后重试。"
     },
     "fallback_badge": "有备选",
     "fallback_badge_tip": "共享额度繁忙时自动改用 {{model}}"

@@ -788,3 +788,113 @@ def test_custom_configured_requires_key_and_endpoint():
             "base_url": "https://acme.example/v1",
         },
     )
+
+
+# -- one-shot deadlines (Enhance prompt, auto-title) ---------------------------------
+# These callers pass an explicit `timeout`; two things have to be true of it. It must reach
+# the SDK, and it must be a WALL-CLOCK bound: the SDK's default max_retries=2 counts a
+# timed-out request as retryable, so an unprotected 60s budget is really 180s of spinning.
+
+
+class _RetryAwareClient(_FakeClient):
+    """Adds the SDK's `with_options`, which is the only way to change max_retries per call."""
+
+    def __init__(self, response):
+        super().__init__(response)
+        self.options: list[dict] = []
+
+    def with_options(self, **kwargs):
+        self.options.append(kwargs)
+        return self
+
+
+def test_timeout_reaches_the_sdk_and_disables_retries():
+    client = _RetryAwareClient(_response(content="x"))
+    provider = OpenAIProvider(client=client)
+
+    provider.complete(model="nvidia-hosted", messages=[], timeout=60.0)
+
+    assert client.chat.completions.calls[0]["timeout"] == 60.0
+    assert client.options == [{"max_retries": 0}]
+
+
+def test_a_normal_turn_keeps_the_sdk_defaults():
+    """Lockdown: only a caller-supplied timeout opts out of the SDK's resilience — the
+    agent loop must keep its retries."""
+    client = _RetryAwareClient(_response(content="x"))
+    provider = OpenAIProvider(client=client)
+
+    provider.complete(model="gpt-5.5", messages=[])
+
+    assert client.options == []
+    assert "timeout" not in client.chat.completions.calls[0]
+
+
+def test_timeout_survives_a_client_without_with_options():
+    """Ollama-shaped stand-ins and test fakes have no `with_options`; the request-level
+    timeout must still go out rather than the call blowing up."""
+    client = _FakeClient(_response(content="x"))
+    provider = OpenAIProvider(client=client)
+
+    turn = provider.complete(model="ollama-ish", messages=[], timeout=30.0)
+
+    assert turn.text == "x"
+    assert client.chat.completions.calls[0]["timeout"] == 30.0
+
+
+# -- reasoning_effort the server knows but won't take that VALUE ----------------------
+# NVIDIA NIM grades effort low/medium/high on some models and 400s on "none" — which our
+# utility calls pin for EVERY model, so "don't think" turned into "don't answer at all"
+# (2026-09-16 repro: the same model answered fine with the param dropped).
+
+# Verbatim shape of the live 400 (NVIDIA NIM, 2026-09-16) — pydantic's literal_error, which
+# names the offending param only inside a `loc` tuple and never uses the word "unsupported".
+_EFFORT_VALUE_400 = (
+    "Error code: 400 - {'error': {'message': '[{\'type\': \'literal_error\', "
+    "\'loc\': (\'body\', \'reasoning_effort\'), \'msg\': \"Input should be "
+    "\'low\', \'medium\' or \'high\'\", \'input\': \'none\'}]'}}"
+)
+
+
+class _EffortValueRejectingCompletions:
+    def __init__(self, response):
+        self._response = response
+        self.calls: list[dict] = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        if "reasoning_effort" in kwargs:
+            raise RuntimeError(_EFFORT_VALUE_400)
+        return self._response
+
+
+def test_unsupported_effort_value_is_dropped_and_retried():
+    client = _FakeClient(_response(content="x"))
+    client.chat.completions = _EffortValueRejectingCompletions(_response(content="x"))
+    provider = OpenAIProvider(client=client)
+
+    turn = provider.complete(model="llama-vision", messages=[], reasoning_effort="none")
+
+    calls = client.chat.completions.calls
+    assert turn.text == "x" and len(calls) == 2
+    assert calls[0]["reasoning_effort"] == "none"
+    assert "reasoning_effort" not in calls[1]
+
+
+def test_effort_drop_does_not_fire_without_the_param():
+    """An error that merely mentions the word must not be turned into an endless retry
+    loop when we never sent the parameter — it re-raises, as before."""
+    import pytest
+
+    from coworker.providers.openai_provider import _param_fix_retry
+
+    client = _FakeClient(_response(content="x"))
+    client.chat.completions = _EffortValueRejectingCompletions(_response(content="x"))
+    provider = OpenAIProvider(client=client)
+
+    # No effort in the request → the fake answers normally; nothing to fix, one call.
+    provider.complete(model="llama-vision", messages=[])
+    assert len(client.chat.completions.calls) == 1
+
+    with pytest.raises(RuntimeError, match="unrelated"):
+        _param_fix_retry({"model": "m"}, RuntimeError("unrelated reasoning_effort note"))

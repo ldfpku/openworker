@@ -43,6 +43,7 @@ from .base import (
     StreamChunk,
     TokenUsage,
     ToolCall,
+    bounded_client,
 )
 from .capabilities import capabilities_for
 from .openai_provider import _field, _int, resolve_api_key
@@ -375,6 +376,11 @@ class OpenAIResponsesProvider(ProviderClient):
             "include": ["reasoning.encrypted_content"],
             **{k: v for k, v in settings.items() if k in _SETTINGS_WHITELIST},
         }
+        # `timeout` is a request OPTION the SDK reads off the same kwargs, not a body field
+        # — hence not in the whitelist above (which exists to keep unknown BODY params off
+        # the wire) but still forwarded. Only the one-shot helpers set it; see manager.
+        if settings.get("timeout") is not None:
+            kwargs["timeout"] = settings["timeout"]
         if self._reasoning_summary:
             kwargs["reasoning"] = {"summary": "auto"}
         if instructions:
@@ -386,6 +392,8 @@ class OpenAIResponsesProvider(ProviderClient):
         return kwargs
 
     def _create(self, client: Any, kwargs: dict[str, Any]) -> Any:
+        # An explicit `timeout` must be a wall-clock bound — see base.bounded_client.
+        client = bounded_client(client, kwargs.get("timeout"))
         # Up to three param-fix retries: sampling params, `reasoning`, and `include` can
         # each need dropping depending on the model (reasoning vs not).
         for _ in range(3):

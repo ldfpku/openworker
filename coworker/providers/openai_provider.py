@@ -23,6 +23,7 @@ from .base import (
     StreamChunk,
     TokenUsage,
     ToolCall,
+    bounded_client,
 )
 from .capabilities import capabilities_for
 
@@ -104,6 +105,17 @@ def _param_fix_retry(kwargs: dict[str, Any], exc: Exception) -> dict[str, Any]:
     msg = str(exc).lower()
     if _EFFORT_ERROR in msg and kwargs.get("reasoning_effort") != "none":
         return {**kwargs, "reasoning_effort": "none"}
+    if "reasoning_effort" in msg and "reasoning_effort" in kwargs:
+        # The server knows the parameter but not the VALUE we sent. Our utility calls
+        # (Enhance prompt, auto-title) pin effort "none" for EVERY model, and a NIM-hosted
+        # model that only grades low/medium/high 400s on it outright (observed 2026-09-16:
+        # llama-3.2-11b-vision answered in ~2.7s with the param dropped and 400'd in ~2.3s
+        # with it) — so "don't think" silently became "don't answer at all". Drop the
+        # param and take the server's own default: worse than no thinking, far better
+        # than no completion.
+        fixed = dict(kwargs)
+        fixed.pop("reasoning_effort")
+        return fixed
     if _MAX_TOKENS_ERROR in msg and "max_tokens" in kwargs:
         fixed = dict(kwargs)
         fixed["max_completion_tokens"] = fixed.pop("max_tokens")
@@ -300,10 +312,12 @@ class OpenAIProvider(ProviderClient):
             kwargs.setdefault("max_tokens", DEFAULT_MAX_TOKENS)
         _pin_reasoning_effort(kwargs)
 
-        client = self._ensure_client()
-        # Up to three param-fix retries: effort, the max_tokens rename, and the
-        # max_tokens over-limit drop can ALL need fixing on one call.
-        for _ in range(3):
+        # An explicit `timeout` (one-shot helpers only — see manager._oneshot_timeout)
+        # must be a wall-clock bound, not a per-attempt one; see base.bounded_client.
+        client = bounded_client(self._ensure_client(), kwargs.get("timeout"))
+        # Up to four param-fix retries: the effort pin, the effort drop, the max_tokens
+        # rename, and the max_tokens over-limit drop can ALL need fixing on one call.
+        for _ in range(4):
             try:
                 response = client.chat.completions.create(**kwargs)
                 break
@@ -360,9 +374,9 @@ class OpenAIProvider(ProviderClient):
         finish_reason = None
         usage: Optional[TokenUsage] = None
 
-        # Up to three param-fix retries: effort, the max_tokens rename, and the
-        # max_tokens over-limit drop can ALL need fixing on one call.
-        for _ in range(3):
+        # Up to four param-fix retries: the effort pin, the effort drop, the max_tokens
+        # rename, and the max_tokens over-limit drop can ALL need fixing on one call.
+        for _ in range(4):
             try:
                 chunks = client.chat.completions.create(**kwargs)
                 break

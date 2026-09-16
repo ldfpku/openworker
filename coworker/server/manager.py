@@ -200,6 +200,63 @@ def _stable_error(error: str) -> str:
     return re.sub(r"\d{4,}", "N", stable)
 
 
+# -- one-shot helper completions (Enhance prompt, auto-title) --------------------------
+# These two ride provider.complete directly: no agent loop, no streaming, so nothing ever
+# reports progress and — until now — nothing ever gave up. Left unbounded, the OpenAI SDK
+# waits its own default (600s, plus two automatic retries on top), which is how "Enhance
+# prompt" could spin for minutes with no error ever reaching the composer: observed
+# 2026-09-16 on a NIM-hosted model behind the relay, ~127s to the relay's own gateway
+# timeout and the button still spinning, the only way out being a manual cancel that shows
+# nothing. 60s is far past every healthy sample we have (a cheap model rewrites a prompt in
+# 2-3s) and short enough that a stuck call reads as a failure rather than as a hang.
+# Raise it for a slow self-hosted endpoint; it is deliberately NOT a general model timeout
+# — the agent loop keeps the SDK's own generous defaults.
+_ONESHOT_TIMEOUT_ENV = "OPENWORKER_ONESHOT_TIMEOUT"
+_ONESHOT_TIMEOUT_DEFAULT = 60.0
+
+
+def _oneshot_timeout() -> float:
+    """Seconds one helper completion may take. Garbage or a non-positive override falls
+    back to the default rather than disabling the bound — "0" must not mean "wait forever",
+    which is the very failure this exists to prevent."""
+    raw = (os.environ.get(_ONESHOT_TIMEOUT_ENV) or "").strip()
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            return _ONESHOT_TIMEOUT_DEFAULT
+        if value > 0:
+            return value
+    return _ONESHOT_TIMEOUT_DEFAULT
+
+
+# Cloudflare's 524 and a plain 504: a proxy in front of the model gave up before we did.
+# Same user-visible fact as our own deadline firing, so it earns the same message.
+_GATEWAY_TIMEOUT_CODES = ("504", "524")
+
+
+def _is_timeout_error(exc: BaseException) -> bool:
+    """Whether a provider exception means "the model never answered in time".
+
+    Matched by shape rather than isinstance: the vendor SDKs each define their own
+    `APITimeoutError`, and importing all of them here to name the types would defeat the
+    point of the provider layer. Three shapes count — the SDK's timeout class (name ends up
+    containing "timeout"), a builtin/httpx timeout somewhere in the cause chain, and a
+    gateway timeout status in the message.
+    """
+    seen: set[int] = set()
+    current: Optional[BaseException] = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, TimeoutError):
+            return True
+        if "timeout" in type(current).__name__.lower():
+            return True
+        current = current.__cause__ or current.__context__
+    text = str(exc).lower()
+    return any(f"code: {code}" in text for code in _GATEWAY_TIMEOUT_CODES)
+
+
 class SessionManager:
     # Live model-catalog cache (`_model_catalog`, prefs key "model_catalog"): how long a
     # successful fetch stands before it's considered stale enough to re-pull (models
@@ -6882,6 +6939,9 @@ class SessionManager:
                 # OpenAI-compat path.
                 max_tokens=800,
                 reasoning_effort="none",
+                # Nobody is waiting on a title, which is exactly why it must not sit on a
+                # worker thread for the SDK's ten-minute default when a model stalls.
+                timeout=_oneshot_timeout(),
             )
             raw = (getattr(turn, "text", None) or "").strip()
             # Sanitize: surrounding quotes off, whitespace collapsed, capped at 60.
@@ -7289,9 +7349,20 @@ class SessionManager:
                 temperature=0.3,
                 max_tokens=2000,
                 reasoning_effort="none",
+                # Somebody is watching a spinner — this one must fail rather than hang.
+                timeout=_oneshot_timeout(),
             )
         except Exception as exc:
             logger.warning("enhance_prompt failed for model %s", use_model, exc_info=True)
+            if _is_timeout_error(exc):
+                # `reason` is the frontend's hook for saying WHICH failure this was; the
+                # `error` string stays human-readable because a raw SDK exception (stack
+                # frames, a base URL) is neither useful nor safe to put on screen.
+                return {
+                    "ok": False,
+                    "reason": "timeout",
+                    "error": "增强提示词超时，请换个更快的模型或稍后重试。",
+                }
             return {"ok": False, "error": str(exc)}
         raw = (getattr(turn, "text", None) or "").strip()
         # Strip a habitual ```fenced``` wrapper first (multi-line safe — a prompt, unlike

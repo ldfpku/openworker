@@ -1132,6 +1132,11 @@ export interface EnhancePromptResult {
   ok: boolean;
   text?: string;
   error?: string;
+  /** Which failure this was, when the backend can name it ("timeout" — the model did not
+   * answer inside the one-shot budget). Lets the composer show copy that says what to do
+   * next instead of the generic "try again"; `error` itself is server-side wording in one
+   * language and is never rendered. */
+  reason?: string;
 }
 
 /** Composer "Enhance prompt" button — one one-shot, session-agnostic rewrite (rides the same

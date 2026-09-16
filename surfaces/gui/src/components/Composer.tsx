@@ -646,7 +646,13 @@ export function Composer(props: Props) {
       // above catches most, but a provider failure or an empty completion still needs this
       // check, or `undefined` would land in the textarea.
       if (!r.ok || !r.text?.trim()) {
-        setEnhanceError(t("composer.enhance.failed"));
+        // A model too slow to finish inside the backend's one-shot budget is the one
+        // failure the user can actually act on (pick a faster model), so it gets its own
+        // line instead of the generic "try again" — which, retried on the same model,
+        // just spends another minute arriving at the same place.
+        setEnhanceError(
+          t(r.reason === "timeout" ? "composer.enhance.timed_out" : "composer.enhance.failed"),
+        );
         return;
       }
       setEnhanceOriginal(text);

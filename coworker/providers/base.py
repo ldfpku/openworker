@@ -19,6 +19,33 @@ from typing import Any, Optional
 SYSTEM_CONTEXT_OPEN = "<system-context>"
 
 
+def bounded_client(client: Any, timeout: Any) -> Any:
+    """A per-call clone of an SDK client with automatic retries off, for a call that
+    carries an explicit `timeout`.
+
+    A timeout is only a wall-clock bound if nothing silently multiplies it. The OpenAI SDK
+    defaults to `max_retries=2` and counts a timed-out request as retryable, so a caller
+    that asks for 60s can still be kept waiting 180s — which is exactly how a one-shot
+    helper (Enhance prompt, auto-title) turns into an unexplained hang instead of a clean
+    failure. `with_options` returns a shallow copy sharing the same HTTP pool, so this
+    costs nothing and never mutates the cached client other calls are using.
+
+    `timeout` None (every normal turn) returns the client untouched: the agent loop wants
+    the SDK's own resilience. Clients without `with_options` (test fakes, hand-rolled
+    stand-ins) are returned unchanged too — the request-level timeout still applies there,
+    it just isn't protected from retries.
+    """
+    if timeout is None:
+        return client
+    with_options = getattr(client, "with_options", None)
+    if not callable(with_options):
+        return client
+    try:
+        return with_options(max_retries=0)
+    except Exception:  # noqa: BLE001 - a clone we can't make is no reason to fail the call
+        return client
+
+
 @dataclass
 class ToolCall:
     """A single tool call requested by the model, with parsed arguments."""

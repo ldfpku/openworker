@@ -740,3 +740,60 @@ def test_registry_routes_blank_endpoint_to_responses():
     assert isinstance(
         build_provider_client("deepseek", {"api_key": "sk-x"}, None), OpenAIProvider
     )
+
+
+# -- one-shot deadlines --------------------------------------------------------------
+# `timeout` is a request OPTION, not a body field, so it is deliberately outside the
+# settings whitelist yet still forwarded — and, like on the Chat Completions path, it must
+# be a wall-clock bound rather than a per-attempt one (SDK default: max_retries=2).
+
+
+class _RetryAwareResponsesClient(_FakeClient):
+    def __init__(self, response=None):
+        super().__init__(response=response)
+        self.options: list[dict] = []
+
+    def with_options(self, **kwargs):
+        self.options.append(kwargs)
+        return self
+
+
+def test_timeout_forwarded_and_retries_disabled():
+    fake = _RetryAwareResponsesClient(response=_response([_message_item("hello")]))
+    provider = OpenAIResponsesProvider(client=fake)
+
+    provider.complete(
+        model="gpt-5.6-sol",
+        messages=[{"role": "user", "content": "hi"}],
+        timeout=60.0,
+    )
+
+    assert fake.kwargs["timeout"] == 60.0
+    assert fake.options == [{"max_retries": 0}]
+
+
+def test_normal_turn_sends_no_timeout_and_keeps_retries():
+    fake = _RetryAwareResponsesClient(response=_response([_message_item("hello")]))
+    provider = OpenAIResponsesProvider(client=fake)
+
+    provider.complete(model="gpt-5.6-sol", messages=[{"role": "user", "content": "hi"}])
+
+    assert "timeout" not in fake.kwargs
+    assert fake.options == []
+
+
+def test_unknown_settings_are_still_dropped():
+    """Lockdown for the carve-out above: `timeout` is the ONE non-whitelisted setting that
+    gets through — an unknown body param must still never reach the wire."""
+    fake = _RetryAwareResponsesClient(response=_response([_message_item("hello")]))
+    provider = OpenAIResponsesProvider(client=fake)
+
+    provider.complete(
+        model="gpt-5.6-sol",
+        messages=[{"role": "user", "content": "hi"}],
+        reasoning_effort="none",
+        frequency_penalty=0.5,
+    )
+
+    assert "reasoning_effort" not in fake.kwargs
+    assert "frequency_penalty" not in fake.kwargs
