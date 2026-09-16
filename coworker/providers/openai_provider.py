@@ -366,7 +366,11 @@ class OpenAIProvider(ProviderClient):
         if "max_completion_tokens" not in kwargs:
             kwargs.setdefault("max_tokens", DEFAULT_MAX_TOKENS)
         _pin_reasoning_effort(kwargs)
-        client = self._ensure_client()
+        # An explicit `timeout` (one-shot helpers only) must be a wall-clock bound here
+        # too — symmetric with `complete()`. Without this, the SDK's default
+        # max_retries=2 stayed in force on the streaming path, so a caller-supplied 60s
+        # budget could still silently balloon to 180s; see base.bounded_client.
+        client = bounded_client(self._ensure_client(), kwargs.get("timeout"))
 
         text_parts: list[str] = []
         reasoning_parts: list[str] = []

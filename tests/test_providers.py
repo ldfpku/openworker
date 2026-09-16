@@ -842,6 +842,54 @@ def test_timeout_survives_a_client_without_with_options():
     assert client.chat.completions.calls[0]["timeout"] == 30.0
 
 
+class _RetryAwareStreamClient:
+    """Stream-path analog of `_RetryAwareClient`: `chat.completions.create` returns an
+    iterator of chunks (like `_StreamClient`), while `with_options` is tracked the same
+    way — the only way to tell whether the streaming path was ever routed through
+    `bounded_client`, the same as the non-streaming one."""
+
+    def __init__(self, chunks):
+        self._chunks = chunks
+        self.calls: list[dict] = []
+        self.options: list[dict] = []
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+    def _create(self, **kwargs):
+        self.calls.append(kwargs)
+        return iter(self._chunks)
+
+    def with_options(self, **kwargs):
+        self.options.append(kwargs)
+        return self
+
+
+def test_stream_timeout_reaches_the_sdk_and_disables_retries():
+    """stream() must be symmetric with complete(): a caller-supplied timeout has to route
+    through bounded_client too, or the one-shot 60s budget silently balloons to 180s here
+    exactly as it did before complete() got this treatment."""
+    chunks = [_chunk(content="ok"), _chunk(finish="stop")]
+    client = _RetryAwareStreamClient(chunks)
+    provider = OpenAIProvider(client=client)
+
+    list(provider.stream(model="nvidia-hosted", messages=[], timeout=60.0))
+
+    assert client.calls[0]["timeout"] == 60.0
+    assert client.options == [{"max_retries": 0}]
+
+
+def test_stream_without_timeout_keeps_the_sdk_defaults():
+    """Lockdown: a normal (no-timeout) stream call must not touch with_options — the
+    agent loop keeps the SDK's own retries."""
+    chunks = [_chunk(content="ok"), _chunk(finish="stop")]
+    client = _RetryAwareStreamClient(chunks)
+    provider = OpenAIProvider(client=client)
+
+    list(provider.stream(model="gpt-5.5", messages=[]))
+
+    assert client.options == []
+    assert "timeout" not in client.calls[0]
+
+
 # -- reasoning_effort the server knows but won't take that VALUE ----------------------
 # NVIDIA NIM grades effort low/medium/high on some models and 400s on "none" — which our
 # utility calls pin for EVERY model, so "don't think" turned into "don't answer at all"

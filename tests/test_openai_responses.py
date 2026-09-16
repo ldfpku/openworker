@@ -749,8 +749,8 @@ def test_registry_routes_blank_endpoint_to_responses():
 
 
 class _RetryAwareResponsesClient(_FakeClient):
-    def __init__(self, response=None):
-        super().__init__(response=response)
+    def __init__(self, response=None, events=None):
+        super().__init__(response=response, events=events)
         self.options: list[dict] = []
 
     def with_options(self, **kwargs):
@@ -780,6 +780,28 @@ def test_normal_turn_sends_no_timeout_and_keeps_retries():
 
     assert "timeout" not in fake.kwargs
     assert fake.options == []
+
+
+def test_stream_timeout_also_disables_retries():
+    """stream() shares `_create()` with complete() (see `_create`'s call sites), so the
+    same wall-clock guarantee must hold on the streaming path too — lockdown against a
+    future refactor that has stream() call `client.responses.create` directly and skip
+    `bounded_client`, the exact gap `openai_provider.stream()` had before this test."""
+    final = _response([_message_item("hello")])
+    events = [SimpleNamespace(type="response.completed", response=final)]
+    fake = _RetryAwareResponsesClient(events=events)
+    provider = OpenAIResponsesProvider(client=fake)
+
+    list(
+        provider.stream(
+            model="gpt-5.6-sol",
+            messages=[{"role": "user", "content": "hi"}],
+            timeout=60.0,
+        )
+    )
+
+    assert fake.kwargs["timeout"] == 60.0
+    assert fake.options == [{"max_retries": 0}]
 
 
 def test_unknown_settings_are_still_dropped():
