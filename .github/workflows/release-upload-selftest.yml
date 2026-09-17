@@ -1,0 +1,122 @@
+# A dry run of the release job's upload path, on a real runner against real GitHub.
+#
+# packaging/upload_release_assets.py is unit-tested against a fake GitHub
+# (tests/test_upload_release_assets.py), which proves the logic but not the plumbing:
+# gh's real behaviour, GitHub's real `state`/`digest` timing, and the real asset API.
+# This workflow exercises the whole sequence end to end —
+#
+#   create a draft -> upload 14 files serially -> re-run and upload nothing (idempotent)
+#   -> verify -> refuse to overwrite an asset whose bytes differ -> clean up
+#
+# — on THROWAWAY files with a throwaway tag. It never creates a git tag (a draft release
+# does not create its ref until it is published), never touches a real release, and
+# deletes its own draft at the end even when a step fails. Safe to run any time; run it
+# after changing upload_release_assets.py or the release job's upload steps.
+#
+# Manual only, on purpose: nothing about this belongs in a tag push's critical path.
+
+name: Release upload selftest
+
+on:
+  workflow_dispatch:
+
+# Two of these at once would fight over the same selftest namespace.
+concurrency: release-upload-selftest
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build a throwaway dist/ (14 fake artifacts)
+        run: |
+          TAG="selftest-upload-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          VERSION="0.0.0-selftest"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          python3 packaging/upload_release_assets.py make-selftest-dist \
+            --version "$VERSION" --tag "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --dist dist --big-mb 90
+          ls -la dist
+
+      # Draft only — no files, and no generate_release_notes (there is no tag to diff
+      # against). The uploader fills it in the steps below.
+      - uses: softprops/action-gh-release@v3
+        id: draft
+        with:
+          tag_name: ${{ env.TAG }}
+          draft: true
+          name: SELFTEST (safe to delete)
+          body: Throwaway draft from .github/workflows/release-upload-selftest.yml. It is deleted automatically at the end of the run; if you are reading this, delete it.
+
+      - name: First upload (fresh draft)
+        id: first
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 packaging/upload_release_assets.py upload \
+            --repo "$GITHUB_REPOSITORY" --tag "$TAG" --version "$VERSION" \
+            --release-id "${{ steps.draft.outputs.id }}" --dist dist
+
+      - name: Assert the first upload shipped all 14
+        run: |
+          U="${{ steps.first.outputs.uploaded }}"; S="${{ steps.first.outputs.skipped }}"
+          echo "uploaded=$U skipped=$S"
+          [ "$U" = "14" ] && [ "$S" = "0" ] || { echo "::error::expected uploaded=14 skipped=0"; exit 1; }
+
+      - name: Second upload (must be a no-op)
+        id: second
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 packaging/upload_release_assets.py upload \
+            --repo "$GITHUB_REPOSITORY" --tag "$TAG" --version "$VERSION" \
+            --release-id "${{ steps.draft.outputs.id }}" --dist dist
+
+      - name: Assert the re-run uploaded nothing
+        run: |
+          U="${{ steps.second.outputs.uploaded }}"; S="${{ steps.second.outputs.skipped }}"
+          echo "uploaded=$U skipped=$S"
+          [ "$U" = "0" ] && [ "$S" = "14" ] || { echo "::error::expected uploaded=0 skipped=14"; exit 1; }
+
+      - name: Verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 packaging/upload_release_assets.py verify \
+            --repo "$GITHUB_REPOSITORY" --tag "$TAG" --version "$VERSION" \
+            --release-id "${{ steps.draft.outputs.id }}" --dist dist
+
+      - name: Changed bytes must be REFUSED, and the uploaded asset left untouched
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NAME=OpenWorker-windows.msi
+          ASSETS="repos/$GITHUB_REPOSITORY/releases/${{ steps.draft.outputs.id }}/assets?per_page=100"
+          BEFORE=$(gh api "$ASSETS" --jq ".[] | select(.name==\"$NAME\") | \"\(.id) \(.state) \(.digest)\"")
+          echo "before: $BEFORE"
+          printf 'x' >> "dist/$NAME"
+          if python3 packaging/upload_release_assets.py upload \
+               --repo "$GITHUB_REPOSITORY" --tag "$TAG" --version "$VERSION" \
+               --release-id "${{ steps.draft.outputs.id }}" --dist dist; then
+            echo "::error::upload accepted a digest mismatch — it must have refused"
+            exit 1
+          fi
+          AFTER=$(gh api "$ASSETS" --jq ".[] | select(.name==\"$NAME\") | \"\(.id) \(.state) \(.digest)\"")
+          echo "after:  $AFTER"
+          [ "$BEFORE" = "$AFTER" ] || { echo "::error::the asset changed: [$BEFORE] -> [$AFTER]"; exit 1; }
+
+      - name: Delete the throwaway draft
+        if: always() && steps.draft.outputs.id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 packaging/upload_release_assets.py cleanup-selftest \
+            --repo "$GITHUB_REPOSITORY" --release-id "${{ steps.draft.outputs.id }}"
