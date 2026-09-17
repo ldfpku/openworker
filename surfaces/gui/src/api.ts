@@ -360,12 +360,17 @@ export async function getJournalCases(): Promise<JournalCase[]> {
 }
 
 export interface ArtifactInfo {
-  path: string; // workspace-relative (the display/API identifier)
+  path: string; // scratch-relative, or absolute (forward-slashed) for the other roots
   abs_path?: string; // absolute — what "Copy path" copies
   name: string;
   kind: "markdown" | "html" | "image" | "code" | "text" | string;
   size: number;
   modified_at: number;
+  // Which of the session's roots the file sits in, by the same label the Files section
+  // shows ("workspace", "scratch", a granted folder's name). Files outside scratch now
+  // list too, and the row says where — relative paths resolve to the workspace, so most
+  // of what the agent produces is not in scratch at all.
+  root?: string;
   // Which rail surface opened it — drives the viewer's breadcrumb ("Artifacts" vs
   // "Files"). Absent = artifacts (UX-037).
   origin?: "artifacts" | "files";

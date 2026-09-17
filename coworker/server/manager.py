@@ -3284,58 +3284,30 @@ class SessionManager:
         return None
 
     def list_artifacts(self, session_id: str) -> list[dict[str, Any]]:
-        root = self._artifact_scan_root(session_id)
-        if root is None or not root.is_dir():
-            return []
         out: list[dict[str, Any]] = []
-        suffixes = {
-            ".md",
-            ".markdown",
-            ".html",
-            ".htm",
-            ".txt",
-            ".json",
-            ".csv",
-            ".tsv",
-            ".py",
-            ".js",
-            ".ts",
-            ".tsx",
-            ".css",
-            ".png",
-            ".jpg",
-            ".jpeg",
-            ".webp",
-            ".gif",
-            ".pdf",
-            ".xlsx",
-            ".xls",
-            ".pptx",
-            ".ppt",
-            ".pptm",
-            ".docx",
-            ".doc",
-            ".docm",
-        }
-        # os.walk with in-place pruning, NOT rglob: rglob descends first and filters after,
-        # so a home-directory workspace walked into ~/Library and tripped the macOS App Data
-        # TCC prompt ("OpenWorker would like to access data from other apps") on every turn.
-        # Pruning here means those directories are never entered at all.
-        from ..tools.search import OS_DATA_DIRS
-
-        skip = {"node_modules", "target", "dist", "__pycache__"} | OS_DATA_DIRS
-        for dirpath, dirs, files in os.walk(root):
-            dirs[:] = [d for d in dirs if not d.startswith(".") and d not in skip]
-            for name in files:
-                if name.startswith("."):
-                    continue
-                path = Path(dirpath) / name
-                if path.suffix.lower() not in suffixes:
-                    continue
-                try:
-                    st = path.stat()
-                    if not path.is_file():
+        seen: set[str] = set()
+        root = self._artifact_scan_root(session_id)
+        if root is not None and root.is_dir():
+            # os.walk with in-place pruning, NOT rglob: rglob descends first and filters
+            # after, so a home-directory workspace walked into ~/Library and tripped the
+            # macOS App Data TCC prompt ("OpenWorker would like to access data from other
+            # apps") on every turn. Pruning here means those dirs are never entered at all.
+            skip = _artifact_skip_dirs()
+            for dirpath, dirs, files in os.walk(root, onerror=_artifact_walk_error):
+                dirs[:] = [d for d in dirs if not d.startswith(".") and d not in skip]
+                for name in files:
+                    if name.startswith("."):
                         continue
+                    path = Path(dirpath) / name
+                    if path.suffix.lower() not in _ARTIFACT_SUFFIXES:
+                        continue
+                    try:
+                        st = path.stat()
+                        if not path.is_file():
+                            continue
+                    except OSError:
+                        continue
+                    seen.add(os.path.normcase(str(path)))
                     out.append(
                         {
                             "path": str(path.relative_to(root)),
@@ -3347,12 +3319,158 @@ class SessionManager:
                             "kind": _artifact_kind(path),
                             "size": st.st_size,
                             "modified_at": st.st_mtime,
+                            "root": "scratch",
                         }
                     )
-                except OSError:
+        # Files this session produced OUTSIDE scratch. Relative paths resolve to the
+        # workspace and `run_shell` runs there, so most of what the agent makes has always
+        # landed in the workspace — while this panel only ever read scratch, which is how a
+        # session could deliver a report and show the user an empty panel. Derived from the
+        # conversation, never persisted: nothing new to migrate, and a deleted session takes
+        # its list with it. Best-effort by construction, so it must never cost the caller
+        # the scratch listing it already has.
+        try:
+            for entry in self._session_artifacts(session_id, scratch=root):
+                key = os.path.normcase(entry["abs_path"])
+                if key in seen:
                     continue
+                seen.add(key)
+                out.append(entry)
+        except Exception:
+            logger.warning(
+                "session-produced artifacts scan failed for %s",
+                session_id,
+                exc_info=True,
+            )
+        # One key: newest first, whichever directory it came from. Ranking by how the file
+        # was found was tried and reverted — scratch holds the session's intermediate
+        # files, so putting it ahead of the workspace pushed a report a script had just
+        # written behind twenty temp files, and the rail only renders 16 rows. What the
+        # user is looking for after a turn is the thing that changed last.
         out.sort(key=lambda a: a["modified_at"], reverse=True)
         return out[:80]
+
+    def _session_messages(self, session_id: str) -> list[dict[str, Any]]:
+        """This session's messages, live engine first. The jsonl is only appended at a
+        checkpoint (`iteration_end`), so mid-turn — exactly when the panel refreshes after
+        a write — the file is one iteration behind what the engine holds."""
+        engine = self._engines.get(session_id)
+        messages = list(getattr(engine, "messages", None) or []) if engine else []
+        if messages:
+            return messages
+        record = self.session_store.load(session_id)
+        return list(record.messages or []) if record else []
+
+    def _session_artifacts(
+        self, session_id: str, *, scratch: Optional[Path]
+    ) -> list[dict[str, Any]]:
+        """Documents this session produced in its non-scratch roots.
+
+        Two sources, both read off the conversation:
+        * the write tools, whose arguments name the file exactly (`provenance.created_paths`);
+        * `run_shell`, which names nothing useful — a script writes whatever it writes — so
+          each call contributes a TIME WINDOW and a bounded sweep collects files whose mtime
+          falls inside one. No shell call, no sweep.
+
+        Only document/media extensions count here: a workspace is usually a real project, and
+        listing its `.py`/`.json` would turn the panel back into a file browser.
+        """
+        all_roots = self.get_roots(session_id)
+        # The PRIMARY root, taken before scratch is filtered out — it is what a relative
+        # tool path resolves against, and on an orphan session the primary IS the scratch
+        # dir. Reading it off the post-filter list instead made `write_file("报告.csv")`
+        # resolve into whatever folder the user had granted, where a same-named file of
+        # theirs would be listed as this session's work and readable from the panel.
+        primary = next(
+            (
+                Path(str(r["path"])).expanduser().resolve()
+                for r in all_roots
+                if r.get("primary") and r.get("path")
+            ),
+            None,
+        )
+        scratch_dir = scratch.resolve() if scratch else None
+        roots: list[tuple[Path, str, bool]] = []
+        for r in all_roots:
+            if not r.get("path"):
+                continue
+            path = Path(str(r["path"])).expanduser().resolve()
+            if scratch_dir is not None and path.is_relative_to(scratch_dir):
+                continue  # already covered, with its own relative paths, by the walk above
+            roots.append((path, str(r.get("label") or ""), bool(r.get("writable"))))
+        if not roots or primary is None:
+            return []  # an orphan session runs ON its scratch: nothing else to look at
+        messages = self._session_messages(session_id)
+        results = {
+            str(m.get("tool_call_id")): m
+            for m in messages
+            if m.get("role") == "tool" and m.get("tool_call_id")
+        }
+        # Kept apart on purpose: the named writes are exact, the swept ones are a guess
+        # bounded by a time window, and the cap below spends its budget in that order.
+        named = _written_paths(messages, results, primary)
+        windows = _shell_windows(messages, results)
+        swept = (
+            _sweep_for_windows([r[0] for r in roots if r[2]], windows) - named
+            if windows
+            else set()
+        )
+
+        skip = _artifact_skip_dirs()
+
+        def entries(paths: set[Path]) -> list[dict[str, Any]]:
+            out: list[dict[str, Any]] = []
+            for candidate in paths:
+                try:
+                    # Real-path recheck: a junction or symlink inside a root can point
+                    # anywhere, and `_artifact_target` resolves before it scopes — so a
+                    # lexical path that only LOOKS contained becomes a row that opens to
+                    # "path escapes workspace" while already having leaked the file's name
+                    # and size. Match what the viewer will match, on the real path.
+                    path = candidate.resolve()
+                except OSError:
+                    continue
+                label, depth = "", -1
+                for root_path, root_label, _writable in roots:
+                    if path.is_relative_to(root_path) and len(root_path.parts) > depth:
+                        label, depth = root_label, len(root_path.parts)
+                if depth < 0:  # outside every root this session holds
+                    continue
+                if path.suffix.lower() not in _SESSION_ARTIFACT_SUFFIXES:
+                    continue
+                below = path.parts[depth:]
+                if any(part.startswith(".") for part in below):
+                    continue
+                if any(part in skip for part in below):
+                    continue
+                try:
+                    st = path.stat()
+                    if not path.is_file():
+                        continue
+                except OSError:
+                    continue
+                out.append(
+                    {
+                        # Absolute, forward-slashed: `_artifact_target` resolves an
+                        # absolute path against every root, so read/reveal work unchanged,
+                        # and forward slashes survive the JSON + URL round trip to the GUI.
+                        "path": path.as_posix(),
+                        "abs_path": str(path),
+                        "name": path.name,
+                        "kind": _artifact_kind(path),
+                        "size": st.st_size,
+                        "modified_at": st.st_mtime,
+                        "root": label,
+                    }
+                )
+            out.sort(key=lambda a: a["modified_at"], reverse=True)
+            return out
+
+        # Exact entries claim the budget first. A shell-heavy session sweeps up whatever the
+        # user happened to edit at the same time, and dropping a file the agent demonstrably
+        # wrote to make room for that noise is the one outcome worth ruling out. This is a
+        # budget rule only — what survives it is ordered with everything else, newest first.
+        return (entries(named) + entries(swept))[:_SESSION_ARTIFACT_LIMIT]
 
     MAX_BINARY_PREVIEW = 25 * 1024 * 1024  # base64-over-JSON gets heavy past this
 
@@ -7940,6 +8058,250 @@ def _recent_files(workspace: str, *, since: float, limit: int = 20) -> list[str]
         if len(out) >= limit:
             break
     return out
+
+
+# What the scratch walk lists. Scratch belongs to the session, so a source file there is
+# still something the agent made for this conversation.
+_ARTIFACT_SUFFIXES = {
+    ".md", ".markdown", ".html", ".htm", ".txt", ".json", ".csv", ".tsv",
+    ".py", ".js", ".ts", ".tsx", ".css", ".png", ".jpg", ".jpeg", ".webp",
+    ".gif", ".pdf", ".xlsx", ".xls", ".pptx", ".ppt", ".pptm", ".docx",
+    ".doc", ".docm",
+}
+# What a NON-scratch root may contribute. The workspace is usually the user's own project:
+# listing its `.py`/`.ts`/`.json` would make the panel a second file browser, so only
+# documents and media count as something the session produced.
+_SESSION_ARTIFACT_SUFFIXES = _ARTIFACT_SUFFIXES - {
+    ".json", ".py", ".js", ".ts", ".tsx", ".css",
+}
+_SESSION_ARTIFACT_LIMIT = 40  # non-scratch entries, before the shared 80 cap
+
+# `run_shell` names no output path, so a call is credited with everything written while it
+# ran, ±2s for clock/stat granularity between the message timestamp and the file's mtime.
+_SHELL_WINDOW_SLACK = 2.0
+# Sweep budget. The panel refreshes after every turn and a workspace can be a monorepo, so
+# the sweep is explicitly best-effort: whichever bound trips first ends it, and a partial
+# answer beats a stalled panel.
+_SWEEP_MAX_DEPTH = 6
+_SWEEP_MAX_ENTRIES = 20_000
+_SWEEP_TIME_BUDGET = 1.0
+
+
+def _artifact_skip_dirs() -> set[str]:
+    from ..tools.search import OS_DATA_DIRS
+
+    return {"node_modules", "target", "dist", "__pycache__"} | OS_DATA_DIRS
+
+
+def _artifact_walk_error(exc: OSError) -> None:
+    """os.walk drops unreadable directories silently. Behaviour stays the same; the log
+    line is so an empty panel can be told apart from a permission-denied subtree."""
+    logger.debug(
+        "artifact walk could not read %s: %s", getattr(exc, "filename", "?"), exc
+    )
+
+
+# `{"error": …` at the very start of a result that no longer parses — the shape every
+# engine-side failure is serialised in, seen through a mid-JSON clip.
+_ERROR_KEY_OPENING = re.compile(r'^\{\s*"error"\s*:')
+
+
+def _tool_result_failed(message: dict[str, Any]) -> bool:
+    """Whether a persisted tool result says the call failed. The engine serialises a raised
+    tool as `{"error": ..., "error_type": ...}` and a refused one as `{"error": "tool call
+    not executed", ...}`; anything else (a plain string, a dict without `error`) is a
+    success. Callers still require the file to exist, so a misread only ever costs an entry
+    that was going to be filtered anyway.
+
+    A long result is clipped mid-JSON before it is stored (`engine._clip_tool_result`), so
+    "won't parse" cannot mean "succeeded": an error object that opens with `{"error"` is
+    read as a failure from its opening alone."""
+    content = message.get("content")
+    if not isinstance(content, str):
+        return False
+    text = content.strip()
+    if not text.startswith("{"):
+        return False
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return bool(_ERROR_KEY_OPENING.match(text))
+    return isinstance(data, dict) and bool(data.get("error"))
+
+
+def _written_paths(
+    messages: list[dict[str, Any]],
+    results: dict[str, dict[str, Any]],
+    workspace: Path,
+) -> set[Path]:
+    """Absolute paths the session's write tools created — the exact half of the answer.
+    `provenance.created_paths` is the same extractor the reviewer uses, so a path that
+    scopes and gates as a write is the path listed here.
+
+    A call counts only once a result message says it SUCCEEDED. No result at all is not
+    success: a call denied at the approval card, or one the process died on, leaves the
+    same dangling assistant message — and its `path` argument may well name a file that
+    already existed and belongs to the user. Crediting that would put someone else's
+    document in the panel and let it be opened from there."""
+    from ..provenance import created_paths, resolve
+    from ..risk import WRITE_TOOLS
+
+    out: set[Path] = set()
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+        for call in message.get("tool_calls") or []:
+            function = call.get("function") or {}
+            name = str(function.get("name") or "")
+            if name not in WRITE_TOOLS:
+                continue
+            result = results.get(str(call.get("id")))
+            if result is None or _tool_result_failed(result):
+                continue
+            raw = function.get("arguments")
+            try:
+                arguments = json.loads(raw) if isinstance(raw, str) else raw
+            except ValueError:
+                continue
+            if not isinstance(arguments, dict):
+                continue
+            paths, origin = created_paths(name, arguments, result)
+            if not origin:
+                continue
+            for path in paths:
+                try:
+                    out.add(Path(resolve(path, workspace)))
+                except (OSError, ValueError):  # pragma: no cover - exotic path
+                    continue
+    return out
+
+
+def _shell_windows(
+    messages: list[dict[str, Any]], results: dict[str, dict[str, Any]]
+) -> list[tuple[float, float]]:
+    """One [start, end] per FINISHED `run_shell` call — the interval it was running in.
+
+    Only finished calls count. A dangling call (no result message) is not "still running":
+    the assistant message is appended and checkpointed before authorization, so a session
+    abandoned at a `run_shell` approval card leaves one forever — and treating it as open
+    would make every later refresh, days later, claim everything the user has since touched
+    in their own workspace.
+
+    The start is the result's `t0` (when the tool actually began), NOT the assistant
+    message's `ts`: between the two sits however long the human spent at the approval card,
+    and files edited during that wait are the user's, not the session's. A result with no
+    `t0` is either a record written before that sidecar existed — which falls back to the
+    widest interval the call could possibly have occupied, since `run_shell` cannot outlive
+    `shell._MAX_TIMEOUT` — or a call that never ran at all, which is told apart by its error
+    result and contributes nothing.
+    """
+    from ..risk import SHELL_TOOL
+    from ..tools.shell import _MAX_TIMEOUT
+
+    windows: list[tuple[float, float]] = []
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+        asked = message.get("ts")
+        for call in message.get("tool_calls") or []:
+            if str((call.get("function") or {}).get("name") or "") != SHELL_TOOL:
+                continue
+            result = results.get(str(call.get("id")))
+            finished = (result or {}).get("ts")
+            if not isinstance(finished, (int, float)):
+                continue  # never completed (or a record too old to place in time)
+            started = (result or {}).get("t0")
+            if not isinstance(started, (int, float)):
+                if _tool_result_failed(result or {}):
+                    # No `t0` AND an error result: the call never reached `_execute_sync`
+                    # (denied at the card, interrupted, arguments that never parsed), so it
+                    # wrote nothing. Without this it would take the fallback below, and a
+                    # card left open for an hour before Deny would hand back a ten-minute
+                    # window over the user's own edits. A call that really ran and then
+                    # failed or timed out carries `t0`, so it still opens its real window.
+                    continue
+                floor = float(finished) - _MAX_TIMEOUT
+                started = max(float(asked), floor) if isinstance(asked, (int, float)) else floor
+            windows.append(
+                (float(started) - _SHELL_WINDOW_SLACK, float(finished) + _SHELL_WINDOW_SLACK)
+            )
+    return windows
+
+
+def _is_reparse_dir(entry: os.DirEntry) -> bool:
+    """A directory entry that redirects elsewhere. `is_junction` is Windows' own answer and
+    exists from 3.12; `is_symlink` covers the rest and the older interpreters."""
+    try:
+        if entry.is_symlink():
+            return True
+        is_junction = getattr(entry, "is_junction", None)
+        return bool(is_junction()) if callable(is_junction) else False
+    except OSError:  # pragma: no cover - a racing unlink
+        return True
+
+
+def _sweep_for_windows(
+    roots: list[Path], windows: list[tuple[float, float]]
+) -> set[Path]:
+    """Breadth-first, budgeted walk collecting documents whose mtime lands in a window.
+    Breadth-first on purpose: a script's output usually sits at or near the top of the
+    workspace, so the shallow files are the ones found before a bound trips."""
+    from collections import deque
+
+    skip = _artifact_skip_dirs()
+    deadline = time.monotonic() + _SWEEP_TIME_BUDGET
+    budget = _SWEEP_MAX_ENTRIES
+    queue: deque[tuple[Path, int]] = deque()
+    seen: set[str] = set()
+    for root in roots:
+        key = os.path.normcase(str(root))
+        if key not in seen:
+            seen.add(key)
+            queue.append((root, 0))
+    found: set[Path] = set()
+    visited = 0
+    while queue:
+        if visited >= budget or time.monotonic() > deadline:
+            break
+        directory, depth = queue.popleft()
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    visited += 1
+                    if visited >= budget or time.monotonic() > deadline:
+                        break
+                    if entry.name.startswith("."):
+                        continue
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            if entry.name in skip or depth >= _SWEEP_MAX_DEPTH:
+                                continue
+                            if _is_reparse_dir(entry):
+                                # A junction/symlink is a door out of the root. Windows
+                                # reports a junction as a plain directory, so walking it
+                                # would collect paths that only look contained and that
+                                # the viewer then refuses to open.
+                                continue
+                            key = os.path.normcase(entry.path)
+                            if key not in seen:
+                                seen.add(key)
+                                queue.append((Path(entry.path), depth + 1))
+                            continue
+                        if not entry.is_file(follow_symlinks=False):
+                            continue
+                        if (
+                            os.path.splitext(entry.name)[1].lower()
+                            not in _SESSION_ARTIFACT_SUFFIXES
+                        ):
+                            continue
+                        mtime = entry.stat().st_mtime
+                    except OSError:
+                        continue
+                    if any(start <= mtime <= end for start, end in windows):
+                        found.add(Path(entry.path))
+        except OSError as exc:
+            logger.debug("artifact sweep could not read %s: %s", directory, exc)
+    return found
 
 
 def _artifact_kind(path: Path) -> str:

@@ -110,3 +110,39 @@ describe("RightRail Artifacts — load failure vs empty", () => {
     expect(screen.queryByText("Could not load files.")).toBeNull();
   });
 });
+
+// Artifacts now come from the whole session, not just its scratch dir: a relative write
+// lands in the workspace, so the row has to say which folder it is in. Scratch stays
+// unlabelled — it is the section's historical default and would be noise on every row.
+describe("RightRail Artifacts — which root a file is in", () => {
+  const WORKSPACE_FILE = {
+    path: "C:/Users/tester/新建文件夹 (8)/报告.csv",
+    abs_path: "C:\\Users\\tester\\新建文件夹 (8)\\报告.csv",
+    name: "报告.csv",
+    kind: "csv",
+    size: 64,
+    modified_at: 0,
+    root: "workspace",
+  };
+  const SCRATCH_FILE = { ...FILE_A, root: "scratch" };
+
+  it("labels a file outside scratch with its root, and leaves scratch files unlabelled", async () => {
+    vi.mocked(getArtifacts).mockResolvedValueOnce([WORKSPACE_FILE, SCRATCH_FILE]);
+    render(railBase(0));
+    fireEvent.click(screen.getByTestId("rail-toggle-artifacts"));
+
+    expect(await screen.findByText("报告.csv")).toBeTruthy();
+    const tags = screen.getAllByTestId("artifact-root-tag");
+    expect(tags).toHaveLength(1);
+    expect(tags[0].textContent).toContain("workspace");
+  });
+
+  it("shows no label at all when the backend sends no root (older payloads)", async () => {
+    vi.mocked(getArtifacts).mockResolvedValueOnce([FILE_A]);
+    render(railBase(0));
+    fireEvent.click(screen.getByTestId("rail-toggle-artifacts"));
+
+    expect(await screen.findByText("report.md")).toBeTruthy();
+    expect(screen.queryAllByTestId("artifact-root-tag")).toHaveLength(0);
+  });
+});

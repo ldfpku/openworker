@@ -396,7 +396,16 @@ export function RightRail({
                     </span>
                     <span className="artifact-name">
                       {a.name}
-                      <span className="artifact-row-meta">{formatBytes(a.size)} · {formatTime(a.modified_at)}</span>
+                      <span className="artifact-row-meta">
+                        {formatBytes(a.size)} · {formatTime(a.modified_at)}
+                        {/* Which root it's in — the same label the Files section shows.
+                            Scratch is the section's historical default, so naming it would
+                            be noise on nearly every row; anywhere else is the thing worth
+                            knowing. No new i18n key: a root's label is the folder's name. */}
+                        {a.root && a.root !== "scratch" ? (
+                          <span data-testid="artifact-root-tag"> · {a.root}</span>
+                        ) : null}
+                      </span>
                     </span>
                     <span className="artifact-open">{t("rail.open")}</span>
                   </button>
