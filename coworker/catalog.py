@@ -21,7 +21,7 @@ import aisuite as ai
 
 from .agents.base import AgentContext
 from .risk import RiskClass
-from .tools.files import file_tools
+from .tools.files import file_tools, write_file_tools
 from .tools.git import git_tools
 from .tools.search import search_tools
 from .tools.shell import shell_tools
@@ -52,23 +52,38 @@ class Capability:
 # These reproduce, exactly, what the Code and Cowork agent factories assembled by hand.
 
 
+def _toolkit_files(context: AgentContext, replaced: set[str]) -> list:
+    """The aisuite file toolkit minus `replaced`, plus our own replacements.
+
+    `write_file` is always replaced — by the SAME toolkit function, wrapped (see
+    `tools.files.write_file_tools`) so its result names the absolute path it wrote and so
+    a ZIP-container Office extension is refused instead of silently written as text. The
+    wrapper needs the original, so it is picked out before the filter runs.
+    """
+    ws = str(context.workspace)
+    file_kwargs = (
+        {"roots": context.roots} if context.roots else {"root": ws, "allow_write": True}
+    )
+    toolkit = ai.toolkits.files(**file_kwargs)
+    inner_write = next(
+        (t for t in toolkit if getattr(t, "__name__", "") == "write_file"), None
+    )
+    files = [t for t in toolkit if getattr(t, "__name__", "") not in replaced]
+    wrapped = (
+        write_file_tools(inner_write, ws, roots=context.roots) if inner_write else []
+    )
+    return [*files, *wrapped, *file_tools(ws, roots=context.roots)]
+
+
 def _code_files(context: AgentContext) -> list:
     """Repo-oriented files: line-numbered/windowed `read_file`. Our `grep` and windowed
     `read_file` replace aisuite's slower `search_files` / `read_file`/`read_file_lines`.
     Multi-root aware (universal scratch): with session roots, writes/reads reach the
     scratch and granted dirs too; the workspace stays the relative-path anchor.
     """
-    ws = str(context.workspace)
-    replaced = {"search_files", "read_file", "read_file_lines"}
-    file_kwargs = (
-        {"roots": context.roots} if context.roots else {"root": ws, "allow_write": True}
+    return _toolkit_files(
+        context, {"search_files", "read_file", "read_file_lines", "write_file"}
     )
-    files = [
-        t
-        for t in ai.toolkits.files(**file_kwargs)
-        if getattr(t, "__name__", "") not in replaced
-    ]
-    return [*files, *file_tools(ws, roots=context.roots)]
 
 
 def _files(context: AgentContext) -> list:
@@ -77,20 +92,20 @@ def _files(context: AgentContext) -> list:
     `read_file` replaces aisuite's `read_file`/`read_file_lines`, and our `grep`
     replaces the slow `search_files` — same set Code uses.
     """
-    ws = str(context.workspace)
-    file_kwargs = (
-        {"roots": context.roots} if context.roots else {"root": ws, "allow_write": True}
-    )
     # Knowledge-work personas only need one editor, not three overlapping ones: keep
     # `replace_in_file` and drop aisuite's `apply_patch` / `apply_unified_diff` too (Code
     # keeps all three — see `_code_files` above).
-    replaced = {"search_files", "read_file", "read_file_lines", "apply_patch", "apply_unified_diff"}
-    files = [
-        t
-        for t in ai.toolkits.files(**file_kwargs)
-        if getattr(t, "__name__", "") not in replaced
-    ]
-    return [*files, *file_tools(ws, roots=context.roots)]
+    return _toolkit_files(
+        context,
+        {
+            "search_files",
+            "read_file",
+            "read_file_lines",
+            "apply_patch",
+            "apply_unified_diff",
+            "write_file",
+        },
+    )
 
 
 def _git(context: AgentContext) -> list:

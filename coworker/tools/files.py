@@ -1,9 +1,14 @@
-"""Line-numbered file reading (`read_file`) — replaces the aisuite toolkit's reader.
+"""Line-numbered file reading (`read_file`) and an honest `write_file` — both replace the
+aisuite toolkit's originals.
 
 The toolkit's `read_file` returns raw text (the agent can't cite path:line without
 counting) and raises outright on large files (the agent errors and guesses). This one
 returns `cat -n`-style numbered lines, windows big files instead of failing, and tells
 the agent how to continue reading. Read-only, workspace-scoped.
+
+`write_file` is the toolkit's own, wrapped (see `write_file_tools`): it reports the
+ABSOLUTE path it wrote plus which root that is, and it refuses the ZIP-container Office
+formats it can only ever corrupt.
 """
 
 from __future__ import annotations
@@ -132,3 +137,115 @@ def file_tools(workspace: str, roots: Optional[list] = None) -> list:
     )
     read_file.__coworker_schema__ = _SCHEMA
     return [read_file]
+
+
+# Office formats that are ZIP containers, not text. `write_file` encodes its `content` as
+# UTF-8, so every one of these comes out a text file wearing the wrong extension: Excel and
+# Word refuse to open it, and the agent — having seen a success — tells the user the
+# spreadsheet is ready. Refusing costs one turn and names the way that works.
+_ZIP_CONTAINER_SUFFIXES = {".xlsx", ".xlsm", ".docx", ".docm", ".pptx", ".pptm"}
+
+
+def _zip_container_error(suffix: str) -> str:
+    """Route the model to the option that always works first.
+
+    The script route needs Python AND the right library on the USER's machine — the
+    packaged backend is a frozen exe and `run_shell` spawns the user's own shell, so on an
+    ordinary office PC neither is a given. Leading with it gets a plausible-looking plan
+    that fails three commands later; leading with `.csv` gets the user a file they can
+    open. The BOM note is for Excel specifically: without it Excel reads a UTF-8 CSV as the
+    local ANSI codepage and every non-ASCII character comes out mangled.
+    """
+    return (
+        f"write_file writes UTF-8 text only, and {suffix} is a ZIP container — what it "
+        f"would produce is a text file with a {suffix} name that no app can open. "
+        "Deliver .csv, .md or .html instead, which write_file writes properly (begin a "
+        "CSV meant for Excel with the BOM U+FEFF or non-ASCII text arrives mangled). "
+        "Only once you have checked with run_shell that this machine has Python and the "
+        "right library (openpyxl for .xlsx, python-docx for .docx, python-pptx for .pptx) "
+        "should you generate it with a script — then verify the file exists. Either way, "
+        "tell the user which format you actually delivered."
+    )
+
+
+def _root_entries(roots: Optional[list]) -> list[tuple[Path, str]]:
+    """(resolved path, label) for each root, resolved on EVERY call — same reason as
+    `resolved_paths`: the list is shared and mutated in place when a folder is granted."""
+    out: list[tuple[Path, str]] = []
+    for r in roots or []:
+        if isinstance(r, dict):
+            raw, label = r.get("path", ""), str(r.get("label") or "")
+        elif isinstance(r, (str, Path)):
+            raw, label = r, ""
+        else:  # duck-typed RootDir-like
+            raw, label = getattr(r, "path", ""), str(getattr(r, "label", "") or "")
+        if raw:
+            path = Path(str(raw)).expanduser().resolve()
+            out.append((path, label or path.name))
+    return out
+
+
+def write_file_tools(
+    inner: Any, workspace: str, roots: Optional[list] = None
+) -> list:
+    """The aisuite `write_file`, wrapped so its RESULT names the file it actually wrote.
+
+    The toolkit reports `_relative(path)` — a bare `report.csv` for anything under the
+    primary root. In a workspace+scratch session that is exactly the ambiguity that made
+    the agent lie: it wrote a relative path (which resolves to the WORKSPACE), read back
+    `report.csv`, and told the user the file was in scratch / in the Artifacts panel. An
+    absolute path plus the root's own label leaves nothing to guess at, and it is the
+    string the agent is now told to quote verbatim (see `roots.render_context`).
+
+    Nothing consumes this result programmatically — the permission engine, provenance and
+    the GUI's tool card all read the ARGUMENTS — so the extra words cost only tokens.
+    """
+    primary = Path(workspace).resolve()
+
+    def write_file(path: str, content: str, overwrite: bool = True) -> str:
+        """Write a UTF-8 text file under the configured root."""
+        suffix = Path(str(path)).suffix.lower()
+        if suffix in _ZIP_CONTAINER_SUFFIXES:
+            # Refuse BEFORE writing: a half-written .xlsx on disk is worse than none, and
+            # the model would cite it as proof the spreadsheet exists.
+            raise ValueError(_zip_container_error(suffix))
+        written = inner(path=path, content=content, overwrite=overwrite)
+        try:
+            p = Path(str(path)).expanduser()
+            entries = _root_entries(roots)
+            base = entries[0][0] if entries else primary
+            target = p.resolve() if p.is_absolute() else (base / p).resolve()
+            # Deepest matching root wins, so a folder nested inside another is labelled
+            # with the one the user actually granted.
+            label, depth = "", -1
+            for root_path, root_label in entries:
+                if not target.is_relative_to(root_path):
+                    continue
+                if len(root_path.parts) > depth:
+                    label, depth = root_label, len(root_path.parts)
+            return f"Wrote {target}" + (f" (root: {label})" if label else "")
+        except Exception:
+            # The bytes are already on disk. Everything past `inner` is cosmetics, so a
+            # failure here must not be reported as a failed write — the engine turns a
+            # raised tool into `{"error": …}`, and the model would then retry the write or
+            # tell the user the file does not exist. Deliberately broad: no formatting bug
+            # is worth turning a completed write into a lie. Fall back to what the toolkit
+            # itself would have answered.
+            return written
+
+    write_file.__name__ = "write_file"
+    write_file.__aisuite_tool_metadata__ = getattr(
+        inner, "__aisuite_tool_metadata__", None
+    ) or ai.ToolMetadata(
+        name="write_file",
+        category="filesystem",
+        risk_level="medium",
+        capabilities=["write_file"],
+        requires_approval=True,
+    )
+    # Reuse the toolkit's own schema verbatim: the model must see the same tool it always
+    # saw (same name, params, wording), so the prompt budget can't drift on a wrapper.
+    from .registry import _schema_for
+
+    write_file.__coworker_schema__ = _schema_for(inner)
+    return [write_file]

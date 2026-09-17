@@ -137,12 +137,37 @@ def render_context(roots: list[RootDir]) -> str:
             tag = ""
         lines.append(f"- {r.path} [{access}]{tag}")
     if has_side_scratch:
+        # Where files go is unchanged; what this block CLAIMS is not. It used to say
+        # deliverables in scratch "appear in the user's Artifacts panel" while relative
+        # paths quietly resolved to the workspace — so a model that wrote `report.csv`
+        # left it in the workspace and then announced it had reached a panel that was, in
+        # fact, empty. There is no sync tool and never was; the panel reads both
+        # directories now (SessionManager.list_artifacts). Every turn pays for these lines
+        # in full — they sit after the prompt-cache breakpoint — so each one earns its
+        # place: where paths land, where deliverables go, what the panel does, and not
+        # claiming a file no tool result confirmed.
         lines.append(
-            "Relative paths resolve against the workspace; pass an absolute path to use "
-            "another directory. Writes are only allowed in read-write directories. Put "
-            "reports, analyses, and other non-repo deliverables in the scratch directory "
-            "(they appear in the user's Artifacts panel) — write into the workspace only "
-            "for changes that belong in it."
+            "Relative paths resolve against the workspace and the shell starts there; use "
+            "absolute paths elsewhere, scratch included. Writes need read-write access."
+        )
+        lines.append(
+            "Put reports, analyses and other non-repo deliverables in scratch; use the "
+            "workspace only for changes that belong in it."
+        )
+        lines.append(
+            # "not code or JSON": outside scratch the panel keeps to documents and media —
+            # a workspace is usually the user's own project (see
+            # manager._SESSION_ARTIFACT_SUFFIXES).
+            "The Artifacts panel lists documents (not code or JSON) you make this session "
+            "in either directory; no sync or publish step exists."
+        )
+        lines.append(
+            # Only `write_file` is wrapped to report an absolute path; `replace_in_file`
+            # and the patch tools still answer with a workspace-relative name. So: always
+            # GIVE an absolute path, and quote the tool's when the tool supplied one.
+            "Give file locations as absolute paths, quoting the tool's own when it reports "
+            "one. Never claim a file exists, or was copied or moved, unless a tool result "
+            "confirms it; say so when a command fails."
         )
     else:
         lines.append(

@@ -84,6 +84,121 @@ def test_toolkit_runtime_added_root_is_seen_live(tmp_path):
     assert tools["read_file"](str(ro / "data.txt")) == "secret"
 
 
+# -- write_file: absolute result, no ZIP-container Office formats ---------------
+# The toolkit's own `write_file` answers `report.csv` for anything under the primary root,
+# which in a workspace+scratch session is the ambiguity that let the agent claim a file was
+# somewhere it wasn't. The catalog swaps in a wrapper (tools/files.write_file_tools) on both
+# registration paths. It also refuses .xlsx & friends: write_file encodes UTF-8 text, so
+# what it produced was a text file wearing a spreadsheet's extension.
+
+
+def _catalog_write_file(builder, workspace, roots):
+    from coworker.agents.base import AgentContext
+
+    tools = {
+        getattr(t, "__name__", ""): t
+        for t in builder(AgentContext(workspace=workspace, roots=roots))
+    }
+    return tools["write_file"]
+
+
+def _dual_roots(tmp_path):
+    ws = tmp_path / "新建文件夹 (8)"
+    scratch = tmp_path / "scratch"
+    for d in (ws, scratch):
+        d.mkdir()
+    return ws, scratch, normalize_roots(
+        [
+            RootDir(path=ws, writable=True, label="workspace"),
+            RootDir(path=scratch, writable=True, label="scratch"),
+        ]
+    )
+
+
+@pytest.mark.parametrize("builder_name", ["_files", "_code_files"])
+def test_write_file_result_names_the_absolute_path_and_its_root(tmp_path, builder_name):
+    import coworker.catalog as catalog
+
+    ws, scratch, roots = _dual_roots(tmp_path)
+    write_file = _catalog_write_file(getattr(catalog, builder_name), ws, roots)
+
+    # A relative path resolves to the WORKSPACE — and now says so, in full.
+    out = write_file(path="报告.csv", content="a,b\n1,2\n")
+    assert out == f"Wrote {(ws / '报告.csv').resolve()} (root: workspace)"
+    assert (ws / "报告.csv").read_text(encoding="utf-8") == "a,b\n1,2\n"
+    assert not (scratch / "报告.csv").exists()
+
+    # An absolute scratch path is labelled with the root the user knows it by.
+    out = write_file(path=str(scratch / "notes.md"), content="# x")
+    assert out == f"Wrote {(scratch / 'notes.md').resolve()} (root: scratch)"
+
+
+@pytest.mark.parametrize("builder_name", ["_files", "_code_files"])
+def test_write_file_refuses_zip_container_office_formats(tmp_path, builder_name):
+    import coworker.catalog as catalog
+
+    ws, _scratch, roots = _dual_roots(tmp_path)
+    write_file = _catalog_write_file(getattr(catalog, builder_name), ws, roots)
+
+    with pytest.raises(ValueError) as excinfo:
+        write_file(path="测试报告_标准模版.xlsx", content="a,b\n1,2\n")
+    message = str(excinfo.value)
+    assert "ZIP container" in message
+    # The route that always works comes FIRST. A frozen backend spawns the USER's shell,
+    # and a Chinese-Windows office PC has no Python — leading with the script route buys a
+    # confident plan that dies three commands later.
+    assert message.index(".csv") < message.index("openpyxl")
+    assert "Only once you have checked with run_shell" in message
+    assert "U+FEFF" in message  # Excel reads a BOM-less UTF-8 CSV as the local codepage
+    assert "tell the user which format you actually delivered" in message
+    # Nothing was written: a half-baked .xlsx on disk is what the model would cite as proof.
+    assert not (ws / "测试报告_标准模版.xlsx").exists()
+    assert list(ws.iterdir()) == []
+
+    # Every other extension is untouched.
+    assert write_file(path="报告.csv", content="a,b\n").startswith("Wrote ")
+
+
+def test_a_successful_write_never_reports_failure_when_formatting_breaks(tmp_path):
+    """Everything after the toolkit call is cosmetics. If it raises, the bytes are already
+    on disk — reporting an error would send the model back to rewrite the file, or make it
+    tell the user the file does not exist."""
+    import coworker.catalog as catalog
+    import coworker.tools.files as files_module
+
+    ws, _scratch, roots = _dual_roots(tmp_path)
+    write_file = _catalog_write_file(catalog._files, ws, roots)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            files_module,
+            "_root_entries",
+            lambda _roots: (_ for _ in ()).throw(RuntimeError("formatting blew up")),
+        )
+        out = write_file(path="报告.csv", content="a,b\n")
+
+    assert (ws / "报告.csv").read_text(encoding="utf-8") == "a,b\n"
+    # Falls back to what the toolkit itself would have answered — a path, not an error.
+    assert out == "报告.csv"
+
+
+def test_write_file_schema_is_byte_identical_to_the_toolkit_original(tmp_path):
+    """The wrapper must be invisible to the model: same name, same params, same wording —
+    otherwise the prompt-budget guard is measuring a different tool than it was set against.
+    """
+    import coworker.catalog as catalog
+    from coworker.tools.registry import _schema_for
+
+    ws, _scratch, roots = _dual_roots(tmp_path)
+    original = next(
+        t
+        for t in ai.toolkits.files(roots=roots)
+        if getattr(t, "__name__", "") == "write_file"
+    )
+    wrapped = _catalog_write_file(catalog._files, ws, roots)
+    assert wrapped.__coworker_schema__ == _schema_for(original)
+
+
 # -- permission engine ----------------------------------------------------------
 
 
@@ -134,6 +249,74 @@ def test_render_context_marks_primary_and_access(tmp_path):
     assert "read-write" in text and "read-only" in text
     assert "primary" in text.lower()
     assert str(scratch.resolve()) in text
+
+
+def _dual_root_context(tmp_path):
+    ws = tmp_path / "repo"
+    scratch = tmp_path / "scratch"
+    for d in (ws, scratch):
+        d.mkdir()
+    return render_context(
+        normalize_roots(
+            [
+                RootDir(path=ws, writable=True, label="workspace"),
+                RootDir(path=scratch, writable=True, label="scratch"),
+            ]
+        )
+    )
+
+
+def test_render_context_dual_root_tells_the_truth_about_where_files_land(tmp_path):
+    """The workspace+scratch block used to say "put deliverables in scratch (they appear in
+    the user's Artifacts panel)" while relative paths quietly resolved to the WORKSPACE — so
+    a model wrote `report.csv`, landed it in the workspace, and announced it had reached a
+    panel that only ever read scratch. Each assertion pins one thing the block must say."""
+    text = _dual_root_context(tmp_path)
+
+    # (i) where relative paths and the shell land, and how to reach scratch
+    assert "Relative paths resolve against the workspace and the shell starts there" in text
+    assert "use absolute paths elsewhere, scratch included" in text
+    assert "Writes need read-write access" in text
+    # (ii) the placement policy is upstream's, unchanged — only the false claim is gone
+    assert "Put reports, analyses and other non-repo deliverables in scratch" in text
+    assert "use the workspace only for changes that belong in it" in text
+    # (iii) the panel reads BOTH dirs, documents only, and no sync step exists.
+    # "not code or JSON", not "not source": `.json` is excluded outside scratch too.
+    assert "Artifacts panel lists documents (not code or JSON) you make this session" in text
+    assert "either directory; no sync or publish step exists" in text
+    # (iv) absolute locations, quoting the tool's own WHEN IT REPORTS ONE — only
+    # `write_file` is wrapped to return an absolute path; `replace_in_file` and the patch
+    # tools still answer relative, so "quote it exactly" would be a rule they can't satisfy.
+    assert "Give file locations as absolute paths, quoting the tool's own when it reports" in text
+    assert "Never claim a file exists, or was copied or moved, unless a tool result" in text
+    assert "say so when a command fails" in text
+
+    # The old, false claim is gone for good.
+    assert "(they appear in the user's Artifacts panel)" not in text
+    assert "Artifacts panel" in text  # …but the panel is still explained
+
+
+def test_render_context_does_not_claim_the_shell_stays_in_the_workspace(tmp_path):
+    """`run_shell` is a persistent session — `cd` moves its cwd for every later command
+    (tools/shell.py). "Shell commands resolve to the workspace" would be a claim the tool
+    does not honour; "starts there" is what is actually true."""
+    text = _dual_root_context(tmp_path)
+    assert "the shell starts there" in text
+    assert "shell commands resolve" not in text.lower()
+
+
+_GUIDANCE_BUDGET = 600  # chars, absolute — see the docstring below
+
+
+def test_render_context_dual_root_block_stays_within_its_token_budget(tmp_path):
+    """This block sits AFTER the prompt-cache breakpoint, so every line is re-billed at
+    full price on every single turn. A flat ceiling, not a delta against some earlier
+    wording: what matters is what each turn costs, not how it compares to a version nobody
+    runs any more."""
+    text = _dual_root_context(tmp_path)
+    head = "Relative paths resolve against the workspace"
+    block = head + text.split(head)[1]
+    assert len(block) <= _GUIDANCE_BUDGET, f"guidance block grew to {len(block)} chars"
 
 
 def test_outbound_messages_appends_context_as_trailing_message():
