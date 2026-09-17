@@ -256,3 +256,189 @@ async def test_a_scheduled_task_approves_its_own_spreadsheet_write(tmp_path, mon
     )
     assert outcome is ApprovalOutcome.ONCE
     assert manager.inbox.pending(run.session_id) == []
+
+
+# -- on-demand exposure: the loader, and who gets it -------------------------------------
+
+
+class _StubProvider:
+    """build_engine never calls the provider at build time (same stand-in the other
+    build_engine suites use)."""
+
+    def complete(self, **_kw):  # pragma: no cover - never invoked at build time
+        from coworker.providers import AssistantTurn
+
+        return AssistantTurn()
+
+    def capabilities(self, _model):  # pragma: no cover
+        from coworker.providers.base import ModelCapabilities
+
+        return ModelCapabilities()
+
+
+def _engine_for(agent, tmp_path, **kw):
+    from coworker.agent import build_engine
+
+    return build_engine(agent=agent, workspace=tmp_path, provider=_StubProvider(), **kw)
+
+
+def _schema_names(engine) -> set[str]:
+    return {s["function"]["name"] for s in engine.registry.schemas()}
+
+
+def test_a_fresh_session_advertises_the_loader_not_the_spreadsheet_tool(tmp_path):
+    """The whole point of the deferral: `write_spreadsheet`'s schema is ~2,300 chars,
+    re-billed every round trip of every session, for a tool most turns never call. The
+    loader stands in at ~300."""
+    from coworker.agents import cowork_agent
+
+    engine = _engine_for(cowork_agent(), tmp_path)
+    try:
+        names = _schema_names(engine)
+        assert "load_office_tools" in names
+        assert "write_spreadsheet" not in names
+    finally:
+        engine.executor.close()
+
+
+def test_calling_the_loader_puts_the_spreadsheet_tool_in_the_next_prompt(tmp_path):
+    from coworker.agents import cowork_agent
+
+    engine = _engine_for(cowork_agent(), tmp_path)
+    try:
+        said = engine.registry.execute("load_office_tools", {})
+        assert "write_spreadsheet" in said
+        assert "write_spreadsheet" in _schema_names(engine)
+        # Idempotent: a second call reports the state instead of re-describing the set.
+        assert "already loaded" in engine.registry.execute("load_office_tools", {})
+    finally:
+        engine.executor.close()
+
+
+def test_the_spreadsheet_tool_is_reachable_by_name_without_the_loader(tmp_path):
+    """`ToolRegistry.defer` keeps the held-back name KNOWN. A model that calls
+    `write_spreadsheet` straight out — from a resumed transcript, or because the refusal
+    text named it — gets the tool, not "no such tool"."""
+    from coworker.agents import cowork_agent
+
+    engine = _engine_for(cowork_agent(), tmp_path)
+    try:
+        spec = engine.registry.get("write_spreadsheet")
+        assert spec is not None and spec.name == "write_spreadsheet"
+        assert spec.metadata.requires_approval is True
+        assert "write_spreadsheet" in _schema_names(engine)
+    finally:
+        engine.executor.close()
+
+
+def test_every_persona_with_write_file_gets_the_loader_and_no_other_does(tmp_path):
+    """The registration condition, stated as behaviour. Cowork and Code have file tools;
+    Chat has none and must not carry the loader (it could not use the tool if it did — no
+    writable root), and the read-only explorer subagent builds its own registry entirely."""
+    from coworker.agents import chat_agent, code_agent, cowork_agent
+
+    for factory in (cowork_agent, code_agent):
+        engine = _engine_for(factory(), tmp_path)
+        try:
+            assert "write_file" in engine.registry.names(), factory.__name__
+            assert "load_office_tools" in _schema_names(engine), factory.__name__
+        finally:
+            engine.executor.close()
+
+    chat = _engine_for(chat_agent(), tmp_path)
+    try:
+        assert "write_file" not in chat.registry.names()
+        assert "load_office_tools" not in _schema_names(chat)
+        # Not merely hidden — never deferred either, so no call can conjure it.
+        assert chat.registry.get("write_spreadsheet") is None
+    finally:
+        if chat.executor is not None:
+            chat.executor.close()
+
+
+def test_the_explorer_subagent_carries_neither_the_loader_nor_the_tool(tmp_path):
+    """Explore is read-only by construction — its child registry is assembled in
+    `subagent.build_explorer_engine`, not by build_engine, so the loader must be absent
+    and unreachable there however build_engine changes."""
+    from coworker.tools.subagent import build_explorer_engine
+
+    child = build_explorer_engine(
+        workspace=tmp_path, provider=_StubProvider(), model="stub"
+    )
+    assert "write_file" not in child.registry.names()
+    assert "load_office_tools" not in _schema_names(child)
+    assert child.registry.get("write_spreadsheet") is None
+
+
+def test_the_materialised_tool_shares_the_session_roots_with_write_file(tmp_path):
+    """The loader is built from the same roots LIST object the file tools got, not a copy.
+    A folder granted mid-session therefore becomes writable for spreadsheets in that same
+    turn — snapshotting the list is the bug this pins (it is what once made `read_file`
+    blind to a fresh grant)."""
+    from coworker.agents import cowork_agent
+    from coworker.roots import RootDir
+
+    scratch, granted = tmp_path / "scratch", tmp_path / "granted"
+    scratch.mkdir()
+    granted.mkdir()
+    engine = _engine_for(
+        cowork_agent(),
+        scratch,
+        roots=[RootDir(path=scratch, writable=True, label="scratch")],
+    )
+    try:
+        write_spreadsheet = engine.registry.get("write_spreadsheet").func
+        # Before the grant the folder is off limits — same wording write_file uses.
+        try:
+            write_spreadsheet(path=str(granted / "报告.xlsx"), sheets=_sheets())
+            raise AssertionError("a path outside every root must be refused")
+        except PermissionError as exc:
+            assert "escapes allowed roots" in str(exc)
+
+        engine.permissions.roots.append(
+            RootDir(path=granted, writable=True, label="granted")
+        )
+        out = write_spreadsheet(path=str(granted / "报告.xlsx"), sheets=_sheets())
+        assert (granted / "报告.xlsx").exists()
+        assert "(root: granted)" in out
+    finally:
+        engine.executor.close()
+
+
+def test_the_loader_description_stays_small(tmp_path):
+    """The loader's own schema is prompt too, paid on every round trip of every session
+    with file tools. Measured 2026-09-18 at 302 chars; the ceiling leaves room for wording
+    but not for a second paragraph. (`write_spreadsheet` itself is ~2,300 — that asymmetry
+    IS the feature.)"""
+    from coworker.agents import cowork_agent
+
+    engine = _engine_for(cowork_agent(), tmp_path)
+    try:
+        schema = next(
+            s
+            for s in engine.registry.schemas()
+            if s["function"]["name"] == "load_office_tools"
+        )
+        assert len(json.dumps(schema)) <= 350, len(json.dumps(schema))
+        assert schema["function"]["parameters"]["properties"] == {}
+        assert "write_spreadsheet" in schema["function"]["description"]
+    finally:
+        engine.executor.close()
+
+
+# -- packaging: the dependency must survive a merge from upstream ------------------------
+
+
+def test_openpyxl_is_declared_and_importable_in_fork():
+    """Two pins and a real import. CI installs the backend straight from pyproject and
+    never smoke-tests a frozen build, so a merge that drops either line fails NOWHERE in
+    this repo — it surfaces as "this build is missing openpyxl" on a user's machine, where
+    there is no Python to fall back on."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    assert "openpyxl" in (root / "pyproject.toml").read_text(encoding="utf-8")
+    spec = (root / "packaging" / "openworker-server.spec").read_text(encoding="utf-8")
+    assert "openpyxl" in spec
+
+    import openpyxl  # noqa: F401  - the dependency itself, not a stub

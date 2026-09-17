@@ -2,7 +2,12 @@
 wiring: a handful of rarely-first tools stay REGISTERED exactly as before, but drop out
 of schemas() until the model calls one by name, at which point get() puts it right back.
 See coworker/tools/registry.py:hold_back and the two prior rounds (git 8aa5c74, b4dadb6)
-for the mechanism this extends."""
+for the mechanism this extends.
+
+Round 4 (2026-09-18) only re-measures the guardrail below: `write_spreadsheet` joined the
+roster behind a `load_office_tools` loader (the `defer` half of the mechanism, not
+hold_back), so the fresh-session baseline moved 5,937 → 6,241. Its own exposure tests
+live in tests/test_office_integration.py."""
 
 from __future__ import annotations
 
@@ -171,14 +176,17 @@ def test_instructions_carry_the_dynamic_hint_for_a_bare_workspace_session(tmp_pa
 
 
 def test_fresh_cowork_session_schema_size_stays_within_budget(tmp_path):
-    """Not a golden byte count — a tripwire. Measured today (2026-09-01) at 5,937 chars
-    of json.dumps(schemas()) for a fresh Cowork session (workspace only, no messaging/
-    memory configured). 10% slack absorbs incidental schema wording drift; a real
-    addition to the roster should fail this and prompt a deliberate re-measure, not an
-    accidental one."""
+    """Not a golden byte count — a tripwire. Re-measured (2026-09-18, round 4) at 6,241
+    chars of json.dumps(schemas()) for a fresh Cowork session (workspace only, no
+    messaging/memory configured), up from 5,937 on 2026-09-01. The +304 is
+    `load_office_tools` (302 chars of schema): the loader stands in for
+    `write_spreadsheet`, whose own schema is ~2,300, so declaring the tool directly would
+    have cost eight times as much. 10% slack absorbs incidental schema wording drift; a
+    real addition to the roster should fail this and prompt a deliberate re-measure, not
+    an accidental one."""
     engine = build_engine(agent=cowork_agent(), workspace=tmp_path, provider=_StubProvider())
     try:
         size = len(json.dumps(engine.registry.schemas()))
-        assert size < 5_937 * 1.10
+        assert size < 6_241 * 1.10
     finally:
         engine.executor.close()

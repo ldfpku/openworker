@@ -45,6 +45,7 @@ from .tools import ToolRegistry
 from .tools.ask import ask_user_tool
 from .tools.deferred import make_deferred_toolset_loader
 from .tools.directories import request_directory_tool
+from .tools.office import office_tools
 from .tools.plan import propose_plan_tool
 from .tools.toolreq import request_tool_tool
 from .tools.subagent import explorer_tools
@@ -349,6 +350,33 @@ def build_engine(
 
     registry = ToolRegistry()
     registry.register_all(agent.build_tools(context))
+    # Real Office files (tools/office.py — `write_spreadsheet` writes a .xlsx in this
+    # process, so an office PC with no Python still gets a workbook). Deferred like the
+    # connector sets and for the same arithmetic: its schema is ~2,300 chars against a
+    # ~150-char loader, and most turns never make a spreadsheet — but unlike a connector
+    # this set has a second door, because `write_file` refusing a .xlsx materialises it
+    # (see engine._execute_sync + tools/files.py), so the model finds it exactly when it
+    # needs it whether or not it thought to call the loader.
+    #
+    # Registered ONLY where `write_file` is: the tool is the answer to that refusal, and a
+    # persona with no file tools (chat) has nothing to answer. Built from the SAME
+    # workspace and the SAME roots LIST the file tools got — by reference, not a copy — so
+    # a folder the user grants mid-session is writable in that very turn.
+    if ws is not None and "write_file" in registry.names():
+        registry.register(
+            make_deferred_toolset_loader(
+                registry,
+                label="office",
+                title="Office file",
+                tool_name="load_office_tools",
+                deferred_tools=office_tools(str(ws), roots=root_list or None),
+                description=(
+                    "Load tools that create real Office files without Python: "
+                    "write_spreadsheet (.xlsx with merged cells, borders, styles). "
+                    "Call before creating such a file."
+                ),
+            )
+        )
     # MCP / connector tools (supplied by the manager) carry their own metadata + schema.
     if extra_tools:
         registry.register_all(extra_tools)

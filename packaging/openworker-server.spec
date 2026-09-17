@@ -55,7 +55,21 @@ datas = []
 binaries = []
 
 # segno renders the Weixin QR-login PNG; core dep, pure python — always bundled.
-for pkg in ("coworker", "aisuite", "mcp", "ddgs", "croniter", "docstring_parser", "segno"):
+# openpyxl writes the .xlsx `write_spreadsheet` delivers (tools/office.py), and it is
+# imported INSIDE the call so a build without it still starts — which is exactly the state
+# a packaged app must never ship in, because the frozen backend is the only Python on a
+# typical office PC. PyInstaller's analysis does find the lazy import today; naming it here
+# means a trimmed hook or a moved import cannot silently take the feature out of the app.
+for pkg in (
+    "coworker",
+    "aisuite",
+    "mcp",
+    "ddgs",
+    "croniter",
+    "docstring_parser",
+    "segno",
+    "openpyxl",
+):
     hiddenimports += collect_submodules(pkg)
 
 # Builtin personas ship as DATA, not code: personas/builtin/<id>/manifest.md plus their
