@@ -171,6 +171,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    # One release job per tag, and never cancel one mid-upload. Two concurrent jobs on the
+    # same tag would each see the other's in-flight asset as a `state=starter` half-finished
+    # record and delete it (that IS the right thing to do for a genuinely abandoned upload —
+    # it just must never be another job's live one).
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7
 
@@ -201,8 +208,32 @@ jobs:
             echo "::warning::no updater signatures in dist/ — release ships WITHOUT auto-update manifest"
           fi
 
+      # Creates the draft and its notes ONLY. No `files:` — this action uploads everything
+      # at once and, with its default `overwrite_files: true`, a re-run deletes the assets
+      # that already landed before starting over. v0.6.2 lost two runs that way to transient
+      # uploads.github.com 500s. The two steps below do the upload instead, one file at a
+      # time, re-uploading only what is missing.
       - uses: softprops/action-gh-release@v3
+        id: draft
         with:
           draft: true
-          files: dist/*
           generate_release_notes: true
+
+      - name: Upload the release assets (serial, idempotent)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 packaging/upload_release_assets.py upload \
+            --repo "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME" \
+            --release-id "${{ steps.draft.outputs.id }}" --dist dist
+
+      - name: Verify the release is complete
+        # Independent read-back: every expected asset present and state=uploaded, every
+        # digest equal to the local sha256, no half-finished leftovers, and latest.json's
+        # urls/signatures consistent with what actually shipped.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 packaging/upload_release_assets.py verify \
+            --repo "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME" \
+            --release-id "${{ steps.draft.outputs.id }}" --dist dist
