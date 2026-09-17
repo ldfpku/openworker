@@ -59,6 +59,7 @@ export function humanizeTool(name: string, args: any, opts?: { running?: boolean
     case "read_file":
       return { pre: t("Read "), obj: baseName(String(a.path ?? t("a file"))) };
     case "write_file":
+    case "write_spreadsheet":
       return { pre: t("Wrote "), obj: baseName(String(a.path ?? t("a file"))) };
     case "replace_in_file":
     case "apply_patch":
@@ -124,6 +125,7 @@ export function humanizeApprovalTitle(name: string, args: any): HumanLine {
   const a = args && typeof args === "object" ? args : {};
   switch (name) {
     case "write_file":
+    case "write_spreadsheet":
       return { pre: t("Write "), obj: baseName(String(a.path ?? t("a file"))) };
     case "replace_in_file":
     case "apply_patch":
@@ -165,6 +167,7 @@ export function humanizeAsk(name: string, args: any): HumanLine {
     case "run_shell":
       return { pre: t("Wanted to run "), obj: trunc(String(a.command ?? ""), 60) };
     case "write_file":
+    case "write_spreadsheet":
       return { pre: t("Wanted to write "), obj: baseName(String(a.path ?? t("a file"))) };
     case "replace_in_file":
     case "apply_patch":

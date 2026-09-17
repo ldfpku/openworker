@@ -20,6 +20,7 @@ export function shortArgs(args: any): string {
 // Values are i18n keys resolved at render time.
 const TOOL_VERBS: Record<string, string> = {
   write_file: "approval.verbs.write_file",
+  write_spreadsheet: "approval.verbs.write_spreadsheet",
   replace_in_file: "approval.verbs.edit_file",
   apply_patch: "approval.verbs.apply_patch",
   apply_unified_diff: "approval.verbs.apply_patch",
@@ -29,7 +30,7 @@ const TOOL_VERBS: Record<string, string> = {
 };
 
 // §35: routine workspace writes render as a compact ROW; everything else is a full card.
-const FILE_WRITES = new Set(["write_file", "replace_in_file", "apply_patch", "apply_unified_diff"]);
+const FILE_WRITES = new Set(["write_file", "write_spreadsheet", "replace_in_file", "apply_patch", "apply_unified_diff"]);
 // Actions that leave the Mac get the warm border + explicit destination note.
 const EXTERNAL = new Set(["send_message", "send_file"]);
 
@@ -177,6 +178,41 @@ export function PreviewBlock({ text, mono = true }: { text: string; mono?: boole
       )}
     </div>
   );
+}
+
+// write_spreadsheet has no single `content` string — the proposal is `args.sheets`, an array
+// of {name?, rows: cell[][], ...formatting}. Build a small text preview (first sheet, first
+// few rows, cells joined like a table row) so the card shows something sheet-shaped instead
+// of a raw JSON dump. Pure and defensive: a malformed/unexpected shape degrades to "" (no
+// preview) rather than throwing — a bad tool call must never crash the approval card.
+const SPREADSHEET_PREVIEW_ROWS = 5;
+
+export function spreadsheetPreview(args: any): string {
+  const sheets = args?.sheets;
+  if (!Array.isArray(sheets) || sheets.length === 0) return "";
+  const sheet = sheets[0];
+  if (!sheet || typeof sheet !== "object") return "";
+  const rows = sheet.rows;
+  if (!Array.isArray(rows)) return "";
+
+  const cell = (v: unknown): string => (v === null || v === undefined ? "" : typeof v === "string" ? v : String(v));
+
+  const lines: string[] = [];
+  if (typeof sheet.name === "string" && sheet.name.trim()) lines.push(sheet.name.trim());
+  for (const row of rows.slice(0, SPREADSHEET_PREVIEW_ROWS)) {
+    if (!Array.isArray(row)) continue;
+    lines.push(row.map(cell).join(" | "));
+  }
+  if (lines.length === 0) return "";
+
+  const tt = getI18n().getFixedT(null, "translation");
+  const moreRows = rows.length - SPREADSHEET_PREVIEW_ROWS;
+  const summary: string[] = [];
+  if (moreRows > 0) summary.push(tt("approval.spreadsheet_more_rows", { count: moreRows }));
+  if (sheets.length > 1) summary.push(tt("approval.spreadsheet_sheet_count", { count: sheets.length }));
+  if (summary.length > 0) lines.push(summary.join(" · "));
+
+  return lines.join("\n");
 }
 
 // Outbound message text: short one-liners keep the cozy inline quote; anything
@@ -345,7 +381,12 @@ export function ApprovalCard({
 
   // §35 compact row: routine workspace writes — one line, preview expands inline from the
   // tool args. Standing/grant flows keep the full card (they carry §25 consent weight).
-  const content = typeof item.args?.content === "string" ? item.args.content : "";
+  const content =
+    typeof item.args?.content === "string"
+      ? item.args.content
+      : item.name === "write_spreadsheet"
+        ? spreadsheetPreview(item.args)
+        : "";
   if (FILE_WRITES.has(item.name) && !offerStanding && !grants.length && !item.resolved) {
     return (
       <div className={"approval approval-row" + dock} data-testid="approval-row">

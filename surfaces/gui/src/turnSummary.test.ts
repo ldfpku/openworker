@@ -35,6 +35,14 @@ describe("summarizeTurn", () => {
     ]);
   });
 
+  it("counts write_spreadsheet as edited_files too — it also writes a real file", () => {
+    const tools = [tool("write_spreadsheet")];
+    expect(summarizeTurn(tools, 1)).toEqual([
+      { key: "used_tools", count: 1 },
+      { key: "edited_files", count: 1 },
+    ]);
+  });
+
   it("loaded_tools is a presence flag, not a count, matched by /^load_.+_tools$/", () => {
     const tools = [tool("load_browser_tools"), tool("load_email_tools")];
     expect(summarizeTurn(tools, 2)).toEqual([
@@ -79,6 +87,7 @@ describe("stepIcon", () => {
     ["shell_task_kill", "terminal"],
     ["read_file", "file"],
     ["write_file", "pencil"],
+    ["write_spreadsheet", "pencil"],
     ["replace_in_file", "pencil"],
     ["apply_patch", "pencil"],
     ["apply_unified_diff", "pencil"],

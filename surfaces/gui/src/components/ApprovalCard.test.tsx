@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { ApprovalCard } from "./ApprovalCard";
+import { ApprovalCard, spreadsheetPreview } from "./ApprovalCard";
 import { InboxItemCard } from "./InboxItemCard";
 import type { Item } from "../types";
 import type { InboxItem } from "../api";
@@ -110,6 +110,53 @@ describe("ApprovalCard — §35 shapes", () => {
     expect(onApprove).toHaveBeenCalledWith("once");
   });
 
+  it("write_spreadsheet renders as a compact row too, with a sheet-shaped preview from args.sheets", () => {
+    const onApprove = vi.fn();
+    render(
+      <ApprovalCard
+        item={sendApproval({
+          name: "write_spreadsheet",
+          args: {
+            path: "报告.xlsx",
+            sheets: [{ name: "汇总", rows: [["表头1", "表头2"], ["值1", "值2"]] }],
+          },
+          category: undefined,
+        })}
+        onApprove={onApprove}
+      />,
+    );
+    const row = screen.getByTestId("approval-row");
+    expect(row.textContent).toContain("Write ");
+    expect(row.textContent).toContain("报告.xlsx");
+
+    // Preview expands inline from args.sheets — there's no args.content to show.
+    expect(screen.queryByText(/表头1/)).toBeNull();
+    fireEvent.click(screen.getByText(/preview/));
+    const prev = document.querySelector(".approval-prev") as HTMLElement;
+    expect(prev.textContent).toContain("汇总");
+    expect(prev.textContent).toContain("表头1 | 表头2");
+    expect(prev.textContent).toContain("值1 | 值2");
+
+    fireEvent.click(screen.getByText("Allow"));
+    expect(onApprove).toHaveBeenCalledWith("once");
+  });
+
+  it("write_spreadsheet with no usable sheets shows no preview toggle at all", () => {
+    render(
+      <ApprovalCard
+        item={sendApproval({
+          name: "write_spreadsheet",
+          args: { path: "空.xlsx", sheets: "not-an-array" },
+          category: undefined,
+        })}
+        onApprove={vi.fn()}
+      />,
+    );
+    const row = screen.getByTestId("approval-row");
+    expect(row.textContent).toContain("空.xlsx");
+    expect(screen.queryByText(/preview/)).toBeNull();
+  });
+
   it("send_file gets the full external card: destination title, file chip, leaves-the-computer note", () => {
     render(
       <ApprovalCard
@@ -161,6 +208,64 @@ describe("ApprovalCard — §35 shapes", () => {
     expect(screen.getByText(/python3 fetch\.py/)).toBeTruthy();
     expect(screen.getByText(/stays on this computer/)).toBeTruthy();
     expect(screen.getByText("Always allow this command")).toBeTruthy();
+  });
+});
+
+describe("spreadsheetPreview", () => {
+  it("joins the first sheet's rows with ' | ', leading with the sheet name", () => {
+    const text = spreadsheetPreview({
+      sheets: [{ name: "汇总", rows: [["表头1", "表头2"], ["值1", "值2"]] }],
+    });
+    expect(text).toBe("汇总\n表头1 | 表头2\n值1 | 值2");
+  });
+
+  it("omits the name line when the sheet has none", () => {
+    expect(spreadsheetPreview({ sheets: [{ rows: [["a", "b"]] }] })).toBe("a | b");
+  });
+
+  it("converts null/undefined cells to empty strings and stringifies other types", () => {
+    const text = spreadsheetPreview({ sheets: [{ rows: [[null, undefined, 1, true, "x"]] }] });
+    expect(text.split(" | ")).toEqual(["", "", "1", "true", "x"]);
+  });
+
+  it("clips to the first 5 rows and appends a 'more rows' summary", () => {
+    const rows = Array.from({ length: 7 }, (_, i) => [`r${i}`]);
+    expect(spreadsheetPreview({ sheets: [{ rows }] })).toBe("r0\nr1\nr2\nr3\nr4\n+2 more rows");
+  });
+
+  it("uses the singular phrasing for exactly one extra row", () => {
+    const rows = Array.from({ length: 6 }, (_, i) => [`r${i}`]);
+    expect(spreadsheetPreview({ sheets: [{ rows }] }).endsWith("+1 more row")).toBe(true);
+  });
+
+  it("notes the sheet count when there is more than one sheet", () => {
+    const text = spreadsheetPreview({ sheets: [{ rows: [["a"]] }, { rows: [["b"]] }] });
+    expect(text).toBe("a\n2 sheets total");
+  });
+
+  it("joins both summary facts with ' · ' when both apply", () => {
+    const rows = Array.from({ length: 6 }, (_, i) => [`r${i}`]);
+    const text = spreadsheetPreview({ sheets: [{ rows }, { rows: [["b"]] }] });
+    expect(text.endsWith("+1 more row · 2 sheets total")).toBe(true);
+  });
+
+  it("skips malformed individual rows instead of throwing", () => {
+    const text = spreadsheetPreview({ sheets: [{ rows: [["a", "b"], "not a row", ["c", "d"]] }] });
+    expect(text).toBe("a | b\nc | d");
+  });
+
+  it.each([
+    ["sheets missing", {}],
+    ["sheets not an array", { sheets: "nope" }],
+    ["sheets empty", { sheets: [] }],
+    ["first sheet not an object", { sheets: [null] }],
+    ["rows missing", { sheets: [{}] }],
+    ["rows not an array", { sheets: [{ rows: "nope" }] }],
+    ["every row malformed and no sheet name", { sheets: [{ rows: ["nope", 42] }] }],
+    ["args itself is null", null],
+    ["args itself is a string", "nope"],
+  ])("degrades to no preview (\"\") when %s", (_label, args) => {
+    expect(spreadsheetPreview(args)).toBe("");
   });
 });
 

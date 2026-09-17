@@ -659,6 +659,7 @@
     "deny": "Deny",
     "verbs": {
       "write_file": "Write a file",
+      "write_spreadsheet": "Write a spreadsheet",
       "edit_file": "Edit a file",
       "apply_patch": "Apply a patch",
       "run_command": "Run a command",
@@ -696,6 +697,9 @@
     "preview_all_lines": "show all {{n}} lines",
     "preview_full": "show the full message",
     "preview_label": "preview",
+    "spreadsheet_more_rows_one": "+{{count}} more row",
+    "spreadsheet_more_rows_other": "+{{count}} more rows",
+    "spreadsheet_sheet_count_other": "{{count}} sheets total",
     "tool_title": "Tool: {{name}}",
     "file_fallback": "file",
     "as_png_screenshot": "· as a PNG screenshot",

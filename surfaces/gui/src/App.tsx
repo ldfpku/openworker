@@ -118,7 +118,7 @@ const SUGGESTION_KEYS = [
 ];
 
 // Tools whose success means a new/changed file should show up under Artifacts right away.
-const FILE_WRITE_TOOLS = new Set(["write_file", "apply_patch", "apply_unified_diff", "replace_in_file"]);
+const FILE_WRITE_TOOLS = new Set(["write_file", "write_spreadsheet", "apply_patch", "apply_unified_diff", "replace_in_file"]);
 
 // Models sometimes pass todo items as bare strings instead of {content, status} objects (the
 // backend tool normalizes them the same way; the GUI reads the raw proposal args, so mirror it).
