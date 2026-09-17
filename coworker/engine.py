@@ -192,6 +192,13 @@ class TurnEngine:
         # into the tool message's `_display` sidecar, so the quiet provenance chips
         # survive reload (owner ruling 2026-08-24) — display-only, never provider-visible.
         self._approval_origins: dict[str, dict[str, str]] = {}
+        # When each call actually STARTED running, keyed by tool_call id — not when the
+        # model asked for it. The assistant message is appended (and checkpointed) before
+        # authorization, so its `ts` can precede execution by however long the human took
+        # at the approval card. Consumed by `_record_result` into the result message's `t0`
+        # sidecar, which is what tells the Artifacts panel which files a shell command
+        # could plausibly have written (SessionManager._shell_windows).
+        self._tool_started_at: dict[str, float] = {}
         # Shadow evaluation (spec Part 6 step 3): when True and a reviewer is attached, the
         # reviewer records what it WOULD have decided on each approval card while the human
         # still decides. Fire-and-forget — the card is never delayed, no decision is ever
@@ -1408,6 +1415,8 @@ class TurnEngine:
 
     def _execute_sync(self, tool_call: ToolCall) -> tuple[Any, str]:
         """Execute one authorized call (runs in a worker thread)."""
+        # The one chokepoint every executed call passes through, concurrent or serial.
+        self._tool_started_at[tool_call.id] = time.time()
         try:
             return self.registry.execute(tool_call.name, tool_call.arguments), "ok"
         except Exception as exc:
@@ -1443,6 +1452,12 @@ class TurnEngine:
         message = _tool_result_message(tool_call, result)
         if display:
             message["_display"] = display
+        started = self._tool_started_at.pop(tool_call.id, None)
+        if started is not None:
+            # Display/derivation-only sidecar like `ts`: stripped from every provider feed
+            # in `_outbound_messages`, kept in the jsonl. With `ts` it brackets exactly the
+            # interval the tool was running in.
+            message["t0"] = started
         self.messages.append(message)
         hidden = int((display or {}).get("hidden_by_filters") or 0)
         stripped = int((display or {}).get("hidden_fields") or 0)
@@ -2014,11 +2029,11 @@ class TurnEngine:
         strip nor the tail message is persisted/replayed.
         """
         # Strip the display-only sidecars — `source` (connector cards), `_display`
-        # (e.g. filter-hidden counts), `ts` (append-time timestamps), `reasoning`
-        # (thinking text), and `usage` (token counts) — copying only messages that carry
-        # one. Whole `notice` messages (error/interrupted/model-switch markers) are
-        # display-only too: dropped entirely.
-        _SIDECARS = ("source", "_display", "ts", "reasoning", "usage")
+        # (e.g. filter-hidden counts), `ts` (append-time timestamps), `t0` (when the tool
+        # actually started running), `reasoning` (thinking text), and `usage` (token
+        # counts) — copying only messages that carry one. Whole `notice` messages
+        # (error/interrupted/model-switch markers) are display-only too: dropped entirely.
+        _SIDECARS = ("source", "_display", "ts", "t0", "reasoning", "usage")
         # Auto-compaction (OPE-27): everything before the boundary is represented by the
         # compacted block. Outbound-only — the canonical history stays intact — and the
         # block+tail are byte-stable between turns, so prompt caching keeps working.

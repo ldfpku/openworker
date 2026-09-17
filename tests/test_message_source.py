@@ -6,13 +6,14 @@ but stripped before any message reaches a provider. These tests pin that contrac
 """
 
 import asyncio
+import time
 
 from fastapi.testclient import TestClient
 
 from coworker.connectors.base import MessageEvent, MessageSource, SessionSource
 from coworker.engine import TurnEngine
 from coworker.permissions import PermissionEngine
-from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient, ToolCall
 from coworker.server import create_app
 from coworker.server.manager import SessionManager
 from coworker.tools import ToolRegistry
@@ -180,6 +181,41 @@ def test_outbound_strips_source_with_and_without_context(tmp_path):
     assert all("source" not in m for m in out2)
     assert "<system-context>" in out2[-1]["content"]
     assert engine2.messages[-1]["source"] == src  # original untouched
+
+
+def test_t0_sidecar_is_recorded_on_the_result_and_never_reaches_the_model(tmp_path):
+    """`t0` (when a tool actually began running) rides on the tool result so the Artifacts
+    panel can tell which files a shell command could have written — the assistant message's
+    own `ts` predates authorization, so it also covers however long the human sat at the
+    approval card. It is a sidecar like `ts`: persisted, never sent to a provider."""
+    registry = ToolRegistry()
+    permissions = PermissionEngine(workspace_root=tmp_path)
+
+    def slow_tool() -> str:
+        """A tool."""
+        time.sleep(0.01)
+        return "done"
+
+    registry.register(slow_tool)
+    engine = TurnEngine(
+        provider=CapturingProvider([]),
+        registry=registry,
+        permissions=permissions,
+        model="gpt-5.5",
+    )
+    call = ToolCall(id="c1", name="slow_tool", arguments={})
+    before = time.time()
+    result, status = engine._execute_sync(call)
+    engine._record_result(call, result, status)
+
+    message = engine.messages[-1]
+    assert message["role"] == "tool"
+    # Bracketed by the call: started no earlier than we did, finished no later than `ts`.
+    assert before <= message["t0"] <= message["ts"]
+
+    # …and the provider never sees it (same strip as `ts`), while history keeps it.
+    assert all("t0" not in m for m in engine._outbound_messages())
+    assert "t0" in engine.messages[-1]
 
 
 def test_outbound_repairs_dangling_tool_call(tmp_path):
