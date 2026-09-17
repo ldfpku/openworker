@@ -576,7 +576,7 @@ def office_tools(workspace: str, roots: Optional[list] = None) -> list:
         try:
             from openpyxl import Workbook
             from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-        except ImportError as exc:  # pragma: no cover - build without the dependency
+        except ImportError as exc:  # a build that trimmed the dependency
             raise RuntimeError(
                 "this build is missing openpyxl, so it cannot write .xlsx files; deliver "
                 "a .csv with write_file instead (start it with the BOM U+FEFF so Excel "

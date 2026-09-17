@@ -335,11 +335,14 @@ def test_sheet_names_are_repaired_deduplicated_and_reported(tmp_path):
             {"name": long_name, "rows": [["a"]]},
             {"rows": [["a"]]},  # no name at all
             {"name": "'引号'", "rows": [["a"]]},
+            {"name": "Data", "rows": [["a"]]},
+            {"name": "data", "rows": [["a"]]},  # Excel's duplicate check ignores case
         ],
     )
     names = _load(tmp_path / "n.xlsx").sheetnames
     assert names[0] == repaired
     assert names[1] == f"{repaired} (2)"
+    assert names[5] == "Data" and names[6] == "data (2)"
     assert names[2] == long_name[:31] and len(names[2]) == 31
     assert names[3] == "Sheet4"
     assert names[4] == "引号"
@@ -704,6 +707,17 @@ def test_the_tool_advertises_the_schema_and_its_write_metadata(tmp_path):
     assert tool.__coworker_schema__ is _SCHEMA
     meta = tool.__aisuite_tool_metadata__
     assert meta.risk_level == "medium" and meta.requires_approval is True
+
+
+def test_a_build_without_openpyxl_says_what_to_deliver_instead(tmp_path, monkeypatch):
+    """The dependency is bundled, but a trimmed build must fail with an instruction, not a
+    traceback: the model needs to hear "deliver a .csv" to salvage the turn."""
+    monkeypatch.setitem(sys.modules, "openpyxl", None)
+    with pytest.raises(RuntimeError) as exc:
+        _tool(tmp_path)(path="报告.xlsx", sheets=[{"rows": [["a"]]}])
+    assert "missing openpyxl" in str(exc.value)
+    assert ".csv" in str(exc.value) and "U+FEFF" in str(exc.value)
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_importing_the_module_does_not_import_openpyxl():
