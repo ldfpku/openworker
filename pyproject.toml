@@ -41,6 +41,10 @@ dependencies = [
     # ships its own libpdfium — NOT PyMuPDF, whose AGPL license can't ride in the DMG).
     "pypdf>=5",
     "pypdfium2>=4",
+    # Real .xlsx in-process (tools/office.py `write_spreadsheet`). Pure python, MIT, no
+    # native deps — the frozen backend can write a spreadsheet on an office PC that has
+    # neither Python nor Excel installed. Lazy-imported, so a build without it still runs.
+    "openpyxl>=3.1",
     # IANA tz database for zoneinfo. Windows ships no system tz db, so without this every
     # named schedule timezone (UTC, Asia/Kolkata, …) silently falls back to local time.
     "tzdata; sys_platform == 'win32'",
