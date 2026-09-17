@@ -145,7 +145,14 @@ def _host_of(url_or_domain: str) -> str:
 
 # The argument that names a write tool's target path, when it's a single top-level field.
 # Patch/diff tools carry their paths inside the blob instead — extracted in `write_paths`.
-_PATH_ARG: dict[str, str] = {"write_file": "path", "replace_in_file": "path"}
+# A write tool missing from here is not "unscoped but allowed": `evaluate` fails it closed
+# to a human approval card in EVERY mode, bypass-approvals included, because it cannot tell
+# which root the write lands in. That is the whole cost of forgetting an entry.
+_PATH_ARG: dict[str, str] = {
+    "write_file": "path",
+    "replace_in_file": "path",
+    "write_spreadsheet": "path",
+}
 # apply_patch (Codex format) file headers, and unified-diff `+++ b/<path>` headers.
 _APPLY_PATCH_FILE = re.compile(
     r"^\*\*\* (?:Add|Update|Delete) File: (.+)$", re.MULTILINE

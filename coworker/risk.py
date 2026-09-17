@@ -24,7 +24,19 @@ class RiskClass(str, Enum):
 
 
 # Built-in tools whose risk is fixed by name (the old WRITE_TOOLS / SHELL_TOOL, as data).
-WRITE_TOOLS = {"write_file", "replace_in_file", "apply_patch", "apply_unified_diff"}
+WRITE_TOOLS = {
+    "write_file",
+    "replace_in_file",
+    "apply_patch",
+    "apply_unified_diff",
+    # In-process .xlsx writer (tools/office.py). Everything that makes a write a write
+    # hangs off this set: path scoping in the permission engine, the read-only-mode denial,
+    # provenance's `created_paths`, the Artifacts panel's precise-source pass, and the
+    # scheduled-task approver. Left out, it would classify as EXTERNAL off its metadata —
+    # approval-gated, but with no root scoping at all, so a model-chosen absolute path
+    # could write anywhere on the machine the moment anything auto-approved it.
+    "write_spreadsheet",
+}
 SHELL_TOOL = "run_shell"
 # Model-chosen network egress. `web_fetch` takes a URL straight from the model and the
 # URL's path/query can carry data outbound, so it is NOT a pure read — it must reach the
