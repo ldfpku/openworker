@@ -1,6 +1,6 @@
 """`write_document` as the rest of the app sees it — the wiring, not the .docx.
 
-`tests/test_document_tools.py` covers what the tool writes. This file covers everything
+`tests/test_document_tool.py` covers what the tool writes. This file covers everything
 that has to KNOW about it, and it is the sibling of `tests/test_office_integration.py`:
 the two name registries that make it a write tool, the permission verdicts that follow,
 provenance and the Artifacts panel, the loader that keeps its schema out of every prompt,
@@ -494,6 +494,30 @@ def test_a_refused_docm_write_explains_the_macro_limit(tmp_path):
         assert "write_document" in message and ".docx" in message
         assert "write_document" in _schema_names(engine)
         assert not (tmp_path / "宏文档.docm").exists()
+    finally:
+        engine.executor.close()
+
+
+def test_a_refused_doc_write_offers_docx_instead(tmp_path):
+    """`.doc` is the OLE2 binary Word 97 wrote, not a ZIP container, and on a Chinese
+    office PC it is still what "Word 文档" often means — so a model reaches for write_file
+    with it exactly as it would for .docx. Nothing here can write it (python-docx cannot),
+    so the refusal has to say which format IS on offer, and must not invent a container
+    story the format does not have."""
+    from coworker.agents import cowork_agent
+
+    engine = _engine_for(cowork_agent(), tmp_path)
+    try:
+        result, status = engine._execute_sync(
+            _call("write_file", {"path": "旧文档.doc", "content": "正文\n"})
+        )
+        assert status == "error" and result["error_type"] == "ValueError"
+        message = result["error"]
+        assert "old binary Word format" in message
+        assert "ZIP container" not in message  # it genuinely is not one
+        assert "write_document" in message and ".docx" in message
+        assert "write_document" in _schema_names(engine)
+        assert not (tmp_path / "旧文档.doc").exists()
     finally:
         engine.executor.close()
 

@@ -144,20 +144,23 @@ def file_tools(workspace: str, roots: Optional[list] = None) -> list:
 # it, and the agent — having seen a success — tells the user the spreadsheet is ready.
 # Refusing costs one turn and names the way that works.
 #
-# Split in two because the two halves have different answers. Spreadsheets and Word
-# documents each have a real one in this app (`tools/office.py`, `tools/document.py`);
-# PowerPoint does not yet, so its refusal still has to route around the missing capability.
+# Split by family because the families have different answers. Spreadsheets and Word
+# documents each have a real one in this app (`tools/office.py`, `tools/document.py`) and
+# share `_writer_error`; PowerPoint has no in-app writer yet, so its refusal still has to
+# route around the missing capability and keeps its own text.
 #
-# `.xls` is in the spreadsheet half but is NOT a ZIP container — it is the OLE2 binary
-# format Office 97 wrote, and on a Chinese office PC it is still what "Excel 文件" often
-# means, so a model asked for one reaches for write_file exactly like it would for .xlsx.
-# Nothing in this app writes it (openpyxl cannot), and it must not be written as text
-# either, so it is refused with .xlsx offered in its place.
+# `.xls` and `.doc` are in their families but are NOT ZIP containers — they are the OLE2
+# binary formats Office 97 wrote, and on a Chinese office PC they are still what
+# "Excel 文件" / "Word 文档" often mean, so a model asked for one reaches for write_file
+# exactly like it would for .xlsx / .docx. Nothing in this app writes them (neither
+# openpyxl nor python-docx can), and they must not be written as text either, so each is
+# refused with the modern format offered in its place.
 _ZIP_SPREADSHEET_SUFFIXES = {".xlsx", ".xlsm"}
 _LEGACY_SPREADSHEET_SUFFIXES = {".xls"}
 _SPREADSHEET_SUFFIXES = _ZIP_SPREADSHEET_SUFFIXES | _LEGACY_SPREADSHEET_SUFFIXES
 _ZIP_WORD_SUFFIXES = {".docx", ".docm"}
-_WORD_SUFFIXES = _ZIP_WORD_SUFFIXES
+_LEGACY_WORD_SUFFIXES = {".doc"}
+_WORD_SUFFIXES = _ZIP_WORD_SUFFIXES | _LEGACY_WORD_SUFFIXES
 _PRESENTATION_SUFFIXES = {".pptx", ".pptm"}
 _ZIP_CONTAINER_SUFFIXES = (
     _ZIP_SPREADSHEET_SUFFIXES | _ZIP_WORD_SUFFIXES | _PRESENTATION_SUFFIXES
@@ -217,7 +220,7 @@ _register_writer(
             "lists, tables, bold and italic, links, page breaks — and needs neither "
             "Python nor Word on this machine"
         ),
-        legacy=frozenset(),
+        legacy=frozenset(_LEGACY_WORD_SUFFIXES),
     ),
 )
 
