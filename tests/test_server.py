@@ -730,6 +730,96 @@ def test_ws_session_persisted_while_parked_on_approval(tmp_path):
             pass
 
 
+def test_ws_turn_task_tracked_and_cleared(tmp_path):
+    """`claim_turn` hands the turn's Task to `manager.spawn_turn_task`, which keeps a
+    strong reference in `_turn_tasks` for as long as the turn is in flight — including
+    parked on an approval — and drops it once the turn ends. Guards against a bare
+    `asyncio.create_task()` at the call site, which the loop's weak ref alone doesn't."""
+    import time
+
+    manager = SessionManager(
+        workspace=tmp_path,
+        provider=ScriptedProvider(
+            [_tool("write_file", {"path": "z.py", "content": "1\n"}), _text("done")]
+        ),
+    )
+    client = TestClient(create_app(manager))
+    with client.websocket_connect("/ws/session/turntask1") as ws:
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_json({"type": "user_message", "text": "make z.py"})
+        while ws.receive_json()["type"] != "permission_required":
+            pass
+        # Parked on the approval: exactly one live, unfinished turn task tracked.
+        assert len(manager._turn_tasks) == 1
+        (task,) = manager._turn_tasks
+        assert not task.done()
+
+        ws.send_json({"type": "approval", "decision": "once"})
+        while ws.receive_json()["type"] != "turn_done":
+            pass
+        # turn_done broadcasts from inside run_turn's `finally`, just before the Task
+        # itself completes; the done callback that discards from `_turn_tasks` runs on
+        # the server loop — a different thread from this TestClient — so poll with a
+        # timeout instead of asserting the instant turn_done lands.
+        deadline = time.monotonic() + 5.0
+        while manager._turn_tasks and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert manager._turn_tasks == set()
+
+
+# -- turn task tracking (spawn_turn_task, method-level) --------------------------
+
+
+async def test_spawn_turn_task_tracks_until_it_finishes(tmp_path):
+    """Covers the three ways a spawned coroutine can end: return normally (this test),
+    raise, and get cancelled (the next two) — `_turn_tasks` should drop the task after
+    each of them."""
+    import asyncio
+
+    manager = SessionManager(workspace=tmp_path, provider=ScriptedProvider([]))
+    gate = asyncio.Event()
+
+    async def pending():
+        await gate.wait()
+
+    task = manager.spawn_turn_task(pending())
+    assert task in manager._turn_tasks
+    assert not task.done()
+    gate.set()
+    await task
+    assert task not in manager._turn_tasks
+
+
+async def test_spawn_turn_task_discards_after_exception(tmp_path):
+    import asyncio
+
+    manager = SessionManager(workspace=tmp_path, provider=ScriptedProvider([]))
+
+    async def boom():
+        raise ValueError("turn blew up")
+
+    task = manager.spawn_turn_task(boom())
+    with pytest.raises(ValueError):
+        await task
+    assert task not in manager._turn_tasks
+
+
+async def test_spawn_turn_task_discards_after_cancel(tmp_path):
+    import asyncio
+
+    manager = SessionManager(workspace=tmp_path, provider=ScriptedProvider([]))
+    gate = asyncio.Event()
+
+    async def pending():
+        await gate.wait()
+
+    task = manager.spawn_turn_task(pending())
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert task not in manager._turn_tasks
+
+
 def test_ws_browser_tool_audit_round_trip(tmp_path):
     # Browser tools are on-demand (OPE-XXX): the model loads them via load_browser_tools
     # before it can call browser_close — the engine re-reads registry.schemas() every

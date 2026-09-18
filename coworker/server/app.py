@@ -2904,7 +2904,7 @@ def create_app(manager: SessionManager) -> FastAPI:
                     "This session is already running a turn. Wait for it to finish or stop it."
                 )
                 return
-            asyncio.create_task(run_turn(content, retry=retry, display=display))
+            manager.spawn_turn_task(run_turn(content, retry=retry, display=display))
 
         try:
             while True:

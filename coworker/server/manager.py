@@ -322,6 +322,10 @@ class SessionManager:
         # Sessions with an auto-title LLM call in flight (FB-010) — one call at a time.
         self._autotitle_inflight: set[str] = set()
         self._autotitle_tasks: set[asyncio.Task] = set()
+        # Turn tasks spawned from the WS `claim_turn` handler (app.py), via
+        # `spawn_turn_task` below — same reasoning as `_autotitle_tasks` above: the loop
+        # only holds a weak ref, so an unreferenced Task can be GC'd before it finishes.
+        self._turn_tasks: set[asyncio.Task] = set()
         self._autotitle_attempts: dict[str, int] = {}
         # Opener-count signature of the last attempt: titling fires at TURN START (owner
         # catch 2026-08-24 — waiting for an agentic turn to COMPLETE left sessions
@@ -6248,6 +6252,19 @@ class SessionManager:
 
     def is_running(self, session_id: str) -> bool:
         return session_id in self._running_sessions
+
+    def spawn_turn_task(self, coro) -> asyncio.Task:
+        """Run a WS turn (`run_turn` in app.py) on the live loop, keeping a strong
+        reference — same pattern as `_spawn_weixin_task`/`_autotitle_tasks`. The loop only
+        holds a weak ref to a Task, so one with no other referent can be garbage-collected
+        before it finishes, silently stopping the turn mid-run. Right now every suspend
+        point a turn can sit at (engine._cancel, an `inbox` wait, the tool executor
+        thread, a timer handle) happens to be anchored by something else, so this is a
+        guard against that changing rather than a fix for an observed loss."""
+        task = asyncio.create_task(coro)
+        self._turn_tasks.add(task)
+        task.add_done_callback(self._turn_tasks.discard)
+        return task
 
     async def _resume_wake(self, wake) -> None:
         message = self._wake_message(wake)
