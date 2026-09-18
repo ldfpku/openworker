@@ -481,15 +481,31 @@ def build_engine(
     # passes its shared router; this fallback covers the TUI / direct build_engine() callers.
     # Resolved here (not at engine construction) because the explorer subagent captures it.
     provider = provider or ProviderRouter(secrets, default_provider="openai")
+    # Late-bound engine ref, shared by the two closures below that need the engine but are
+    # built before it exists (the explorer's Stop relay here, the skill-disable countermand
+    # in `context_provider`). Filled in at the bottom of this function.
+    _engine_box: list = []
+
     # Repo-focused personas can fan broad research out to read-only explorer subagents, keeping
     # their own context for the actual change.
     if agent.subagents and ws is not None:
+
+        def _relay_stop_to_explorer(hook: Callable[[], None]) -> Callable[[], None]:
+            # Stop has to reach the subagent too: it's a whole engine of its own, running
+            # on its own loop in a worker thread, and left alone it keeps burning rounds
+            # after the user has stopped the session. Empty box ⇒ nothing to attach to,
+            # which can't happen (tools only run inside a turn, long after the box is
+            # filled), so it degrades to today's behaviour instead of failing the call.
+            eng = _engine_box[0] if _engine_box else None
+            return eng.add_interrupt_hook(hook) if eng is not None else lambda: None
+
         registry.register_all(
             explorer_tools(
                 workspace=ws,
                 provider=provider,
                 model=model,
                 model_settings=model_settings,
+                register_stop_hook=_relay_stop_to_explorer,
             )
         )
     # Scheduling: opted-in surfaces with a workspace can set up scheduled tasks (origin = this
@@ -681,10 +697,6 @@ def build_engine(
     # session start (§7.1).
     roots_context = (lambda: render_context(root_list)) if root_list else None
 
-    # Late-bound engine ref: the closure needs the conversation history (for the disable
-    # countermand) but the engine is constructed after the closure. Filled below.
-    _engine_box: list = []
-
     def context_provider() -> str:
         # Live clock, every turn (owner ruling 2026-08-20): the environment block's
         # "Today's date" is a session-START snapshot — stale for long-lived/self-waking
@@ -814,7 +826,7 @@ def build_engine(
         "workspace": str(ws) if ws else "",
     }
     engine.skill_loader = skill_loader  # type: ignore[attr-defined]
-    _engine_box.append(engine)  # late-bind for the countermand (see context_provider)
+    _engine_box.append(engine)  # late-bind for the countermand + the explorer Stop relay
     return engine
 
 

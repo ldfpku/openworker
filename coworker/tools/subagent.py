@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import aisuite as ai
 
@@ -82,7 +82,15 @@ def explorer_tools(
     provider: Any,
     model: str,
     model_settings: Optional[dict[str, Any]] = None,
+    register_stop_hook: Optional[
+        Callable[[Callable[[], None]], Callable[[], None]]
+    ] = None,
 ) -> list:
+    """`register_stop_hook` attaches a callable to whatever can stop THIS tool — the
+    parent engine — and returns the callable that detaches it again
+    (`TurnEngine.add_interrupt_hook` is exactly that shape). Without it the explorer runs
+    to its own end no matter what the user presses; the parent wires it in agent.py."""
+
     def explore(task: str) -> dict:
         """Delegate a broad, read-only research task to a subagent with its own fresh
         context window. It searches and reads the workspace, then returns only its final
@@ -102,20 +110,46 @@ def explorer_tools(
             model=model,
             model_settings=model_settings,
         )
+        # Per CALL, never in the enclosing closure: several explores run at once when the
+        # model asks for them together, each with its own child engine to stop.
+        detach: list[Callable[[], None]] = []
+
+        def _relay_stop() -> None:
+            """Put this child engine on the receiving end of the parent's Stop.
+
+            Attached on the child's FIRST event, not before `asyncio.run`: `run()` clears
+            the stop flag as its first act, so a hook attached any earlier would have the
+            Stop it relayed wiped and the explorer would finish as if nobody had pressed
+            it. The other side of that window — the Stop landing between the dispatch and
+            this line — is closed by `add_interrupt_hook`, which fires the hook on the
+            spot when a Stop is already pending.
+            """
+            if register_stop_hook is not None and not detach:
+                detach.append(register_stop_hook(engine.request_interrupt))
 
         async def _run() -> tuple[str, str]:
             report, status = "", "unknown"
             async for event in engine.run(task):
+                _relay_stop()
                 if event.type == EventType.ASSISTANT_MESSAGE and event.data.get("text"):
                     report = event.data["text"]
                 elif event.type == EventType.TURN_END:
                     status = event.data.get("status", "unknown")
+                elif event.type == EventType.INTERRUPTED:
+                    status = "interrupted"
                 elif event.type == EventType.ERROR:
                     return report, f"error: {event.data.get('error', '')}"
             return report, status
 
         # Tools execute in a worker thread (no running loop), so asyncio.run is safe.
-        report, status = asyncio.run(_run())
+        try:
+            report, status = asyncio.run(_run())
+        finally:
+            # Whatever the exit — stopped, finished, blown up — the hook goes: it holds
+            # this child engine, and with it a whole conversation history, alive on the
+            # parent for as long as the session lasts.
+            for remove in detach:
+                remove()
         if not report:
             return {"error": f"explorer produced no report (status: {status})"}
         result: dict[str, Any] = {"report": report}
