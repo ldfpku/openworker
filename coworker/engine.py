@@ -267,7 +267,9 @@ class _StopSignal:
     "bound to a different loop", and it lets `set()` be called safely from any thread —
     which matters because Stop is also set from threads that have no loop at all (the
     manager cancelling a team run, deleting a session). So the flag keeps its own
-    registry of waiters, one per loop, instead of belonging to one of them.
+    registry of waiters, one per loop, instead of belonging to one of them. A Stop also
+    travels from a thread running a DIFFERENT loop: the session's Stop is relayed into the
+    `explore` subagent's engine, which waits on its own loop in a worker thread.
 
     Supports exactly what the engine uses: `set`, `clear`, `is_set`, and an awaitable
     `wait`. `is_set` is a plain attribute read, which is what makes it safe to poll from
@@ -526,6 +528,10 @@ class TurnEngine:
         # TOOL_FINISHED event can carry the note to the tool card (§25).
         self._standing_notes: dict[str, str] = {}
         self._interrupt_hooks: list[Callable[[], None]] = list(interrupt_hooks or [])
+        # Guards the hook list: `request_interrupt` takes its snapshot under it and calls
+        # the hooks outside it, so a hook that attaches or detaches another one (or simply
+        # takes its time) can never corrupt the walk or deadlock against it.
+        self._hooks_lock = threading.Lock()
 
     # -- external controls ------------------------------------------------------
     def request_interrupt(self) -> None:
@@ -536,11 +542,57 @@ class TurnEngine:
         tool_call still gets a tool-error result so the history never carries orphans
         (hosted templates reject them, and durable-resume would re-prompt them)."""
         self._cancel.set()
-        for hook in self._interrupt_hooks:
+        with self._hooks_lock:
+            hooks = list(self._interrupt_hooks)
+        for hook in hooks:
             try:
                 hook()
             except Exception:
                 pass  # best-effort: a dead executor must not block the stop
+
+    def add_interrupt_hook(self, hook: Callable[[], None]) -> Callable[[], None]:
+        """Attach `hook` for as long as the returned "remove" callable is left uncalled.
+
+        For whatever is stoppable only WHILE one call runs, as opposed to the things the
+        session owns for its whole life (those go in the constructor's `interrupt_hooks`):
+        `explore` relays Stop into the subagent engine it just built, and only for the
+        length of that one call (tools/subagent.py).
+
+        If Stop is already pending, `hook` is called here, before this returns — that is
+        what closes the window between "the work started" and "its hook got attached".
+        A hook can therefore be called twice, once from here and once from
+        `request_interrupt`, so it must be idempotent and safe to call from any thread
+        (`request_interrupt` itself is both). Exceptions are swallowed, as they are there.
+
+        Attach it from INSIDE the turn: `run`/`retry`/`resume` clear the stop flag as their
+        first act, so the flag this reads only means anything once the turn is under way.
+
+        The returned callable is idempotent and detaches exactly this registration.
+        """
+        with self._hooks_lock:
+            self._interrupt_hooks.append(hook)
+        removed = False
+
+        def remove() -> None:
+            nonlocal removed
+            with self._hooks_lock:
+                if removed:
+                    return
+                removed = True
+                for index, registered in enumerate(self._interrupt_hooks):
+                    if registered is hook:
+                        del self._interrupt_hooks[index]
+                        break
+
+        # Read AFTER the append, which is what makes "called at least once" hold whichever
+        # side wins the race: appended before `request_interrupt` took its snapshot ⇒ it
+        # calls the hook; appended after ⇒ the flag it had already set is visible here.
+        if self._cancel.is_set():
+            try:
+                hook()
+            except Exception:
+                pass
+        return remove
 
     async def _interruptible(self, coro: Any, interrupted: Any) -> Any:
         """Await `coro`, but resolve early with `interrupted` if the user stops the

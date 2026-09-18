@@ -1876,3 +1876,87 @@ def test_a_failed_stop_wait_is_not_read_as_an_interruption(tmp_path):
 
     with pytest.raises(RuntimeError):
         asyncio.run(_await_an_approval())
+
+
+# -- interrupt hooks attached for the length of one call -------------------------------
+
+
+def _hook_engine(tmp_path, hooks=None):
+    return TurnEngine(
+        provider=ScriptedProvider([]),
+        registry=ToolRegistry(),
+        permissions=PermissionEngine(workspace_root=tmp_path),
+        model="gpt-5.5",
+        interrupt_hooks=hooks,
+    )
+
+
+def test_an_added_hook_runs_on_stop_and_a_removed_one_does_not(tmp_path):
+    engine = _hook_engine(tmp_path)
+    calls = []
+    remove = engine.add_interrupt_hook(lambda: calls.append("hook"))
+
+    engine.request_interrupt()
+    assert calls == ["hook"]
+
+    remove()
+    remove()  # idempotent: a `finally` that runs twice must not raise or re-remove
+    engine.request_interrupt()
+    assert calls == ["hook"]
+    assert engine._interrupt_hooks == []
+
+
+def test_a_hook_added_after_stop_fires_at_once(tmp_path):
+    """The window this closes: the tool was already dispatched when the user pressed Stop,
+    so the thing it owns has no hook yet and nothing later will ever call one."""
+    engine = _hook_engine(tmp_path)
+    calls = []
+
+    engine.request_interrupt()
+    remove = engine.add_interrupt_hook(lambda: calls.append("hook"))
+
+    assert calls == ["hook"]
+    remove()
+
+
+def test_constructor_hooks_still_run_alongside_added_ones(tmp_path):
+    calls = []
+    engine = _hook_engine(tmp_path, hooks=[lambda: calls.append("session")])
+    engine.add_interrupt_hook(lambda: calls.append("call"))
+
+    engine.request_interrupt()
+    assert calls == ["session", "call"]
+
+
+def test_a_hook_that_detaches_during_the_stop_does_not_skip_the_next_one(tmp_path):
+    """Walking the LIVE list is the hazard the snapshot removes: a hook that detaches
+    itself while being called — exactly what a finishing `explore` does, from a worker
+    thread, while Stop is going round — shifts the list under the walk and the hook behind
+    it is never reached. Two parallel explores, one Stop, one subagent left running."""
+    engine = _hook_engine(tmp_path)
+    calls = []
+    removers = {}
+
+    def first():
+        calls.append("first")
+        removers["first"]()  # this explore just finished; its relay hook goes
+
+    removers["first"] = engine.add_interrupt_hook(first)
+    removers["second"] = engine.add_interrupt_hook(lambda: calls.append("second"))
+
+    engine.request_interrupt()
+    assert calls == ["first", "second"]
+
+
+def test_a_hook_that_raises_does_not_block_the_ones_behind_it(tmp_path):
+    engine = _hook_engine(tmp_path)
+    calls = []
+
+    def boom():
+        raise RuntimeError("dead executor")
+
+    engine.add_interrupt_hook(boom)
+    engine.add_interrupt_hook(lambda: calls.append("after"))
+
+    engine.request_interrupt()
+    assert calls == ["after"]
