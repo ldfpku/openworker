@@ -6618,59 +6618,73 @@ class SessionManager:
         run = TaskRun(
             task_id=task.id, trigger=trigger
         )  # __post_init__ sets run.session_id
-        self.task_store.add_run(run)  # mark "running"
-        # UX-026: tell every open app window a SCHEDULED run just started (the 5s
-        # top-right toast). Manual runs never come through here — the user is
-        # already watching those live.
-        await self.broadcast_event(
-            {
-                "type": "automation_run_started",
-                "data": {
-                    "task_id": task.id,
-                    "task_title": task.title,
-                    "session_id": run.session_id,
-                    "workspace": task.workspace,
-                    "agent": task.agent,
-                    "trigger": trigger,
-                },
-            }
-        )
-        # Each run is a real, persisted conversation thread: it runs the instructions under its
-        # own session id, then saves the transcript. The user can reopen that session and ask a
-        # follow-up — the scheduled agent is no longer fire-and-forget.
-        engine = self._build_task_engine(task, session_id=run.session_id)
-        # Register the live engine up-front: a parked approval persists the session
-        # mid-run (durable suspend), and resolving from the Inbox must find this engine.
-        self._engines[run.session_id] = engine
-        # The first turn is the task itself. The framing matters: instructions often restate the
-        # schedule ("every day at 5:32pm…"), so make explicit that the schedule already fired and
-        # the job now is to execute, not to (re)schedule.
-        opening = (
-            f"⏰ Scheduled run — {task.title}\n\n"
-            "This automation is due now: carry out the task below immediately and produce the "
-            "result. The schedule already exists — do not create or modify any scheduled tasks.\n\n"
-            f"{task.instructions}"
-        )
+        # Mark busy BEFORE run.session_id is ever exposed outside this function (the
+        # broadcast right below reaches every open GUI window). Without this, a WS
+        # client could claim_turn() on this same session while this function is still
+        # building its engine and drive a second, concurrent turn on it (owner-hit
+        # 2026-09-19: try_mark_running() must fail for a session already being run
+        # headlessly). No `except` here, same shape as `_durable_resume` — a raise
+        # must still reach `mark_idle` in the `finally` below.
+        self.mark_running(run.session_id)
         try:
-            async for _event in engine.run(opening):
-                pass
-            run.result_text = _last_assistant_text(engine.messages)
-            run.artifacts = _recent_files(task.workspace, since=run.started_at)
-            run.status = "ok"
-            if task.notify_on_completion:
-                await self._notify_task_done(task, run)
-        except Exception as exc:
-            run.status, run.error = "error", str(exc)
-        finally:
-            run.finished_at = _epoch()
-            # Persist the run as a continuable session + keep the live engine for an immediate
-            # follow-up; record the run (now carrying its session_id).
+            self.task_store.add_run(run)  # mark "running"
+            # UX-026: tell every open app window a SCHEDULED run just started (the 5s
+            # top-right toast). Manual runs never come through here — the user is
+            # already watching those live.
+            await self.broadcast_event(
+                {
+                    "type": "automation_run_started",
+                    "data": {
+                        "task_id": task.id,
+                        "task_title": task.title,
+                        "session_id": run.session_id,
+                        "workspace": task.workspace,
+                        "agent": task.agent,
+                        "trigger": trigger,
+                    },
+                }
+            )
+            # Each run is a real, persisted conversation thread: it runs the instructions under its
+            # own session id, then saves the transcript. The user can reopen that session and ask a
+            # follow-up — the scheduled agent is no longer fire-and-forget.
+            engine = self._build_task_engine(task, session_id=run.session_id)
+            # Register the live engine up-front: a parked approval persists the session
+            # mid-run (durable suspend), and resolving from the Inbox must find this engine.
+            self._engines[run.session_id] = engine
+            # The first turn is the task itself. The framing matters: instructions often restate the
+            # schedule ("every day at 5:32pm…"), so make explicit that the schedule already fired and
+            # the job now is to execute, not to (re)schedule.
+            opening = (
+                f"⏰ Scheduled run — {task.title}\n\n"
+                "This automation is due now: carry out the task below immediately and produce the "
+                "result. The schedule already exists — do not create or modify any scheduled tasks.\n\n"
+                f"{task.instructions}"
+            )
             try:
-                self.save(run.session_id, engine)
-                self._engines[run.session_id] = engine
-            except Exception:
-                pass
-            self.task_store.add_run(run)
+                async for _event in engine.run(opening):
+                    pass
+                run.result_text = _last_assistant_text(engine.messages)
+                run.artifacts = _recent_files(task.workspace, since=run.started_at)
+                run.status = "ok"
+                if task.notify_on_completion:
+                    await self._notify_task_done(task, run)
+            except Exception as exc:
+                run.status, run.error = "error", str(exc)
+            finally:
+                run.finished_at = _epoch()
+                # Persist the run as a continuable session + keep the live engine for an immediate
+                # follow-up; record the run (now carrying its session_id).
+                try:
+                    self.save(run.session_id, engine)
+                    self._engines[run.session_id] = engine
+                except Exception:
+                    pass
+                self.task_store.add_run(run)
+        finally:
+            # Release only after the state above is fully persisted — mark_idle before
+            # that save would let a WS client open a new turn on this session before
+            # the run's final status ever hit disk.
+            self.mark_idle(run.session_id)
         return run
 
     async def _notify_task_done(self, task, run: TaskRun) -> None:
