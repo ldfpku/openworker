@@ -1715,7 +1715,13 @@ def test_a_stop_wait_that_fails_is_raised_not_read_as_a_stop(tmp_path):
 def test_two_turns_on_two_event_loops_both_complete(tmp_path):
     """The shape that first caught this: one engine, one whole turn per `asyncio.run()`.
     Each round has to stand on its own model call — an answer rescued by the automatic
-    retry would hide the very frame loss this guards."""
+    retry would hide the very frame loss this guards.
+
+    This is an end-to-end scenario regression, not the deterministic guardrail: on the
+    pre-fix code it only failed probabilistically, roughly 40-45% of runs in independent
+    review. The deterministic guardrail is
+    `test_one_engine_streaming_on_a_second_event_loop_delivers_every_chunk`, which parks
+    the producer to force the exact race every run."""
     parked = _GatedStream(
         [_sse_chunk(content="second"), _sse_chunk(finish="stop")], park_at=1
     )
@@ -1760,11 +1766,16 @@ def test_a_consumer_that_leaves_stops_the_producer(tmp_path):
         first = asyncio.ensure_future(stream.__anext__())
         await asyncio.sleep(0)  # let the bridge start its producer, then walk away
         first.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await first
-        await stream.aclose()
-        # Only now is the producer let go, so it cannot have got ahead of the departure.
-        parked.gate.set()
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await first
+            await stream.aclose()
+        finally:
+            # Only now is the producer let go, so it cannot have got ahead of the
+            # departure — and it's in `finally` so a failed assertion above still frees
+            # the producer instead of wedging `asyncio.run()`'s executor shutdown on
+            # gate.wait().
+            parked.gate.set()
         await loop.run_in_executor(None, lambda: None)
 
     asyncio.run(_leave_at_once())

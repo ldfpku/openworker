@@ -259,9 +259,14 @@ class _StopSignal:
     """The turn's Stop flag: `asyncio.Event`'s surface without its event-loop binding.
 
     `asyncio.Event` binds itself to the first loop that awaits it and raises on every loop
-    after that (`asyncio.mixins._LoopBoundMixin`). An engine outlives loops — a subagent
-    tool runs its own via `asyncio.run` — and Stop is set from threads that have no loop at
-    all (the manager cancelling a team run, deleting a session). So the flag keeps its own
+    after that (`asyncio.mixins._LoopBoundMixin`). No production path drives one engine
+    across two event loops today — `explore` builds a fresh subagent engine per call and
+    runs it through exactly one `asyncio.run` (tools/subagent.py) — but staying
+    loop-agnostic here is defensive: it's what keeps tests, the CLI, and any future code
+    that reuses one engine across separate `asyncio.run` calls from ever landing on
+    "bound to a different loop", and it lets `set()` be called safely from any thread —
+    which matters because Stop is also set from threads that have no loop at all (the
+    manager cancelling a team run, deleting a session). So the flag keeps its own
     registry of waiters, one per loop, instead of belonging to one of them.
 
     Supports exactly what the engine uses: `set`, `clear`, `is_set`, and an awaitable
