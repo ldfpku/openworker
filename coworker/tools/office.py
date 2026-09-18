@@ -338,6 +338,8 @@ _DATETIME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2})?)$")
 # digits. An 18-digit order number, a bank account, a Chinese ID number: all must stay text
 # or the user gets 1.23457E+17 back and the data is gone.
 _MAX_SIGNIFICANT_DIGITS = 15
+_MAX_FORMULA_CHARS = 8192  # Excel's own formula ceiling
+_MAX_CELL_CHARS = 32_767  # Excel's own per-cell ceiling; openpyxl truncates in silence
 
 
 def _digit_count(text: str) -> int:
@@ -372,7 +374,11 @@ def _coerce(raw: Any) -> tuple[Any, Optional[str], bool]:
     if text == "":
         return None, None, False
     if text[0] == "'":  # the escape hatch: keep it text, whatever it looks like
-        return text[1:], None, True
+        # A lone "'" (or "'\x07", once the control character is dropped) leaves nothing
+        # behind. Writing that as forced text made openpyxl emit `<c t="inlineStr">` with
+        # no `<is>` child — one such cell and Excel declares the WHOLE workbook unreadable
+        # and offers to repair it. An empty quote means an empty cell.
+        return (text[1:], None, True) if text[1:] else (None, None, False)
     if text[0] == "=" and len(text) > 1:
         return text, None, False  # openpyxl types a leading "=" as a formula
     if _INT_RE.match(text) and _digit_count(text) <= _MAX_SIGNIFICANT_DIGITS:
@@ -413,6 +419,62 @@ def _coerce(raw: Any) -> tuple[Any, Optional[str], bool]:
     return text, None, False
 
 
+def _balanced(text: str, opener: str, closer: str) -> bool:
+    """Brackets balanced, ignoring anything inside a double-quoted literal."""
+    depth = 0
+    in_string = False
+    for ch in text:
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == opener:
+            depth += 1
+        elif ch == closer:
+            depth -= 1
+            if depth < 0:
+                return False
+    return depth == 0 and not in_string
+
+
+def _check_formula(text: str, where: str) -> None:
+    """Structure only — not a parser, and deliberately not a function-name check.
+
+    The failure worth catching is a TRUNCATED formula: a model that runs out of output
+    budget mid-cell emits `=SUM(B2:B`, openpyxl copies it into `<f>` verbatim, and Excel
+    then refuses the whole file ("unreadable content"). Refusing the call costs one turn
+    and the model resends the formula; writing it costs the user the entire workbook. An
+    unknown function name, by contrast, is Excel's business: it shows #NAME? in one cell.
+    """
+    if len(text) > _MAX_FORMULA_CHARS:
+        raise ValueError(
+            f"{where}: the formula is {len(text)} characters, over Excel's "
+            f"{_MAX_FORMULA_CHARS} limit — compute the value instead, or write it as text "
+            "with a leading ' apostrophe"
+        )
+    if not _balanced(text, "(", ")"):
+        raise ValueError(
+            f'{where}: the formula {text!r} has unbalanced parentheses or quotes — it '
+            "looks truncated. Send the whole formula, or prefix ' to write it as text."
+        )
+
+
+def _check_number_format(text: str, where: str) -> None:
+    """Same reasoning one layer down: a half-typed format string ("0.00[red") lands in
+    styles.xml and condemns the file, and the number format is not something Excel can
+    show an error inside a single cell for."""
+    if _ILLEGAL_CHARS.search(text) or "\n" in text or "\r" in text or "\t" in text:
+        raise ValueError(
+            f"{where}: a number format cannot contain control characters (got: {text!r})"
+        )
+    if not _balanced(text, "[", "]"):
+        raise ValueError(
+            f"{where}: the number format {text!r} has unbalanced [] brackets or quotes; "
+            'use e.g. "0.00", "#,##0", "0%", "yyyy-mm-dd" or "#,##0.00;[Red]-#,##0.00"'
+        )
+
+
 def _display_width(text: str) -> int:
     """Column width is measured in characters of the default font, so a CJK glyph counts
     double — without this every Chinese header is clipped."""
@@ -428,15 +490,20 @@ def _display_width(text: str) -> int:
 # -- sheet names ----------------------------------------------------------------
 
 _BAD_SHEET_CHARS = re.compile(r"[\[\]:*?/\\]")
+# Excel keeps "History" for a shared workbook's change log and refuses a sheet by that
+# name, case regardless. Pre-seeding `taken` routes it through the same dedupe path as a
+# duplicate, so it comes out "History (2)" and lands in the receipt's Adjusted list.
+_RESERVED_SHEET_NAMES = {"history"}
 
 
 def _sheet_names(sheets: list[dict]) -> tuple[list[str], list[str]]:
-    """(titles, notes). Excel rejects []:*?/\\ , leading/trailing apostrophes, names over
-    31 chars and case-insensitive duplicates — and rejects the whole FILE, silently, after
-    the user double-clicks it. Fix them here and say so in the receipt."""
+    """(titles, notes). Excel rejects []:*?/\\ , leading/trailing apostrophes, the reserved
+    name History, names over 31 chars and case-insensitive duplicates — and rejects the
+    whole FILE, silently, after the user double-clicks it. Fix them here, say so in the
+    receipt."""
     titles: list[str] = []
     notes: list[str] = []
-    taken: set[str] = set()
+    taken: set[str] = set(_RESERVED_SHEET_NAMES)
     for i, sheet in enumerate(sheets, 1):
         given = str(sheet.get("name") or "").strip() if isinstance(sheet, dict) else ""
         name = _BAD_SHEET_CHARS.sub("_", given).strip().strip("'").strip()
@@ -542,8 +609,34 @@ def _save_workbook(workbook: Any, path: Path) -> None:
 
 
 def _replace(src: Path, dst: Path) -> None:
-    """Seam: the atomic swap. Its PermissionError is the "Excel has the file open" case."""
+    """Seam: the atomic swap. See `_replace_denied` for what its PermissionError means."""
     os.replace(str(src), str(dst))
+
+
+def _replace_denied(target: Path) -> str:
+    """Why the swap was refused, in words the user can act on.
+
+    "Close Excel" is the single most likely cause on Windows and the only one the user can
+    fix in five seconds — but it is not the only one: a read-only file, a write-protected
+    folder, and Defender's Controlled Folder Access all arrive as the same PermissionError.
+    Telling someone to close an Excel they never opened sends them looking for a window
+    that does not exist, so the file's own flag is checked first and the fallback names
+    both possibilities.
+    """
+    try:
+        read_only = target.exists() and not os.access(target, os.W_OK)
+    except OSError:  # pragma: no cover - a stat that fails tells us nothing either way
+        read_only = False
+    if read_only:
+        return (
+            f"{target} is read-only / write-protected. Clear the read-only flag, or "
+            "choose a different file name."
+        )
+    return (
+        f"{target} is open in another program (Excel?) or is read-only / "
+        "write-protected. Close it, clear the read-only flag, or choose a different "
+        "file name."
+    )
 
 
 def _receipt(
@@ -618,6 +711,7 @@ def office_tools(workspace: str, roots: Optional[list] = None) -> list:
         summaries: list[str] = []
         formulas_used = False
         total_cells = 0
+        truncated = 0
 
         for index, (spec, title) in enumerate(zip(sheet_specs, titles), 1):
             where = f'sheets[{index - 1}] ("{title}")'
@@ -675,9 +769,20 @@ def office_tools(workspace: str, roots: Optional[list] = None) -> list:
                 widths_row: list[int] = []
                 for c, raw in enumerate(row, 1):
                     value, number_format, force_text = _coerce(raw)
-                    if value is None:
+                    if value is None or (isinstance(value, str) and not value):
                         widths_row.append(0)
                         continue
+                    if isinstance(value, str):
+                        if not force_text and value.startswith("="):
+                            _check_formula(
+                                value, f"{where} cell {_col_letter(c)}{r}"
+                            )
+                        elif len(value) > _MAX_CELL_CHARS:
+                            # Excel's ceiling. openpyxl cuts it without a word, so cut it
+                            # here and say so in the receipt — a silently shortened cell
+                            # is a claim the agent makes on our behalf.
+                            value = value[:_MAX_CELL_CHARS]
+                            truncated += 1
                     cell = worksheet.cell(row=r, column=c, value=value)
                     if force_text:
                         # A quoted "'=SUM(A1:A2)" or "'00123" must arrive as TEXT; setting
@@ -849,6 +954,11 @@ def office_tools(workspace: str, roots: Optional[list] = None) -> list:
                     else None
                 )
                 number_format = style.get("format")
+                if number_format:
+                    number_format = str(number_format)
+                    _check_number_format(
+                        number_format, f"{where}: styles[{s_index}] format"
+                    )
                 if height is not None:
                     for r in range(lo_row, hi_row + 1):
                         worksheet.row_dimensions[r].height = height
@@ -889,6 +999,9 @@ def office_tools(workspace: str, roots: Optional[list] = None) -> list:
                 + (f", {merged} merge{'s' if merged > 1 else ''}" if merged else "")
             )
 
+        if truncated:
+            notes.append(f"{truncated} cell(s) truncated to 32,767 characters")
+
         # -- atomic write: a half-written .xlsx is a corrupt ZIP the user double-clicks and
         # Excel refuses, with the old (good) file already gone.
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -898,10 +1011,7 @@ def office_tools(workspace: str, roots: Optional[list] = None) -> list:
             try:
                 _replace(temp, target)
             except PermissionError as exc:
-                raise PermissionError(
-                    f"{target} is open in another program (Excel?). Close it or choose a "
-                    "different file name."
-                ) from exc
+                raise PermissionError(_replace_denied(target)) from exc
         finally:
             try:
                 temp.unlink(missing_ok=True)

@@ -15,6 +15,8 @@ Three things these cover, in order of how much damage they prevent:
 from __future__ import annotations
 
 import json
+import os
+import re
 import subprocess
 import sys
 import zipfile
@@ -40,6 +42,20 @@ def _load(path: Path):
 
     assert zipfile.ZipFile(path).testzip() is None  # a readable ZIP container
     return load_workbook(path)
+
+
+def _sheet_xml(path: Path, index: int = 1) -> str:
+    """The raw worksheet part. Some corruption is invisible to openpyxl on read-back —
+    an inline string cell with no <is> child loads fine here and makes Excel offer to
+    repair the file — so the bytes themselves have to be inspected."""
+    with zipfile.ZipFile(path) as archive:
+        return archive.read(f"xl/worksheets/sheet{index}.xml").decode("utf-8")
+
+
+def _assert_no_empty_inline_strings(path: Path, index: int = 1) -> None:
+    xml = _sheet_xml(path, index)
+    assert re.search(r'<c[^>]*t="inlineStr"[^>]*/>', xml) is None, xml
+    assert xml.count('t="inlineStr"') == xml.count("<is>"), xml
 
 
 def _assert_framed(sheet, *, max_row: int, max_col: int) -> None:
@@ -246,6 +262,129 @@ def test_every_cell_value_rule_has_a_worked_example(tmp_path):
             assert cell.number_format == number_format, label
 
 
+def test_a_lone_apostrophe_is_an_empty_cell_not_a_corrupt_one(tmp_path):
+    """The escape hatch with nothing behind it. Forced text plus an empty string made
+    openpyxl write `<c t="inlineStr">` with no `<is>` child, and Excel condemns the whole
+    workbook over one such cell — so it has to be an empty cell instead."""
+    out = _tool(tmp_path)(
+        path="撇号.xlsx",
+        sheets=[
+            {
+                "rows": [
+                    ["'", "'\x07", "'x", "", "'0"],  # "'\x07" is a lone quote too
+                    ["正常", "", "'", "x", ""],
+                ],
+                "header_rows": 0,
+            }
+        ],
+    )
+    assert out.startswith("Wrote ")
+    target = tmp_path / "撇号.xlsx"
+    _assert_no_empty_inline_strings(target)
+    sheet = _load(target)["Sheet1"]
+    assert sheet["A1"].value is None and sheet["B1"].value is None
+    assert sheet["C1"].value == "x" and sheet["E1"].value == "0"
+    assert sheet["C1"].data_type == "s" and sheet["E1"].data_type == "s"
+    assert sheet["C2"].value is None
+    assert sheet["A2"].value == "正常"
+
+
+def test_a_truncated_formula_is_refused_instead_of_written(tmp_path):
+    """A model that runs out of output budget mid-cell sends `=SUM(B2:B`. openpyxl copies
+    it into <f> verbatim and Excel then refuses the FILE, so refusing the call — and
+    naming the cell — is the cheap outcome."""
+    tool = _tool(tmp_path)
+    for formula in ("=SUM(", "=SUM(B2:B", '=IF(A1>1,"y","n"', '=CONCAT("a)', "=A1)"):
+        with pytest.raises(ValueError) as exc:
+            tool(
+                path="f.xlsx",
+                sheets=[{"name": "汇总", "rows": [["项目", "金额"], ["项目A", formula]]}],
+            )
+        message = str(exc.value)
+        assert "unbalanced parentheses or quotes" in message, formula
+        assert "cell B2" in message and "汇总" in message, formula
+        assert "prefix ' to write it as text" in message, formula
+    with pytest.raises(ValueError, match="over Excel's 8192 limit"):
+        tool(path="f.xlsx", sheets=[{"rows": [["=SUM(" + "A1," * 3000 + "A2)"]]}])
+    assert not any(tmp_path.iterdir())
+
+    # a formula whose parentheses live inside a STRING literal is fine, and so is the
+    # escape hatch for a formula the model wants to show rather than compute
+    tool(
+        path="f.xlsx",
+        sheets=[
+            {
+                "rows": [
+                    ['=IF(A2>1,"yes (maybe)","no")'],
+                    ["'=SUM("],
+                    ["=SUM(A1:A2)"],
+                ],
+                "header_rows": 0,
+            }
+        ],
+    )
+    sheet = _load(tmp_path / "f.xlsx")["Sheet1"]
+    assert sheet["A1"].data_type == "f"
+    assert sheet["A2"].value == "=SUM(" and sheet["A2"].data_type == "s"
+    assert sheet["A3"].data_type == "f"
+
+
+def test_an_unterminated_number_format_is_refused(tmp_path):
+    """Same failure one layer down: a half-typed format string lands in styles.xml, which
+    Excel cannot report per-cell — it declares the file unreadable."""
+    tool = _tool(tmp_path)
+    for fmt in ("0.00[unterminated", '0.00"abc', "0.00]", "0.00\x07"):
+        with pytest.raises(ValueError) as exc:
+            tool(
+                path="nf.xlsx",
+                sheets=[{"rows": [["a"], ["1"]], "styles": [{"range": "A2", "format": fmt}]}],
+            )
+        message = str(exc.value)
+        assert "styles[0] format" in message, fmt
+        assert ("unbalanced [] brackets or quotes" in message) or (
+            "control characters" in message
+        ), fmt
+    assert not any(tmp_path.iterdir())
+
+    # the formats a report actually uses, brackets and all
+    tool(
+        path="nf.xlsx",
+        sheets=[
+            {
+                "rows": [["金额"], ["-1234.5"]],
+                "styles": [
+                    {"range": "A2", "format": "#,##0.00;[Red]-#,##0.00"},
+                    {"range": "A1", "format": 'yyyy"年"mm"月"'},
+                ],
+            }
+        ],
+    )
+    sheet = _load(tmp_path / "nf.xlsx")["Sheet1"]
+    assert sheet["A2"].number_format == "#,##0.00;[Red]-#,##0.00"
+    assert sheet["A1"].number_format == 'yyyy"年"mm"月"'
+
+
+def test_an_over_long_cell_is_truncated_and_the_receipt_says_so(tmp_path):
+    """openpyxl cuts at 32,767 characters without a word. A silently shortened cell is a
+    claim the agent would go on to make on our behalf, so it goes in Adjusted."""
+    tool = _tool(tmp_path)
+    out = tool(
+        path="长.xlsx",
+        sheets=[
+            {"rows": [["标题"], ["很长" * 20_000], ["也很长" * 11_000]], "header_rows": 0}
+        ],
+    )
+    assert "Adjusted: 2 cell(s) truncated to 32,767 characters." in out
+    sheet = _load(tmp_path / "长.xlsx")["Sheet1"]
+    assert len(sheet["A2"].value) == 32_767
+    assert len(sheet["A3"].value) == 32_767
+
+    # exactly at the ceiling: nothing is cut and nothing is reported
+    out = tool(path="刚好.xlsx", sheets=[{"rows": [["x" * 32_767]], "header_rows": 0}])
+    assert "truncated" not in out
+    assert len(_load(tmp_path / "刚好.xlsx")["Sheet1"]["A1"].value) == 32_767
+
+
 def test_a_nested_array_in_a_cell_is_reported_not_stringified(tmp_path):
     with pytest.raises(ValueError, match="a cell cannot hold list"):
         _tool(tmp_path)(path="x.xlsx", sheets=[{"rows": [[["a", "b"]]]}])
@@ -337,12 +476,15 @@ def test_sheet_names_are_repaired_deduplicated_and_reported(tmp_path):
             {"name": "'引号'", "rows": [["a"]]},
             {"name": "Data", "rows": [["a"]]},
             {"name": "data", "rows": [["a"]]},  # Excel's duplicate check ignores case
+            {"name": "History", "rows": [["a"]]},  # reserved by Excel, case regardless
         ],
     )
     names = _load(tmp_path / "n.xlsx").sheetnames
     assert names[0] == repaired
     assert names[1] == f"{repaired} (2)"
     assert names[5] == "Data" and names[6] == "data (2)"
+    assert names[7] == "History (2)"
+    assert 'sheet name "History" became "History (2)"' in out
     assert names[2] == long_name[:31] and len(names[2]) == 31
     assert names[3] == "Sheet4"
     assert names[4] == "引号"
@@ -500,7 +642,7 @@ _PARITY_CASES = [
 
 @pytest.mark.parametrize("case", _PARITY_CASES)
 def test_path_parity_with_aisuite_write_file(tmp_path, monkeypatch, case):
-    """One root set, two tools, the same nine inputs: accept/reject, exception type, message
+    """One root set, two tools, the same ten inputs: accept/reject, exception type, message
     and landing directory must match. `write_spreadsheet` re-implements `_resolve` (it
     cannot borrow one that only takes `content: str`), so this is the guard that keeps the
     copy honest."""
@@ -656,6 +798,54 @@ def test_a_locked_target_says_the_file_is_open_elsewhere(tmp_path, monkeypatch):
     assert "is open in another program (Excel?)" in str(exc.value)
     assert str(tmp_path / "报告.xlsx") in str(exc.value)
     assert list(tmp_path.iterdir()) == []  # the temp file is cleaned up regardless
+
+
+def test_the_refusal_distinguishes_read_only_from_a_file_someone_has_open(
+    tmp_path, monkeypatch
+):
+    """"Close Excel" sends the user hunting for a window that does not exist when the real
+    cause is a read-only file, a write-protected folder or Defender's controlled folder
+    access — all of which arrive as the same PermissionError."""
+    target = tmp_path / "报告.xlsx"
+    target.write_bytes(b"PK\x03\x04")
+
+    monkeypatch.setattr(office_module.os, "access", lambda *_a, **_k: False)
+    read_only = office_module._replace_denied(target)
+    assert "is read-only / write-protected" in read_only
+    assert "open in another program" not in read_only
+    assert "Clear the read-only flag" in read_only
+
+    monkeypatch.setattr(office_module.os, "access", lambda *_a, **_k: True)
+    locked = office_module._replace_denied(target)
+    assert "is open in another program (Excel?)" in locked
+    # a target that does not exist yet cannot be the read-only one, so both are named
+    monkeypatch.setattr(office_module.os, "access", lambda *_a, **_k: False)
+    absent = office_module._replace_denied(tmp_path / "缺失.xlsx")
+    assert "is open in another program (Excel?)" in absent
+    assert "read-only / write-protected" in absent
+
+
+@pytest.mark.skipif(
+    os.name != "nt", reason="only Windows refuses to replace a read-only file"
+)
+def test_a_read_only_target_is_not_blamed_on_excel(tmp_path):
+    """End to end, with a genuinely read-only file and the real `os.replace`."""
+    tool = _tool(tmp_path)
+    tool(path="报告.xlsx", sheets=[{"rows": [["旧数据"]]}])
+    target = tmp_path / "报告.xlsx"
+    target.chmod(0o444)
+    try:
+        if os.access(target, os.W_OK):  # pragma: no cover - filesystem without the bit
+            pytest.skip("this filesystem ignores the read-only bit")
+        with pytest.raises(PermissionError) as exc:
+            tool(path="报告.xlsx", sheets=[{"rows": [["新数据"]]}])
+        message = str(exc.value)
+        assert "is read-only / write-protected" in message
+        assert "open in another program" not in message
+        assert [p.name for p in tmp_path.iterdir()] == ["报告.xlsx"]  # no .part left
+        assert _load(target)["Sheet1"]["A1"].value == "旧数据"  # and it is untouched
+    finally:
+        target.chmod(0o666)
 
 
 def test_overwriting_an_existing_file_is_the_documented_behaviour(tmp_path):
