@@ -12,7 +12,7 @@
 use std::{
     collections::HashMap,
     fs::{self, File, OpenOptions},
-    io::{Read, Seek, SeekFrom, Write},
+    io::{ErrorKind, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -224,6 +224,18 @@ pub fn pack_status(model_dir: &Path, pack: &'static ModelPack) -> PackStatus {
 /// A failed gate also drops the marker. `pack_status` reports it as `verified`, `Dictation::start`
 /// admits on it and an install skips a pack that carries one; left behind it would show a badge
 /// the bytes no longer earn, and put the repair out of reach.
+///
+/// Two things this does not claim. It reads the files and `create` opens them again a moment
+/// later, so a rewrite that lands in between is not caught; the window is small, and closing it
+/// would mean holding every file open across the load, which is not what this is for. And it is
+/// not free — with the files in the page cache a pack costs tens of milliseconds where the CPU
+/// has SHA instructions, a few hundred where the hashing falls back to software. That lands on
+/// two paths. Starting a recording pays for the streaming pack, but the microphone is open before
+/// this runs and the audio waiting in it is fed in afterwards, so what it costs is how soon the
+/// window answers, not words. Stopping pays for the final pack, and pays again every time that
+/// recogniser has to be rebuilt — the engine drops it once it has sat unused for
+/// `OFFLINE_IDLE_UNLOAD`, so this is not a once-per-run cost — and there is nothing buffering
+/// that one.
 pub fn ensure_pack_ready(
     model_dir: &Path,
     pack: &'static ModelPack,
@@ -242,8 +254,8 @@ pub fn ensure_pack_ready(
     Ok(dir)
 }
 
-/// Hashes every file in a pack. Exact, and the whole cost of the gate: about 55 ms for the
-/// streaming pack with the files in the page cache.
+/// Hashes every file in a pack. Exact, and the whole of what the gate costs — see
+/// [`ensure_pack_ready`] for the orders of magnitude and which waits they land in.
 ///
 /// One thread per file. A pack is two or three files of a couple of hundred megabytes each, and
 /// hashing them side by side rather than one after another takes about a third off the streaming
@@ -754,19 +766,32 @@ fn check_cancel(cancel: &AtomicBool) -> Result<(), DictationError> {
 }
 
 pub(crate) fn hash_file(path: &Path) -> Result<String, DictationError> {
-    let mut file = File::open(path).map_err(|e| {
+    let file = File::open(path).map_err(|e| {
         DictationError::model_missing(format!("无法读取 {}：{e}", path.display()))
     })?;
+    hash_reader(file).map_err(|e| {
+        DictationError::model_corrupt(format!("无法校验 {}：{e}", path.display()))
+    })
+}
+
+/// SHA-256 of everything the reader has, taken 128 KiB at a time.
+///
+/// `Interrupted` is not a failure — it says a signal arrived mid-read and the read wants making
+/// again — so it is made again. Reporting it would be worse than idle here: a failed check takes
+/// the pack's marker with it, and one stray interruption would then shut voice input off until
+/// somebody found their way to Settings and verified by hand. Every other IO error still travels,
+/// and still costs the marker, deliberately: a bad sector reads as an error rather than as a wrong
+/// hash, and a pack that cannot be read is not a pack to hand to the engine.
+pub(crate) fn hash_reader(mut reader: impl Read) -> std::io::Result<String> {
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 128 * 1024];
     loop {
-        let count = file.read(&mut buffer).map_err(|e| {
-            DictationError::model_corrupt(format!("无法校验 {}：{e}", path.display()))
-        })?;
-        if count == 0 {
-            break;
+        match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => hasher.update(&buffer[..count]),
+            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
         }
-        hasher.update(&buffer[..count]);
     }
     Ok(format!("{:x}", hasher.finalize()))
 }

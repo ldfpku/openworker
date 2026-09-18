@@ -455,7 +455,7 @@ impl Dictation {
 mod tests {
     use std::{
         fs,
-        io::Write,
+        io::{Read, Write},
         path::{Path, PathBuf},
         sync::{Arc, Mutex},
         time::{Duration, SystemTime, UNIX_EPOCH},
@@ -897,11 +897,16 @@ mod tests {
 
     // Two files, because a pack is never one: the real ones all carry a tokens.txt beside the
     // model, and it is the file a shortcut would skip — small, not a model, and last.
+    //
+    // The sizes are the point of the pairing. The model is big enough that deciding against it
+    // means hashing all of it, while the verdict on six bytes of tokens lands almost at once, so
+    // an implementation that reported whichever thread finished first would report the wrong file
+    // and be caught. Two five-byte files could not tell the two implementations apart.
     static PAIR_FILES: &[ModelFile] = &[
         ModelFile {
             name: "model.bin",
-            bytes: 5,
-            sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+            bytes: BULK_BYTES as u64,
+            sha256: "eeb05699ef0e719dfdd9c98a1d2af9d1b174982ae5e78ee235e268fe2c515641",
         },
         ModelFile {
             name: "tokens.txt",
@@ -940,6 +945,38 @@ mod tests {
     /// it, so a drifting generator shows up as itself rather than as a weakened corruption case.
     fn bulk_bytes() -> Vec<u8> {
         (0..BULK_BYTES).map(|i| ((i * 31 + 7) % 251) as u8).collect()
+    }
+
+    /// Reads normally until at least one whole block has gone by, then hands out a single
+    /// `Interrupted` and carries on from exactly where it left off — a signal arriving partway
+    /// through a hash that takes several reads. The count is shared so the test can tell the
+    /// interruption actually happened rather than assuming it.
+    struct InterruptedMidway {
+        data: Vec<u8>,
+        read_from: usize,
+        interruptions: std::rc::Rc<std::cell::Cell<u32>>,
+    }
+
+    impl Read for InterruptedMidway {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.read_from > 0 && self.interruptions.get() == 0 {
+                self.interruptions.set(1);
+                return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+            }
+            let count = (self.data.len() - self.read_from).min(buf.len());
+            buf[..count].copy_from_slice(&self.data[self.read_from..self.read_from + count]);
+            self.read_from += count;
+            Ok(count)
+        }
+    }
+
+    /// A reader that only ever fails, and not in the forgivable way.
+    struct AlwaysFails(std::io::ErrorKind);
+
+    impl Read for AlwaysFails {
+        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::from(self.0))
+        }
     }
 
     /// The gate with a counter behind it, standing in for `OnlineRecognizer::create`. Refusing a
@@ -1146,6 +1183,41 @@ mod tests {
     }
 
     #[test]
+    fn an_interrupted_read_is_made_again_rather_than_called_corruption() {
+        // A failed check costs the pack its marker, so mistaking a signal for a bad file would
+        // shut voice input off until somebody re-verified by hand. The fixture is longer than one
+        // read block, and the reader gets through a whole block before it is interrupted, so this
+        // really is the middle of a multi-read hash — where a retry that dropped or repeated the
+        // bytes around it would show up.
+        let bytes = bulk_bytes();
+        assert!(
+            bytes.len() > 128 * 1024,
+            "the fixture has to outlast one read block for this to be a mid-hash interruption"
+        );
+        let straight = models::hash_reader(&bytes[..]).unwrap();
+        assert_eq!(
+            straight, BULK_FILES[0].sha256,
+            "the fixture drifted from its pinned hash"
+        );
+
+        let interruptions = std::rc::Rc::new(std::cell::Cell::new(0));
+        let interrupted = models::hash_reader(InterruptedMidway {
+            data: bytes,
+            read_from: 0,
+            interruptions: interruptions.clone(),
+        })
+        .unwrap();
+        assert_eq!(interruptions.get(), 1, "the reader was never interrupted");
+        assert_eq!(interrupted, straight, "an interruption changed the hash");
+
+        // Everything else is a real failure and still travels — a bad sector reads as an error
+        // rather than as a wrong hash, and the pack has to lose its marker over it.
+        let error =
+            models::hash_reader(AlwaysFails(std::io::ErrorKind::PermissionDenied)).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
     fn a_pack_is_only_as_sound_as_its_last_file() {
         // Handing sherpa-onnx a tokens.txt that does not belong to the model is not a graceful
         // failure either — it exits(-1) — so the small file at the end of the pack is checked
@@ -1157,7 +1229,8 @@ mod tests {
         let tokens = pack_dir.join("tokens.txt");
         let gate = Gate::new();
 
-        fs::write(&model, b"hello").unwrap();
+        let good = bulk_bytes();
+        fs::write(&model, &good).unwrap();
         fs::write(&tokens, b"tokens").unwrap();
         gate.load(&dir, &PAIR_PACK).unwrap();
         assert_eq!(gate.creates(), 1);
@@ -1169,9 +1242,13 @@ mod tests {
         assert!(error.message.contains("tokens.txt"), "{}", error.message);
         assert_eq!(gate.creates(), 1);
 
-        // Both wrong: the files are hashed side by side, so say which one is named — it has to
-        // be the first in the pack, never whichever thread happened to finish first.
-        fs::write(&model, b"world").unwrap();
+        // Both wrong, and wrong in a way that makes the answer arrive in the opposite order: the
+        // model only gives itself away on its very last byte, while six bytes of tokens are done
+        // with immediately. Whichever thread finishes first, the pack is reported on in its own
+        // order, so this has to name the model every time.
+        let mut spoiled = good.clone();
+        spoiled[BULK_BYTES - 1] ^= 0xff;
+        fs::write(&model, &spoiled).unwrap();
         for _ in 0..20 {
             let error = gate.load(&dir, &PAIR_PACK).unwrap_err();
             assert!(error.message.contains("model.bin"), "{}", error.message);
