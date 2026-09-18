@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import asyncio
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -319,6 +320,119 @@ async def test_scheduled_run_persists_continuable_session(tmp_path, monkeypatch)
     async for _ in engine.run("tell me more"):
         pass
     assert _last_assistant_text(engine.messages) == "Sure — here is more detail."
+
+
+# -- concurrency: a scheduled run must mark its session busy --------------------
+async def test_scheduled_run_marks_session_busy_while_running(tmp_path, monkeypatch):
+    """Bug: _run_scheduled_task never called mark_running, so a concurrent WS turn
+    (claim_turn -> try_mark_running) could grab the very same live engine mid-run —
+    two turns racing on one TurnEngine. While the scheduled run is in flight,
+    is_running must be True and a second claim on the same session must be
+    rejected."""
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+    from coworker.server.manager import SessionManager
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingProvider(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            entered.set()
+            release.wait(timeout=10)  # backstop: never hang the suite
+            return AssistantTurn(text="done", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    manager = SessionManager(data_dir=tmp_path / "data", provider=BlockingProvider())
+    task = _task(workspace=str(ws), agent="cowork")
+    manager.task_store.save(task)
+
+    run_task = asyncio.create_task(manager._run_scheduled_task(task, trigger="manual"))
+    try:
+        for _ in range(500):  # ~5s budget
+            if entered.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert entered.is_set(), "provider.complete was never entered"
+
+        runs = manager.task_store.runs(task.id)
+        assert runs, "run was not persisted before the provider call"
+        session_id = runs[0].session_id
+
+        assert manager.is_running(session_id) is True
+        assert manager.try_mark_running(session_id) is False
+    finally:
+        release.set()  # never leave the worker thread (and pytest) blocked
+        await run_task
+
+
+async def test_scheduled_run_marks_idle_after_success(tmp_path, monkeypatch):
+    """After a scheduled run finishes normally, the busy marker must be released so a
+    later WS turn (or the next scheduled tick) can claim the session again."""
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+    from coworker.server.manager import SessionManager
+
+    class ScriptedProvider(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            return AssistantTurn(text="done", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    manager = SessionManager(data_dir=tmp_path / "data", provider=ScriptedProvider())
+    task = _task(workspace=str(ws), agent="cowork")
+    manager.task_store.save(task)
+
+    run = await manager._run_scheduled_task(task, trigger="manual")
+    assert run.status == "ok"
+    assert manager.is_running(run.session_id) is False
+
+
+async def test_scheduled_run_marks_idle_when_setup_raises(tmp_path, monkeypatch):
+    """An exception during the run's setup must still release the busy marker via
+    `finally` — mirrors the existing _durable_resume guard shape (no `except`, just a
+    `finally` around the busy marker; the exception still escapes to the caller).
+
+    Note: a plain provider exception does NOT exercise this path — the engine's own
+    error handling (`engine.py`) catches provider failures internally and degrades into
+    an ERROR *event* rather than letting the exception propagate out of `engine.run()`,
+    so `_run_scheduled_task`'s inner `except Exception` is unreachable that way. Forcing
+    the raise in `_build_task_engine` instead reaches the outer guard directly."""
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+    from coworker.server.manager import SessionManager
+
+    class ScriptedProvider(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            return AssistantTurn(text="unused", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    manager = SessionManager(data_dir=tmp_path / "data", provider=ScriptedProvider())
+    task = _task(workspace=str(ws), agent="cowork")
+    manager.task_store.save(task)
+
+    def _boom(self, task, *, session_id):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(SessionManager, "_build_task_engine", _boom)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await manager._run_scheduled_task(task, trigger="manual")
+
+    runs = manager.task_store.runs(task.id)
+    assert runs, "the run record should have been persisted before the failure"
+    assert manager.is_running(runs[0].session_id) is False
 
 
 def test_task_engine_has_no_scheduling_tools(tmp_path, monkeypatch):
