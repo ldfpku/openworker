@@ -340,6 +340,7 @@ _DATETIME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2})?)$")
 _MAX_SIGNIFICANT_DIGITS = 15
 _MAX_FORMULA_CHARS = 8192  # Excel's own formula ceiling
 _MAX_CELL_CHARS = 32_767  # Excel's own per-cell ceiling; openpyxl truncates in silence
+_MAX_NUMBER_FORMAT_CHARS = 255  # Excel's own format-code ceiling (openpyxl writes any)
 
 
 def _digit_count(text: str) -> int:
@@ -420,7 +421,13 @@ def _coerce(raw: Any) -> tuple[Any, Optional[str], bool]:
 
 
 def _balanced(text: str, opener: str, closer: str) -> bool:
-    """Brackets balanced, ignoring anything inside a double-quoted literal."""
+    """Brackets balanced, ignoring anything inside a double-quoted literal.
+
+    Known limitation, accepted on purpose: a backslash-escaped quote (`0.00\\"`, legal in a
+    number format) reads here as the START of a literal and the input is refused. Teaching
+    this the escape rules would also teach it to accept `=SUM(B2:B\\"` — and a wrongly
+    refused format costs one turn, while a wrongly accepted one costs the whole workbook.
+    """
     depth = 0
     in_string = False
     for ch in text:
@@ -464,6 +471,12 @@ def _check_number_format(text: str, where: str) -> None:
     """Same reasoning one layer down: a half-typed format string ("0.00[red") lands in
     styles.xml and condemns the file, and the number format is not something Excel can
     show an error inside a single cell for."""
+    if len(text) > _MAX_NUMBER_FORMAT_CHARS:
+        raise ValueError(
+            f"{where}: the number format is {len(text)} characters, over Excel's "
+            f"{_MAX_NUMBER_FORMAT_CHARS} limit — use a short format code like "
+            '"#,##0.00"'
+        )
     if _ILLEGAL_CHARS.search(text) or "\n" in text or "\r" in text or "\t" in text:
         raise ValueError(
             f"{where}: a number format cannot contain control characters (got: {text!r})"
@@ -955,7 +968,16 @@ def office_tools(workspace: str, roots: Optional[list] = None) -> list:
                 )
                 number_format = style.get("format")
                 if number_format:
-                    number_format = str(number_format)
+                    # No str() rescue here: `["0.00"]` would become the literal format
+                    # code `['0.00']`, which passes every structural check and shows the
+                    # user a column of `['0.00']`. A wrong type is a model mistake worth
+                    # one turn.
+                    if not isinstance(number_format, str):
+                        raise ValueError(
+                            f"{where}: styles[{s_index}] format must be a string, not "
+                            f"{type(number_format).__name__} (got: {number_format!r}); "
+                            'e.g. "#,##0.00"'
+                        )
                     _check_number_format(
                         number_format, f"{where}: styles[{s_index}] format"
                     )
@@ -991,7 +1013,7 @@ def office_tools(workspace: str, roots: Optional[list] = None) -> list:
                                 wrap_text=wrap if wrap is not None else now.wrap_text,
                             )
                         if number_format:
-                            cell.number_format = str(number_format)
+                            cell.number_format = number_format  # checked above
 
             merged = len(merge_boxes)
             summaries.append(

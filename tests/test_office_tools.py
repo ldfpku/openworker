@@ -364,6 +364,55 @@ def test_an_unterminated_number_format_is_refused(tmp_path):
     assert sheet["A1"].number_format == 'yyyy"年"mm"月"'
 
 
+def _format_writer(tool):
+    """`tool(...)` with one `styles[0].format` under test and everything else fixed."""
+
+    def write(number_format):
+        return tool(
+            path="nf.xlsx",
+            sheets=[
+                {
+                    "rows": [["金额"], ["1234.5"]],
+                    "styles": [{"range": "A2", "format": number_format}],
+                }
+            ],
+        )
+
+    return write
+
+
+def test_a_number_format_over_excels_255_character_ceiling_is_refused(tmp_path):
+    """openpyxl writes a format code of any length; Excel's own limit is 255, and a longer
+    one is another whole-file repair prompt."""
+    write = _format_writer(_tool(tmp_path))
+    with pytest.raises(ValueError) as exc:
+        write("0." + "0" * 300)
+    assert "over Excel's 255 limit" in str(exc.value)
+    assert "styles[0] format" in str(exc.value)
+    assert not any(tmp_path.iterdir())
+
+    # right at the ceiling it still goes through
+    at_limit = "0." + "0" * 253
+    assert len(at_limit) == 255
+    write(at_limit)
+    assert _load(tmp_path / "nf.xlsx")["Sheet1"]["A2"].number_format == at_limit
+
+
+def test_a_non_string_number_format_is_refused_not_stringified(tmp_path):
+    """`str(["0.00"])` is the literal format code `['0.00']`: it passes every structural
+    check and the user gets a column showing `['0.00']`."""
+    write = _format_writer(_tool(tmp_path))
+    for bad in (["0.00"], {"format": "0.00"}, 0.25):
+        with pytest.raises(ValueError) as exc:
+            write(bad)
+        assert "styles[0] format must be a string" in str(exc.value), bad
+        assert type(bad).__name__ in str(exc.value), bad
+    assert not any(tmp_path.iterdir())
+
+    write("0.00")
+    assert _load(tmp_path / "nf.xlsx")["Sheet1"]["A2"].number_format == "0.00"
+
+
 def test_an_over_long_cell_is_truncated_and_the_receipt_says_so(tmp_path):
     """openpyxl cuts at 32,767 characters without a word. A silently shortened cell is a
     claim the agent would go on to make on our behalf, so it goes in Adjusted."""
