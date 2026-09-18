@@ -350,13 +350,14 @@ def build_engine(
 
     registry = ToolRegistry()
     registry.register_all(agent.build_tools(context))
-    # Real Office files (tools/office.py — `write_spreadsheet` writes a .xlsx in this
-    # process, so an office PC with no Python still gets a workbook). Deferred like the
-    # connector sets and for the same arithmetic: its schema is ~2,300 chars against a
-    # ~150-char loader, and most turns never make a spreadsheet — but unlike a connector
-    # this set has a second door, because `write_file` refusing a .xlsx materialises it
-    # (see engine._execute_sync + tools/files.py), so the model finds it exactly when it
-    # needs it whether or not it thought to call the loader.
+    # Real Office files (tools/office.py — `write_spreadsheet` writes a .xlsx and
+    # `write_document` a .docx in this process, so an office PC with no Python still gets
+    # the file). Deferred like the connector sets and for the same arithmetic: the two
+    # schemas are ~3,300 chars together against a ~340-char loader, and most turns make
+    # neither — but unlike a connector this set has a second door, because `write_file`
+    # refusing a .xlsx or a .docx materialises the matching tool (see
+    # engine._execute_sync + tools/files.py), so the model finds it exactly when it needs
+    # it whether or not it thought to call the loader.
     #
     # Registered ONLY where `write_file` is: the tool is the answer to that refusal, and a
     # persona with no file tools (chat) has nothing to answer. Built from the SAME
@@ -372,7 +373,8 @@ def build_engine(
                 deferred_tools=office_tools(str(ws), roots=root_list or None),
                 description=(
                     "Load tools that create real Office files without Python: "
-                    "write_spreadsheet (.xlsx with merged cells, borders, styles). "
+                    "write_spreadsheet (.xlsx with merged cells, borders, styles) and "
+                    "write_document (.docx from Markdown). "
                     "Call before creating such a file."
                 ),
             )

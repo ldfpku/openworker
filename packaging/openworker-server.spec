@@ -55,11 +55,13 @@ datas = []
 binaries = []
 
 # segno renders the Weixin QR-login PNG; core dep, pure python — always bundled.
-# openpyxl writes the .xlsx `write_spreadsheet` delivers (tools/office.py), and it is
-# imported INSIDE the call so a build without it still starts — which is exactly the state
-# a packaged app must never ship in, because the frozen backend is the only Python on a
-# typical office PC. PyInstaller's analysis does find the lazy import today; naming it here
-# means a trimmed hook or a moved import cannot silently take the feature out of the app.
+# openpyxl writes the .xlsx `write_spreadsheet` delivers (tools/office.py) and markdown_it
+# parses the Markdown `write_document` turns into a .docx (tools/document.py); both are
+# imported INSIDE the call so a build without them still starts — which is exactly the
+# state a packaged app must never ship in, because the frozen backend is the only Python on
+# a typical office PC. PyInstaller's analysis does find the lazy imports today; naming them
+# here means a trimmed hook or a moved import cannot silently take the feature out of the
+# app. (mdurl, markdown_it's one dependency, is a plain module the analysis always sees.)
 for pkg in (
     "coworker",
     "aisuite",
@@ -69,6 +71,7 @@ for pkg in (
     "docstring_parser",
     "segno",
     "openpyxl",
+    "markdown_it",
 ):
     hiddenimports += collect_submodules(pkg)
 
@@ -106,7 +109,23 @@ if not INCLUDE_EXPERIMENTAL:
 # carries ALL_PROXY=socks5h://… (v2rayN/Clash). Static analysis never sees it, and
 # without it EVERY outbound httpx call on such a machine dies with ImportError
 # (measured 2026-08-28: sign-out, relay status, model calls — all 500).
-for pkg in ("uvicorn", "certifi", "anyio", "websockets", "pypdf", "pypdfium2", "socksio"):
+# `docx` (python-docx) is the other half of `write_document` and needs collect_all rather
+# than collect_submodules: the .docx it produces starts from the package's OWN
+# docx/templates/default.docx, plus the .xml part templates beside it. Code-only collection
+# imports fine and then raises PackageNotFoundError on the first call — a feature that
+# passes every test in CI and fails on the user's machine, where there is no Python to fall
+# back on. (pyinstaller-hooks-contrib's hook-docx collects the same data files today; this
+# does not depend on that hook still being installed, or still doing it.)
+for pkg in (
+    "uvicorn",
+    "certifi",
+    "anyio",
+    "websockets",
+    "pypdf",
+    "pypdfium2",
+    "socksio",
+    "docx",
+):
     d, b, h = collect_all(pkg)
     datas += d
     binaries += b

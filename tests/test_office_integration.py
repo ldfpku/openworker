@@ -407,9 +407,11 @@ def test_the_materialised_tool_shares_the_session_roots_with_write_file(tmp_path
 
 def test_the_loader_description_stays_small(tmp_path):
     """The loader's own schema is prompt too, paid on every round trip of every session
-    with file tools. Measured 2026-09-18 at 302 chars; the ceiling leaves room for wording
-    but not for a second paragraph. (`write_spreadsheet` itself is ~2,300 — that asymmetry
-    IS the feature.)"""
+    with file tools. Measured 2026-09-18 at 343 chars, up from 302 when `write_document`
+    joined the set — one clause for a second tool. The ceiling leaves room for wording but
+    not for a second paragraph, and NOT for naming a third tool in prose: a set that keeps
+    growing should get a shorter formulation, not a longer description. (The two tools'
+    own schemas are ~2,300 and ~1,000 — that asymmetry IS the feature.)"""
     from coworker.agents import cowork_agent
 
     engine = _engine_for(cowork_agent(), tmp_path)
@@ -419,7 +421,7 @@ def test_the_loader_description_stays_small(tmp_path):
             for s in engine.registry.schemas()
             if s["function"]["name"] == "load_office_tools"
         )
-        assert len(json.dumps(schema)) <= 350, len(json.dumps(schema))
+        assert len(json.dumps(schema)) <= 400, len(json.dumps(schema))
         assert schema["function"]["parameters"]["properties"] == {}
         assert "write_spreadsheet" in schema["function"]["description"]
     finally:

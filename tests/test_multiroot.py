@@ -134,11 +134,13 @@ def test_write_file_result_names_the_absolute_path_and_its_root(tmp_path, builde
 
 
 @pytest.mark.parametrize("builder_name", ["_files", "_code_files"])
-def test_write_file_hands_a_spreadsheet_to_write_spreadsheet(tmp_path, builder_name):
-    """The refusal now has a real answer: `write_spreadsheet` writes the .xlsx in-process,
-    so the old ".csv first, then maybe a script" routing is gone from this branch. The
-    exception also carries `materialize_tools`, which `engine._execute_sync` reads to put
-    the tool in front of the model on the next round trip (tests/test_office_integration)."""
+def test_write_file_hands_office_formats_to_the_in_app_writers(tmp_path, builder_name):
+    """The refusal now has a real answer for two of the three families:
+    `write_spreadsheet` writes the .xlsx and `write_document` the .docx in-process, so the
+    old ".csv first, then maybe a script" routing is gone from both branches and survives
+    only for PowerPoint. Each exception also carries `materialize_tools`, which
+    `engine._execute_sync` reads to put the right tool in front of the model on the next
+    round trip (tests/test_office_integration, tests/test_document_integration)."""
     import coworker.catalog as catalog
 
     ws, _scratch, roots = _dual_roots(tmp_path)
@@ -166,19 +168,45 @@ def test_write_file_hands_a_spreadsheet_to_write_spreadsheet(tmp_path, builder_n
     assert "Macros cannot be generated" in str(excinfo.value)
     assert "write_spreadsheet" in str(excinfo.value)
 
-    # Word/PowerPoint have no in-app writer yet, so they keep the old routing.
-    for suffix in (".docx", ".docm", ".pptx", ".pptm"):
+    # Word now has an in-app writer too, so .docx routes exactly like .xlsx does.
+    for suffix in (".docx", ".docm"):
         with pytest.raises(ValueError) as excinfo:
             write_file(path=f"文档{suffix}", content="x")
+        doc = str(excinfo.value)
+        assert "ZIP container" in doc, suffix
+        assert "write_document" in doc, suffix
+        assert "load_office_tools" in doc, suffix
+        # Same detour removed here: the .csv fallback and the "check for Python, then
+        # write a script" route only made sense while nothing in the app wrote a .docx.
+        assert "run_shell" not in doc, suffix
+        assert "python-docx" not in doc, suffix
+        assert "Tell the user which format you actually delivered" in doc, suffix
+        assert excinfo.value.materialize_tools == ("write_document",), suffix
+        assert not (ws / f"文档{suffix}").exists(), suffix
+    # .docm too, plus the reason a macro document cannot be delivered at all.
+    with pytest.raises(ValueError) as excinfo:
+        write_file(path="宏文档.docm", content="x")
+    assert "Macros cannot be generated" in str(excinfo.value)
+    assert "write_document" in str(excinfo.value)
+
+    # PowerPoint has no in-app writer yet, so it keeps the old routing.
+    for suffix in (".pptx", ".pptm"):
+        with pytest.raises(ValueError) as excinfo:
+            write_file(path=f"演示{suffix}", content="x")
         doc = str(excinfo.value)
         # The route that always works comes FIRST. A frozen backend spawns the USER's
         # shell, and a Chinese-Windows office PC has no Python — leading with the script
         # route buys a confident plan that dies three commands later.
-        assert doc.index(".csv") < doc.index("python-docx"), suffix
+        assert doc.index(".csv") < doc.index("python-pptx"), suffix
         assert "Only once you have checked with run_shell" in doc, suffix
         assert "U+FEFF" in doc, suffix  # a BOM-less UTF-8 CSV reads as the local codepage
         assert "tell the user which format you actually delivered" in doc, suffix
+        # Neither in-app writer can help with a deck; naming one would send the model
+        # off to produce a spreadsheet or a document and call it a presentation.
         assert "write_spreadsheet" not in doc, suffix
+        assert "write_document" not in doc, suffix
+        # python-docx belonged to the old .docx branch and has no business here.
+        assert "python-docx" not in doc, suffix
 
     # Every other extension is untouched.
     assert write_file(path="报告.csv", content="a,b\n").startswith("Wrote ")

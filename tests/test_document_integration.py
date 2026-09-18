@@ -261,3 +261,283 @@ async def test_a_scheduled_task_approves_its_own_document_write(tmp_path, monkey
     )
     assert outcome is ApprovalOutcome.ONCE
     assert manager.inbox.pending(run.session_id) == []
+
+
+# -- on-demand exposure: the loader it shares with write_spreadsheet ---------------------
+
+
+class _StubProvider:
+    """build_engine never calls the provider at build time (same stand-in the other
+    build_engine suites use)."""
+
+    def complete(self, **_kw):  # pragma: no cover - never invoked at build time
+        from coworker.providers import AssistantTurn
+
+        return AssistantTurn()
+
+    def capabilities(self, _model):  # pragma: no cover
+        from coworker.providers.base import ModelCapabilities
+
+        return ModelCapabilities()
+
+
+def _engine_for(agent, tmp_path, **kw):
+    from coworker.agent import build_engine
+
+    return build_engine(agent=agent, workspace=tmp_path, provider=_StubProvider(), **kw)
+
+
+def _schema_names(engine) -> set[str]:
+    return {s["function"]["name"] for s in engine.registry.schemas()}
+
+
+def test_office_tools_exposes_both_writers_in_one_set():
+    """`agent.build_engine` hands the loader whatever `office_tools` returns, so the set
+    membership IS the exposure. A `document_tools` that stopped being spliced in there
+    would leave `write_document` importable, tested and unreachable from any session."""
+    from coworker.tools.office import office_tools
+
+    assert [t.__name__ for t in office_tools("/tmp/cw-both")] == [
+        "write_spreadsheet",
+        "write_document",
+    ]
+
+
+def test_a_fresh_session_advertises_the_loader_not_the_document_tool(tmp_path):
+    """The whole point of the deferral: `write_document`'s schema is ~1,000 chars,
+    re-billed every round trip of every session, for a tool most turns never call."""
+    from coworker.agents import cowork_agent
+
+    engine = _engine_for(cowork_agent(), tmp_path)
+    try:
+        names = _schema_names(engine)
+        assert "load_office_tools" in names
+        assert "write_document" not in names
+    finally:
+        engine.executor.close()
+
+
+def test_calling_the_loader_puts_both_writers_in_the_next_prompt(tmp_path):
+    """One loader, both tools — a model that called it for a spreadsheet and is then asked
+    for a document must not have to discover a second loader."""
+    from coworker.agents import cowork_agent
+
+    engine = _engine_for(cowork_agent(), tmp_path)
+    try:
+        said = engine.registry.execute("load_office_tools", {})
+        assert "write_document" in said and "write_spreadsheet" in said
+        names = _schema_names(engine)
+        assert "write_document" in names and "write_spreadsheet" in names
+    finally:
+        engine.executor.close()
+
+
+def test_the_document_tool_is_reachable_by_name_without_the_loader(tmp_path):
+    """`ToolRegistry.defer` keeps the held-back name KNOWN. A model that calls
+    `write_document` straight out — from a resumed transcript, or because the refusal text
+    named it — gets the tool, not "no such tool"."""
+    from coworker.agents import cowork_agent
+
+    engine = _engine_for(cowork_agent(), tmp_path)
+    try:
+        spec = engine.registry.get("write_document")
+        assert spec is not None and spec.name == "write_document"
+        assert spec.metadata.requires_approval is True
+        assert "write_document" in _schema_names(engine)
+    finally:
+        engine.executor.close()
+
+
+def test_every_persona_with_write_file_can_reach_the_document_tool(tmp_path):
+    """The registration condition, stated as behaviour. Cowork and Code have file tools;
+    Chat has none and must not be able to conjure the tool (it has no writable root
+    either), and the read-only explorer subagent builds its own registry entirely."""
+    from coworker.agents import chat_agent, code_agent, cowork_agent
+
+    for factory in (cowork_agent, code_agent):
+        engine = _engine_for(factory(), tmp_path)
+        try:
+            assert "write_file" in engine.registry.names(), factory.__name__
+            assert "load_office_tools" in _schema_names(engine), factory.__name__
+            assert engine.registry.get("write_document") is not None, factory.__name__
+        finally:
+            engine.executor.close()
+
+    chat = _engine_for(chat_agent(), tmp_path)
+    try:
+        assert "write_file" not in chat.registry.names()
+        assert "load_office_tools" not in _schema_names(chat)
+        # Not merely hidden — never deferred either, so no call can conjure it.
+        assert chat.registry.get("write_document") is None
+    finally:
+        if chat.executor is not None:
+            chat.executor.close()
+
+
+def test_the_explorer_subagent_carries_neither_the_loader_nor_the_tool(tmp_path):
+    """Explore is read-only by construction — its child registry is assembled in
+    `subagent.build_explorer_engine`, not by build_engine, so the loader must be absent
+    and unreachable there however build_engine changes."""
+    from coworker.tools.subagent import build_explorer_engine
+
+    child = build_explorer_engine(
+        workspace=tmp_path, provider=_StubProvider(), model="stub"
+    )
+    assert "write_file" not in child.registry.names()
+    assert "load_office_tools" not in _schema_names(child)
+    assert child.registry.get("write_document") is None
+
+
+def test_the_loader_description_names_both_writers(tmp_path):
+    """A model deciding whether to spend a round trip on the loader only sees this string.
+    Naming just the spreadsheet — which is what the loader said before `write_document`
+    existed — means a model asked for a Word file reads "not for me" and goes off to write
+    Markdown instead. The size ceiling lives in tests/test_office_integration.py."""
+    from coworker.agents import cowork_agent
+
+    engine = _engine_for(cowork_agent(), tmp_path)
+    try:
+        schema = next(
+            s
+            for s in engine.registry.schemas()
+            if s["function"]["name"] == "load_office_tools"
+        )
+        description = schema["function"]["description"]
+        assert "write_document" in description and "write_spreadsheet" in description
+        assert ".docx" in description
+        assert len(json.dumps(schema)) <= 400, len(json.dumps(schema))
+    finally:
+        engine.executor.close()
+
+
+def test_the_materialised_tool_shares_the_session_roots_with_write_file(tmp_path):
+    """The loader is built from the same roots LIST object the file tools got, not a copy.
+    A folder granted mid-session therefore becomes writable for documents in that same
+    turn — snapshotting the list is the bug this pins."""
+    from coworker.agents import cowork_agent
+    from coworker.roots import RootDir
+
+    scratch, granted = tmp_path / "scratch", tmp_path / "granted"
+    scratch.mkdir()
+    granted.mkdir()
+    engine = _engine_for(
+        cowork_agent(),
+        scratch,
+        roots=[RootDir(path=scratch, writable=True, label="scratch")],
+    )
+    try:
+        write_document = engine.registry.get("write_document").func
+        # Before the grant the folder is off limits — same wording write_file uses.
+        try:
+            write_document(path=str(granted / "报告.docx"), markdown=_MARKDOWN)
+            raise AssertionError("a path outside every root must be refused")
+        except PermissionError as exc:
+            assert "escapes allowed roots" in str(exc)
+
+        engine.permissions.roots.append(
+            RootDir(path=granted, writable=True, label="granted")
+        )
+        out = write_document(path=str(granted / "报告.docx"), markdown=_MARKDOWN)
+        assert (granted / "报告.docx").exists()
+        assert "(root: granted)" in out
+    finally:
+        engine.executor.close()
+
+
+# -- the second door: a refused .docx materialises the tool that can do it ---------------
+
+
+def _call(name, arguments, call_id="tc1"):
+    from coworker.providers import ToolCall
+
+    return ToolCall(id=call_id, name=name, arguments=arguments)
+
+
+def test_a_refused_docx_write_makes_write_document_available(tmp_path):
+    """The real path, through the real `write_file`: the model asks for a .docx, is told
+    no, and finds the right tool in its list on the next round trip without having to
+    think of `load_office_tools` first. `engine._execute_sync` reads `materialize_tools`
+    off the raised exception; the contract is that the error the model sees is UNCHANGED —
+    same message, same `error_type` — and the named tool simply becomes available."""
+    from coworker.agents import cowork_agent
+
+    engine = _engine_for(cowork_agent(), tmp_path)
+    try:
+        assert "write_document" not in _schema_names(engine)
+
+        result, status = engine._execute_sync(
+            _call("write_file", {"path": "x.docx", "content": "# 标题\n"})
+        )
+        assert status == "error"
+        assert result["error_type"] == "ValueError"  # unchanged for the model
+        assert "write_document" in result["error"]
+        assert "write_document" in _schema_names(engine)
+        assert not (tmp_path / "x.docx").exists()
+    finally:
+        engine.executor.close()
+
+
+def test_a_refused_docm_write_explains_the_macro_limit(tmp_path):
+    """.docm is a real container this app could write the body of, but not the macros that
+    are the whole reason for the extension — so the refusal has to say which format IS on
+    offer rather than implying a .docm is coming."""
+    from coworker.agents import cowork_agent
+
+    engine = _engine_for(cowork_agent(), tmp_path)
+    try:
+        result, status = engine._execute_sync(
+            _call("write_file", {"path": "宏文档.docm", "content": "x"})
+        )
+        assert status == "error" and result["error_type"] == "ValueError"
+        message = result["error"]
+        assert "Macros cannot be generated" in message
+        assert "write_document" in message and ".docx" in message
+        assert "write_document" in _schema_names(engine)
+        assert not (tmp_path / "宏文档.docm").exists()
+    finally:
+        engine.executor.close()
+
+
+def test_a_refused_pptx_write_names_neither_in_app_writer(tmp_path):
+    """The family with no in-app writer keeps the old routing, and must not be handed a
+    tool that writes a different kind of file — a model told to "use write_document" for a
+    deck would deliver a .docx and report a presentation."""
+    from coworker.agents import cowork_agent
+
+    engine = _engine_for(cowork_agent(), tmp_path)
+    try:
+        result, status = engine._execute_sync(
+            _call("write_file", {"path": "演示.pptx", "content": "x"})
+        )
+        assert status == "error" and result["error_type"] == "ValueError"
+        message = result["error"]
+        assert "python-pptx" in message
+        assert "python-docx" not in message  # belonged to the old .docx branch
+        assert "write_document" not in message and "write_spreadsheet" not in message
+        assert "write_document" not in _schema_names(engine)
+    finally:
+        engine.executor.close()
+
+
+# -- packaging: the dependencies must survive a merge from upstream ----------------------
+
+
+def test_python_docx_and_markdown_it_are_declared_and_importable_in_fork():
+    """Two pins and two real imports. CI installs the backend straight from pyproject and
+    never smoke-tests a frozen build, so a merge that drops a line fails NOWHERE in this
+    repo — it surfaces as "this build is missing python-docx" on a user's machine, where
+    there is no Python to fall back on. `docx` is collected with collect_all rather than
+    collect_submodules because the .docx starts from the package's own default template."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
+    assert "python-docx" in pyproject
+    assert "markdown-it-py" in pyproject
+
+    spec = (root / "packaging" / "openworker-server.spec").read_text(encoding="utf-8")
+    assert '"docx"' in spec
+    assert '"markdown_it"' in spec
+
+    import docx  # noqa: F401  - the dependency itself, not a stub
+    import markdown_it  # noqa: F401
