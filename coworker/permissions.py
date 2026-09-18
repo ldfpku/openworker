@@ -152,6 +152,7 @@ _PATH_ARG: dict[str, str] = {
     "write_file": "path",
     "replace_in_file": "path",
     "write_spreadsheet": "path",
+    "write_document": "path",
 }
 # apply_patch (Codex format) file headers, and unified-diff `+++ b/<path>` headers.
 _APPLY_PATCH_FILE = re.compile(
