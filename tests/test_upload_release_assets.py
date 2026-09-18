@@ -223,6 +223,7 @@ class FakeGh:
         releases: list[dict] | None = None,
         behaviors: dict[str, list[Behavior]] | None = None,
         promote_on_get: tuple[str, ...] = (),
+        on_list_assets=None,
     ) -> None:
         self.repo = REPO
         self.clock = clock
@@ -234,6 +235,11 @@ class FakeGh:
         self.assets: dict[int, dict] = {a["id"]: dict(a) for a in (assets or [])}
         self.behaviors = {k: list(v) for k, v in (behaviors or {}).items()}
         self.promote_on_get = set(promote_on_get)
+        # Called with this FakeGh at the top of every list_assets, so a test can make
+        # api.github.com misbehave at a precise moment: raise GhError, or rewrite an
+        # asset the way GitHub would if the draft were filled by a different build.
+        self.on_list_assets = on_list_assets
+        self.list_calls = 0
         self._ids = itertools.count(9000)
         self._live: list[FakeUpload] = []
         self.uploads: list[str] = []
@@ -266,6 +272,9 @@ class FakeGh:
 
     def list_assets(self, release_id: int) -> list[dict]:
         assert release_id == RELEASE_ID or any(r["id"] == release_id for r in self.releases)
+        self.list_calls += 1
+        if self.on_list_assets is not None:
+            self.on_list_assets(self)
         self._tick()
         return [dict(a) for a in self.assets.values()]
 
@@ -357,12 +366,41 @@ def test_fresh_draft_uploads_all_fourteen_with_the_manifest_last(dist, clock):
     assert run.ok, run.errors
     assert (run.uploaded, run.skipped) == (14, 0)
     assert len(run.results) == 14
-    assert gh.uploads == mod.upload_order(mod.expected_assets(VERSION))
-    # latest.json is what shipped apps poll; it must not advertise a payload that has
-    # not landed yet, so it goes last.
-    assert gh.uploads[-1] == "latest.json"
+    # Spelled out rather than derived from upload_order(): an expectation computed by the
+    # code under test asserts nothing at all.
+    assert gh.uploads == [
+        "OpenWorker-macos-arm64.app.tar.gz",
+        "OpenWorker-macos-arm64.app.tar.gz.sig",
+        "OpenWorker-macos-arm64.dmg",
+        "OpenWorker-macos-x64.app.tar.gz",
+        "OpenWorker-macos-x64.app.tar.gz.sig",
+        "OpenWorker-macos-x64.dmg",
+        "OpenWorker-windows-setup.exe",
+        "OpenWorker-windows-setup.exe.sig",
+        "OpenWorker-windows.msi",
+        "OpenWorker_1.2.3_aarch64.dmg",
+        "OpenWorker_1.2.3_x64-setup.exe",
+        "OpenWorker_1.2.3_x64_en-US.msi",
+        "OpenWorker_1.2.3_x86_64.dmg",
+        "latest.json",
+    ]
     assert gh.deleted == []
     assert {r.action for r in run.results} == {"uploaded"}
+
+
+def test_the_manifest_goes_last_even_when_sorting_alone_would_not_put_it_there():
+    # latest.json is what shipped apps poll: it must never advertise a payload that has
+    # not landed yet. With the real asset names every other name happens to start with an
+    # uppercase 'O', which sorts before lowercase 'l' — so the fresh-draft test above
+    # cannot tell `upload_order` apart from a plain `sorted()`. This one can.
+    assert mod.upload_order(["zzz.bin", "latest.json"]) == ["zzz.bin", "latest.json"]
+    assert mod.upload_order(["latest.json", "zzz.bin", "aaa.bin"]) == [
+        "aaa.bin",
+        "zzz.bin",
+        "latest.json",
+    ]
+    assert mod.upload_order(["latest.json"]) == ["latest.json"]
+    assert mod.upload_order(["b", "a"]) == ["a", "b"]
 
 
 def test_rerun_over_a_complete_release_uploads_and_deletes_nothing(dist, clock):
@@ -383,8 +421,13 @@ def test_partial_release_fills_the_gaps_and_deletes_only_half_finished_records(d
     run = run_upload(gh, clock, dist)
 
     assert run.ok, run.errors
-    assert sorted(gh.uploads) == sorted(missing + half_done)
-    assert gh.uploads[-1] == "latest.json"
+    assert gh.uploads == [
+        "OpenWorker-macos-x64.dmg",
+        "OpenWorker-windows-setup.exe",
+        "OpenWorker-windows-setup.exe.sig",
+        "OpenWorker-windows.msi",
+        "latest.json",
+    ]
     assert sorted(gh.deleted) == sorted((name, "starter") for name in half_done)
     assert (run.uploaded, run.skipped) == (5, 9)
     by_name = {r.name: r.action for r in run.results}
@@ -409,6 +452,65 @@ def test_preflight_refuses_a_draft_holding_another_builds_bytes(dist, clock):
     assert gh.uploads == []
     assert gh.deleted == []
     assert gh.illegal_deletes == []
+
+
+def test_a_mismatching_digest_discovered_after_preflight_still_aborts(dist, clock):
+    # Preflight lets an uploaded asset with an EMPTY digest through (GitHub fills the
+    # field a moment after the state flips), so the mismatch is caught later, by
+    # _judge_uploaded, on the per-file pass. Nothing may be uploaded or deleted after it.
+    name = "OpenWorker-windows.msi"
+    wrong = "sha256:" + "d" * 64
+
+    def fill_in_the_wrong_digest(gh):
+        if gh.list_calls < 2:
+            return  # let preflight see the empty digest
+        for asset in gh.assets.values():
+            if asset["name"] == name:
+                asset["digest"] = wrong
+
+    gh = FakeGh(
+        dist,
+        clock=clock,
+        assets=remote_assets(dist, digest_override={name: ""}),
+        on_list_assets=fill_in_the_wrong_digest,
+    )
+
+    run = run_upload(gh, clock, dist)
+
+    assert not run.ok
+    blob = "\n".join(run.errors)
+    assert name in blob
+    assert wrong in blob
+    assert mod.sha256_file(dist / name) in blob
+    assert gh.uploads == []
+    assert gh.deleted == []
+    assert gh.illegal_deletes == []
+
+
+def test_judge_uploaded_accepts_a_matching_digest_and_rejects_anything_else(dist, clock):
+    # The direct unit test for the branch above: `if digest == local_digest` is the one
+    # line standing between a re-run and an asset set that mixes two builds.
+    gh = FakeGh(dist, clock=clock, assets=remote_assets(dist))
+    ctx = mod._Ctx(
+        api=gh,
+        release_id=RELEASE_ID,
+        tag=TAG,
+        sleep=clock.sleep,
+        monotonic=clock.monotonic,
+        log=lambda message: None,
+    )
+    name = "OpenWorker-windows.msi"
+    local = mod.sha256_file(dist / name)
+
+    good = mod._judge_uploaded(ctx, name, {"id": 1, "name": name, "state": "uploaded", "digest": local}, local)
+    assert good.done and good.fatal is None
+
+    other = "sha256:" + "e" * 64
+    bad = mod._judge_uploaded(ctx, name, {"id": 1, "name": name, "state": "uploaded", "digest": other}, local)
+    assert not bad.done
+    assert bad.fatal is not None
+    assert name in bad.fatal and other in bad.fatal and local in bad.fatal
+    assert gh.deleted == []
 
 
 def test_preflight_refuses_an_unexpected_uploaded_asset(dist, clock):
@@ -506,6 +608,81 @@ def test_giving_up_never_touches_what_already_landed(dist, clock):
     assert gh.illegal_deletes == []
     still_there = {a["name"] for a in gh.assets.values() if a["state"] == "uploaded"}
     assert still_there == set(already)
+
+
+def test_a_transient_api_error_mid_attempt_is_only_a_failed_attempt(dist, clock):
+    # api.github.com having a bad minute must not abandon the run: the files that already
+    # landed would be left for the next re-run to redo. _api's own retry has already spent
+    # ~30s by the time this GhError escapes, so the right move is the normal backoff.
+    name = "OpenWorker-macos-arm64.app.tar.gz"  # first in upload order
+    fired = []
+
+    def flaky(gh):
+        if gh.uploads and not fired:
+            fired.append(gh.list_calls)
+            raise mod.GhError("gh api GET repos/x/y/releases/42/assets failed: HTTP 502")
+
+    gh = FakeGh(
+        dist,
+        clock=clock,
+        behaviors={name: [Behavior(effect="nothing", exit_at=None)]},
+        on_list_assets=flaky,
+    )
+
+    run = run_upload(gh, clock, dist)
+
+    assert run.ok, run.errors
+    assert fired, "the fake never raised"
+    assert next(r for r in run.results if r.name == name).attempts == 2
+    assert run.backoffs == [10.0]
+    assert gh.uploads.count(name) == 2
+    assert gh.stopped.count(name) == 2  # the interrupted gh was killed, not orphaned
+    assert (run.uploaded, run.skipped) == (14, 0)
+
+
+def test_repeated_api_errors_exhaust_the_attempts_and_damage_nothing(dist, clock):
+    name = "OpenWorker-macos-arm64.app.tar.gz"
+
+    def always(gh):
+        if gh.uploads:
+            raise mod.GhError("gh api GET repos/x/y/releases/42/assets failed: HTTP 502")
+
+    gh = FakeGh(
+        dist,
+        clock=clock,
+        assets=remote_assets(dist, omit=(name,)),
+        behaviors={name: [Behavior(effect="nothing", exit_at=None) for _ in range(5)]},
+        on_list_assets=always,
+    )
+
+    run = run_upload(gh, clock, dist, max_attempts=3)
+
+    assert not run.ok
+    assert any("GitHub API error" in e and "gave up after 3 attempts" in e for e in run.errors)
+    assert run.backoffs == [10.0, 20.0]
+    # Attempts 2 and 3 fail in the pre-upload reconcile, before gh is even started: with
+    # the API unreadable there is no safe way to decide what to do with the name.
+    assert gh.uploads == [name]
+    assert gh.deleted == []
+    assert gh.illegal_deletes == []
+    survivors = {a["name"] for a in gh.assets.values() if a["state"] == "uploaded"}
+    assert survivors == set(mod.expected_assets(VERSION)) - {name}
+
+
+def test_preflight_api_errors_still_abort_immediately(dist, clock):
+    # The other side of the coin: nothing has been written yet, so there is nothing to
+    # protect and no reason to spend six attempts finding that out.
+    def always(gh):
+        raise mod.GhError("gh api GET repos/x/y/releases/42/assets failed: HTTP 502")
+
+    gh = FakeGh(dist, clock=clock, on_list_assets=always)
+
+    run = run_upload(gh, clock, dist)
+
+    assert not run.ok
+    assert any("HTTP 502" in e for e in run.errors)
+    assert gh.uploads == []
+    assert run.backoffs == []
 
 
 # --------------------------------------------------------------------------------------
@@ -834,6 +1011,66 @@ def test_every_updater_artifact_and_its_signature_are_in_the_expected_set():
 def test_the_versioned_names_track_the_version():
     assert "OpenWorker_0.6.2_x64-setup.exe" in mod.expected_assets("0.6.2")
     assert "OpenWorker_0.6.2_x64-setup.exe" not in mod.expected_assets("0.6.3")
+
+
+# --------------------------------------------------------------------------------------
+# GhApi._paginated — offline, with a stub executor in place of the gh subprocess
+# --------------------------------------------------------------------------------------
+
+
+def _stub_api(api, pages: dict[int, list]) -> list[str]:
+    """Replace GhApi._api with a page server. Returns the list of paths it was asked for."""
+    seen: list[str] = []
+
+    def fake(path: str, *, method: str = "GET", allow_404: bool = False):
+        seen.append(path)
+        return pages.get(int(path.rsplit("page=", 1)[1]), [])
+
+    api._api = fake
+    return seen
+
+
+def test_paginated_fetches_the_next_page_after_a_full_one_and_stops_on_a_short_one():
+    # 100 is the boundary that matters: the repo's release list will cross it, and a
+    # single-page fetch would silently hide the tag we are looking for.
+    api = mod.GhApi(REPO, sleep=lambda seconds: None)
+    pages = {1: [{"i": n} for n in range(100)], 2: [{"i": 100}, {"i": 101}]}
+    seen = _stub_api(api, pages)
+
+    out = api._paginated("repos/x/y/releases")
+
+    assert [item["i"] for item in out] == list(range(102))
+    assert seen == [
+        "repos/x/y/releases?per_page=100&page=1",
+        "repos/x/y/releases?per_page=100&page=2",
+    ]
+
+
+def test_paginated_stops_on_an_empty_page():
+    api = mod.GhApi(REPO, sleep=lambda seconds: None)
+    seen = _stub_api(api, {1: [{"i": n} for n in range(100)], 2: []})
+
+    out = api._paginated("repos/x/y/releases")
+
+    assert len(out) == 100
+    assert len(seen) == 2  # asked for page 2, believed the empty answer
+
+
+def test_paginated_stops_after_one_short_page():
+    api = mod.GhApi(REPO, sleep=lambda seconds: None)
+    seen = _stub_api(api, {1: [{"i": 0}, {"i": 1}]})
+
+    assert len(api._paginated("repos/x/y/releases")) == 2
+    assert seen == ["repos/x/y/releases?per_page=100&page=1"]
+
+
+def test_paginated_appends_to_a_path_that_already_has_a_query():
+    api = mod.GhApi(REPO, sleep=lambda seconds: None)
+    seen = _stub_api(api, {1: []})
+
+    api._paginated("repos/x/y/releases?draft=true")
+
+    assert seen == ["repos/x/y/releases?draft=true&per_page=100&page=1"]
 
 
 def test_every_runtime_string_is_plain_ascii():

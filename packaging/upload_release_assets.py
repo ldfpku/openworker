@@ -589,34 +589,44 @@ def _upload_one(
     last_reason = ""
 
     for attempt in range(1, max_attempts + 1):
-        state = _reconcile(ctx, name, local_digest)
-        if state.fatal:
-            return None, state.fatal
-        replaced = replaced or state.deleted_stale
-        if state.done:
-            action = "skipped" if (attempt == 1 and not replaced) else (
-                "replaced-stale" if replaced else "uploaded"
+        try:
+            state = _reconcile(ctx, name, local_digest)
+            if state.fatal:
+                return None, state.fatal
+            replaced = replaced or state.deleted_stale
+            if state.done:
+                action = "skipped" if (attempt == 1 and not replaced) else (
+                    "replaced-stale" if replaced else "uploaded"
+                )
+                ctx.log(f"  {name}: {action}")
+                return FileResult(name, action, attempt, size, ctx.monotonic() - started), None
+
+            ctx.log(f"  {name}: uploading ({size} bytes), attempt {attempt}/{max_attempts}")
+            handle_result = _run_attempt(
+                ctx,
+                name,
+                path,
+                local_digest,
+                attempt_timeout=attempt_timeout,
+                poll_interval=poll_interval,
             )
-            ctx.log(f"  {name}: {action}")
-            return FileResult(name, action, attempt, size, ctx.monotonic() - started), None
+            if handle_result.fatal:
+                return None, handle_result.fatal
+            if handle_result.ok:
+                action = "replaced-stale" if replaced else "uploaded"
+                ctx.log(f"  {name}: {action} (attempt {attempt})")
+                return FileResult(name, action, attempt, size, ctx.monotonic() - started), None
+            last_reason = handle_result.reason
+        except GhError as exc:
+            # api.github.com had a bad minute (the read-only retry inside _api already
+            # gave it ~30s). That is one failed ATTEMPT, not a failed run: letting it
+            # abort here would throw away the files that already landed and hand the
+            # next re-run more work, which is the exact failure mode this script exists
+            # to remove. _run_attempt's own `finally` has already stopped gh.
+            # Preflight and release resolution stay fail-fast on purpose: nothing has
+            # been written yet at that point, so stopping costs nothing.
+            last_reason = f"GitHub API error: {exc}"
 
-        ctx.log(f"  {name}: uploading ({size} bytes), attempt {attempt}/{max_attempts}")
-        handle_result = _run_attempt(
-            ctx,
-            name,
-            path,
-            local_digest,
-            attempt_timeout=attempt_timeout,
-            poll_interval=poll_interval,
-        )
-        if handle_result.fatal:
-            return None, handle_result.fatal
-        if handle_result.ok:
-            action = "replaced-stale" if replaced else "uploaded"
-            ctx.log(f"  {name}: {action} (attempt {attempt})")
-            return FileResult(name, action, attempt, size, ctx.monotonic() - started), None
-
-        last_reason = handle_result.reason
         ctx.log(f"  {name}: attempt {attempt} failed - {last_reason}")
         if attempt < max_attempts:
             delay = _backoff_delay(attempt, rand)
