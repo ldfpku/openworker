@@ -17,6 +17,12 @@ export type EventType =
   | "tool_finished"
   | "iteration_end"
   | "turn_end"
+  // The turn answered and completed, but the provider cut the answer off part-way — a
+  // warning appended after the message, never a failure (engine.py `turn_truncated`).
+  | "turn_truncated"
+  // A model call that never landed is being re-run automatically (engine.py `turn_retry`);
+  // the attempt it replaces is discarded, stream buffer included.
+  | "turn_retry"
   | "error"
   | "input_rejected"
   | "interrupted"

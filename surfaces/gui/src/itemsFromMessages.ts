@@ -8,7 +8,16 @@
 import type { ConversationMessage } from "./api";
 import i18n from "./i18n";
 import type { Attachment, Item } from "./types";
-import { compactionText, modelSwitchText, modeNoticeBody, modeOnText, reviewerPausedText } from "./modeNotice";
+import {
+  compactionText,
+  modelSwitchText,
+  modeNoticeBody,
+  modeOnText,
+  reviewerPausedText,
+  turnAbortedText,
+  turnRetryText,
+  turnTruncatedText,
+} from "./modeNotice";
 
 // i18n.t() returns undefined before init() (bare unit tests call this mapper without
 // initLocale(); the app always inits in main.tsx). Mirror react-i18next's graceful
@@ -148,17 +157,49 @@ export function itemsFromMessages(messages: ConversationMessage[]): Item[] {
                         }
                       : m.kind === "mode_switch"
                         ? { kind: "notice", tone: "info", text: modeOnText(m.text || ""), bookkeeping: true }
-                  : {
-                      kind: "notice",
-                      tone: "warn",
-                      text: t("Error: {{message}}", { message: m.text || t("unknown") }),
-                      retriable: true,
-                    },
+                        : CUT_OFF_NOTICE_KINDS.has(String(m.kind))
+                          ? cutOffNoticeItem(m)
+                          : {
+                              kind: "notice",
+                              tone: "warn",
+                              text: t("Error: {{message}}", { message: m.text || t("unknown") }),
+                              retriable: true,
+                            },
       );
     }
     // system messages are omitted; tool-result messages are folded into the tool row above
   }
   return items;
+}
+
+// engine.py's three "the provider cut this turn short" markers, in one helper rather than
+// three more arms on a chain that is already ten ternaries deep. All three carry a
+// structured `reason` beside the server's English sentence, so each localizes from the
+// reason and falls back to that sentence for a reason it doesn't recognize.
+const CUT_OFF_NOTICE_KINDS = new Set(["turn_aborted", "turn_truncated", "turn_retry"]);
+
+function cutOffNoticeItem(m: ConversationMessage): Item {
+  // Nothing came back at all: reported exactly like a provider failure, Retry and all.
+  // No "Error: " scaffold — the text is already a whole sentence.
+  if (m.kind === "turn_aborted")
+    return {
+      kind: "notice",
+      tone: "warn",
+      text: turnAbortedText(m.reason, m.text || "", m.retries),
+      retriable: true,
+    };
+  // An answer DID arrive and the turn completed; this only warns that it may be missing
+  // its tail, so it is NOT retriable — retrying would re-answer a finished turn.
+  if (m.kind === "turn_truncated")
+    return { kind: "notice", tone: "warn", text: turnTruncatedText(m.reason, m.text || "") };
+  // One automatic re-run of a call that never landed. Quiet: the turn it belongs to may
+  // well have gone on to succeed, so it must not read as a failure — and the `info` tone
+  // is what keeps it from consuming the Retry button on the notice that follows it.
+  return {
+    kind: "notice",
+    tone: "info",
+    text: turnRetryText(m.reason, m.attempt, m.max, m.text || ""),
+  };
 }
 
 function mcpNoticeItem(m: ConversationMessage): Item {

@@ -508,7 +508,17 @@
       "unknown": "unknown",
       "mode_on": "{{label}} is on.",
       "auto_approve_explainer": "Auto-approve uses a model to let routine actions through without asking; anything it isn't sure about still comes to you. It cuts interruptions but still carries some risk i.e. a command it allows still reaches anything you can. These are model judgments, and not guarantees.",
-      "reviewer_paused": "Auto-approve is paused for the rest of this turn — the reviewer blocked {{n}} actions in a row, so approvals now come to you."
+      "reviewer_paused": "Auto-approve is paused for the rest of this turn — the reviewer blocked {{n}} actions in a row, so approvals now come to you.",
+      "turn_aborted_no_finish": "The model's response was cut off before it finished (no end-of-stream from the provider). Nothing was answered or done.",
+      "turn_aborted_length": "The model hit its output length limit before producing an answer.",
+      "turn_aborted_empty": "The model returned an empty response.",
+      "turn_aborted_filtered": "The provider blocked this response under its content policy.",
+      "turn_truncated_no_finish": "The response may be incomplete: it was cut off before the provider signalled the end of the stream.",
+      "turn_truncated_length": "The response may be incomplete: the model hit its output length limit.",
+      "turn_aborted_retried": " Automatic retry didn't help ({{n}} retries).",
+      "turn_retry_no_finish": "The model's response was cut off; retrying ({{attempt}}/{{max}})…",
+      "turn_retry_empty": "The model returned an empty response; retrying ({{attempt}}/{{max}})…",
+      "turn_retry_transient": "The model call failed; retrying ({{attempt}}/{{max}})…"
     },
     "jump_to_latest": "Jump to latest",
     "waiting_for_agent": "Waiting for agent...",

@@ -490,7 +490,17 @@
       "unknown": "未知",
       "mode_on": "已开启：{{label}}",
       "auto_approve_explainer": "自动审批会用模型来放行常规操作，无需逐一询问；拿不准的操作仍会交由你处理。这样能减少打断，但仍有风险——被放行的指令依然能触达你能触达的任何东西。这些只是模型的判断，并非保证。",
-      "reviewer_paused": "自动审批已为本轮对话暂停——审查器连续拦截了 {{n}} 次操作，之后的批准将改为询问你。"
+      "reviewer_paused": "自动审批已为本轮对话暂停——审查器连续拦截了 {{n}} 次操作，之后的批准将改为询问你。",
+      "turn_aborted_no_finish": "模型输出在完成前被中断（上游未发送结束帧），本轮没有产生任何回答或操作。",
+      "turn_aborted_length": "模型在给出回答前就触及了输出长度上限。",
+      "turn_aborted_empty": "模型返回了空回复。",
+      "turn_aborted_filtered": "这条回复被提供商的内容策略拦截了。",
+      "turn_truncated_no_finish": "这条回复可能不完整：它在上游发出结束帧之前就被截断了。",
+      "turn_truncated_length": "这条回复可能不完整：模型触及了输出长度上限。",
+      "turn_aborted_retried": "自动重试未能解决（重试 {{n}} 次）。",
+      "turn_retry_no_finish": "模型输出被中断，正在自动重试（第 {{attempt}}/{{max}} 次）…",
+      "turn_retry_empty": "模型返回了空回复，正在自动重试（第 {{attempt}}/{{max}} 次）…",
+      "turn_retry_transient": "模型调用失败，正在自动重试（第 {{attempt}}/{{max}} 次）…"
     },
     "jump_to_latest": "跳转到最新",
     "waiting_for_agent": "正在等待代理…",

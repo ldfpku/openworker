@@ -128,3 +128,64 @@ export function compactionOptionLabel(raw: string): string {
   const key = COMPACTION_OPTION_KEYS[raw];
   return key ? i18n.t(key) : raw;
 }
+
+// coworker/engine.py `_TURN_ABORTED_TEXT` / `_TURN_TRUNCATED_TEXT`: a turn the provider
+// cut short. Unlike every marker above, these carry a STRUCTURED `reason` alongside the
+// English sentence (`no_finish` / `length` / `empty`), so the lookup is on the reason and
+// the sentence is only the fallback — a server that grows a new reason still renders, in
+// English, instead of showing nothing.
+//   turn_aborted   nothing came back at all → reported like a provider failure (retriable)
+//   turn_truncated an answer arrived but was cut → a warning after it; the turn completed
+const TURN_ABORTED_KEYS: Record<string, string> = {
+  no_finish: "app.notice.turn_aborted_no_finish",
+  length: "app.notice.turn_aborted_length",
+  filtered: "app.notice.turn_aborted_filtered",
+  empty: "app.notice.turn_aborted_empty",
+};
+
+const TURN_TRUNCATED_KEYS: Record<string, string> = {
+  no_finish: "app.notice.turn_truncated_no_finish",
+  length: "app.notice.turn_truncated_length",
+};
+
+function byReason(keys: Record<string, string>, reason: unknown, raw: string): string {
+  const key = typeof reason === "string" ? keys[reason] : undefined;
+  return key ? i18n.t(key) : raw;
+}
+
+const TURN_RETRY_KEYS: Record<string, string> = {
+  no_finish: "app.notice.turn_retry_no_finish",
+  empty: "app.notice.turn_retry_empty",
+  transient: "app.notice.turn_retry_transient",
+};
+
+/** The "this turn produced nothing" notice, localized from its `reason`; an unknown (or
+ *  missing) reason falls back to the server's English text. `retries` (present only once
+ *  the engine's automatic retry has already been spent) appends the "we tried" sentence,
+ *  so the user isn't invited to repeat a lost cause blindly. */
+export function turnAbortedText(reason: unknown, raw: string, retries?: unknown): string {
+  const base = byReason(TURN_ABORTED_KEYS, reason, raw);
+  const n = Number(retries) || 0;
+  // The server already appended its own English sentence; only add ours when we replaced
+  // that whole text with a localized one, or the user reads the same thing twice. The
+  // separator lives IN the catalog entry (a space in English, nothing in Chinese) — same
+  // shape as `model_switched_no_vision`.
+  return n > 0 && base !== raw ? base + i18n.t("app.notice.turn_aborted_retried", { n }) : base;
+}
+
+/** The "retrying automatically" marker, localized from `reason` with the attempt counter
+ *  interpolated; an unknown reason falls back to the server's English text. */
+export function turnRetryText(
+  reason: unknown,
+  attempt: unknown,
+  max: unknown,
+  raw: string,
+): string {
+  const key = typeof reason === "string" ? TURN_RETRY_KEYS[reason] : undefined;
+  return key ? i18n.t(key, { attempt: Number(attempt) || 1, max: Number(max) || 1 }) : raw;
+}
+
+/** The "the answer may be incomplete" notice, same contract as `turnAbortedText`. */
+export function turnTruncatedText(reason: unknown, raw: string): string {
+  return byReason(TURN_TRUNCATED_KEYS, reason, raw);
+}

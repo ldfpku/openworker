@@ -53,7 +53,16 @@ import type {
 import { fullPersonaName, isProjectScoped } from "./personaScope";
 import { baseName } from "./paths";
 import { sessionDisplayTitle } from "./sessionTitle";
-import { compactionText, modelSwitchText, modeNoticeBody, modeOnText, reviewerPausedText } from "./modeNotice";
+import {
+  compactionText,
+  modelSwitchText,
+  modeNoticeBody,
+  modeOnText,
+  reviewerPausedText,
+  turnAbortedText,
+  turnRetryText,
+  turnTruncatedText,
+} from "./modeNotice";
 import { promptResolvedNotice } from "./promptResolved";
 import { itemsFromMessages } from "./itemsFromMessages";
 import { hasConversation } from "./draft";
@@ -826,6 +835,16 @@ export function App() {
       // would otherwise live only in the ephemeral buffer until the next turn_start wipes it
       // (owner-hit 2026-07-22). Promote it to a durable transcript item — the engine persists
       // the same text server-side, so the live view and a session reload now agree.
+      // An attempt the engine is about to RE-RUN is discarded server-side — it never
+      // enters history — so promoting its partial here would put a bubble on screen that
+      // vanishes on the next reload, and would glue dead thinking text to the next
+      // attempt's answer. Drop it, exactly as the engine does. (A FINAL abort is the
+      // other way round: the engine keeps that thinking, so it gets `flushPartialStream`
+      // like any other failure.)
+      const dropPartialStream = () => {
+        setStreaming("");
+        setReasoningStream("");
+      };
       const flushPartialStream = () => {
         const partial = streamingRef.current;
         const thinking = reasoningRef.current;
@@ -1193,11 +1212,51 @@ export function App() {
           flushPartialStream();
           setItems((p) => [...p, { kind: "notice", tone: "warn", text: t("app.notice.interrupted") }]);
           break;
+        case "turn_truncated":
+          // The turn DID answer and completed — this only warns that the answer may be
+          // missing its tail (engine.py `turn_truncated`). Not retriable: retrying would
+          // re-answer a finished turn. Localized from the structured `reason`, the same
+          // mapping the persisted-history replay uses (modeNotice.ts), so the live line
+          // and a post-reload replay of it read identically.
+          setItems((p) => [
+            ...p,
+            { kind: "notice", tone: "warn", text: turnTruncatedText(d.reason, String(d.text || "")) },
+          ]);
+          break;
+        case "turn_retry":
+          // The engine is re-running a call that never landed. The abandoned attempt's
+          // stream is dropped, not promoted: it isn't in history either, and leaving it
+          // in the buffer would glue dead thinking text to the next attempt's answer in
+          // one bubble.
+          dropPartialStream();
+          setItems((p) => [
+            ...p,
+            {
+              kind: "notice",
+              tone: "info",
+              text: turnRetryText(d.reason, d.attempt, d.max, String(d.text || "")),
+            },
+          ]);
+          break;
         case "error":
+          // A turn the provider cut short before it answered anything arrives on this
+          // same channel (engine.py `turn_aborted`), carrying a `reason` instead of a raw
+          // error string: its text is already a whole sentence, so it skips the "Error: "
+          // prefix and is localized by reason. The partial is PROMOTED, same as any other
+          // failure — on a final abort the engine persists that thinking too (as an
+          // `aborted` assistant message it never sends to a model), so the live view and
+          // a reload agree. Only a retry drops it, because a retry keeps nothing.
           flushPartialStream();
           setItems((p) => [
             ...p,
-            { kind: "notice", tone: "warn", text: t("app.notice.error") + (d.error || t("app.notice.unknown")), retriable: true },
+            {
+              kind: "notice",
+              tone: "warn",
+              text: d.reason
+                ? turnAbortedText(d.reason, String(d.error || ""), d.retries)
+                : t("app.notice.error") + (d.error || t("app.notice.unknown")),
+              retriable: true,
+            },
           ]);
           break;
         case "input_rejected":
