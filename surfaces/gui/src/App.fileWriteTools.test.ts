@@ -8,17 +8,18 @@ import APP from "./App.tsx?raw";
 // What breaks if this regresses: on `tool_finished`, App.tsx refreshes the Artifacts right
 // rail immediately when `FILE_WRITE_TOOLS.has(d.name)` (or the tool is a browser_* one) — see
 // the comment above that check ("a file write that should appear under Artifacts immediately,
-// not only after the turn"). write_spreadsheet writes a real file to disk exactly like
-// write_file, so it belongs in that Set. If an upstream merge silently reverts this one line
-// back to its pre-write_spreadsheet shape, nothing breaks loudly: the backend still writes the
-// .xlsx correctly, the compact approval row and its preview (ApprovalCard.tsx) still render
-// fine, and every other vitest case stays green — none of them exercise App.tsx's
-// tool_finished handler. The only symptom is that a freshly written spreadsheet silently fails
-// to appear under Artifacts until the turn ends or the user reloads (the exact class of bug
-// fixed for write_file in memory note artifacts-panel-session-products.md). Hence a dedicated
-// pin here, done as a source-text match rather than an import (see the comment above).
+// not only after the turn"). write_spreadsheet and write_document write a real file to disk
+// exactly like write_file, so they belong in that Set. If an upstream merge silently reverts
+// one of these lines back to its pre-write_spreadsheet/pre-write_document shape, nothing
+// breaks loudly: the backend still writes the .xlsx/.docx correctly, the compact approval row
+// and its preview (ApprovalCard.tsx) still render fine, and every other vitest case stays
+// green — none of them exercise App.tsx's tool_finished handler. The only symptom is that a
+// freshly written spreadsheet or document silently fails to appear under Artifacts until the
+// turn ends or the user reloads (the exact class of bug fixed for write_file in memory note
+// artifacts-panel-session-products.md). Hence a dedicated pin here, done as a source-text
+// match rather than an import (see the comment above).
 describe("App.tsx source — FILE_WRITE_TOOLS guard", () => {
-  it("still lists write_spreadsheet alongside write_file (Artifacts-refresh trigger)", () => {
+  it("still lists write_spreadsheet and write_document alongside write_file (Artifacts-refresh trigger)", () => {
     const match = APP.match(/const FILE_WRITE_TOOLS = new Set\(\[([^\]]*)\]\)/);
     if (!match) {
       throw new Error(
@@ -28,5 +29,6 @@ describe("App.tsx source — FILE_WRITE_TOOLS guard", () => {
     const tools = [...match[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
     expect(tools).toContain("write_file");
     expect(tools).toContain("write_spreadsheet");
+    expect(tools).toContain("write_document");
   });
 });

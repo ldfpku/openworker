@@ -8,7 +8,7 @@ import type { IconName } from "./components/Icon";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 
-const EDIT_TOOLS = new Set(["write_file", "write_spreadsheet", "replace_in_file", "apply_patch", "apply_unified_diff"]);
+const EDIT_TOOLS = new Set(["write_file", "write_spreadsheet", "write_document", "replace_in_file", "apply_patch", "apply_unified_diff"]);
 const MEMORY_TOOLS = new Set(["remember", "memory_update", "memory_forget"]);
 const LOAD_TOOLS_RE = /^load_.+_tools$/;
 
@@ -54,6 +54,7 @@ export function stepIcon(name: string): IconName {
       return "file";
     case "write_file":
     case "write_spreadsheet":
+    case "write_document":
     case "replace_in_file":
     case "apply_patch":
     case "apply_unified_diff":

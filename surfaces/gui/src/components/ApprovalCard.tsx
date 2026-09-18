@@ -21,6 +21,7 @@ export function shortArgs(args: any): string {
 const TOOL_VERBS: Record<string, string> = {
   write_file: "approval.verbs.write_file",
   write_spreadsheet: "approval.verbs.write_spreadsheet",
+  write_document: "approval.verbs.write_document",
   replace_in_file: "approval.verbs.edit_file",
   apply_patch: "approval.verbs.apply_patch",
   apply_unified_diff: "approval.verbs.apply_patch",
@@ -30,7 +31,7 @@ const TOOL_VERBS: Record<string, string> = {
 };
 
 // §35: routine workspace writes render as a compact ROW; everything else is a full card.
-const FILE_WRITES = new Set(["write_file", "write_spreadsheet", "replace_in_file", "apply_patch", "apply_unified_diff"]);
+const FILE_WRITES = new Set(["write_file", "write_spreadsheet", "write_document", "replace_in_file", "apply_patch", "apply_unified_diff"]);
 // Actions that leave the Mac get the warm border + explicit destination note.
 const EXTERNAL = new Set(["send_message", "send_file"]);
 
@@ -215,6 +216,40 @@ export function spreadsheetPreview(args: any): string {
   return lines.join("\n");
 }
 
+// write_document has no single `content` string either — the proposal is `args.markdown`,
+// the source Markdown the backend renders into a .docx. Build a small text preview (first 5
+// non-empty lines, each clipped to a reasonable width, trailing "+N more lines" summary when
+// truncated) so the card shows prose instead of a raw JSON dump. Pure and defensive: a
+// malformed/unexpected shape (markdown missing, not a string, empty/whitespace-only) degrades
+// to "" (no preview) rather than throwing — a bad tool call must never crash the approval card.
+const DOCUMENT_PREVIEW_LINES = 5;
+const DOCUMENT_PREVIEW_LINE_CHARS = 100;
+
+export function documentPreview(args: any): string {
+  const markdown = args?.markdown;
+  if (typeof markdown !== "string") return "";
+
+  const nonEmpty = markdown
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (nonEmpty.length === 0) return "";
+
+  const lines = nonEmpty
+    .slice(0, DOCUMENT_PREVIEW_LINES)
+    .map((line) =>
+      line.length > DOCUMENT_PREVIEW_LINE_CHARS ? line.slice(0, DOCUMENT_PREVIEW_LINE_CHARS - 1) + "…" : line,
+    );
+
+  const moreLines = nonEmpty.length - DOCUMENT_PREVIEW_LINES;
+  if (moreLines > 0) {
+    const tt = getI18n().getFixedT(null, "translation");
+    lines.push(tt("approval.document_more_lines", { count: moreLines }));
+  }
+
+  return lines.join("\n");
+}
+
 // Outbound message text: short one-liners keep the cozy inline quote; anything
 // long (or multi-line) gets the clamped preview so the card stays card-sized.
 function MessagePreview({ text, label }: { text: string; label?: string }) {
@@ -386,7 +421,9 @@ export function ApprovalCard({
       ? item.args.content
       : item.name === "write_spreadsheet"
         ? spreadsheetPreview(item.args)
-        : "";
+        : item.name === "write_document"
+          ? documentPreview(item.args)
+          : "";
   if (FILE_WRITES.has(item.name) && !offerStanding && !grants.length && !item.resolved) {
     return (
       <div className={"approval approval-row" + dock} data-testid="approval-row">

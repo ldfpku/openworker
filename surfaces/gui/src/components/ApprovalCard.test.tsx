@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { ApprovalCard, spreadsheetPreview } from "./ApprovalCard";
+import { ApprovalCard, spreadsheetPreview, documentPreview } from "./ApprovalCard";
 import { InboxItemCard } from "./InboxItemCard";
 import type { Item } from "../types";
 import type { InboxItem } from "../api";
@@ -157,6 +157,53 @@ describe("ApprovalCard — §35 shapes", () => {
     expect(screen.queryByText(/preview/)).toBeNull();
   });
 
+  it("write_document renders as a compact row too, with a prose preview from args.markdown", () => {
+    const onApprove = vi.fn();
+    render(
+      <ApprovalCard
+        item={sendApproval({
+          name: "write_document",
+          args: {
+            path: "报告.docx",
+            markdown: "# 项目汇总\n\n这是第一段。\n这是第二段。",
+          },
+          category: undefined,
+        })}
+        onApprove={onApprove}
+      />,
+    );
+    const row = screen.getByTestId("approval-row");
+    expect(row.textContent).toContain("Write ");
+    expect(row.textContent).toContain("报告.docx");
+
+    // Preview expands inline from args.markdown — there's no args.content to show.
+    expect(screen.queryByText(/项目汇总/)).toBeNull();
+    fireEvent.click(screen.getByText(/preview/));
+    const prev = document.querySelector(".approval-prev") as HTMLElement;
+    expect(prev.textContent).toContain("项目汇总");
+    expect(prev.textContent).toContain("这是第一段。");
+    expect(prev.textContent).toContain("这是第二段。");
+
+    fireEvent.click(screen.getByText("Allow"));
+    expect(onApprove).toHaveBeenCalledWith("once");
+  });
+
+  it("write_document with no usable markdown shows no preview toggle at all", () => {
+    render(
+      <ApprovalCard
+        item={sendApproval({
+          name: "write_document",
+          args: { path: "空.docx", markdown: "   \n\n   " },
+          category: undefined,
+        })}
+        onApprove={vi.fn()}
+      />,
+    );
+    const row = screen.getByTestId("approval-row");
+    expect(row.textContent).toContain("空.docx");
+    expect(screen.queryByText(/preview/)).toBeNull();
+  });
+
   it("send_file gets the full external card: destination title, file chip, leaves-the-computer note", () => {
     render(
       <ApprovalCard
@@ -266,6 +313,50 @@ describe("spreadsheetPreview", () => {
     ["args itself is a string", "nope"],
   ])("degrades to no preview (\"\") when %s", (_label, args) => {
     expect(spreadsheetPreview(args)).toBe("");
+  });
+});
+
+describe("documentPreview", () => {
+  it("joins the first non-empty lines with '\\n'", () => {
+    const text = documentPreview({ markdown: "# 标题\n\n正文第一行\n正文第二行" });
+    expect(text).toBe("# 标题\n正文第一行\n正文第二行");
+  });
+
+  it("skips blank/whitespace-only lines instead of counting them", () => {
+    const text = documentPreview({ markdown: "line1\n\n   \nline2\n\t\nline3" });
+    expect(text).toBe("line1\nline2\nline3");
+  });
+
+  it("trims leading/trailing whitespace on each line", () => {
+    expect(documentPreview({ markdown: "   padded line   " })).toBe("padded line");
+  });
+
+  it("clips to the first 5 non-empty lines and appends a 'more lines' summary", () => {
+    const markdown = Array.from({ length: 7 }, (_, i) => `line${i}`).join("\n");
+    expect(documentPreview({ markdown })).toBe("line0\nline1\nline2\nline3\nline4\n+2 more lines");
+  });
+
+  it("uses the singular phrasing for exactly one extra line", () => {
+    const markdown = Array.from({ length: 6 }, (_, i) => `line${i}`).join("\n");
+    expect(documentPreview({ markdown }).endsWith("+1 more line")).toBe(true);
+  });
+
+  it("clips an overly long line to a reasonable width with an ellipsis", () => {
+    const long = "a".repeat(150);
+    const text = documentPreview({ markdown: long });
+    expect(text.length).toBe(100);
+    expect(text.endsWith("…")).toBe(true);
+  });
+
+  it.each([
+    ["markdown missing", {}],
+    ["markdown not a string", { markdown: 123 }],
+    ["markdown empty", { markdown: "" }],
+    ["markdown whitespace-only", { markdown: "   \n\n\t  " }],
+    ["args itself is null", null],
+    ["args itself is a string", "nope"],
+  ])("degrades to no preview (\"\") when %s", (_label, args) => {
+    expect(documentPreview(args)).toBe("");
   });
 });
 

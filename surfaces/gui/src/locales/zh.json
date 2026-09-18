@@ -640,6 +640,7 @@
     "verbs": {
       "write_file": "写入文件",
       "write_spreadsheet": "写入表格",
+      "write_document": "写入文档",
       "edit_file": "编辑文件",
       "apply_patch": "应用补丁",
       "run_command": "运行命令",
@@ -679,6 +680,7 @@
     "preview_label": "预览",
     "spreadsheet_more_rows_other": "还有 {{count}} 行",
     "spreadsheet_sheet_count_other": "共 {{count}} 个工作表",
+    "document_more_lines_other": "还有 {{count}} 行",
     "tool_title": "工具：{{name}}",
     "file_fallback": "文件",
     "as_png_screenshot": "· 作为 PNG 截图",
