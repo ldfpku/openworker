@@ -1420,6 +1420,21 @@ class TurnEngine:
         try:
             return self.registry.execute(tool_call.name, tool_call.arguments), "ok"
         except Exception as exc:
+            # A tool may answer "the tool for this is X" — `write_file` refusing a .xlsx is
+            # the case this exists for (tools/files.py). Materialising X here means the
+            # model FINDS it: `_astream` re-reads registry.schemas() every round trip, so
+            # the very next one carries it, whether or not the model thought to call the
+            # `load_*` meta-tool the refusal text names. A tool function cannot do this
+            # itself — the registry does not exist yet when AgentContext is built.
+            #
+            # Deliberately after nothing and before nothing: the error the model sees is
+            # unchanged (same message, same `error_type`), and a loader that blows up must
+            # not replace a precise refusal with a confusing one.
+            for name in getattr(exc, "materialize_tools", None) or ():
+                try:
+                    self.registry.get(str(name))
+                except Exception:  # pragma: no cover - never mask the real error
+                    pass
             return {"error": str(exc), "error_type": type(exc).__name__}, "error"
 
     def _record_result(self, tool_call: ToolCall, result: Any, status: str) -> Event:

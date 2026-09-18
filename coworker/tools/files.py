@@ -139,15 +139,50 @@ def file_tools(workspace: str, roots: Optional[list] = None) -> list:
     return [read_file]
 
 
-# Office formats that are ZIP containers, not text. `write_file` encodes its `content` as
-# UTF-8, so every one of these comes out a text file wearing the wrong extension: Excel and
-# Word refuse to open it, and the agent — having seen a success — tells the user the
-# spreadsheet is ready. Refusing costs one turn and names the way that works.
-_ZIP_CONTAINER_SUFFIXES = {".xlsx", ".xlsm", ".docx", ".docm", ".pptx", ".pptm"}
+# Office formats `write_file` must refuse. It encodes its `content` as UTF-8, so every one
+# of these comes out a text file wearing the wrong extension: Excel and Word refuse to open
+# it, and the agent — having seen a success — tells the user the spreadsheet is ready.
+# Refusing costs one turn and names the way that works.
+#
+# Split in two because the two halves now have different answers. Spreadsheets have a real
+# one in this app (`tools/office.py`); Word and PowerPoint do not yet, so their refusal
+# still has to route around the missing capability.
+_SPREADSHEET_SUFFIXES = {".xlsx", ".xlsm"}
+_DOC_CONTAINER_SUFFIXES = {".docx", ".docm", ".pptx", ".pptm"}
+_ZIP_CONTAINER_SUFFIXES = _SPREADSHEET_SUFFIXES | _DOC_CONTAINER_SUFFIXES
 
 
-def _zip_container_error(suffix: str) -> str:
-    """Route the model to the option that always works first.
+def _spreadsheet_error(suffix: str) -> ValueError:
+    """Refuse, and hand over the tool that does it properly.
+
+    `materialize_tools` is read by `engine._execute_sync`: the named tool is registered on
+    the spot, so `write_spreadsheet` is in the model's tool list on the very next round
+    trip even if it never calls `load_office_tools`. The sentence naming the loader stays
+    anyway — a resumed session, a replayed transcript or a persona without the loader all
+    reach this text too, and a model that calls a deferred name directly gets it loaded.
+    """
+    detail = (
+        f"{suffix} is a ZIP container, so what write_file would produce is a text file "
+        f"with a {suffix} name that no app can open"
+    )
+    macros = (
+        " Macros cannot be generated, so deliver the workbook as .xlsx instead of .xlsm."
+        if suffix == ".xlsm"
+        else ""
+    )
+    error = ValueError(
+        f"write_file writes UTF-8 text only, and {detail}. Use write_spreadsheet "
+        "instead: it writes a real .xlsx in this app — several sheets, merged cells, "
+        "borders, number formats, formulas — and needs neither Python nor Excel on this "
+        "machine. If write_spreadsheet is not in your tool list, call load_office_tools "
+        f"to add it.{macros} Tell the user which format you actually delivered."
+    )
+    error.materialize_tools = ("write_spreadsheet",)
+    return error
+
+
+def _doc_container_error(suffix: str) -> str:
+    """Word/PowerPoint: no in-app writer yet, so route to the option that always works.
 
     The script route needs Python AND the right library on the USER's machine — the
     packaged backend is a frozen exe and `run_shell` spawns the user's own shell, so on an
@@ -162,9 +197,9 @@ def _zip_container_error(suffix: str) -> str:
         "Deliver .csv, .md or .html instead, which write_file writes properly (begin a "
         "CSV meant for Excel with the BOM U+FEFF or non-ASCII text arrives mangled). "
         "Only once you have checked with run_shell that this machine has Python and the "
-        "right library (openpyxl for .xlsx, python-docx for .docx, python-pptx for .pptx) "
-        "should you generate it with a script — then verify the file exists. Either way, "
-        "tell the user which format you actually delivered."
+        "right library (python-docx for .docx, python-pptx for .pptx) should you generate "
+        "it with a script — then verify the file exists. Either way, tell the user which "
+        "format you actually delivered."
     )
 
 
@@ -205,10 +240,12 @@ def write_file_tools(
     def write_file(path: str, content: str, overwrite: bool = True) -> str:
         """Write a UTF-8 text file under the configured root."""
         suffix = Path(str(path)).suffix.lower()
-        if suffix in _ZIP_CONTAINER_SUFFIXES:
-            # Refuse BEFORE writing: a half-written .xlsx on disk is worse than none, and
-            # the model would cite it as proof the spreadsheet exists.
-            raise ValueError(_zip_container_error(suffix))
+        # Refuse BEFORE writing: a half-written .xlsx on disk is worse than none, and the
+        # model would cite it as proof the spreadsheet exists.
+        if suffix in _SPREADSHEET_SUFFIXES:
+            raise _spreadsheet_error(suffix)
+        if suffix in _DOC_CONTAINER_SUFFIXES:
+            raise ValueError(_doc_container_error(suffix))
         written = inner(path=path, content=content, overwrite=overwrite)
         try:
             p = Path(str(path)).expanduser()

@@ -442,3 +442,97 @@ def test_openpyxl_is_declared_and_importable_in_fork():
     assert "openpyxl" in spec
 
     import openpyxl  # noqa: F401  - the dependency itself, not a stub
+
+
+# -- the second door: a refused write materialises the tool that can do it ---------------
+
+
+def _call(name, arguments, call_id="tc1"):
+    from coworker.providers import ToolCall
+
+    return ToolCall(id=call_id, name=name, arguments=arguments)
+
+
+def test_a_tool_can_name_the_tool_the_model_should_have_used(tmp_path):
+    """`engine._execute_sync` reads `materialize_tools` off the raised exception. The
+    contract is deliberately narrow: the tool the model sees as failing is unchanged —
+    same message, same `error_type` — and the named tool simply becomes available."""
+    from coworker.agents import cowork_agent
+
+    engine = _engine_for(cowork_agent(), tmp_path)
+    try:
+
+        def needs_helper() -> str:
+            error = ValueError("use write_spreadsheet for that")
+            error.materialize_tools = ("write_spreadsheet",)
+            raise error
+
+        engine.registry.register(needs_helper)
+        assert "write_spreadsheet" not in _schema_names(engine)
+
+        result, status = engine._execute_sync(_call("needs_helper", {}))
+        assert status == "error"
+        assert result["error_type"] == "ValueError"
+        assert result["error"] == "use write_spreadsheet for that"
+        assert "write_spreadsheet" in _schema_names(engine)
+    finally:
+        engine.executor.close()
+
+
+def test_a_refused_xlsx_write_makes_write_spreadsheet_available(tmp_path):
+    """The real path, through the real `write_file`: the model asks for a .xlsx, is told
+    no, and finds the right tool in its list on the next round trip without having to
+    think of `load_office_tools` first."""
+    from coworker.agents import cowork_agent
+
+    engine = _engine_for(cowork_agent(), tmp_path)
+    try:
+        assert "write_spreadsheet" not in _schema_names(engine)
+
+        result, status = engine._execute_sync(
+            _call("write_file", {"path": "x.xlsx", "content": "a,b\n1,2\n"})
+        )
+        assert status == "error"
+        assert result["error_type"] == "ValueError"  # unchanged for the model
+        assert "write_spreadsheet" in result["error"]
+        assert "write_spreadsheet" in _schema_names(engine)
+        assert not (tmp_path / "x.xlsx").exists()
+    finally:
+        engine.executor.close()
+
+
+def test_naming_a_tool_that_does_not_exist_is_not_an_error(tmp_path):
+    """A stale name — a renamed tool, a persona that never registered it — must degrade to
+    "no extra tool appeared", never to a second exception that buries the first."""
+    from coworker.agents import cowork_agent
+
+    engine = _engine_for(cowork_agent(), tmp_path)
+    try:
+
+        def points_nowhere() -> str:
+            error = ValueError("original message")
+            error.materialize_tools = ("no_such_tool", "write_spreadsheet")
+            raise error
+
+        engine.registry.register(points_nowhere)
+        result, status = engine._execute_sync(_call("points_nowhere", {}))
+        assert status == "error" and result["error"] == "original message"
+        # The reachable name in the same tuple still loaded.
+        assert "write_spreadsheet" in _schema_names(engine)
+        assert "no_such_tool" not in _schema_names(engine)
+    finally:
+        engine.executor.close()
+
+
+def test_an_ordinary_failure_materialises_nothing(tmp_path):
+    from coworker.agents import cowork_agent
+
+    engine = _engine_for(cowork_agent(), tmp_path)
+    try:
+        result, status = engine._execute_sync(
+            _call("write_file", {"path": str(tmp_path.parent / "越界.txt"), "content": "x"})
+        )
+        assert status == "error"
+        assert "write_spreadsheet" not in _schema_names(engine)
+    finally:
+        engine.executor.close()

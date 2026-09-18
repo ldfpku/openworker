@@ -134,7 +134,11 @@ def test_write_file_result_names_the_absolute_path_and_its_root(tmp_path, builde
 
 
 @pytest.mark.parametrize("builder_name", ["_files", "_code_files"])
-def test_write_file_refuses_zip_container_office_formats(tmp_path, builder_name):
+def test_write_file_hands_a_spreadsheet_to_write_spreadsheet(tmp_path, builder_name):
+    """The refusal now has a real answer: `write_spreadsheet` writes the .xlsx in-process,
+    so the old ".csv first, then maybe a script" routing is gone from this branch. The
+    exception also carries `materialize_tools`, which `engine._execute_sync` reads to put
+    the tool in front of the model on the next round trip (tests/test_office_integration)."""
     import coworker.catalog as catalog
 
     ws, _scratch, roots = _dual_roots(tmp_path)
@@ -144,16 +148,37 @@ def test_write_file_refuses_zip_container_office_formats(tmp_path, builder_name)
         write_file(path="测试报告_标准模版.xlsx", content="a,b\n1,2\n")
     message = str(excinfo.value)
     assert "ZIP container" in message
-    # The route that always works comes FIRST. A frozen backend spawns the USER's shell,
-    # and a Chinese-Windows office PC has no Python — leading with the script route buys a
-    # confident plan that dies three commands later.
-    assert message.index(".csv") < message.index("openpyxl")
-    assert "Only once you have checked with run_shell" in message
-    assert "U+FEFF" in message  # Excel reads a BOM-less UTF-8 CSV as the local codepage
-    assert "tell the user which format you actually delivered" in message
+    assert "write_spreadsheet" in message
+    assert "load_office_tools" in message
+    # No detour: the .csv fallback and the "check for Python, then write a script" route
+    # only made sense while nothing in the app could produce a workbook.
+    assert "run_shell" not in message
+    assert "openpyxl" not in message
+    assert "Tell the user which format you actually delivered" in message
+    assert excinfo.value.materialize_tools == ("write_spreadsheet",)
     # Nothing was written: a half-baked .xlsx on disk is what the model would cite as proof.
     assert not (ws / "测试报告_标准模版.xlsx").exists()
     assert list(ws.iterdir()) == []
+
+    # .xlsm too, plus the reason a macro workbook cannot be delivered at all.
+    with pytest.raises(ValueError) as excinfo:
+        write_file(path="宏模板.xlsm", content="x")
+    assert "Macros cannot be generated" in str(excinfo.value)
+    assert "write_spreadsheet" in str(excinfo.value)
+
+    # Word/PowerPoint have no in-app writer yet, so they keep the old routing.
+    for suffix in (".docx", ".docm", ".pptx", ".pptm"):
+        with pytest.raises(ValueError) as excinfo:
+            write_file(path=f"文档{suffix}", content="x")
+        doc = str(excinfo.value)
+        # The route that always works comes FIRST. A frozen backend spawns the USER's
+        # shell, and a Chinese-Windows office PC has no Python — leading with the script
+        # route buys a confident plan that dies three commands later.
+        assert doc.index(".csv") < doc.index("python-docx"), suffix
+        assert "Only once you have checked with run_shell" in doc, suffix
+        assert "U+FEFF" in doc, suffix  # a BOM-less UTF-8 CSV reads as the local codepage
+        assert "tell the user which format you actually delivered" in doc, suffix
+        assert "write_spreadsheet" not in doc, suffix
 
     # Every other extension is untouched.
     assert write_file(path="报告.csv", content="a,b\n").startswith("Wrote ")
