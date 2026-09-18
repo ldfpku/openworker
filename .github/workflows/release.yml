@@ -171,6 +171,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    # Well above a healthy run (~15 min) and well under Actions' 6-hour job ceiling, which
+    # the uploader's worst case (14 files x 6 attempts x --attempt-timeout) could otherwise
+    # approach. Being killed here is safe: an interrupted upload leaves only a `starter`
+    # record, which the next run deletes before re-uploading that one file.
+    timeout-minutes: 120
     # One release job per tag, and never cancel one mid-upload. Two concurrent jobs on the
     # same tag would each see the other's in-flight asset as a `state=starter` half-finished
     # record and delete it (that IS the right thing to do for a genuinely abandoned upload —
@@ -219,13 +224,22 @@ jobs:
           draft: true
           generate_release_notes: true
 
+      # A build with no .sig files (the ::warning:: branch above) fails this step's
+      # preflight, because dist/ then holds neither the signatures nor latest.json and the
+      # expected-asset list is incomplete. That is deliberate: this fork has no legitimate
+      # unsigned release, and a release without latest.json silently strands every
+      # installed app. Fix the signing secret and re-run rather than relaxing the check.
+      #
+      # --attempt-timeout 600: ten minutes is generous for a 96 MB file from a runner. The
+      # script's own 1800s default stays put for laptop runs behind a slow proxy.
       - name: Upload the release assets (serial, idempotent)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 packaging/upload_release_assets.py upload \
             --repo "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME" \
-            --release-id "${{ steps.draft.outputs.id }}" --dist dist
+            --release-id "${{ steps.draft.outputs.id }}" --dist dist \
+            --attempt-timeout 600
 
       - name: Verify the release is complete
         # Independent read-back: every expected asset present and state=uploaded, every
