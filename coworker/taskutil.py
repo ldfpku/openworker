@@ -8,15 +8,18 @@ it, silently ending the coroutine mid-run. (When it happens under a debug-enable
 you get a logged "Task was destroyed but it is pending!"; under a normal loop you get
 nothing at all — the work just stops.)
 
-Several call sites in this package fire a coroutine with `create_task(...)` and never
-store the returned Task anywhere. Today, each of those happens to keep running anyway,
-because whatever the coroutine is suspended on (a thread-pool work item, a `wait_for`
-timer handle, an object a manager already holds elsewhere) happens to be reachable from
-some OTHER strong reference. That is an accident of what the coroutine happens to await
-right now, not a designed guarantee, and it silently breaks the moment that changes —
-e.g. a refactor that removes the incidental anchor. `spawn_retained()` replaces the
-accident with an explicit guarantee: the caller's own `set` of tasks IS the strong
-reference, for as long as the task is in flight.
+A bare `create_task(...)` whose returned Task nobody stores can still happen to keep
+running for a while — but only for as long as whatever it is suspended on (a thread-pool
+work item, a `wait_for` timer handle, an object something else already holds) stays
+reachable through some OTHER strong reference. That is an accident of what the coroutine
+happens to await, not a designed guarantee, and it silently breaks the moment that
+incidental anchor goes away — e.g. an unrelated refactor stops holding the object that
+was keeping it alive. `spawn_retained()` replaces the accident with an explicit
+guarantee: the caller's own `set` of tasks IS the strong reference, for as long as the
+task is in flight. It is this package's one shared entry point for that guarantee — a
+new fire-and-forget task that must survive past its own next suspend point should be
+created through it instead of growing another hand-rolled `set` +
+`add_done_callback(set.discard)` copy.
 
 **Usage.** Each call site owns one `set[asyncio.Task]` (e.g. an instance attribute like
 `self._bg_tasks`) and passes it to `spawn_retained()` alongside the coroutine to run.
