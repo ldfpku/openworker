@@ -665,6 +665,40 @@ def test_stream_requests_stream_flag():
     assert fake.kwargs["stream"] is True
 
 
+def test_an_incomplete_response_names_its_own_cause():
+    """`max_output_tokens` and `content_filter` are different failures with different
+    cures, and the engine acts on the difference (it re-runs one and never the other), so
+    they must not both collapse into `stop`."""
+    for reason, expected in (
+        ("max_output_tokens", "length"),
+        ("content_filter", "content_filter"),
+        (None, "stop"),
+    ):
+        response = _response(
+            [_message_item("")],
+            status="incomplete",
+            incomplete_details={"reason": reason} if reason else None,
+        )
+        provider = OpenAIResponsesProvider(client=_FakeClient(response=response))
+        turn = provider.complete(model="m", messages=[{"role": "user", "content": "x"}])
+        assert turn.finish_reason == expected, reason
+
+
+def test_normal_stream_never_claims_it_was_cut_off():
+    """`AssistantTurn.truncated` ends a turn on the error path, and only the
+    OpenAI-compatible CHAT provider can tell a severed stream from a clean one. The
+    Responses wire always derives a finish reason from the terminal event, so it must
+    leave the flag alone — a false positive would fail ordinary answers."""
+    final = _response([_message_item("hello")])
+    events = [
+        SimpleNamespace(type="response.output_text.delta", delta="hello"),
+        SimpleNamespace(type="response.completed", response=final),
+    ]
+    provider = OpenAIResponsesProvider(client=_FakeClient(events=events))
+    turn = list(provider.stream(model="m", messages=[{"role": "user", "content": "x"}]))[-1].turn
+    assert turn.truncated is False and turn.finish_reason == "stop"
+
+
 # -- round trip ----------------------------------------------------------------------
 
 

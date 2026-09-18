@@ -278,6 +278,38 @@ def test_stream_accumulates_tool_calls():
     )
 
 
+def test_stream_cut_off_before_any_finish_reason_is_marked_truncated():
+    """A clean Chat Completions stream always ends with a chunk carrying `finish_reason`.
+    Reaching the end without one means the connection was severed mid-response — the
+    engine needs that flag to tell "the model said nothing" from "the model never got to
+    finish" (owner report 2026-09-18: a relayed turn ended after 3.3k of thinking with no
+    answer and no error). The missing usage frame is deliberately NOT the signal: compat
+    endpoints that ignore `include_usage` would trip it on every good turn."""
+    chunks = [_chunk(content="Write file to rep")]
+    provider = OpenAIProvider(client=_StreamClient(chunks))
+    turn = list(provider.stream(model="gpt-5.5", messages=[]))[-1].turn
+    assert turn.truncated is True
+    assert turn.finish_reason is None
+    assert turn.usage is None
+
+
+def test_normal_stream_is_never_marked_truncated():
+    for finish in ("stop", "length", "tool_calls", "content_filter"):
+        chunks = [_chunk(content="hi"), _chunk(finish=finish)]
+        provider = OpenAIProvider(client=_StreamClient(chunks))
+        turn = list(provider.stream(model="gpt-5.5", messages=[]))[-1].turn
+        assert turn.truncated is False, finish
+        assert turn.finish_reason == finish
+
+
+def test_complete_never_marks_truncated():
+    """Only the streaming path can observe a severed stream; a non-streaming response is
+    a whole JSON body, so a missing finish_reason there says nothing about the wire."""
+    provider = OpenAIProvider(client=_FakeClient(_response("hi", finish_reason=None)))
+    turn = provider.complete(model="gpt-5.5", messages=[])
+    assert turn.truncated is False and turn.finish_reason is None
+
+
 # -- OpenAI-compatible vendor providers (Z AI, DeepSeek, Kimi, MiniMax, Qwen, xAI, Mistral) ------
 
 COMPAT_VENDORS = {

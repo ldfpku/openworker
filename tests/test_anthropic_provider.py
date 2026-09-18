@@ -461,6 +461,24 @@ def test_stream_passes_stream_flag():
     assert fake.kwargs["max_tokens"] == DEFAULT_MAX_TOKENS
 
 
+def test_normal_stream_never_claims_it_was_cut_off():
+    """`AssistantTurn.truncated` is the engine's "this stream was severed" signal, and it
+    ends the turn on the error path. Only the OpenAI-compatible chat provider can tell a
+    cut stream from a clean one, so every other provider must leave the flag alone — a
+    false positive here would turn ordinary Anthropic answers into failures."""
+    events = [
+        SimpleNamespace(
+            type="content_block_start", index=0, content_block=SimpleNamespace(type="text")
+        ),
+        _delta(0, type="text_delta", text="hello"),
+        SimpleNamespace(type="message_delta", delta=SimpleNamespace(stop_reason="end_turn")),
+    ]
+    provider = AnthropicProvider(client=_FakeClient(events=events))
+    chunks = list(provider.stream(model="m", messages=[{"role": "user", "content": "x"}]))
+    assert chunks[-1].turn.truncated is False
+    assert chunks[-1].turn.finish_reason == "stop"
+
+
 # -- registry / capabilities ----------------------------------------------------------
 
 

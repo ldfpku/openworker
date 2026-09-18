@@ -332,7 +332,16 @@ def test_complete_parses_function_calls_with_synthesized_ids():
     [
         ("STOP", "stop"),
         ("MAX_TOKENS", "length"),
-        ("SAFETY", "stop"),
+        # Everything Gemini BLOCKS on lands on `content_filter`, never `stop`: the engine
+        # re-runs an empty turn that merely stopped, and a block answers identically
+        # however many times it is asked.
+        ("SAFETY", "content_filter"),
+        ("RECITATION", "content_filter"),
+        ("PROHIBITED_CONTENT", "content_filter"),
+        ("BLOCKLIST", "content_filter"),
+        ("SPII", "content_filter"),
+        ("IMAGE_SAFETY", "content_filter"),
+        ("MALFORMED_FUNCTION_CALL", "stop"),
         ("WEIRD_NEW", "weird_new"),
     ],
 )
@@ -413,6 +422,19 @@ def test_stream_yields_text_deltas_then_final_turn():
         and final.finish_reason == "stop"
         and not final.has_tool_calls
     )
+
+
+def test_normal_stream_never_claims_it_was_cut_off():
+    """`AssistantTurn.truncated` ends a turn on the error path, and only the
+    OpenAI-compatible chat provider can tell a severed stream from a clean one. Gemini
+    must leave the flag alone or ordinary answers would start reporting as failures."""
+    chunks = [
+        _response([_text_part("hel")], finish_reason=None),
+        _response([_text_part("lo")], finish_reason="STOP"),
+    ]
+    provider = GeminiProvider(client=_FakeClient(chunks=chunks))
+    final = list(provider.stream(model="m", messages=[{"role": "user", "content": "x"}]))[-1].turn
+    assert final.truncated is False and final.finish_reason == "stop"
 
 
 def test_stream_collects_function_calls_across_chunks():

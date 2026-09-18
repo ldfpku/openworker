@@ -216,6 +216,26 @@ def test_converse_stream_accumulates_text_and_tool():
     assert final.finish_reason == "tool_calls"
     (call,) = final.tool_calls
     assert (call.id, call.name, call.arguments) == ("c1", "ls", {"path": "."})
+    # `truncated` ends a turn on the error path; only the OpenAI-compatible chat provider
+    # can tell a severed stream from a clean one, so Converse must never set it.
+    assert final.truncated is False
+
+
+def test_a_guardrail_stop_is_not_reported_as_a_plain_stop():
+    """`guardrail_intervened` / `content_filtered` map to `content_filter`, never `stop`:
+    the engine re-runs an empty turn that merely stopped, and re-running a blocked one
+    buys the identical block at three times the cost."""
+    for stop_reason in ("guardrail_intervened", "content_filtered"):
+        fake = _FakeConverse(
+            response={
+                "output": {"message": {"content": []}},
+                "stopReason": stop_reason,
+            }
+        )
+        turn = _BedrockConverseClient(client=fake).complete(
+            model="m", messages=[{"role": "user", "content": "x"}]
+        )
+        assert turn.finish_reason == "content_filter", stop_reason
 
 
 def test_no_credentials_error_becomes_friendly():

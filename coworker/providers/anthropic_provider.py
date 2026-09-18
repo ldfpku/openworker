@@ -163,13 +163,18 @@ def _raise_on_refusal(stop_reason: Any, raw: Any) -> None:
         + " — try rephrasing, or switch model and press Retry."
     )
 
-# Anthropic stop_reason → the engine's OpenAI-shaped finish_reason vocabulary.
+# Anthropic stop_reason → the engine's OpenAI-shaped finish_reason vocabulary. `refusal`
+# is DELIBERATELY absent: `_raise_on_refusal` fires unconditionally before either call
+# site builds a turn, so a refusal never reaches this table — leaving an entry here would
+# read as a live mapping and invite someone to rely on it. If that raise is ever relaxed
+# into a normal turn, the entry to add is `"refusal": "content_filter"` (the engine's
+# spelling for "something refused to let this through", which it never retries), matching
+# what bedrock and gemini already map their block reasons to.
 _STOP_REASON_MAP = {
     "end_turn": "stop",
     "tool_use": "tool_calls",
     "max_tokens": "length",
     "stop_sequence": "stop",
-    "refusal": "stop",
     "pause_turn": "stop",
 }
 

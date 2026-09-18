@@ -104,6 +104,14 @@ class AssistantTurn:
     # Token counts for this round-trip, normalized across providers. None when the
     # backend didn't report usage (some compat servers) — never guessed.
     usage: Optional[TokenUsage] = None
+    # True when the STREAM ended without the provider ever reporting a finish reason —
+    # i.e. the response was severed mid-flight rather than completed. Only providers that
+    # always report one on a clean finish set this (OpenAI-compatible chat streaming,
+    # where the last choice chunk always carries `finish_reason`); everywhere else it
+    # stays False, so a backend that simply doesn't report finish reasons can never be
+    # mistaken for a cut connection. Usage is NOT a substitute signal here: plenty of
+    # compat endpoints ignore `stream_options.include_usage` on a perfectly good stream.
+    truncated: bool = False
 
     @property
     def has_tool_calls(self) -> bool:

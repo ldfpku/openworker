@@ -52,11 +52,18 @@ def _usage_from(meta: Any) -> Optional[TokenUsage]:
 
 # Gemini finishReason → the engine's OpenAI-shaped finish_reason vocabulary. STOP maps to
 # "tool_calls" instead when the turn contains function calls (Gemini has no distinct reason).
+# Everything Gemini blocks on — safety, recitation, the blocklist, personal data — maps to
+# `content_filter` (OpenAI's own spelling), NOT to `stop`: the engine retries an empty turn
+# that merely stopped, and a block answers identically however many times it is asked.
 _FINISH_REASON_MAP = {
     "STOP": "stop",
     "MAX_TOKENS": "length",
-    "SAFETY": "stop",
-    "RECITATION": "stop",
+    "SAFETY": "content_filter",
+    "RECITATION": "content_filter",
+    "PROHIBITED_CONTENT": "content_filter",
+    "BLOCKLIST": "content_filter",
+    "SPII": "content_filter",
+    "IMAGE_SAFETY": "content_filter",
     "MALFORMED_FUNCTION_CALL": "stop",
 }
 

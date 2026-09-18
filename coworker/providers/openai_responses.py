@@ -295,6 +295,10 @@ def _parse_response(response: Any) -> AssistantTurn:
         finish = "tool_calls"
     elif incomplete.get("reason") == "max_output_tokens":
         finish = "length"
+    elif incomplete.get("reason") == "content_filter":
+        # Kept distinct from `stop` on purpose: the engine retries an empty turn that
+        # merely stopped, and a filtered one answers identically every time.
+        finish = "content_filter"
     else:
         finish = "stop"
 

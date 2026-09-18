@@ -64,14 +64,17 @@ def _usage_from(usage: Any) -> Optional[TokenUsage]:
 # 512 — an agent turn gets truncated mid-tool-call); 4096 fits every family's ceiling.
 DEFAULT_MAX_TOKENS = 4096
 
-# Converse stopReason → the engine's OpenAI-shaped finish_reason vocabulary.
+# Converse stopReason → the engine's OpenAI-shaped finish_reason vocabulary. A guardrail
+# or content block maps to `content_filter` (OpenAI's own spelling), NOT to `stop`: the
+# engine retries an empty turn that merely stopped, and retrying a blocked one just buys
+# the same block three times over.
 _STOP_REASON_MAP = {
     "end_turn": "stop",
     "tool_use": "tool_calls",
     "max_tokens": "length",
     "stop_sequence": "stop",
-    "guardrail_intervened": "stop",
-    "content_filtered": "stop",
+    "guardrail_intervened": "content_filter",
+    "content_filtered": "content_filter",
 }
 
 _DATA_URL_RE = re.compile(

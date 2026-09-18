@@ -418,8 +418,12 @@ class OpenAIProvider(ProviderClient):
                             acc["name"] = fn.name
                         if getattr(fn, "arguments", None):
                             acc["args"] += fn.arguments
-            if getattr(choice, "finish_reason", None):
-                finish_reason = choice.finish_reason
+            chunk_finish = getattr(choice, "finish_reason", None)
+            if chunk_finish is not None:
+                # `is not None`, not truthiness: an endpoint that sends `finish_reason: ""`
+                # HAS reported one, and reading that as "never reported" is what made a
+                # perfectly ordinary reply look like a severed stream.
+                finish_reason = chunk_finish
 
         tool_calls = []
         for index in sorted(tool_accum):
@@ -442,6 +446,17 @@ class OpenAIProvider(ProviderClient):
                 finish_reason=finish_reason,
                 reasoning="".join(reasoning_parts) or None,
                 usage=usage,
+                # A clean Chat Completions stream ALWAYS ends with a choice chunk carrying
+                # `finish_reason`; reaching here without one means the connection was cut
+                # mid-response (relay/gateway hang-up, upstream timeout). The engine needs
+                # that distinction to tell "the model said nothing" from "the model never
+                # got to finish" — an empty turn ended as `completed` reads to the user as
+                # a silent success (owner-hit 2026-09-18: 3.3k of thinking, no answer, no
+                # error). Missing usage is NOT usable as the signal: compat endpoints that
+                # ignore `include_usage` would trip it on every good turn. The engine
+                # still gates on having SEEN this model report one, so a backend that
+                # never sends the field can't be accused of cutting every reply short.
+                truncated=finish_reason is None,
             )
         )
 
