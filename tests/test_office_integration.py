@@ -524,6 +524,29 @@ def test_naming_a_tool_that_does_not_exist_is_not_an_error(tmp_path):
         engine.executor.close()
 
 
+def test_a_refused_xls_write_offers_xlsx_instead(tmp_path):
+    """`.xls` is the OLE2 binary Office 97 wrote, not a ZIP container, and on a Chinese
+    office PC it is still what "Excel 文件" often means — so a model reaches for write_file
+    with it exactly as it would for .xlsx. Nothing here can write it (openpyxl cannot), so
+    the refusal has to say which format IS on offer."""
+    from coworker.agents import cowork_agent
+
+    engine = _engine_for(cowork_agent(), tmp_path)
+    try:
+        result, status = engine._execute_sync(
+            _call("write_file", {"path": "旧表.xls", "content": "a,b\n"})
+        )
+        assert status == "error" and result["error_type"] == "ValueError"
+        message = result["error"]
+        assert "old binary Excel format" in message
+        assert "ZIP container" not in message  # it genuinely is not one
+        assert "write_spreadsheet" in message and ".xlsx" in message
+        assert "write_spreadsheet" in _schema_names(engine)
+        assert not (tmp_path / "旧表.xls").exists()
+    finally:
+        engine.executor.close()
+
+
 def test_an_ordinary_failure_materialises_nothing(tmp_path):
     from coworker.agents import cowork_agent
 

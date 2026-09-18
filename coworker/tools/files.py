@@ -147,9 +147,17 @@ def file_tools(workspace: str, roots: Optional[list] = None) -> list:
 # Split in two because the two halves now have different answers. Spreadsheets have a real
 # one in this app (`tools/office.py`); Word and PowerPoint do not yet, so their refusal
 # still has to route around the missing capability.
-_SPREADSHEET_SUFFIXES = {".xlsx", ".xlsm"}
+#
+# `.xls` is in the spreadsheet half but is NOT a ZIP container — it is the OLE2 binary
+# format Office 97 wrote, and on a Chinese office PC it is still what "Excel 文件" often
+# means, so a model asked for one reaches for write_file exactly like it would for .xlsx.
+# Nothing in this app writes it (openpyxl cannot), and it must not be written as text
+# either, so it is refused with .xlsx offered in its place.
+_ZIP_SPREADSHEET_SUFFIXES = {".xlsx", ".xlsm"}
+_LEGACY_SPREADSHEET_SUFFIXES = {".xls"}
+_SPREADSHEET_SUFFIXES = _ZIP_SPREADSHEET_SUFFIXES | _LEGACY_SPREADSHEET_SUFFIXES
 _DOC_CONTAINER_SUFFIXES = {".docx", ".docm", ".pptx", ".pptm"}
-_ZIP_CONTAINER_SUFFIXES = _SPREADSHEET_SUFFIXES | _DOC_CONTAINER_SUFFIXES
+_ZIP_CONTAINER_SUFFIXES = _ZIP_SPREADSHEET_SUFFIXES | _DOC_CONTAINER_SUFFIXES
 
 
 def _spreadsheet_error(suffix: str) -> ValueError:
@@ -164,18 +172,27 @@ def _spreadsheet_error(suffix: str) -> ValueError:
     detail = (
         f"{suffix} is a ZIP container, so what write_file would produce is a text file "
         f"with a {suffix} name that no app can open"
+        if suffix in _ZIP_CONTAINER_SUFFIXES
+        else f"{suffix} is the old binary Excel format, which it cannot produce at all"
     )
-    macros = (
-        " Macros cannot be generated, so deliver the workbook as .xlsx instead of .xlsm."
-        if suffix == ".xlsm"
-        else ""
-    )
+    if suffix == ".xlsm":
+        note = (
+            " Macros cannot be generated, so deliver the workbook as .xlsx instead "
+            "of .xlsm."
+        )
+    elif suffix in _LEGACY_SPREADSHEET_SUFFIXES:
+        note = (
+            f" Deliver the workbook as .xlsx instead of {suffix}; Excel, WPS and "
+            "LibreOffice all open it."
+        )
+    else:
+        note = ""
     error = ValueError(
         f"write_file writes UTF-8 text only, and {detail}. Use write_spreadsheet "
         "instead: it writes a real .xlsx in this app — several sheets, merged cells, "
         "borders, number formats, formulas — and needs neither Python nor Excel on this "
         "machine. If write_spreadsheet is not in your tool list, call load_office_tools "
-        f"to add it.{macros} Tell the user which format you actually delivered."
+        f"to add it.{note} Tell the user which format you actually delivered."
     )
     error.materialize_tools = ("write_spreadsheet",)
     return error
