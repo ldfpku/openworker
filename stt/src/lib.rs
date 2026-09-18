@@ -452,9 +452,10 @@ impl Dictation {
 mod tests {
     use std::{
         fs,
+        io::Write,
         path::{Path, PathBuf},
         sync::{Arc, Mutex},
-        time::{SystemTime, UNIX_EPOCH},
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     use super::{
@@ -481,6 +482,22 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ocw-stt-{label}-{unique}"));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    fn mtime(path: &Path) -> SystemTime {
+        fs::metadata(path).unwrap().modified().unwrap()
+    }
+
+    /// Rewrites a file and forces its modification time to `stamp`, so that nothing but the bytes
+    /// themselves tells the new contents from the old. Writing and stamping through the same
+    /// handle is what makes the timestamp stick; the check afterwards means a platform that
+    /// refuses to hold it fails the test loudly instead of quietly proving nothing.
+    fn rewrite_at(path: &Path, bytes: &[u8], stamp: SystemTime) {
+        let mut file = fs::File::options().write(true).truncate(true).open(path).unwrap();
+        file.write_all(bytes).unwrap();
+        file.set_modified(stamp).unwrap();
+        drop(file);
+        assert_eq!(mtime(path), stamp, "the filesystem did not hold the timestamp");
     }
 
     // -- the one test that needs the real models ---------------------------------------------
@@ -875,6 +892,77 @@ mod tests {
         files: TEST_FILES,
     };
 
+    // Two files, because a pack is never one: the real ones all carry a tokens.txt beside the
+    // model, and it is the file a shortcut would skip — small, not a model, and last.
+    static PAIR_FILES: &[ModelFile] = &[
+        ModelFile {
+            name: "model.bin",
+            bytes: 5,
+            sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+        },
+        ModelFile {
+            name: "tokens.txt",
+            bytes: 6,
+            sha256: "c51e455b41df6c017327e16001dd064b8b6733faeaa69b23d9bd79c8079237d5",
+        },
+    ];
+    static PAIR_PACK: ModelPack = ModelPack {
+        id: "pair",
+        label_key: "settings.voice_pack_streaming",
+        dir: "pair-pack",
+        repo: "example/pair-pack",
+        revision: "0000000000000000000000000000000000000000",
+        files: PAIR_FILES,
+    };
+
+    // Several times the 128 KiB read block `hash_file` uses, so that a gate which only ever
+    // looked at the first block has somewhere to be caught.
+    const BULK_BYTES: usize = 300 * 1024;
+    static BULK_FILES: &[ModelFile] = &[ModelFile {
+        name: "bulk.bin",
+        bytes: BULK_BYTES as u64,
+        sha256: "eeb05699ef0e719dfdd9c98a1d2af9d1b174982ae5e78ee235e268fe2c515641",
+    }];
+    static BULK_PACK: ModelPack = ModelPack {
+        id: "bulk",
+        label_key: "settings.voice_pack_streaming",
+        dir: "bulk-pack",
+        repo: "example/bulk-pack",
+        revision: "0000000000000000000000000000000000000000",
+        files: BULK_FILES,
+    };
+
+    /// The fixture behind `BULK_PACK`, from a formula rather than a checked-in blob. The pinned
+    /// hash above is the hash of exactly these bytes; the tests assert that before they lean on
+    /// it, so a drifting generator shows up as itself rather than as a weakened corruption case.
+    fn bulk_bytes() -> Vec<u8> {
+        (0..BULK_BYTES).map(|i| ((i * 31 + 7) % 251) as u8).collect()
+    }
+
+    /// The gate with a counter behind it, standing in for `OnlineRecognizer::create`. Refusing a
+    /// bad pack is only half of what these tests check; the other half is that nothing got past.
+    struct Gate {
+        creates: std::cell::Cell<u32>,
+    }
+
+    impl Gate {
+        fn new() -> Self {
+            Self {
+                creates: std::cell::Cell::new(0),
+            }
+        }
+
+        fn load(&self, dir: &Path, pack: &'static ModelPack) -> Result<(), DictationError> {
+            models::ensure_pack_ready(dir, pack)?;
+            self.creates.set(self.creates.get() + 1);
+            Ok(())
+        }
+
+        fn creates(&self) -> u32 {
+            self.creates.get()
+        }
+    }
+
     #[test]
     fn the_pack_manifest_is_self_consistent() {
         let mut ids = Vec::new();
@@ -934,13 +1022,14 @@ mod tests {
         write_marker(&dir, &TEST_PACK).unwrap();
         assert!(marker_matches(&dir, &TEST_PACK));
 
-        // A verified pack skips hashing; an invalidated one must hash again and still pass.
+        // The gate hashes either way. What the marker decides is only whether it has to be
+        // written again afterwards.
         models::ensure_pack_ready(&dir, &TEST_PACK).unwrap();
 
-        // Rewriting the file with identical bytes still moves its mtime, and that is enough to
-        // force a real hash rather than trusting the record.
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        fs::write(&model, b"hello").unwrap();
+        // Touching a file moves its timestamp, and that alone retires the record. The timestamp
+        // is set outright rather than waited for, so no clock takes part in this.
+        let moved = mtime(&model) + Duration::from_secs(30);
+        rewrite_at(&model, b"hello", moved);
         assert!(!marker_matches(&dir, &TEST_PACK));
         models::ensure_pack_ready(&dir, &TEST_PACK).unwrap();
         assert!(marker_matches(&dir, &TEST_PACK));
@@ -970,43 +1059,187 @@ mod tests {
         let pack_dir = TEST_PACK.dir_path(&dir);
         fs::create_dir_all(&pack_dir).unwrap();
         let model = pack_dir.join("model.bin");
-
-        // Stands in for `OnlineRecognizer::create`: counts how often the loader was reached.
-        let creates = std::cell::Cell::new(0_u32);
-        let load = |dir: &PathBuf| -> Result<(), DictationError> {
-            models::ensure_pack_ready(dir, &TEST_PACK)?;
-            creates.set(creates.get() + 1);
-            Ok(())
-        };
+        let gate = Gate::new();
 
         // Right length, wrong bytes — what a mirror out of sync with the pinned revision, or a
         // proxy rewriting the body, actually produces.
         fs::write(&model, b"world").unwrap();
-        let error = load(&dir).unwrap_err();
+        let error = gate.load(&dir, &TEST_PACK).unwrap_err();
         assert_eq!(error.key, err_key::MODEL_CORRUPT);
-        assert_eq!(creates.get(), 0, "a corrupt model was handed to the engine");
+        assert_eq!(gate.creates(), 0, "a corrupt model was handed to the engine");
 
-        // A stale marker claiming the pack is good must not open the gate either.
+        // A marker claiming the pack is good must not open the gate either, not even while it
+        // matches the file it describes in every respect a marker can describe.
         write_marker(&dir, &TEST_PACK).unwrap();
         assert!(marker_matches(&dir, &TEST_PACK));
-        // (The marker only records mtime and the PINNED hash, so it cannot notice this on its
-        // own — verification has to re-read the bytes, which is what makes the gate hold.)
-        fs::write(&model, b"world").unwrap();
-        let error = load(&dir).unwrap_err();
+        let error = gate.load(&dir, &TEST_PACK).unwrap_err();
         assert_eq!(error.key, err_key::MODEL_CORRUPT);
-        assert_eq!(creates.get(), 0);
+        assert_eq!(gate.creates(), 0);
 
         // Absent file: recoverable (`create` would return None), and reported as its own key so
         // the UI can say "download" rather than "repair".
         fs::remove_file(&model).unwrap();
-        let error = load(&dir).unwrap_err();
+        let error = gate.load(&dir, &TEST_PACK).unwrap_err();
         assert_eq!(error.key, err_key::MODEL_MISSING);
-        assert_eq!(creates.get(), 0);
+        assert_eq!(gate.creates(), 0);
 
         // And the good bytes do get through, or the test above would prove nothing.
         fs::write(&model, b"hello").unwrap();
-        load(&dir).unwrap();
-        assert_eq!(creates.get(), 1);
+        gate.load(&dir, &TEST_PACK).unwrap();
+        assert_eq!(gate.creates(), 1);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_rewrite_that_keeps_the_length_is_caught_wherever_it_lands() {
+        // Fixed offsets, fixed bytes, no sleeping and no randomness: each of these files is
+        // exactly as long as the pinned truth says, so a length check waves every one of them
+        // through and only the hash has anything to say.
+        let dir = temp_dir("rewrite");
+        let pack_dir = BULK_PACK.dir_path(&dir);
+        fs::create_dir_all(&pack_dir).unwrap();
+        let path = pack_dir.join("bulk.bin");
+        let good = bulk_bytes();
+        let gate = Gate::new();
+
+        // The fixture first: everything below is only worth as much as this hash.
+        assert_eq!(good.len(), BULK_BYTES);
+        fs::write(&path, &good).unwrap();
+        gate.load(&dir, &BULK_PACK).unwrap();
+        assert_eq!(gate.creates(), 1, "the fixture no longer matches its pinned hash");
+
+        // One byte inverted, at the front, inside the second read block, in the middle, and at
+        // the very last byte. `^ 0xff` always changes the byte, so none of these is a coin toss.
+        let last = BULK_BYTES - 1;
+        for at in [0, 128 * 1024 + 7, BULK_BYTES / 2, last] {
+            let mut bytes = good.clone();
+            bytes[at] ^= 0xff;
+            fs::write(&path, &bytes).unwrap();
+            let error = gate.load(&dir, &BULK_PACK).unwrap_err();
+            assert_eq!(error.key, err_key::MODEL_CORRUPT, "byte {at} was let through");
+            assert_eq!(gate.creates(), 1, "byte {at} reached the engine");
+        }
+
+        // Wrong length: caught before a byte is hashed, and still corrupt rather than missing,
+        // because a file that is there but wrong is repaired, not downloaded from scratch.
+        let mut short = good.clone();
+        short.pop();
+        let mut long = good.clone();
+        long.push(0);
+        for (label, bytes) in [("short", short), ("long", long), ("empty", Vec::new())] {
+            fs::write(&path, &bytes).unwrap();
+            let error = gate.load(&dir, &BULK_PACK).unwrap_err();
+            assert_eq!(error.key, err_key::MODEL_CORRUPT, "{label} was let through");
+            assert_eq!(gate.creates(), 1, "{label} reached the engine");
+        }
+
+        // Whole again, and through again.
+        fs::write(&path, &good).unwrap();
+        gate.load(&dir, &BULK_PACK).unwrap();
+        assert_eq!(gate.creates(), 2);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_pack_is_only_as_sound_as_its_last_file() {
+        // Handing sherpa-onnx a tokens.txt that does not belong to the model is not a graceful
+        // failure either — it exits(-1) — so the small file at the end of the pack is checked
+        // exactly as hard as the model beside it.
+        let dir = temp_dir("pair");
+        let pack_dir = PAIR_PACK.dir_path(&dir);
+        fs::create_dir_all(&pack_dir).unwrap();
+        let model = pack_dir.join("model.bin");
+        let tokens = pack_dir.join("tokens.txt");
+        let gate = Gate::new();
+
+        fs::write(&model, b"hello").unwrap();
+        fs::write(&tokens, b"tokens").unwrap();
+        gate.load(&dir, &PAIR_PACK).unwrap();
+        assert_eq!(gate.creates(), 1);
+
+        // First file untouched, second one rewritten to the same length.
+        fs::write(&tokens, b"tokenS").unwrap();
+        let error = gate.load(&dir, &PAIR_PACK).unwrap_err();
+        assert_eq!(error.key, err_key::MODEL_CORRUPT);
+        assert!(error.message.contains("tokens.txt"), "{}", error.message);
+        assert_eq!(gate.creates(), 1);
+
+        // Both wrong: the files are hashed side by side, so say which one is named — it has to
+        // be the first in the pack, never whichever thread happened to finish first.
+        fs::write(&model, b"world").unwrap();
+        for _ in 0..20 {
+            let error = gate.load(&dir, &PAIR_PACK).unwrap_err();
+            assert!(error.message.contains("model.bin"), "{}", error.message);
+        }
+        assert_eq!(gate.creates(), 1);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_good_pack_passes_the_gate_as_often_as_it_is_asked() {
+        let dir = temp_dir("idempotent");
+        let pack_dir = TEST_PACK.dir_path(&dir);
+        fs::create_dir_all(&pack_dir).unwrap();
+        fs::write(pack_dir.join("model.bin"), b"hello").unwrap();
+        let gate = Gate::new();
+
+        for _ in 0..5 {
+            gate.load(&dir, &TEST_PACK).unwrap();
+            assert!(marker_matches(&dir, &TEST_PACK));
+            assert!(models::pack_status(&dir, &TEST_PACK).verified);
+        }
+        assert_eq!(gate.creates(), 5);
+
+        // A marker that already describes these bytes is left where it is rather than rewritten
+        // on every start. Stamping it into the past and finding it still stamped says so.
+        let marker = TEST_PACK.marker_path(&dir);
+        let long_ago = UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+        fs::File::options()
+            .write(true)
+            .open(&marker)
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
+        gate.load(&dir, &TEST_PACK).unwrap();
+        assert_eq!(mtime(&marker), long_ago, "the marker was rewritten for nothing");
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_marker_cannot_vouch_for_bytes_it_never_read() {
+        // The marker records a length and a modification time, never the bytes it saw. Rewriting
+        // a file to the same length and putting its timestamp back leaves a record that matches
+        // in every respect the record can describe — so a gate that trusts the record hands a
+        // corrupt model straight to the engine. Nothing here depends on the clock: the timestamp
+        // is set, not waited for.
+        let dir = temp_dir("vouch");
+        let pack_dir = TEST_PACK.dir_path(&dir);
+        fs::create_dir_all(&pack_dir).unwrap();
+        let model = pack_dir.join("model.bin");
+        let gate = Gate::new();
+
+        // A genuinely good pack, verified, with the marker that verification leaves behind.
+        fs::write(&model, b"hello").unwrap();
+        gate.load(&dir, &TEST_PACK).unwrap();
+        assert_eq!(gate.creates(), 1);
+        assert!(marker_matches(&dir, &TEST_PACK));
+        let stamp = mtime(&model);
+
+        // Same length, different bytes, same timestamp: the marker still matches.
+        rewrite_at(&model, b"world", stamp);
+        assert!(marker_matches(&dir, &TEST_PACK));
+
+        let error = gate.load(&dir, &TEST_PACK).unwrap_err();
+        assert_eq!(error.key, err_key::MODEL_CORRUPT);
+        assert_eq!(gate.creates(), 1, "a corrupt model was handed to the engine");
+        // The badge has to follow the bytes, or Settings would keep offering a pack the
+        // microphone refuses and the install would keep skipping it as already done.
+        assert!(!marker_matches(&dir, &TEST_PACK));
+        assert!(!models::pack_status(&dir, &TEST_PACK).verified);
 
         fs::remove_dir_all(dir).unwrap();
     }

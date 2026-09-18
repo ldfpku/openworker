@@ -214,49 +214,93 @@ pub fn pack_status(model_dir: &Path, pack: &'static ModelPack) -> PackStatus {
 
 /// Length-and-hash gate in front of every `create` call.
 ///
-/// A valid marker means these exact bytes were hashed before, with the file untouched since
-/// (length plus modification time), so the hash is skipped. An invalid or missing marker means
-/// the hash is computed — never assumed.
+/// Every call re-reads every byte. The marker is a note about what an earlier run saw, never
+/// evidence about what is on disk now: it records a length and a modification time, so a file
+/// rewritten to the same length within one timestamp tick still matches it — a restore that
+/// preserves timestamps, a copy from another machine, a power cut between the write and the data
+/// reaching the platter. Only the bytes can answer for the bytes, and sherpa-onnx answers a bad
+/// `.onnx` by aborting the process, so the gate never trades that away for a faster start.
+///
+/// A failed gate also drops the marker. `pack_status` reports it as `verified`, `Dictation::start`
+/// admits on it and an install skips a pack that carries one; left behind it would show a badge
+/// the bytes no longer earn, and put the repair out of reach.
 pub fn ensure_pack_ready(
     model_dir: &Path,
     pack: &'static ModelPack,
 ) -> Result<PathBuf, DictationError> {
     let dir = pack.dir_path(model_dir);
-    if marker_matches(model_dir, pack) {
-        return Ok(dir);
+    if let Err(error) = verify_pack_files(model_dir, pack) {
+        // Best effort: a marker that will not delete is no reason to report anything other than
+        // what the bytes said.
+        let _ = fs::remove_file(pack.marker_path(model_dir));
+        return Err(error);
     }
-    verify_pack_files(model_dir, pack)?;
-    write_marker(model_dir, pack)?;
+    // These bytes just passed, so a marker that still describes them is accurate as it stands.
+    if !marker_matches(model_dir, pack) {
+        write_marker(model_dir, pack)?;
+    }
     Ok(dir)
 }
 
-/// Hashes every file in a pack. Slow (about half a second for the streaming pack) and exact.
+/// Hashes every file in a pack. Exact, and the whole cost of the gate: about 55 ms for the
+/// streaming pack with the files in the page cache.
+///
+/// One thread per file. A pack is two or three files of a couple of hundred megabytes each, and
+/// hashing them side by side rather than one after another takes about a third off the streaming
+/// pack — time the user spends waiting on a microphone that is already recording. Each file is
+/// judged on its own and the verdicts are read back in `pack.files` order, so which failure gets
+/// reported never depends on which thread happened to finish first.
 pub fn verify_pack_files(
     model_dir: &Path,
     pack: &'static ModelPack,
 ) -> Result<(), DictationError> {
     let dir = pack.dir_path(model_dir);
-    for file in pack.files {
-        let path = dir.join(file.name);
-        let Some(len) = file_len(&path) else {
-            return Err(DictationError::model_missing(format!(
-                "语音模型文件缺失：{}，请在「设置 › 语音输入」里重新下载。",
-                file.name
-            )));
-        };
-        if len != file.bytes {
-            return Err(DictationError::model_corrupt(format!(
-                "语音模型文件不完整：{}（{} / {} 字节），请在「设置 › 语音输入」里修复。",
-                file.name, len, file.bytes
-            )));
-        }
-        let actual = hash_file(&path)?;
-        if actual != file.sha256 {
-            return Err(DictationError::model_corrupt(format!(
-                "语音模型文件校验失败：{}，请在「设置 › 语音输入」里修复。",
-                file.name
-            )));
-        }
+    let verdicts: Vec<Result<(), DictationError>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = pack
+            .files
+            .iter()
+            .map(|file| {
+                let path = dir.join(file.name);
+                scope.spawn(move || verify_one_file(&path, file))
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| match handle.join() {
+                Ok(verdict) => verdict,
+                // A worker that panicked has no verdict to give; carrying the panic out is the
+                // same thing that would happen if the hashing ran here on this thread.
+                Err(panic) => std::panic::resume_unwind(panic),
+            })
+            .collect()
+    });
+    for verdict in verdicts {
+        verdict?;
+    }
+    Ok(())
+}
+
+/// One file against its pinned truth: it is there, it is exactly this long, and it hashes to
+/// exactly this. Length is checked first because a short file is the ordinary half-finished
+/// download, and saying so costs nothing.
+fn verify_one_file(path: &Path, file: &ModelFile) -> Result<(), DictationError> {
+    let Some(len) = file_len(path) else {
+        return Err(DictationError::model_missing(format!(
+            "语音模型文件缺失：{}，请在「设置 › 语音输入」里重新下载。",
+            file.name
+        )));
+    };
+    if len != file.bytes {
+        return Err(DictationError::model_corrupt(format!(
+            "语音模型文件不完整：{}（{} / {} 字节），请在「设置 › 语音输入」里修复。",
+            file.name, len, file.bytes
+        )));
+    }
+    if hash_file(path)? != file.sha256 {
+        return Err(DictationError::model_corrupt(format!(
+            "语音模型文件校验失败：{}，请在「设置 › 语音输入」里修复。",
+            file.name
+        )));
     }
     Ok(())
 }
@@ -555,9 +599,11 @@ pub(crate) fn write_marker(
         .map_err(|e| DictationError::download(format!("无法记录语音模型校验结果：{e}")))
 }
 
-/// True when every pinned file is still exactly the one that was hashed: same length, same
-/// recorded hash, same modification time. Touching a file invalidates the marker, which forces
-/// a real hash rather than trusting a stale record.
+/// True when every pinned file still looks like the one the record describes: same length, same
+/// pinned hash, same modification time. This is what Settings shows as "verified" and what the
+/// gate refreshes once the bytes pass. It is a hint and only a hint — a same-length rewrite
+/// inside one timestamp tick leaves every field here unchanged, which is why nothing is ever
+/// admitted on it alone.
 pub(crate) fn marker_matches(model_dir: &Path, pack: &'static ModelPack) -> bool {
     let Ok(marker) = fs::read_to_string(pack.marker_path(model_dir)) else {
         return false;
