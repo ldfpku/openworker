@@ -1,4 +1,5 @@
-"""Real Office files, written in-process — `write_spreadsheet` (.xlsx).
+"""Real Office files, written in-process — `write_spreadsheet` (.xlsx), and the path /
+atomic-write layer that `write_document` (.docx, `tools/document.py`) shares with it.
 
 Why this exists: `write_file` encodes UTF-8 text, so it can only ever produce a text file
 wearing a spreadsheet's extension (see `tools/files.py`), and the script route it points at
@@ -13,10 +14,20 @@ Two invariants the rest of the app depends on:
   artifact from that one argument, so anything else would be a lie on the user's screen.
 * **Path semantics are `write_file`'s**, deliberately re-implemented rather than borrowed:
   aisuite's `write_file` takes `content: str`, so a binary payload cannot ride through it.
-  `_resolve_target` mirrors `FileToolkit._resolve` (relative → primary root; absolute/`~`
+  `resolve_target` mirrors `FileToolkit._resolve` (relative → primary root; absolute/`~`
   → resolved, then must land inside a declared root; read-only root refused) down to the
   error wording, and `tests/test_office_tools.py` cross-checks the two side by side so they
   cannot drift apart.
+
+The names without a leading underscore — `root_entries`, `resolve_target`, `root_label`,
+`prepare_target`, `atomic_write`, `replace_denied`, `receipt_head`, `ILLEGAL_XML_CHARS` —
+are the shared surface `tools/document.py` imports. Every binary Office writer has to make
+the same five decisions (which root, is it writable, write to a sibling `.part`, swap, say
+why the swap was refused), and a second copy of them is a second thing to keep in step
+with aisuite. `_replace`, `_replace_denied`, `_save_workbook` and `_receipt` keep their
+underscored spelling because they are the SEAMS the tests stand in for by name, and
+`atomic_write` looks the first two up as module globals so a monkeypatch reaches both
+tools.
 
 openpyxl is imported lazily, inside the call: a build without it must still start, and the
 import costs ~40ms that every session which never writes a spreadsheet would pay.
@@ -29,7 +40,7 @@ import re
 import unicodedata
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from uuid import uuid4
 
 import aisuite as ai
@@ -179,7 +190,7 @@ _SCHEMA = {
 # -- paths ----------------------------------------------------------------------
 
 
-def _root_entries(roots: Optional[list]) -> list[tuple[Path, bool, str]]:
+def root_entries(roots: Optional[list]) -> list[tuple[Path, bool, str]]:
     """(resolved path, writable, label) per root, recomputed on EVERY call — the list is
     shared and mutated in place when the user grants a folder mid-session (see
     `roots.resolved_paths`); snapshotting it is what made read_file blind to a fresh grant.
@@ -206,7 +217,7 @@ def _root_entries(roots: Optional[list]) -> list[tuple[Path, bool, str]]:
     return out
 
 
-def _resolve_target(
+def resolve_target(
     path: str, primary: Path, entries: list[tuple[Path, bool, str]]
 ) -> Path:
     """`FileToolkit._resolve(path, for_write=True)`, re-implemented for a binary payload.
@@ -228,16 +239,34 @@ def _resolve_target(
     raise PermissionError(f"Path escapes allowed roots: {path}")
 
 
-def _root_label(target: Path, entries: list[tuple[Path, bool, str]]) -> str:
+def root_label(target: Path, entries: list[tuple[Path, bool, str]]) -> str:
     """Deepest matching root wins — same as `files.write_file_tools`, so a folder nested
     inside another is named with the one the user actually granted."""
     label, depth = "", -1
-    for root_path, _writable, root_label in entries:
+    for root_path, _writable, entry_label in entries:
         if not target.is_relative_to(root_path):
             continue
         if len(root_path.parts) > depth:
-            label, depth = root_label, len(root_path.parts)
+            label, depth = entry_label, len(root_path.parts)
     return label
+
+
+def prepare_target(
+    path: str, roots: Optional[list], primary: Path, tool: str
+) -> tuple[Path, list[tuple[Path, bool, str]]]:
+    """Everything between the `path` argument and an absolute file this session may write.
+
+    `roots` is read HERE rather than at tool-build time, which is what makes a folder the
+    user grants mid-turn reachable on that same turn (see `root_entries`). `tool` only
+    names the caller in the refusal — the rules themselves are `write_file`'s.
+    """
+    entries = root_entries(roots) or [(primary, True, primary.name)]
+    if not any(writable for _p, writable, _l in entries):
+        raise PermissionError(f"{tool} is disabled: this session has no writable directory.")
+    target = resolve_target(path, entries[0][0], entries)
+    if target.exists() and target.is_dir():
+        raise ValueError(f"Path is a directory: {path}")
+    return target, entries
 
 
 def _check_suffix(path: str) -> None:
@@ -323,9 +352,12 @@ def _overlaps(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> boo
 
 # -- cell values ----------------------------------------------------------------
 
-# openpyxl refuses these outright (IllegalCharacterError); a model that pastes terminal
-# output hits it. Dropping them beats failing a 40-sheet report over one stray \x07.
-_ILLEGAL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+# The control characters XML 1.0 has no representation for — everything below \x20 except
+# tab, LF and CR. openpyxl refuses them outright (IllegalCharacterError) and lxml refuses
+# them for .docx; a model that pastes terminal output hits it. Dropping them beats failing
+# a 40-sheet report over one stray \x07.
+ILLEGAL_XML_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+_ILLEGAL_CHARS = ILLEGAL_XML_CHARS
 
 _INT_RE = re.compile(r"^-?(?:0|[1-9][0-9]*)$")
 _DEC_RE = re.compile(r"^-?(?:0|[1-9][0-9]*)\.[0-9]+$")
@@ -626,7 +658,7 @@ def _replace(src: Path, dst: Path) -> None:
     os.replace(str(src), str(dst))
 
 
-def _replace_denied(target: Path) -> str:
+def replace_denied(target: Path, app: str = "Excel") -> str:
     """Why the swap was refused, in words the user can act on.
 
     "Close Excel" is the single most likely cause on Windows and the only one the user can
@@ -634,7 +666,7 @@ def _replace_denied(target: Path) -> str:
     folder, and Defender's Controlled Folder Access all arrive as the same PermissionError.
     Telling someone to close an Excel they never opened sends them looking for a window
     that does not exist, so the file's own flag is checked first and the fallback names
-    both possibilities.
+    both possibilities. `app` is the program to name for the guess — Word for a .docx.
     """
     try:
         read_only = target.exists() and not os.access(target, os.W_OK)
@@ -646,19 +678,50 @@ def _replace_denied(target: Path) -> str:
             "choose a different file name."
         )
     return (
-        f"{target} is open in another program (Excel?) or is read-only / "
+        f"{target} is open in another program ({app}?) or is read-only / "
         "write-protected. Close it, clear the read-only flag, or choose a different "
         "file name."
     )
 
 
+def atomic_write(target: Path, write: Callable[[Path], None], app: str = "Excel") -> None:
+    """Run `write` against a sibling `.part`, then swap it into place.
+
+    A half-written .xlsx/.docx is a corrupt ZIP the user double-clicks and Office refuses —
+    with the old (good) file already gone. The temp file is a SIBLING on purpose: `os.replace`
+    is only atomic within one filesystem, and the system temp dir is routinely another one.
+
+    `_replace` and `_replace_denied` are looked up as module globals so a test can stand in
+    for the swap for either tool (see `test_a_locked_target_says_the_file_is_open_elsewhere`).
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp = target.with_name(f".{target.name}.{uuid4().hex[:8]}.part")
+    try:
+        write(temp)
+        try:
+            _replace(temp, target)
+        except PermissionError as exc:
+            raise PermissionError(_replace_denied(target, app)) from exc
+    finally:
+        try:
+            temp.unlink(missing_ok=True)
+        except OSError:  # pragma: no cover - best effort; never masks the real error
+            pass
+
+
+def receipt_head(target: Path, label: str) -> str:
+    """`write_file`'s own prefix — the agent is told to quote that string verbatim
+    (`roots.render_context`), so every tool that writes a file must look the same."""
+    return f"Wrote {target}" + (f" (root: {label})" if label else "")
+
+
+_replace_denied = replace_denied
+
+
 def _receipt(
     target: Path, label: str, summaries: list[str], formulas: bool, notes: list[str]
 ) -> str:
-    """Opens with `write_file`'s own prefix — the agent is told to quote that string
-    verbatim (`roots.render_context`), so the two tools must look the same."""
-    head = f"Wrote {target}" + (f" (root: {label})" if label else "")
-    parts = [head + ". Sheets: " + "; ".join(summaries) + "."]
+    parts = [receipt_head(target, label) + ". Sheets: " + "; ".join(summaries) + "."]
     if formulas:
         parts.append("Formulas are calculated when the file is opened in Excel/WPS.")
     if notes:
@@ -667,11 +730,14 @@ def _receipt(
 
 
 def office_tools(workspace: str, roots: Optional[list] = None) -> list:
-    """`write_spreadsheet`, rooted like the file tools: relative paths resolve against
-    `workspace` (or the primary root), absolute paths must land in one of `roots`, and a
-    read-only root is refused. `roots` is held BY REFERENCE and re-read per call.
+    """`write_spreadsheet` and `write_document`, rooted like the file tools: relative paths
+    resolve against `workspace` (or the primary root), absolute paths must land in one of
+    `roots`, and a read-only root is refused. `roots` is held BY REFERENCE and re-read per
+    call.
 
-    A list because .docx is the obvious next tenant.
+    `write_document` is built by `tools/document.py`, imported HERE rather than at module
+    scope: that module imports this one for the path and atomic-write layer, and a
+    top-level import in both directions is a cycle.
     """
     primary = Path(workspace).resolve()
 
@@ -690,14 +756,7 @@ def office_tools(workspace: str, roots: Optional[list] = None) -> list:
             ) from exc
 
         _check_suffix(path)
-        entries = _root_entries(roots) or [(primary, True, primary.name)]
-        if not any(writable for _p, writable, _l in entries):
-            raise PermissionError(
-                "write_spreadsheet is disabled: this session has no writable directory."
-            )
-        target = _resolve_target(path, entries[0][0], entries)
-        if target.exists() and target.is_dir():
-            raise ValueError(f"Path is a directory: {path}")
+        target, entries = prepare_target(path, roots, primary, "write_spreadsheet")
 
         sheet_specs = _sheet_list(sheets)
         titles, notes = _sheet_names(sheet_specs)
@@ -1024,25 +1083,11 @@ def office_tools(workspace: str, roots: Optional[list] = None) -> list:
         if truncated:
             notes.append(f"{truncated} cell(s) truncated to 32,767 characters")
 
-        # -- atomic write: a half-written .xlsx is a corrupt ZIP the user double-clicks and
-        # Excel refuses, with the old (good) file already gone.
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temp = target.with_name(f".{target.name}.{uuid4().hex[:8]}.part")
-        try:
-            _save_workbook(workbook, temp)
-            try:
-                _replace(temp, target)
-            except PermissionError as exc:
-                raise PermissionError(_replace_denied(target)) from exc
-        finally:
-            try:
-                temp.unlink(missing_ok=True)
-            except OSError:  # pragma: no cover - best effort; never masks the real error
-                pass
+        atomic_write(target, lambda p: _save_workbook(workbook, p))
 
         try:
             return _receipt(
-                target, _root_label(target, entries), summaries, formulas_used, notes
+                target, root_label(target, entries), summaries, formulas_used, notes
             )
         except Exception:
             # The file is on disk. Everything past the write is cosmetics, and the engine
@@ -1059,4 +1104,7 @@ def office_tools(workspace: str, roots: Optional[list] = None) -> list:
         requires_approval=True,
     )
     write_spreadsheet.__coworker_schema__ = _SCHEMA
-    return [write_spreadsheet]
+
+    from coworker.tools.document import document_tools
+
+    return [write_spreadsheet, *document_tools(workspace, roots)]

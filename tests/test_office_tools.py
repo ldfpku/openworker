@@ -28,12 +28,19 @@ import pytest
 import aisuite as ai
 from coworker.roots import RootDir, normalize_roots
 from coworker.tools import office as office_module
+from coworker.tools.document import _SCHEMA as _DOC_SCHEMA
 from coworker.tools.office import _SCHEMA, office_tools
 
 
 def _tool(workspace, roots=None):
+    """`write_spreadsheet`, plus the standing check that it is still the FIRST tool the
+    toolkit hands out — `tests/test_document_tool.py` reaches for `[1]` by the same token,
+    and App.tsx's FILE_WRITE_TOOLS list is written against both names."""
     tools = office_tools(str(workspace), roots=roots)
-    assert [getattr(t, "__name__", "") for t in tools] == ["write_spreadsheet"]
+    assert [getattr(t, "__name__", "") for t in tools] == [
+        "write_spreadsheet",
+        "write_document",
+    ]
     return tools[0]
 
 
@@ -907,9 +914,19 @@ def test_overwriting_an_existing_file_is_the_documented_behaviour(tmp_path):
 # -- schema / import cost --------------------------------------------------------
 
 
-def test_schema_sticks_to_the_subset_every_provider_accepts():
+@pytest.mark.parametrize(
+    "schema,name,required",
+    [
+        (_SCHEMA, "write_spreadsheet", ["path", "sheets"]),
+        (_DOC_SCHEMA, "write_document", ["path", "markdown"]),
+    ],
+    ids=["write_spreadsheet", "write_document"],
+)
+def test_schema_sticks_to_the_subset_every_provider_accepts(schema, name, required):
     """anyOf, type arrays, null, additionalProperties and default each get a request
-    rejected by at least one hosted provider. Keep the schema boring."""
+    rejected by at least one hosted provider. Keep the schema boring.
+
+    Both office tools ride in every session's prompt, so both are held to it."""
     banned = {"anyOf", "oneOf", "allOf", "not", "default", "additionalProperties", "$ref"}
     allowed_types = {
         "object",
@@ -932,11 +949,11 @@ def test_schema_sticks_to_the_subset_every_provider_accepts():
             for i, value in enumerate(node):
                 walk(value, f"{where}[{i}]")
 
-    fn = _SCHEMA["function"]
+    fn = schema["function"]
     walk(fn["parameters"], "parameters")  # the envelope's own "type": "function" is fine
-    assert _SCHEMA["type"] == "function"
-    assert fn["name"] == "write_spreadsheet"
-    assert fn["parameters"]["required"] == ["path", "sheets"]
+    assert schema["type"] == "function"
+    assert fn["name"] == name
+    assert fn["parameters"]["required"] == required
     # The tool sits in every session's prompt; a runaway description is a per-turn bill.
     assert len(json.dumps(fn)) < 3000
 
