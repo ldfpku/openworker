@@ -262,6 +262,24 @@ def _writer_error(suffix: str) -> ValueError:
     return error
 
 
+def _judged_suffix(path: str) -> str:
+    """The extension the FILESYSTEM will end up giving this file, lowercased.
+
+    Not `Path(path).suffix`: Windows silently drops trailing spaces and dots when it
+    creates a file, so `write_file(path="报告.docx ")` lands on disk as `报告.docx` — but
+    `Path("报告.docx ").suffix` is `".docx "`, which matches none of the sets above, and a
+    5-byte text file goes out wearing a .docx name. `报告.docx.` is worse still: its suffix
+    computes as `""`. Both were measured on Windows 11 (2026-09-18) — the refusal was
+    skipped and the file was written.
+
+    Stripping is for the JUDGEMENT only; the original `path` is what gets written, so
+    nothing changes for an extension that was allowed anyway. On a filesystem that does
+    keep the padding, `报告.docx ` is still a file no Word will open, so refusing it is
+    right there too.
+    """
+    return Path(str(path).rstrip(" .")).suffix.lower()
+
+
 def _presentation_error(suffix: str) -> str:
     """PowerPoint: no in-app writer yet, so route to the option that always works.
 
@@ -319,7 +337,7 @@ def write_file_tools(
 
     def write_file(path: str, content: str, overwrite: bool = True) -> str:
         """Write a UTF-8 text file under the configured root."""
-        suffix = Path(str(path)).suffix.lower()
+        suffix = _judged_suffix(path)
         # Refuse BEFORE writing: a half-written .xlsx on disk is worse than none, and the
         # model would cite it as proof the spreadsheet exists.
         if suffix in _WRITERS:

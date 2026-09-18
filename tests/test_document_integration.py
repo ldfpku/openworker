@@ -522,6 +522,77 @@ def test_a_refused_doc_write_offers_docx_instead(tmp_path):
         engine.executor.close()
 
 
+def test_a_trailing_space_or_dot_does_not_smuggle_a_text_file_past_the_refusal(tmp_path):
+    """Windows drops trailing spaces and dots when it creates a file, so `报告.docx ` and
+    `报告.docx.` both land on disk as `报告.docx` — while `Path(…).suffix` reports `".docx "`
+    and `""` respectively, neither of which is in `_WRITERS`. Measured on Windows 11
+    before the fix: the refusal was skipped, `write_file` reported success, and the user
+    got a 5-byte text file that Word refuses to open — the exact outcome the whole refusal
+    exists to prevent, reachable by one stray keystroke in the model's path argument.
+
+    Both writers are checked because the padding is stripped once, for both families, in
+    `_judged_suffix` — a fix applied to only one of them would be the same bug again.
+    """
+    from coworker.agents import cowork_agent
+
+    cases = [
+        ("报告.docx ", "write_document"),
+        ("报告.docx.", "write_document"),
+        ("报告.docx..", "write_document"),
+        ("报告.docx . ", "write_document"),
+        ("报告.DOCX ", "write_document"),
+        ("旧文档.doc ", "write_document"),
+        ("报表.xlsx ", "write_spreadsheet"),
+        ("报表.xlsx.", "write_spreadsheet"),
+        ("旧表.xls ", "write_spreadsheet"),
+    ]
+    for padded, expected_tool in cases:
+        engine = _engine_for(cowork_agent(), tmp_path)
+        try:
+            result, status = engine._execute_sync(
+                _call("write_file", {"path": padded, "content": "hello"})
+            )
+            assert status == "error", padded
+            assert result["error_type"] == "ValueError", padded
+            assert expected_tool in result["error"], padded
+            # The tool still gets materialised: a padded path is a typo, not a different
+            # request, so the model must land on the same next move.
+            assert expected_tool in _schema_names(engine), padded
+        finally:
+            engine.executor.close()
+        # Nothing on disk under EITHER spelling — Windows would have stripped the padding.
+        assert list(tmp_path.iterdir()) == [], (padded, list(tmp_path.iterdir()))
+
+    # The presentation family shares the one suffix computation, so it is closed too.
+    engine = _engine_for(cowork_agent(), tmp_path)
+    try:
+        result, status = engine._execute_sync(
+            _call("write_file", {"path": "演示.pptx ", "content": "hello"})
+        )
+        assert status == "error" and "python-pptx" in result["error"]
+    finally:
+        engine.executor.close()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_padding_does_not_change_an_allowed_extension(tmp_path):
+    """The stripping is for the JUDGEMENT only. A .md with a stray trailing space is still
+    written, at the path the caller gave — stripping the path itself would be a silent
+    rename, and the receipt would then name a file the model never asked for."""
+    from coworker.agents import cowork_agent
+
+    engine = _engine_for(cowork_agent(), tmp_path)
+    try:
+        result, status = engine._execute_sync(
+            _call("write_file", {"path": "笔记.md ", "content": "# x\n"})
+        )
+        assert status == "ok", result
+        # Windows strips the padding on the way to disk; the point is that it was written.
+        assert [p.name for p in tmp_path.iterdir()] in (["笔记.md"], ["笔记.md "])
+    finally:
+        engine.executor.close()
+
+
 def test_a_refused_pptx_write_names_neither_in_app_writer(tmp_path):
     """The family with no in-app writer keeps the old routing, and must not be handed a
     tool that writes a different kind of file — a model told to "use write_document" for a
