@@ -45,6 +45,14 @@ dependencies = [
     # native deps — the frozen backend can write a spreadsheet on an office PC that has
     # neither Python nor Excel installed. Lazy-imported, so a build without it still runs.
     "openpyxl>=3.1",
+    # Real .docx in-process (tools/document.py `write_document`), same reasoning as
+    # openpyxl: pure python, MIT, no native deps beyond lxml, so the frozen backend can
+    # hand an office PC a Word file without Python or Word on it. Lazy-imported.
+    "python-docx>=1.1",
+    # markdown-it-py is `write_document`'s Markdown parser. It already arrives in the tree
+    # via rich/textual, but a transitive dependency is not a promise: declare it, or a
+    # future textual that drops it takes .docx writing down with it.
+    "markdown-it-py>=3",
     # IANA tz database for zoneinfo. Windows ships no system tz db, so without this every
     # named schedule timezone (UTC, Asia/Kolkata, …) silently falls back to local time.
     "tzdata; sys_platform == 'win32'",
