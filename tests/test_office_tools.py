@@ -14,6 +14,7 @@ Three things these cover, in order of how much damage they prevent:
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
@@ -854,6 +855,42 @@ def test_a_locked_target_says_the_file_is_open_elsewhere(tmp_path, monkeypatch):
     assert "is open in another program (Excel?)" in str(exc.value)
     assert str(tmp_path / "报告.xlsx") in str(exc.value)
     assert list(tmp_path.iterdir()) == []  # the temp file is cleaned up regardless
+
+
+def test_a_file_name_the_os_rejects_is_a_value_error_not_a_bare_oserror(
+    tmp_path, monkeypatch
+):
+    """`os.replace` reports "the file is locked" and "that is not a usable file name" with
+    the same exception class, and only the first is something the USER can fix. The second
+    is the model's to fix, so it arrives as a ValueError naming the path rather than as
+    `OSError: [WinError 87] 参数错误`, which says nothing about which argument was wrong.
+
+    Driven through the shared seam in `office.py`, so it covers both office writers on
+    every platform; the Windows test below is the name that really triggers it."""
+
+    def invalid(_src, _dst):
+        raise OSError(errno.EINVAL, "Invalid argument")
+
+    monkeypatch.setattr(office_module, "_replace", invalid)
+    with pytest.raises(ValueError) as exc:
+        _tool(tmp_path)(path="报告.xlsx", sheets=[{"rows": [["a"]]}])
+    message = str(exc.value)
+    assert "refused this file name" in message
+    assert str(tmp_path / "报告.xlsx") in message
+    assert "Invalid argument" in message
+    assert list(tmp_path.iterdir()) == []  # and the .part is still cleaned up
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS alternate data streams are Windows-only")
+def test_an_alternate_data_stream_path_is_refused_by_name(tmp_path):
+    """`a.txt:b.xlsx` is NTFS alternate-data-stream syntax. `Path.resolve` accepts it, the
+    roots check accepts it, the temp file even writes — and then `os.replace` fails."""
+    with pytest.raises(ValueError) as exc:
+        _tool(tmp_path)(path="a.txt:b.xlsx", sheets=[{"rows": [["a"]]}])
+    assert "refused this file name" in str(exc.value)
+    assert 'no : * ? " < > | characters' in str(exc.value)
+    assert not (tmp_path / "a.txt:b.xlsx").exists()
+    assert [p.name for p in tmp_path.iterdir() if p.name.endswith(".part")] == []
 
 
 def test_the_refusal_distinguishes_read_only_from_a_file_someone_has_open(

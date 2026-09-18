@@ -24,10 +24,10 @@ The names without a leading underscore — `root_entries`, `resolve_target`, `ro
 are the shared surface `tools/document.py` imports. Every binary Office writer has to make
 the same five decisions (which root, is it writable, write to a sibling `.part`, swap, say
 why the swap was refused), and a second copy of them is a second thing to keep in step
-with aisuite. `_replace`, `_replace_denied`, `_save_workbook` and `_receipt` keep their
-underscored spelling because they are the SEAMS the tests stand in for by name, and
-`atomic_write` looks the first two up as module globals so a monkeypatch reaches both
-tools.
+with aisuite. `_replace`, `_save_workbook` and `_receipt` keep their underscored spelling
+because they are the SEAMS the tests stand in for by name; `atomic_write` looks `_replace`
+up as a module global, so one monkeypatch reaches both tools. (`_replace_denied` is only an
+alias for the public `replace_denied`, which is what production code calls.)
 
 openpyxl is imported lazily, inside the call: a build without it must still start, and the
 import costs ~40ms that every session which never writes a spreadsheet would pay.
@@ -691,8 +691,17 @@ def atomic_write(target: Path, write: Callable[[Path], None], app: str = "Excel"
     with the old (good) file already gone. The temp file is a SIBLING on purpose: `os.replace`
     is only atomic within one filesystem, and the system temp dir is routinely another one.
 
-    `_replace` and `_replace_denied` are looked up as module globals so a test can stand in
-    for the swap for either tool (see `test_a_locked_target_says_the_file_is_open_elsewhere`).
+    `_replace` is the SEAM: it is looked up as a module global, so one monkeypatch stands in
+    for the swap in both tools (see `test_a_locked_target_says_the_file_is_open_elsewhere`
+    and its .docx twin). The wording function it pairs with is the public `replace_denied`.
+
+    The two failure modes are told apart because they need different answers. A
+    PermissionError is a file the user can unlock — close Word, clear the read-only flag —
+    so it stays a PermissionError carrying `replace_denied`'s advice. Any OTHER OSError is
+    the operating system rejecting the NAME, and the only one who can fix that is the
+    model: `path="a.txt:b.docx"` (an NTFS alternate data stream) reaches this line and
+    `os.replace` raises a bare `OSError: [WinError 87] 参数错误`, which tells the model
+    nothing about which argument to change.
     """
     target.parent.mkdir(parents=True, exist_ok=True)
     temp = target.with_name(f".{target.name}.{uuid4().hex[:8]}.part")
@@ -701,7 +710,14 @@ def atomic_write(target: Path, write: Callable[[Path], None], app: str = "Excel"
         try:
             _replace(temp, target)
         except PermissionError as exc:
-            raise PermissionError(_replace_denied(target, app)) from exc
+            raise PermissionError(replace_denied(target, app)) from exc
+        except OSError as exc:  # must stay AFTER PermissionError, its subclass
+            detail = exc.strerror or str(exc)
+            raise ValueError(
+                f"the operating system refused this file name: {target} ({detail}). Pass a "
+                'plain file name — no : * ? " < > | characters, and not a reserved device '
+                "name like CON or NUL — keeping the extension it needs."
+            ) from exc
     finally:
         try:
             temp.unlink(missing_ok=True)
@@ -715,6 +731,8 @@ def receipt_head(target: Path, label: str) -> str:
     return f"Wrote {target}" + (f" (root: {label})" if label else "")
 
 
+# Kept for the test that calls the wording function directly with one argument. Production
+# code goes through the public `replace_denied`.
 _replace_denied = replace_denied
 
 

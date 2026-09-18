@@ -19,6 +19,7 @@ What these are actually defending, in order of how much damage they prevent:
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
@@ -44,6 +45,10 @@ from coworker.tools.document import (
 from coworker.tools.office import office_tools
 
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+# By code point: both are invisible in an editor, and a test that hinges on one
+# must not hide it in a string literal.
+_BOM = chr(0xFEFF)
+_PUA = chr(0xE000)
 
 
 def _tool(workspace, roots=None):
@@ -168,10 +173,13 @@ def test_a_typical_report_round_trips_and_carries_the_office_look(tmp_path):
     assert 'w:ascii="Times New Roman"' in _style_xml(styles, "Normal")
     assert 'w:ascii="Arial"' in _style_xml(styles, "Heading2")
     # the built-in Heading/Title styles ship theme-backed fonts and colours that WIN over
-    # an explicit value, so setting ours has to have removed them
+    # an explicit value, so setting ours has to have removed them. Matched case-INSENSITIVELY:
+    # the attributes are `w:asciiTheme` but also `w:themeShade`, and a capital-T check
+    # silently missed the second spelling while `w:themeShade="BF"` sat on Title and
+    # Heading 1 for a whole review cycle.
     for style_id in ("Title", "Heading1", "Heading2", "Heading3", "Heading4"):
         block = _style_xml(styles, style_id)
-        assert "Theme" not in block, style_id
+        assert "theme" not in block.lower(), style_id
         assert 'w:val="000000"' in block, style_id
 
     # -- the 2-character first line is on body text ONLY
@@ -226,6 +234,9 @@ def test_a_typical_report_round_trips_and_carries_the_office_look(tmp_path):
     assert '<w:tblW w:type="pct" w:w="5000"/>' in body  # fills the text column
     assert body.count('w:fill="DDEBF7"') == 3  # the three anchored header cells
     assert table.cell(0, 0).paragraphs[0].runs[0].bold is True
+    # the header repeats on every page the table spills onto — and only the header does
+    rows_xml = re.findall(r"<w:tr\b.*?</w:tr>", body, re.S)
+    assert [("<w:tblHeader/>" in r) for r in rows_xml] == [True, False, False]
 
     # -- code: shaded, and its leading spaces are preserved rather than collapsed
     assert body.count('w:fill="F2F2F2"') == 2  # one paragraph per code line
@@ -239,6 +250,42 @@ def test_a_typical_report_round_trips_and_carries_the_office_look(tmp_path):
         "Document: 12 paragraph(s), 5 heading(s), 1 table(s), 3 list(s), "
         "1 page break(s); style office."
     )
+
+
+def test_no_theme_attribute_survives_anywhere_we_set_an_explicit_value(tmp_path):
+    """The twin attribute names only LOOK regular, and deriving them got it wrong.
+
+    `w:color`'s modifiers are `w:themeTint`/`w:themeShade` — NOT `w:themeColorTint` — so a
+    helper that appended "Tint"/"Shade" to the stem it was given left `w:themeShade="BF"`
+    on Title and Heading 1. Word applies the theme shade to whatever `w:val` says, so the
+    explicit black was being tinted by a value nobody had asked for. `w:shd` is the trap in
+    the other direction: there the twins really are `w:themeFillTint`/`w:themeFillShade`.
+    """
+    _tool(tmp_path)(
+        path="th.docx",
+        markdown="# 标题\n\n# 一级\n\n## 二级\n\n### 三级\n\n#### 四级\n\n> 引用\n\n"
+        "| A |\n|---|\n| 甲 |\n\n```\nx\n```\n",
+    )
+    parts = _parts(tmp_path / "th.docx")
+
+    for style_id in (
+        "Normal",
+        "Title",
+        "Heading1",
+        "Heading2",
+        "Heading3",
+        "Heading4",
+        "Quote",
+    ):
+        block = _style_xml(parts["word/styles.xml"], style_id)
+        assert "theme" not in block.lower(), f"{style_id}: {block}"
+
+    # every shading this tool writes carries only the explicit fill
+    shades = re.findall(r"<w:shd[^/]*/>", parts["word/document.xml"])
+    assert shades, "no shading was written at all"
+    for shade in shades:
+        assert "theme" not in shade.lower(), shade
+        assert 'w:val="clear"' in shade and 'w:color="auto"' in shade
 
 
 def test_every_property_element_keeps_its_schema_child_order(tmp_path):
@@ -332,6 +379,43 @@ def test_nesting_past_three_levels_lands_on_the_third_list_style(tmp_path):
         "List Bullet 2",
         "List Bullet 3",
         "List Bullet 3",
+    ]
+
+
+def test_a_list_item_that_opens_with_a_nested_list_still_gets_its_own_marker(tmp_path):
+    """`- ` with only a sub-list under it gives a `list_item` containing NO paragraph, so
+    nothing consumed the item's own turn and the outer bullet vanished — the sub-items
+    appeared to hang off nothing. The item gets an empty marker line instead, and it has to
+    come BEFORE the nested content."""
+    _tool(tmp_path)(path="nf.docx", markdown="- \n  - 甲\n  - 乙\n- 正常\n")
+    document = _open(tmp_path / "nf.docx")
+    assert [(p.style.name, p.text) for p in document.paragraphs] == [
+        ("List Bullet", ""),
+        ("List Bullet 2", "甲"),
+        ("List Bullet 2", "乙"),
+        ("List Bullet", "正常"),
+    ]
+
+
+def test_an_ordered_item_that_opens_with_a_nested_list_keeps_the_numbering(tmp_path):
+    """The empty marker line has to take the item's `w:numId`, or the outer list would
+    number 1, 1 instead of 1, 2."""
+    _tool(tmp_path)(path="no.docx", markdown="1. \n   1. 甲\n2. 乙\n")
+    document = _open(tmp_path / "no.docx")
+    outer = [p for p in document.paragraphs if p.style.name == "List Number"]
+    assert [p.text for p in outer] == ["", "乙"]
+    assert outer[0]._p.pPr.numPr.numId.val == outer[1]._p.pPr.numPr.numId.val
+    nested = [p for p in document.paragraphs if p.style.name == "List Number 2"]
+    assert [p.text for p in nested] == ["甲"]
+    # the nested list is its own numbering instance, so it starts at 1 too
+    assert nested[0]._p.pPr.numPr.numId.val != outer[0]._p.pPr.numPr.numId.val
+
+
+def test_a_completely_empty_list_item_still_occupies_a_line(tmp_path):
+    _tool(tmp_path)(path="ne.docx", markdown="- \n- 乙\n")
+    assert [(p.style.name, p.text) for p in _open(tmp_path / "ne.docx").paragraphs] == [
+        ("List Bullet", ""),
+        ("List Bullet", "乙"),
     ]
 
 
@@ -494,6 +578,18 @@ def test_a_table_over_the_row_limit_is_refused_with_somewhere_to_put_the_data(tm
     assert list(tmp_path.iterdir()) == []
 
 
+def test_a_long_table_repeats_its_header_row_across_pages(tmp_path):
+    """`w:tblHeader` on the header row's `w:trPr`. Word will not infer it, and a 200-row
+    report whose second page has unlabelled columns is the sort of thing the reader
+    notices and the author does not."""
+    rows = "".join(f"| 项目{i} | {i} |\n" for i in range(60))
+    _tool(tmp_path)(path="long.docx", markdown=f"| 项目 | 金额 |\n|---|---|\n{rows}")
+    body = _parts(tmp_path / "long.docx")["word/document.xml"]
+    assert body.count("<w:tblHeader/>") == 1
+    first_row = re.search(r"<w:tr\b.*?</w:tr>", body, re.S).group(0)
+    assert "<w:tblHeader/>" in first_row
+
+
 def test_cells_carry_the_office_cell_size_and_no_first_line_indent(tmp_path):
     _tool(tmp_path)(path="c.docx", markdown="| A |\n|---|\n| 甲 |\n")
     table = _open(tmp_path / "c.docx").tables[0]
@@ -606,6 +702,7 @@ def test_a_document_without_images_says_nothing_about_them(tmp_path):
 # -- page breaks, HTML, headings -------------------------------------------------
 
 
+@pytest.mark.parametrize("eol", ["\n", "\r\n", "\r"], ids=["lf", "crlf", "cr"])
 @pytest.mark.parametrize(
     "line",
     [
@@ -617,17 +714,65 @@ def test_a_document_without_images_says_nothing_about_them(tmp_path):
         "\t<!-- pagebreak -->",
     ],
 )
-def test_the_pagebreak_comment_is_recognised_however_it_is_spaced(tmp_path, line):
-    out = _tool(tmp_path)(path="pb.docx", markdown=f"前一页。\n{line}\n后一页。\n")
+def test_the_pagebreak_comment_is_recognised_however_it_is_spaced(tmp_path, line, eol):
+    """The line-ending axis is not hypothetical. `_preprocess` runs BEFORE markdown-it does
+    its own `\\r\\n` normalisation, splits on `\\n`, and matches a pattern anchored with
+    `$` — so a CRLF document left a `\\r` on the marker line, missed the match, and printed
+    `<!-- pagebreak -->` into the report as visible text with no break at all."""
+    markdown = eol.join(["前一页。", line, "后一页。", ""])
+    out = _tool(tmp_path)(path="pb.docx", markdown=markdown)
     assert "1 page break(s)" in out
     body = _parts(tmp_path / "pb.docx")["word/document.xml"]
     assert body.count('<w:br w:type="page"/>') == 1
-    assert "pagebreak" not in body  # the sentinel never reaches the document
+    assert "pagebreak" not in body  # neither the comment nor the sentinel reaches the file
     assert [p.text for p in _open(tmp_path / "pb.docx").paragraphs] == [
         "前一页。",
         "",
         "后一页。",
     ]
+
+
+@pytest.mark.parametrize("eol", ["\r\n", "\r"], ids=["crlf", "cr"])
+def test_windows_line_endings_leave_every_other_block_intact(tmp_path, eol):
+    """Line endings are normalised for the whole document, not just the pagebreak scan, so
+    the fence tracking and the table parser see what they expect too."""
+    markdown = eol.join(
+        [
+            "# 标题",
+            "",
+            "| A | B |",
+            "|---|---|",
+            "| 1 | 2 |",
+            "",
+            "```",
+            "<!-- pagebreak -->",
+            "```",
+            "",
+            "- 甲",
+            "- 乙",
+            "",
+        ]
+    )
+    out = _tool(tmp_path)(path="w.docx", markdown=markdown)
+    assert "1 table(s)" in out and "1 list(s)" in out
+    assert "0 page break(s)" in out  # the one inside the fence is still just code
+    document = _open(tmp_path / "w.docx")
+    assert document.paragraphs[0].style.name == "Title"
+    assert [c.text for c in document.tables[0].rows[1].cells] == ["1", "2"]
+    assert "<!-- pagebreak -->" in "\n".join(p.text for p in document.paragraphs)
+    assert "\r" not in _parts(tmp_path / "w.docx")["word/document.xml"]
+
+
+def test_a_leading_byte_order_mark_does_not_swallow_the_title(tmp_path):
+    """`\\ufeff# 标题` is not a heading — it is a paragraph that happens to start with a
+    hash. A BOM arrives whenever the Markdown came from a file Notepad or Excel wrote."""
+    _tool(tmp_path)(path="bom.docx", markdown=_BOM + "# 季度报告\n\n正文。\n")
+    document = _open(tmp_path / "bom.docx")
+    assert [(p.style.name, p.text) for p in document.paragraphs] == [
+        ("Title", "季度报告"),
+        ("Normal", "正文。"),
+    ]
+    assert _BOM not in _parts(tmp_path / "bom.docx")["word/document.xml"]
 
 
 def test_a_pagebreak_comment_inside_a_code_fence_stays_code(tmp_path):
@@ -647,7 +792,7 @@ def test_a_sentinel_the_author_typed_cannot_forge_a_page_break(tmp_path):
         path="sn.docx", markdown=f"文字 {document_module._PAGEBREAK} 文字\n"
     )
     assert "0 page break(s)" in out
-    assert "" not in _parts(tmp_path / "sn.docx")["word/document.xml"]
+    assert _PUA not in _parts(tmp_path / "sn.docx")["word/document.xml"]
 
 
 def test_html_arrives_as_text_rather_than_markup(tmp_path):
@@ -970,6 +1115,47 @@ def test_a_locked_target_blames_word_rather_than_excel(tmp_path, monkeypatch):
     assert "Excel" not in str(exc.value)
     assert str(tmp_path / "报告.docx") in str(exc.value)
     assert list(tmp_path.iterdir()) == []  # the temp file is cleaned up regardless
+
+
+def test_a_file_name_the_os_rejects_is_a_value_error_not_a_bare_oserror(
+    tmp_path, monkeypatch
+):
+    """`os.replace` answers "the file is locked" and "that name is not a file name" with
+    the same exception class, and only the first is something the USER can fix. The second
+    has to reach the model as a ValueError naming the path, or it gets `OSError: [WinError
+    87] 参数错误` and no idea which argument was wrong.
+
+    Driven through the seam so the conversion is covered on every platform; the Windows
+    test below proves what actually triggers it.
+    """
+
+    def invalid(_src, _dst):
+        raise OSError(errno.EINVAL, "Invalid argument")
+
+    monkeypatch.setattr(office_module, "_replace", invalid)
+    with pytest.raises(ValueError) as exc:
+        _tool(tmp_path)(path="报告.docx", markdown="正文。")
+    message = str(exc.value)
+    assert "refused this file name" in message
+    assert str(tmp_path / "报告.docx") in message
+    assert "Invalid argument" in message
+    assert list(tmp_path.iterdir()) == []  # and the .part is still cleaned up
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS alternate data streams are Windows-only")
+def test_an_alternate_data_stream_path_is_refused_by_name(tmp_path):
+    """The real trigger, end to end: `a.txt:b.docx` is NTFS alternate-data-stream syntax.
+    `Path.resolve` accepts it, the roots check accepts it, the temp file even writes — and
+    then `os.replace` fails with WinError 87."""
+    with pytest.raises(ValueError) as exc:
+        _tool(tmp_path)(path="a.txt:b.docx", markdown="正文。")
+    assert "refused this file name" in str(exc.value)
+    assert 'no : * ? " < > | characters' in str(exc.value)
+    assert not (tmp_path / "a.txt:b.docx").exists()
+    # no half-written payload under a confusing name. (The zero-byte `.a.txt` host file the
+    # stream hangs off is left alone on purpose: it is an ordinary name we did not choose
+    # and may already have been the user's.)
+    assert [p.name for p in tmp_path.iterdir() if p.name.endswith(".part")] == []
 
 
 @pytest.mark.skipif(

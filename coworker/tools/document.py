@@ -275,6 +275,24 @@ _TCPR_SEQ = (
     "w:tcPrChange",
 )
 
+_TRPR_SEQ = (
+    "w:cnfStyle",
+    "w:divId",
+    "w:gridBefore",
+    "w:gridAfter",
+    "w:wBefore",
+    "w:wAfter",
+    "w:cantSplit",
+    "w:trHeight",
+    "w:tblHeader",
+    "w:tblCellSpacing",
+    "w:jc",
+    "w:hidden",
+    "w:ins",
+    "w:del",
+    "w:trPrChange",
+)
+
 _NUMPR_SEQ = ("w:ilvl", "w:numId", "w:numberingChange", "w:ins")
 _PBDR_SEQ = ("w:top", "w:left", "w:bottom", "w:right", "w:between", "w:bar")
 
@@ -317,18 +335,23 @@ def _set_attrs(node, attrs: dict) -> None:
 
 
 def _clear_theme(node, *names: str) -> None:
-    """Strip the theme-backed twins of an attribute we are about to set explicitly.
+    """Strip the theme-backed attributes that would override a value we set explicitly.
 
-    `<w:color w:val="365F91" w:themeColor="accent1"/>` renders as the THEME colour: Word
-    reads `w:themeColor` in preference to `w:val`. The built-in Heading and Title styles
-    ship exactly that, plus `w:asciiTheme`/`w:eastAsiaTheme` on their fonts, so setting
-    only the explicit attribute leaves blue Calibri headings and looks like nothing worked.
+    `<w:color w:val="365F91" w:themeColor="accent1" w:themeShade="BF"/>` renders as the
+    THEME colour: Word reads the theme attributes in preference to `w:val`. The built-in
+    Heading and Title styles ship exactly that, plus `w:asciiTheme`/`w:eastAsiaTheme` on
+    their fonts, so setting only the explicit attribute leaves blue Calibri headings and
+    looks like nothing worked.
+
+    Every name is spelled out by the caller rather than derived from a stem, because the
+    naming only LOOKS regular: `w:color`'s modifiers are `w:themeTint` and `w:themeShade`,
+    not `w:themeColorTint`, while `w:shd`'s really are `w:themeFillTint` and
+    `w:themeFillShade`. Deriving them left `w:themeShade="BF"` on Title and Heading 1.
     """
     for name in names:
-        for attr in (name, f"{name}Tint", f"{name}Shade"):
-            key = _qn(f"w:{attr}")
-            if node.get(key) is not None:
-                del node.attrib[key]
+        key = _qn(f"w:{name}")
+        if node.get(key) is not None:
+            del node.attrib[key]
 
 
 def _fonts(rpr, latin: str, eastasia: str) -> None:
@@ -349,7 +372,7 @@ def _fonts(rpr, latin: str, eastasia: str) -> None:
 
 def _color(rpr, hex_rgb: str) -> None:
     node = rpr.get_or_add_color()
-    _clear_theme(node, "themeColor")
+    _clear_theme(node, "themeColor", "themeTint", "themeShade")
     node.set(_qn("w:val"), hex_rgb)
 
 
@@ -376,8 +399,19 @@ def _indent(ppr, *, first_line_chars: int, first_line_twips: int, left_twips: in
 
 
 def _shade(ppr_or_tcpr, fill: str, seq: tuple) -> None:
+    # `w:shd` carries two independent theme pairs — one behind `w:color` (the pattern) and
+    # one behind `w:fill` (the background). Both are cleared, because both attributes are
+    # being set here.
     node = _ordered(ppr_or_tcpr, "w:shd", seq)
-    _clear_theme(node, "themeFill")
+    _clear_theme(
+        node,
+        "themeColor",
+        "themeTint",
+        "themeShade",
+        "themeFill",
+        "themeFillTint",
+        "themeFillShade",
+    )
     _set_attrs(node, {"w:val": "clear", "w:color": "auto", "w:fill": fill})
 
 
@@ -405,15 +439,30 @@ _FENCE_LINE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
 # the author meant. Any pre-existing copy is stripped first, which makes the sentinel
 # unforgeable from the input.
 _PAGEBREAK = "\ue000pagebreak\ue000"
+# Spelled by code point on purpose: a literal BOM in the source is invisible in
+# every editor, and the next person to touch this line cannot see what it strips.
+_BOM = chr(0xFEFF)
 
 
 def _preprocess(markdown: str) -> str:
-    """Drop XML-illegal control characters and turn pagebreak comments into a sentinel.
+    """Normalise line endings, drop XML-illegal control characters, and turn pagebreak
+    comments into a sentinel.
+
+    The line endings come FIRST and are not optional. markdown-it normalises `\\r\\n` and
+    `\\r` to `\\n` itself, but that happens inside `parse()` — everything this function does
+    runs before it, splits on `\\n`, and matches line patterns anchored with `$`. A
+    `<!-- pagebreak -->` arriving with CRLF (a model quoting a file the user pasted from
+    Notepad, or any Windows-side round trip) would keep a trailing `\\r`, miss
+    `_PAGEBREAK_LINE`, and be printed into the document as literal text.
+
+    A leading BOM goes the same way: `\\ufeff# 标题` is not a heading, it is a paragraph
+    that happens to start with a hash.
 
     The scan tracks fenced code blocks so a Markdown cheat sheet that SHOWS the pagebreak
     comment inside a ``` fence gets a code line, not a page break.
     """
-    text = ILLEGAL_XML_CHARS.sub("", markdown).replace(_PAGEBREAK, "")
+    text = markdown.lstrip(_BOM).replace("\r\n", "\n").replace("\r", "\n")
+    text = ILLEGAL_XML_CHARS.sub("", text).replace(_PAGEBREAK, "")
     out: list[str] = []
     fence = ""
     for line in text.split("\n"):
@@ -852,17 +901,33 @@ class _Writer:
         while i < close_i:
             if tokens[i].type == "list_item_open":
                 item_close = self._close(tokens, i, close_i)
+                item = {"style": style, "num": num_id, "first": True}
+                # `- ` with only a nested list under it (and `- ` with nothing at all) give
+                # a list_item containing NO paragraph, so nothing would consume `first` and
+                # the outer item would lose its own bullet — the nested items would appear
+                # to hang off nothing. Give it an empty list paragraph to sit on, BEFORE
+                # the nested content, which is where the marker belongs.
+                opens_with = tokens[i + 1].type if i + 1 < item_close else ""
+                if opens_with != "paragraph_open":
+                    self._empty_item(item)
                 self._blocks(
                     tokens,
                     i + 1,
                     item_close,
                     quote=quote,
                     depth=depth,
-                    item={"style": style, "num": num_id, "first": True},
+                    item=item,
                 )
                 i = item_close + 1
             else:
                 i += 1
+
+    def _empty_item(self, item: dict) -> None:
+        """The list item's own marker line, with no text of its own."""
+        paragraph = self._new_paragraph(item["style"])
+        self._numbering(paragraph, item["num"])
+        item["first"] = False
+        self.paragraphs += 1
 
     # -- inline -----------------------------------------------------------------
 
@@ -1027,6 +1092,12 @@ class _Writer:
         # at 60% of the line looks like a mistake in a report.
         width = _ordered(table._tbl.tblPr, "w:tblW", _TBLPR_SEQ)
         _set_attrs(width, {"w:type": "pct", "w:w": 5000})
+
+        # Repeat the header on every page a long table spills onto. Word will not infer
+        # this, and a 200-row report whose second page has unlabelled columns is the sort
+        # of thing the reader notices and the author does not.
+        for row in table.rows[:head_rows]:
+            _ordered(row._tr.get_or_add_trPr(), "w:tblHeader", _TRPR_SEQ)
 
         # Merge BEFORE writing: `_Cell.merge` concatenates the cells' contents, so a table
         # filled first would carry the literal "<" and "^" markers into the merged cell.
