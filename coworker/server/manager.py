@@ -5882,14 +5882,7 @@ class SessionManager:
     def _spawn_weixin_task(self, coro) -> None:
         """Run `coro` on the live loop, keeping a strong reference. No loop (tests, threads) →
         close the coroutine rather than leak an un-awaited warning."""
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            coro.close()
-            return
-        task = loop.create_task(coro)
-        self._wx_tasks.add(task)
-        task.add_done_callback(self._wx_tasks.discard)
+        spawn_retained(self._wx_tasks, coro)
 
     async def _weixin_say(self, target: str, text: str) -> None:
         if not target or self.gateway is None:
@@ -6267,18 +6260,13 @@ class SessionManager:
     def is_running(self, session_id: str) -> bool:
         return session_id in self._running_sessions
 
-    def spawn_turn_task(self, coro) -> asyncio.Task:
+    def spawn_turn_task(self, coro) -> asyncio.Task | None:
         """Run a WS turn (`run_turn` in app.py) on the live loop, keeping a strong
-        reference — same pattern as `_spawn_weixin_task`/`_autotitle_tasks`. The loop only
-        holds a weak ref to a Task, so one with no other referent can be garbage-collected
-        before it finishes, silently stopping the turn mid-run. Right now every suspend
-        point a turn can sit at (engine._cancel, an `inbox` wait, the tool executor
-        thread, a timer handle) happens to be anchored by something else, so this is a
-        guard against that changing rather than a fix for an observed loss."""
-        task = asyncio.create_task(coro)
-        self._turn_tasks.add(task)
-        task.add_done_callback(self._turn_tasks.discard)
-        return task
+        reference — same pattern as `_spawn_weixin_task`/`_autotitle_tasks`. Right now
+        every suspend point a turn can sit at (engine._cancel, an `inbox` wait, the tool
+        executor thread, a timer handle) happens to be anchored by something else, so
+        this is a guard against that changing rather than a fix for an observed loss."""
+        return spawn_retained(self._turn_tasks, coro)
 
     def spawn_background(self, coro) -> asyncio.Task | None:
         """Fire-and-forget a background flow (see `_bg_tasks` above) with a strong
@@ -7052,17 +7040,16 @@ class SessionManager:
             self._autotitle_attempts.get(session_id, 0) + 1
         )
         try:
-            loop = asyncio.get_running_loop()
+            asyncio.get_running_loop()
         except RuntimeError:
             return  # no loop to ride (sync caller) — skip, never block
         self._autotitle_inflight.add(session_id)
-        # Retain the task: the loop holds only a weak ref, and a GC'd task would both
-        # kill the title mid-flight and strand the inflight guard.
-        task = loop.create_task(
-            self._generate_autotitle(session_id, engine, openers, assistant)
+        # Retain the task: a GC'd task would both kill the title mid-flight and strand
+        # the inflight guard.
+        spawn_retained(
+            self._autotitle_tasks,
+            self._generate_autotitle(session_id, engine, openers, assistant),
         )
-        self._autotitle_tasks.add(task)
-        task.add_done_callback(self._autotitle_tasks.discard)
 
     async def _generate_autotitle(
         self,

@@ -47,6 +47,7 @@ from .providers.errors import (
     retry_after_seconds,
 )
 from .providers.openai_provider import looks_like_unparsed_tool_call
+from .taskutil import spawn_retained
 from .tools import ToolRegistry
 
 logger = logging.getLogger("coworker.engine")
@@ -1742,9 +1743,7 @@ class TurnEngine:
             except Exception:
                 pass  # shadow must never surface a failure
 
-        task = asyncio.create_task(_shadow())
-        self._shadow_tasks.add(task)
-        task.add_done_callback(self._shadow_tasks.discard)
+        spawn_retained(self._shadow_tasks, _shadow())
 
     async def drain_shadow_reviews(self) -> None:
         """Await in-flight shadow verdicts (tests and orderly shutdown; never the hot path)."""

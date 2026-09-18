@@ -31,6 +31,7 @@ from typing import Optional
 
 import httpx
 
+from ..taskutil import spawn_retained
 from .base import BasePlatformAdapter, MessageEvent, SendResult, SessionSource
 from .senders import _send_weixin
 from .weixin_lock import LOCK_BUSY_MESSAGE, TokenLock
@@ -252,9 +253,7 @@ class WeixinAdapter(BasePlatformAdapter):
                     buf = new_buf
                     self._state.save_sync(self._account_id, buf)
                 for message in response.get("msgs") or []:
-                    task = asyncio.create_task(self._process_message_safe(message))
-                    self._msg_tasks.add(task)
-                    task.add_done_callback(self._msg_tasks.discard)
+                    spawn_retained(self._msg_tasks, self._process_message_safe(message))
             except asyncio.CancelledError:
                 break
             except Exception as exc:

@@ -164,6 +164,33 @@ def test_shadow_reviewer_error_never_surfaces(tmp_path):
     assert [r for r in rows if r.get("stage") == "reviewer_shadow"] == []
 
 
+async def test_spawn_shadow_review_tracks_until_drained(tmp_path):
+    """`_spawn_shadow_review` retains its fire-and-forget verdict task in
+    `_shadow_tasks` (spawn_retained) for as long as the reviewer call is in flight,
+    and `drain_shadow_reviews` clears it once the call settles."""
+    gate = asyncio.Event()
+
+    class _BlockingReviewer:
+        async def review(self, *, request, history, tool_name, arguments, provenance=""):
+            await gate.wait()
+            return reviewer_mod.Verdict("allow", "shadow says allow")
+
+    engine, rows, approvals = _engine(
+        tmp_path, mode=Mode.INTERACTIVE, shadow=True, reviewer=_BlockingReviewer()
+    )
+
+    events = [ev async for ev in engine.run("write the file")]
+    assert approvals == ["write_file"]  # the human path still ran to completion
+
+    assert len(engine._shadow_tasks) == 1
+    (task,) = engine._shadow_tasks
+    assert not task.done()
+
+    gate.set()
+    await engine.drain_shadow_reviews()
+    assert engine._shadow_tasks == set()
+
+
 # -- harness scoring (scripts/eval_reviewer.py) ----------------------------------
 
 

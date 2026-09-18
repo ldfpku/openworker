@@ -820,6 +820,53 @@ async def test_spawn_turn_task_discards_after_cancel(tmp_path):
     assert task not in manager._turn_tasks
 
 
+# -- weixin task tracking (_spawn_weixin_task, method-level) ---------------------
+
+
+async def test_spawn_weixin_task_tracks_until_it_finishes(tmp_path):
+    """`_spawn_weixin_task` is the same fire-and-forget retention as `spawn_turn_task`
+    above, for the synchronous WeChat reply path (outbound receipts, prompt-resolved
+    notices). Exception/cancel behavior is already covered for the shared mechanism by
+    tests/test_taskutil.py — this covers the call site's tracking + the "always
+    returns None" contract its three callers rely on."""
+    import asyncio
+
+    manager = SessionManager(workspace=tmp_path, provider=ScriptedProvider([]))
+    gate = asyncio.Event()
+
+    async def pending():
+        await gate.wait()
+
+    result = manager._spawn_weixin_task(pending())
+    assert result is None
+    assert len(manager._wx_tasks) == 1
+    (task,) = manager._wx_tasks
+    assert not task.done()
+
+    gate.set()
+    await task
+    assert manager._wx_tasks == set()
+
+
+def test_spawn_weixin_task_closes_coro_without_running_loop(tmp_path):
+    """No running loop (e.g. a plain thread) — `_spawn_weixin_task` must close the
+    coroutine itself rather than leak a "coroutine ... was never awaited" warning, and
+    `_wx_tasks` stays untouched. This test function is deliberately sync (not `async
+    def`) so there is genuinely no running loop in this thread."""
+    import inspect
+
+    manager = SessionManager(workspace=tmp_path, provider=ScriptedProvider([]))
+
+    async def marker():
+        pass
+
+    coro = marker()
+    result = manager._spawn_weixin_task(coro)
+    assert result is None
+    assert inspect.getcoroutinestate(coro) == inspect.CORO_CLOSED
+    assert manager._wx_tasks == set()
+
+
 def test_ws_browser_tool_audit_round_trip(tmp_path):
     # Browser tools are on-demand (OPE-XXX): the model loads them via load_browser_tools
     # before it can call browser_close — the engine re-reads registry.schemas() every

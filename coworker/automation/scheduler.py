@@ -12,6 +12,7 @@ import asyncio
 import logging
 from typing import Awaitable, Callable, Optional
 
+from ..taskutil import spawn_retained
 from .models import ScheduledTask, TaskRun
 from .store import TaskStore
 
@@ -84,9 +85,7 @@ class Scheduler:
             # already clear — the task runs twice.
             if not self._claim(task.id):
                 continue
-            spawned = asyncio.create_task(self._run_claimed(task, trigger=trigger))
-            self._spawned.add(spawned)
-            spawned.add_done_callback(self._spawned.discard)
+            spawn_retained(self._spawned, self._run_claimed(task, trigger=trigger))
         if self.extra_tick is not None:
             try:
                 await self.extra_tick()

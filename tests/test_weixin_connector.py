@@ -94,6 +94,46 @@ async def test_adapter_poll_dispatches_and_persists_cursor(tmp_path, monkeypatch
     assert state.context_token(ACCOUNT, "wxid_alice") == "ctx-1"
 
 
+async def test_poll_loop_message_task_tracked_and_cleared(tmp_path, monkeypatch):
+    """`_poll_loop` spawns one `_process_message_safe` task per inbound message
+    without awaiting it — `_msg_tasks` must hold a strong reference (spawn_retained)
+    for as long as processing is in flight, and drop it once processing finishes."""
+    adapter, _state = _make_adapter(tmp_path)
+    api_post, _calls = _scripted_api_post(
+        [
+            {
+                "ret": 0,
+                "get_updates_buf": "buf-1",
+                "msgs": [_text_msg("m1", "wxid_alice", "hello")],
+            }
+        ]
+    )
+    monkeypatch.setattr("coworker.connectors.weixin_adapter.api_post", api_post)
+
+    gate = asyncio.Event()
+    entered = asyncio.Event()
+
+    async def blocking_process_message(message):
+        entered.set()
+        await gate.wait()
+
+    monkeypatch.setattr(adapter, "_process_message", blocking_process_message)
+
+    assert await adapter.connect() is True
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2.0)
+        assert len(adapter._msg_tasks) == 1
+        (task,) = adapter._msg_tasks
+        assert not task.done()
+
+        gate.set()
+        await asyncio.wait_for(task, timeout=2.0)
+        assert adapter._msg_tasks == set()
+    finally:
+        gate.set()
+        await adapter.disconnect()
+
+
 async def test_adapter_debounce_merges_rapid_texts(tmp_path, monkeypatch):
     adapter, _state = _make_adapter(tmp_path, batch_delay=0.05, batch_split_delay=0.05)
     api_post, _calls = _scripted_api_post(

@@ -8,6 +8,7 @@ one retry (with both openers) after the next user turn; every failure is swallow
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 
 from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
@@ -225,3 +226,48 @@ def test_turn_start_titles_before_the_turn_completes(tmp_path):
         assert mgr._autotitle_attempts[sid] == 1
 
     asyncio.run(go())
+
+
+async def test_maybe_autotitle_task_tracked_and_cleared(tmp_path):
+    """`_maybe_autotitle` retains its fire-and-forget `_generate_autotitle` task in
+    `_autotitle_tasks` (spawn_retained) for as long as the completion call is in
+    flight, and clears both the task and the `_autotitle_inflight` guard once it
+    settles — same mechanism as `spawn_turn_task`/`_spawn_weixin_task`
+    (tests/test_server.py)."""
+    started = threading.Event()
+    gate = threading.Event()
+
+    class BlockingTitleProvider(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            started.set()
+            gate.wait(5.0)
+            return AssistantTurn(text="Blocked Title", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    mgr = SessionManager(
+        workspace=tmp_path, provider=BlockingTitleProvider(), model="gpt-5.6-sol"
+    )
+    sid = "autotitle-block-1"
+    engine = mgr.get_engine(sid, agent="chat")
+    engine.messages.append({"role": "user", "content": "help me plan a trip"})
+    mgr.save(sid, engine)
+    mgr.mark_running(sid)
+
+    try:
+        mgr._maybe_autotitle(sid)
+        assert len(mgr._autotitle_tasks) == 1
+        (task,) = mgr._autotitle_tasks
+        assert not task.done()
+        assert sid in mgr._autotitle_inflight
+
+        assert await asyncio.to_thread(started.wait, 2.0), "title call never started"
+        assert not task.done()  # still blocked on `gate`
+    finally:
+        gate.set()
+
+    await asyncio.wait_for(task, timeout=5.0)
+    assert mgr._autotitle_tasks == set()
+    assert sid not in mgr._autotitle_inflight
+    assert mgr.session_store.title_state(sid)["auto_title"] == "Blocked Title"

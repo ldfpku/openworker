@@ -217,6 +217,41 @@ async def test_scheduler_skips_overlapping_run(tmp_path):
     await first
 
 
+async def test_tick_retains_spawned_run_until_it_finishes(tmp_path):
+    """`_tick` spawns each claimed run without awaiting it — `_spawned` must hold a
+    strong reference (spawn_retained) for as long as the run is in flight, and drop it
+    once the run settles, the same set `stop()` drains at shutdown."""
+    store = TaskStore(tmp_path / "auto.db")
+    t = _task(schedule=Schedule(kind="cron", cron="* * * * *"))
+    store.save(t)
+    # force it due now (same recipe as test_scheduler_runs_due_task_and_advances)
+    t.next_run = 1.0
+    store.save(t)
+    t.next_run = 1.0  # save() recomputes; push it into the past again
+    store._conn.execute("UPDATE scheduled_tasks SET next_run=1.0 WHERE id=?", (t.id,))
+    store._conn.commit()
+
+    gate = asyncio.Event()
+    started = asyncio.Event()
+
+    async def slow_runner(task, trigger):
+        started.set()
+        await gate.wait()
+        return TaskRun(task_id=task.id, status="ok", trigger=trigger)
+
+    sched = Scheduler(store, slow_runner)
+    await sched._tick(trigger="manual")
+    await asyncio.wait_for(started.wait(), timeout=2.0)
+
+    assert len(sched._spawned) == 1
+    (spawned_task,) = sched._spawned
+    assert not spawned_task.done()
+
+    gate.set()
+    await asyncio.wait_for(spawned_task, timeout=2.0)
+    assert sched._spawned == set()
+
+
 # -- agent-facing tools --------------------------------------------------------
 def test_create_and_list_tools(tmp_path):
     store = TaskStore(tmp_path / "auto.db")
