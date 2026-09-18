@@ -14,6 +14,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
+import random
 import time
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -37,9 +40,169 @@ _REVIEWER_PAUSED_TEXT = (
 from .permissions import Mode, PermissionEngine
 from .providers import AssistantTurn, ProviderClient, ToolCall
 from .providers.base import SYSTEM_CONTEXT_OPEN
-from .providers.errors import friendly_model_error
+from .providers.errors import (
+    friendly_model_error,
+    is_transient_model_error,
+    retry_after_seconds,
+)
 from .providers.openai_provider import looks_like_unparsed_tool_call
 from .tools import ToolRegistry
+
+logger = logging.getLogger("coworker.engine")
+
+# Finish/stop reasons that mean "the model ran out of output budget". Every provider
+# normalizes to the OpenAI vocabulary before the turn reaches here (anthropic/bedrock
+# `max_tokens`, gemini `MAX_TOKENS`, responses `max_output_tokens` all map to "length"),
+# so "length" is the value in practice; the raw spellings stay in the set as a guard for
+# compat endpoints whose own value passes through unmapped.
+_LENGTH_FINISH_REASONS = frozenset(
+    {"length", "max_tokens", "max_output_tokens", "model_length"}
+)
+# Finish reasons that mean "something refused to let this through" — a safety filter, a
+# guardrail, a recitation/blocklist hit. Every provider normalizes its own spelling to
+# `content_filter` (anthropic `refusal`, bedrock `guardrail_intervened`/`content_filtered`,
+# gemini `SAFETY`/`RECITATION`/…, responses `incomplete_details.reason`), because the
+# engine has to tell this apart from a plain empty answer: one is worth re-running and the
+# other returns the identical block however many times it is asked.
+_FILTERED_FINISH_REASONS = frozenset({"content_filter", "content_filtered", "safety"})
+
+# Why a turn ended with nothing to show, in the order the checks run. Server-authored
+# English, persisted verbatim on the notice (like every other marker) and localized at
+# display time from the structured `reason` — see surfaces/gui/src/modeNotice.ts.
+_TURN_ABORTED_TEXT = {
+    "no_finish": (
+        "The model's response was cut off before it finished (no end-of-stream from the "
+        "provider). Nothing was answered or done."
+    ),
+    "length": "The model hit its output length limit before producing an answer.",
+    # Deliberately wider than "safety": the same class carries recitation and blocklist
+    # hits, which are content policy but not safety.
+    "filtered": "The provider blocked this response under its content policy.",
+    "empty": "The model returned an empty response.",
+}
+# Same, for a turn that DID answer but was cut off part-way: the text is already on
+# screen, so this is a warning appended after it, not a failure.
+_TURN_TRUNCATED_TEXT = {
+    "no_finish": (
+        "The response may be incomplete: it was cut off before the provider signalled the "
+        "end of the stream."
+    ),
+    "length": "The response may be incomplete: the model hit its output length limit.",
+}
+# Notice kinds `retry()` will re-run. An aborted turn is exactly as retriable as a
+# provider failure — nothing was answered and nothing was done.
+_RETRIABLE_NOTICE_KINDS = frozenset({"error", "turn_aborted"})
+
+# -- automatic retry of a model call that delivered nothing --------------------------
+#
+# A severed stream is not a decision the model made, it is a call that never landed, and
+# making the user click Retry for it is making them do the machine's job. Bounded, and
+# only for round-trips that delivered NOTHING: a turn with text in it is never re-run,
+# because the user has already read that text and a second answer would duplicate it.
+_MODEL_RETRIES_ENV = "OPENWORKER_MODEL_RETRIES"
+_MODEL_RETRIES_DEFAULT = 2
+# An attempt that ran this long before dying is expensive to repeat — the 2026-09-18
+# incident thought for 232 seconds and then dropped, so the default budget would have
+# spent twelve more minutes and three times the tokens to reach the same sentence. Past
+# this mark one retry is all it gets.
+_LONG_ATTEMPT_ENV = "OPENWORKER_MODEL_RETRY_LONG_ATTEMPT_SECONDS"
+_LONG_ATTEMPT_DEFAULT = 90.0
+_LONG_ATTEMPT_RETRIES = 1
+# Waits before attempt 2 and attempt 3, in seconds, each ±_RETRY_JITTER. Long enough for a
+# busy backend to drain, short enough that the user reads it as "retrying" and not a hang.
+_RETRY_BACKOFF = (2.0, 6.0)
+_RETRY_JITTER = 0.25
+# A vendor's own Retry-After is honoured, but never past this: a five-minute hint would
+# strand the user in front of a spinner with no way to tell it from a hang.
+_RETRY_AFTER_CAP = 30.0
+# Automatic retries allowed across the WHOLE user turn, every round together. Without it a
+# tool-heavy turn could pay the per-call budget again on each of fifty rounds.
+_TURN_RETRY_CAP = 4
+# Which failures earn a re-run. "length" does not (the same prompt meets the same ceiling)
+# and neither does "filtered" (a block is a decision, not an accident) — retrying either
+# only spends the budget to arrive at the identical sentence.
+_RETRIABLE_ABORT_REASONS = frozenset({"no_finish", "empty"})
+# Per-reason ceilings ON TOP of the configured budget. A bare empty answer is the weakest
+# evidence of a transport problem there is — it can just as easily be a model that had
+# nothing to say — so it gets one courtesy re-run, not the full budget.
+_REASON_RETRY_CAP = {"empty": 1}
+# Server-authored English, persisted on the `turn_retry` marker and localized at display
+# time from the structured reason/attempt/max (surfaces/gui/src/modeNotice.ts).
+_TURN_RETRY_TEXT = {
+    "no_finish": "The model's response was cut off; retrying ({attempt}/{max})…",
+    "empty": "The model returned an empty response; retrying ({attempt}/{max})…",
+    "transient": "The model call failed; retrying ({attempt}/{max})…",
+}
+# Appended to the give-up sentence so the user knows the machine already tried.
+_TURN_ABORTED_RETRIED = " Automatic retry didn't help ({n} retries)."
+
+
+def _model_retries() -> int:
+    """How many times one dead model call is re-run automatically. Garbage falls back to
+    the default; an explicit 0 IS honoured — unlike a timeout, "none" is a sane setting
+    here, it just means "ask me". Clamped to the per-turn cap, because a budget bigger
+    than the turn's total can never be spent and would only lie in the "(1/9)" counter."""
+    raw = (os.environ.get(_MODEL_RETRIES_ENV) or "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            return _MODEL_RETRIES_DEFAULT
+        if value >= 0:
+            return min(value, _TURN_RETRY_CAP)
+    return _MODEL_RETRIES_DEFAULT
+
+
+def _long_attempt_seconds() -> float:
+    """How long a dying attempt has to run before it's only worth repeating once."""
+    raw = (os.environ.get(_LONG_ATTEMPT_ENV) or "").strip()
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            return _LONG_ATTEMPT_DEFAULT
+        if value > 0:
+            return value
+    return _LONG_ATTEMPT_DEFAULT
+
+
+def _retry_delay(attempt: int, retry_after: Optional[float] = None) -> float:
+    """Seconds to wait before the 1-based `attempt`. A vendor's own Retry-After wins over
+    the schedule (it knows when its queue drains), capped; otherwise fixed backoff with a
+    little jitter so several sessions recovering at once don't re-collide. A non-positive
+    hint is NOT honoured — "retry immediately" against a backend that just refused us is
+    how a bounded retry turns into a hot loop — so it falls back to the schedule too."""
+    if retry_after is not None and retry_after > 0:
+        return min(retry_after, _RETRY_AFTER_CAP)
+    base = _RETRY_BACKOFF[min(attempt, len(_RETRY_BACKOFF)) - 1]
+    return base * (1.0 + random.uniform(-_RETRY_JITTER, _RETRY_JITTER))
+
+
+def _is_length_finish(finish_reason: Optional[str]) -> bool:
+    return (finish_reason or "").strip().lower() in _LENGTH_FINISH_REASONS
+
+
+def _is_filtered_finish(finish_reason: Optional[str]) -> bool:
+    return (finish_reason or "").strip().lower() in _FILTERED_FINISH_REASONS
+
+
+def _abort_reason(turn: AssistantTurn, *, trust_truncated: bool) -> str:
+    """Why an answerless turn produced nothing — `_TURN_ABORTED_TEXT`'s key.
+
+    The explicit signals win, most specific first: a block is a decision, a length limit
+    names its own cause. `no_finish` comes last and is doubly gated — on `turn.truncated`
+    (only a provider that can tell a severed stream from a clean one sets it, see
+    providers/base.py) AND on `trust_truncated`, the engine's own observation that THIS
+    model has actually been seen reporting a finish reason in this session. Without the
+    second gate, a compat endpoint that never sends the field would have every one of its
+    perfectly good replies accused of being cut short."""
+    if _is_filtered_finish(turn.finish_reason):
+        return "filtered"
+    if _is_length_finish(turn.finish_reason):
+        return "length"
+    if turn.truncated and trust_truncated:
+        return "no_finish"
+    return "empty"
 
 
 class ApprovalOutcome(str, Enum):
@@ -249,6 +412,23 @@ class TurnEngine:
         # Whether the latest assistant turn hit the output-token limit — decides which
         # diagnosis a mangled (unparseable-args) tool call gets answered with.
         self._turn_truncated = False
+        # Automatic retry of a model call that delivered nothing. `retry_sleep` is the
+        # seam tests replace so a backoff never really waits; the default IS a wait on the
+        # cancel event, which is what makes Stop bite DURING the pause and not after it.
+        # `clock` is the matching seam for "how long did the dead attempt run".
+        self.model_retries = _model_retries()
+        self.retry_sleep: Callable[[float], Awaitable[bool]] = self._sleep_unless_stopped
+        self.clock: Callable[[], float] = time.monotonic
+        # Model ids seen reporting a finish reason at least once. A backend that simply
+        # never sends the field must not have its ordinary replies read as severed
+        # streams, and the only honest way to know which kind it is, is to watch it —
+        # keyed by model id so a mid-session switch starts the observation over. Re-seeded
+        # from the loaded history below: the `finish_reason` sidecar is persisted, so a
+        # resumed session (or a restart, or an evicted-and-rebuilt engine) knows what it
+        # already learned instead of spending its first real cut-off saying "empty".
+        self._finish_reason_seen: set[str] = _models_that_report_finish(
+            self.messages, self.model
+        )
         # Each pending steering message: (text, optional MessageSource sidecar dict).
         self._steering: list[tuple[str, Optional[dict[str, Any]]]] = []
         # tool_call.id → the standing rule that auto-allowed it ("tool → target"), so the
@@ -381,13 +561,15 @@ class TurnEngine:
 
     def _tail_is_retriable_error(self) -> bool:
         """True when the history tail is an error notice, looking through any model_switch
-        notices appended after it (a switch must not consume the retry)."""
+        notices appended after it (a switch must not consume the retry). `turn_aborted`
+        counts: a turn the provider cut short answered nothing and did nothing, so it is
+        exactly as re-runnable as a provider failure."""
         for message in reversed(self.messages):
             if message.get("role") != "notice":
                 return False
             if message.get("kind") == "model_switch":
                 continue
-            return message.get("kind") == "error"
+            return message.get("kind") in _RETRIABLE_NOTICE_KINDS
         return False
 
     def _append_notice(self, kind: str, text: Optional[str] = None, **fields: Any) -> None:
@@ -400,6 +582,110 @@ class TurnEngine:
             notice["text"] = text
         notice.update({k: v for k, v in fields.items() if v is not None})
         self.messages.append(notice)
+
+    async def _sleep_unless_stopped(self, delay: float) -> bool:
+        """Wait out one retry backoff; False when the user pressed Stop during it. The
+        wait IS the cancel event's wait, so a Stop lands immediately instead of six
+        seconds later — the default `retry_sleep`, replaced wholesale in tests."""
+        if delay <= 0:
+            return not self._cancel.is_set()
+        try:
+            await asyncio.wait_for(self._cancel.wait(), timeout=delay)
+        except (asyncio.TimeoutError, TimeoutError):
+            return not self._cancel.is_set()
+        return False
+
+    def _trusts_truncation(self) -> bool:
+        """Whether `turn.truncated` means anything for the model in play — see
+        `_abort_reason`. True once this model has been watched reporting a finish reason.
+        """
+        return self.model in self._finish_reason_seen
+
+    def _retry_budget(self, reason: str, elapsed: float) -> int:
+        """How many automatic retries THIS failure is worth, before the turn-wide cap.
+
+        Three ceilings stack: the configured budget, the reason's own (a bare empty answer
+        is weak evidence of a transport fault), and the cost of the attempt that just
+        died — repeating a four-minute call twice more spends twelve minutes and three
+        times the tokens to reach the same sentence."""
+        if reason not in _RETRIABLE_ABORT_REASONS and reason != "transient":
+            return 0
+        budget = self.model_retries
+        budget = min(budget, _REASON_RETRY_CAP.get(reason, budget))
+        if elapsed >= _long_attempt_seconds():
+            budget = min(budget, _LONG_ATTEMPT_RETRIES)
+        return budget
+
+    def _may_retry(self, reason: str, attempt: int, used: int, elapsed: float) -> bool:
+        """Whether one more automatic attempt is allowed: this failure's budget, the
+        turn-wide cap, and nobody having pressed Stop."""
+        return (
+            attempt < self._retry_budget(reason, elapsed)
+            and used < _TURN_RETRY_CAP
+            and not self._cancel.is_set()
+        )
+
+    def _announce_retry(
+        self, reason: str, attempt: int, shown_max: int, elapsed: float
+    ) -> Event:
+        """Persist the marker for one automatic retry and return the live event. The text
+        is server-authored English; `reason`/`attempt`/`max` travel structured beside it so
+        the GUI renders its own localized sentence (modeNotice.ts). `shown_max` is what is
+        actually still available — the per-call budget capped by what's left of the turn's
+        — so the counter never promises a retry that can't happen."""
+        text = _TURN_RETRY_TEXT.get(reason, _TURN_RETRY_TEXT["transient"]).format(
+            attempt=attempt, max=shown_max
+        )
+        self._append_notice(
+            "turn_retry", text, reason=reason, attempt=attempt, max=shown_max
+        )
+        # The only log line a retried attempt gets (the abort line is for the one that
+        # finally gives up). A retry that recovers leaves nothing in the transcript worth
+        # reading later, so this is where "that relay drops one call in five" becomes
+        # countable.
+        logger.info(
+            "turn_retry: session=%s reason=%s attempt=%d/%d model=%s elapsed=%.1fs",
+            self.audit_context.get("session_id") or "-",
+            reason,
+            attempt,
+            shown_max,
+            self.model,
+            elapsed,
+        )
+        return Event(
+            EventType.TURN_RETRY,
+            {"text": text, "reason": reason, "attempt": attempt, "max": shown_max},
+        )
+
+    def _log_abnormal_turn(
+        self,
+        kind: str,
+        reason: str,
+        turn: AssistantTurn,
+        iterations: int,
+        elapsed: float,
+    ) -> None:
+        """One line per turn that didn't end cleanly, and only for the attempt that was
+        NOT retried — a retried one is already on the log as `turn_retry`. There was no
+        log at all for any of this before: a severed stream left the server log completely
+        silent, so the only evidence of the failure was the user noticing nothing had
+        happened. Everything needed to tell the shapes apart is on the line, including
+        whether usage arrived (a stream that stops before the usage frame is the classic
+        severed one)."""
+        logger.info(
+            "%s: session=%s round=%d reason=%s finish_reason=%s usage=%s "
+            "reasoning_chars=%d text_chars=%d tool_calls=%d elapsed=%.1fs",
+            kind,
+            self.audit_context.get("session_id") or "-",
+            iterations,
+            reason,
+            turn.finish_reason or "-",
+            "yes" if turn.usage is not None else "no",
+            len(turn.reasoning or ""),
+            len(turn.text or ""),
+            len(turn.tool_calls),
+            elapsed,
+        )
 
     async def retry(self) -> AsyncIterator[Event]:
         """Re-run the model loop after a provider error — no new user message; the failed
@@ -461,6 +747,12 @@ class TurnEngine:
     async def _loop(self) -> AsyncIterator[Event]:
         iterations = 0
         spent = 0  # billed tokens this turn: prompt-side + output, accumulated per round
+        # Automatic retries: `attempt` counts them for the round-trip being made right
+        # now (reset the moment a round delivers something), `retries_used` for the whole
+        # turn. A retry re-enters this loop WITHOUT spending an iteration — see the
+        # `iterations -= 1` before each `continue`, which the increment below undoes.
+        attempt = 0
+        retries_used = 0
         while True:
             # Two gates, whichever trips first. Both payloads carry BOTH numbers: a stop
             # that says only "max iterations reached" tells the user about a mechanism
@@ -504,6 +796,11 @@ class TurnEngine:
             turn: Optional[AssistantTurn] = None
             streamed: list[str] = []
             streamed_reasoning: list[str] = []
+            # Wall-clock for this round-trip. Reported in the abnormal-ending log line —
+            # a stream severed after four minutes reads very differently from one that
+            # came back empty in two seconds — and it also decides how much of the retry
+            # budget the failure is worth (`_retry_budget`).
+            round_started = self.clock()
 
             def _partial_turn() -> AssistantTurn:
                 # What the user watched arrive — text and thinking, NO tool calls (any
@@ -539,6 +836,39 @@ class TurnEngine:
                         self._append_notice("compacted", notice)
                         yield Event(EventType.COMPACTED, {"text": notice})
                         continue
+                # A call that never landed — connection reset, timeout, 429, 5xx — is a
+                # failure of the wire, not an answer from the model, so re-send it instead
+                # of handing the user a Retry button for work a machine can do. Only while
+                # NO text has streamed: the user has already read whatever arrived, and a
+                # second attempt would print it twice (the same rule aigateway_provider
+                # applies to its own mid-stream re-send). Thinking text doesn't count —
+                # the surfaces drop it when the retry is announced.
+                elapsed = self.clock() - round_started
+                if (
+                    not streamed
+                    and is_transient_model_error(exc)
+                    and self._may_retry("transient", attempt, retries_used, elapsed)
+                ):
+                    shown_max = min(
+                        self._retry_budget("transient", elapsed),
+                        _TURN_RETRY_CAP - retries_used,
+                    )
+                    attempt += 1
+                    retries_used += 1
+                    yield self._announce_retry("transient", attempt, shown_max, elapsed)
+                    if not await self.retry_sleep(
+                        _retry_delay(attempt, retry_after_seconds(exc))
+                    ):
+                        self._append_notice("interrupted")
+                        yield Event(EventType.INTERRUPTED, {"iterations": iterations})
+                        return
+                    # Anything the user typed while this call was dying (or during the
+                    # backoff) belongs in the prompt the retry sends — they are watching
+                    # "retrying…" and correcting course, not queueing for later.
+                    if self._steering:
+                        self._inject_steering()
+                    iterations -= 1  # a retry re-runs the round; it doesn't spend one
+                    continue
                 # Same contract as the stop path below: the partial the user watched
                 # arrive survives the failure.
                 if streamed or streamed_reasoning:
@@ -575,6 +905,81 @@ class TurnEngine:
 
             self._turn_truncated = turn.finish_reason == "length"
             _sanitize_mangled_calls(turn)
+            if turn.finish_reason is not None:
+                # This model DOES report finish reasons, so from here on its silence means
+                # something — see `_abort_reason`. Keyed by model id, so switching to one
+                # we've never watched starts the observation over.
+                self._finish_reason_seen.add(self.model)
+            elapsed = self.clock() - round_started
+
+            # Nothing at all came back — no answer, no tool call. Ending as "completed"
+            # here is the same lie the unparsed-call branch below refuses to tell: the GUI
+            # shows the thinking text trailing off and the turn just stops, so the user
+            # reads a cut-off stream as work that got done (owner report 2026-09-18 — 3.3k
+            # of thinking ending on "Write file to …", no file, no error, nothing in the
+            # log). Handled BEFORE anything is persisted, so a RETRIED attempt re-sends
+            # the history the dead attempt was given — byte-identical unless steering
+            # arrived meanwhile, which is deliberately injected into the re-send.
+            if not turn.tool_calls and not (turn.text or "").strip():
+                reason = _abort_reason(turn, trust_truncated=self._trusts_truncation())
+                if self._may_retry(reason, attempt, retries_used, elapsed):
+                    shown_max = min(
+                        self._retry_budget(reason, elapsed),
+                        _TURN_RETRY_CAP - retries_used,
+                    )
+                    attempt += 1
+                    retries_used += 1
+                    yield self._announce_retry(reason, attempt, shown_max, elapsed)
+                    if not await self.retry_sleep(_retry_delay(attempt)):
+                        self._append_notice("interrupted")
+                        yield Event(EventType.INTERRUPTED, {"iterations": iterations})
+                        return
+                    # Anything the user typed while this call was dying (or during the
+                    # backoff) belongs in the prompt the retry sends — they are watching
+                    # "retrying…" and correcting course, not queueing for later.
+                    if self._steering:
+                        self._inject_steering()
+                    iterations -= 1  # a retry re-runs the round; it doesn't spend one
+                    continue
+                self._log_abnormal_turn(
+                    "turn_aborted", reason, turn, iterations, elapsed
+                )
+                if turn.reasoning:
+                    # Giving up for good: the thinking the user watched for four minutes
+                    # is the only thing this turn produced, so it stays on screen and in
+                    # the record. `aborted` makes `_outbound_messages` drop the WHOLE
+                    # message — an empty assistant turn re-sent on every later call is
+                    # exactly what the retry path above refuses to create.
+                    self.messages.append(
+                        _assistant_message(turn, model=self.model, aborted=True)
+                    )
+                # Steering queued while the dead turn ran must not be swallowed: nothing
+                # else will ever answer it (it isn't in history and never reached the
+                # dead-letter box), and held back it silently resurfaces in the MIDDLE of
+                # the next turn, after that turn's first answer. It goes in BEFORE the
+                # notice so the notice stays the tail: that is what keeps Retry on offer
+                # (`_tail_is_retriable_error`), and the re-run then carries the steering
+                # the user just sent — which is exactly what they were asking for.
+                if self._steering:
+                    self._inject_steering()
+                message = _TURN_ABORTED_TEXT[reason]
+                if attempt:
+                    message += _TURN_ABORTED_RETRIED.format(n=attempt)
+                self._append_notice(
+                    "turn_aborted", message, reason=reason, retries=attempt or None
+                )
+                yield Event(
+                    EventType.ERROR,
+                    {
+                        "error": message,
+                        "error_type": "TurnAborted",
+                        "reason": reason,
+                        **({"retries": attempt} if attempt else {}),
+                    },
+                )
+                return
+            attempt = 0  # this round delivered something; the next one starts fresh
+
             self.messages.append(_assistant_message(turn, model=self.model))
             payload: dict[str, Any] = {
                 "text": turn.text,
@@ -585,6 +990,25 @@ class TurnEngine:
             if turn.usage is not None:
                 payload["usage"] = {"model": self.model, **turn.usage.as_dict()}
             yield Event(EventType.ASSISTANT_MESSAGE, payload)
+
+            # Something DID arrive, but it was cut off. It stays (the user has already
+            # read it) and the turn carries on — this is a warning appended after the
+            # message, not a failure. Deliberately outside the no-tool-calls branch: a
+            # turn that hit the ceiling mid-tool-call is exactly how the mangled-arguments
+            # path gets fed, and the user deserves to know why the tool got half a call.
+            # Membership in _TURN_TRUNCATED_TEXT IS the "was it cut?" test — `_abort_reason`
+            # answers "length"/"no_finish" only on a real cut signal and plain "empty"
+            # (absent from that table) for every ordinary ending.
+            cut_reason = _abort_reason(turn, trust_truncated=self._trusts_truncation())
+            if cut_reason in _TURN_TRUNCATED_TEXT:
+                message = _TURN_TRUNCATED_TEXT[cut_reason]
+                self._log_abnormal_turn(
+                    "turn_truncated", cut_reason, turn, iterations, elapsed
+                )
+                self._append_notice("turn_truncated", message, reason=cut_reason)
+                yield Event(
+                    EventType.TURN_TRUNCATED, {"text": message, "reason": cut_reason}
+                )
 
             if not turn.tool_calls:
                 if self._steering:
@@ -2045,10 +2469,24 @@ class TurnEngine:
         """
         # Strip the display-only sidecars — `source` (connector cards), `_display`
         # (e.g. filter-hidden counts), `ts` (append-time timestamps), `t0` (when the tool
-        # actually started running), `reasoning` (thinking text), and `usage` (token
-        # counts) — copying only messages that carry one. Whole `notice` messages
-        # (error/interrupted/model-switch markers) are display-only too: dropped entirely.
-        _SIDECARS = ("source", "_display", "ts", "t0", "reasoning", "usage")
+        # actually started running), `reasoning` (thinking text), `usage` (token counts)
+        # and `finish_reason`/`truncated`/`aborted` (how the round-trip ended) — copying
+        # only messages that carry one. Whole `notice` messages (error/interrupted/
+        # model-switch markers) are display-only too, and so is an `aborted` assistant
+        # message (the thinking from a turn that delivered nothing, kept for the
+        # transcript alone): both are dropped entirely rather than stripped, because an
+        # empty assistant turn re-sent every round is precisely what it must never become.
+        _SIDECARS = (
+            "source",
+            "_display",
+            "ts",
+            "t0",
+            "reasoning",
+            "usage",
+            "finish_reason",
+            "truncated",
+            "aborted",
+        )
         # Auto-compaction (OPE-27): everything before the boundary is represented by the
         # compacted block. Outbound-only — the canonical history stays intact — and the
         # block+tail are byte-stable between turns, so prompt caching keeps working.
@@ -2062,7 +2500,7 @@ class TurnEngine:
                 else msg
             )
             for msg in source_messages
-            if msg.get("role") != "notice"
+            if msg.get("role") != "notice" and not msg.get("aborted")
         ]
         # Crash/interrupt repair (replay-side only): an assistant tool_call whose
         # result never landed — the process died or the turn was interrupted between
@@ -2277,12 +2715,63 @@ def _calls_awaiting_output(message: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(i for i in ids if i))
 
 
-def _assistant_message(turn: AssistantTurn, model: Optional[str] = None) -> dict[str, Any]:
+def _models_that_report_finish(
+    messages: list[dict[str, Any]], default_model: str
+) -> set[str]:
+    """Which models this conversation has already been seen reporting a finish reason —
+    `TurnEngine._finish_reason_seen`, recovered from the record.
+
+    Without this the gate would be re-learned from scratch on every restart, engine
+    eviction and session resume, and the first genuinely severed stream after each of
+    those would be filed as "the model returned an empty response" — wrong on the facts,
+    and worth only the one courtesy retry an empty answer gets.
+
+    The model id rides the `usage` sidecar, tagged there so per-model rollups survive a
+    mid-session switch, and a message carrying one is attributed to that model wherever it
+    sits. A message WITHOUT one is the awkward case, and it is not rare: `usage` is only
+    written when the backend reported any, and "reports a finish reason but no usage" is
+    exactly the shape of the compat endpoints this gate exists for. Such a message can
+    only be credited to the current model when nothing has switched since — so attribution
+    stops at the last `model_switch` marker, and anything untagged before it is skipped
+    rather than guessed. Guessing there is the one mistake that matters: it would vouch
+    for a model that has never been watched, which is precisely what the gate is for."""
+    seen: set[str] = set()
+    history = messages or []
+    # Everything after the last switch was produced by the model in play now; before it,
+    # by something we can't name without a tag.
+    current_segment = 1 + max(
+        (
+            i
+            for i, m in enumerate(history)
+            if m.get("role") == "notice" and m.get("kind") == "model_switch"
+        ),
+        default=-1,
+    )
+    for index, message in enumerate(history):
+        if message.get("role") != "assistant" or not message.get("finish_reason"):
+            continue
+        usage = message.get("usage")
+        model = (usage or {}).get("model") if isinstance(usage, dict) else None
+        if model:
+            seen.add(str(model))
+        elif index >= current_segment:
+            seen.add(default_model)
+    return seen
+
+
+def _assistant_message(
+    turn: AssistantTurn, model: Optional[str] = None, *, aborted: bool = False
+) -> dict[str, Any]:
     message: dict[str, Any] = {
         "role": "assistant",
         "content": turn.text or "",
         "ts": time.time(),
     }
+    if aborted:
+        # This turn delivered nothing — it is kept ONLY to show the user the thinking they
+        # watched before the stream died. `_outbound_messages` drops the whole message, so
+        # no provider ever sees a blank assistant turn (and no model learns to imitate it).
+        message["aborted"] = True
     if turn.usage is not None:
         # Display/aggregation sidecar (like `reasoning`): persisted with the message,
         # stripped before provider calls. Tagged with the model that produced it so
@@ -2292,6 +2781,18 @@ def _assistant_message(turn: AssistantTurn, model: Optional[str] = None) -> dict
         # Display-only thinking text — rendered by the GUI, stripped for every provider
         # (`_outbound_messages`); provider-private replay blocks go via `extras` instead.
         message["reasoning"] = turn.reasoning
+    if turn.finish_reason:
+        # How the round-trip ended, kept so a stored transcript can be told apart after
+        # the fact: a severed stream (no finish reason at all) vs. the output-token limit
+        # vs. a model that really did answer with nothing. Dropping it is what made the
+        # 2026-09-18 report unexplainable from the record alone. Display/diagnostic
+        # sidecar like `usage` — stripped before every provider call.
+        message["finish_reason"] = turn.finish_reason
+    if turn.truncated:
+        # Only set when the provider can tell a cut stream from a clean one, and only
+        # when it was cut (providers/base.py) — so its absence means "clean", never
+        # "unknown from a backend that doesn't say".
+        message["truncated"] = True
     if turn.extras:
         # Provider-private sidecars (e.g. `_gemini` thought signatures) persist with the
         # message; the owning provider reattaches them, the rest strip them (base.py).

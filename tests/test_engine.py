@@ -5,14 +5,26 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from types import SimpleNamespace
 
 import aisuite as ai
-from coworker.engine import ApprovalOutcome, PermissionRequest, TurnEngine
+import pytest
+from coworker.engine import (
+    _RETRY_AFTER_CAP,
+    _RETRY_JITTER,
+    _TURN_RETRY_CAP,
+    ApprovalOutcome,
+    PermissionRequest,
+    TurnEngine,
+    _model_retries,
+    _retry_delay,
+)
 from coworker.events import EventType
 from coworker.permissions import PermissionEngine
 from coworker.providers import (
     AssistantTurn,
     ModelCapabilities,
+    OpenAIProvider,
     ProviderClient,
     StreamChunk,
     ToolCall,
@@ -32,7 +44,8 @@ def _tool_turn(name, args, call_id="call_1"):
 
 
 class ScriptedProvider(ProviderClient):
-    """Returns queued AssistantTurns; streams via the base default (one final chunk)."""
+    """Returns queued AssistantTurns; streams via the base default (one final chunk). A
+    queued Exception is raised instead, so a script can stage a provider failure."""
 
     def __init__(self, turns, *, loop=False):
         self._turns = list(turns)
@@ -41,13 +54,26 @@ class ScriptedProvider(ProviderClient):
 
     def complete(self, *, model, messages, tools=None, **settings):
         self.calls += 1
-        return self._turns[0] if self._loop else self._turns.pop(0)
+        turn = self._turns[0] if self._loop else self._turns.pop(0)
+        if isinstance(turn, BaseException):
+            raise turn
+        return turn
 
     def capabilities(self, model):
         return ModelCapabilities()
 
 
-def _engine(tmp_path, turns, *, approver=None, loop=False, max_iterations=12):
+def _engine(
+    tmp_path,
+    turns,
+    *,
+    approver=None,
+    loop=False,
+    max_iterations=12,
+    retries=0,
+    finish_reasons_seen=True,
+    messages=None,
+):
     provider = ScriptedProvider(turns, loop=loop)
     registry = ToolRegistry()
     registry.register_all(ai.toolkits.files(root=str(tmp_path), allow_write=True))
@@ -59,8 +85,37 @@ def _engine(tmp_path, turns, *, approver=None, loop=False, max_iterations=12):
         model="gpt-5.5",
         approver=approver,
         max_iterations=max_iterations,
+        messages=messages,
     )
+    # Automatic retry is off unless a test asks for it, and its backoff never really
+    # waits: `retry_sleep` is the injection seam, and the recorded delays are what the
+    # schedule/Retry-After tests assert on. Still honours Stop, like the real one.
+    engine.model_retries = retries
+    engine.slept = []
+
+    async def _instant(delay):
+        engine.slept.append(delay)
+        return not engine._cancel.is_set()
+
+    engine.retry_sleep = _instant
+    # Stands in for "this model has already been watched reporting finish reasons in this
+    # session" — the gate `truncated` has to pass before it means anything (a backend that
+    # never sends the field must not have its ordinary replies read as severed streams).
+    # The gate's own behaviour is driven through real rounds in its dedicated tests.
+    if finish_reasons_seen:
+        engine._finish_reason_seen.add(engine.model)
     return engine, provider
+
+
+def _default_engine(tmp_path):
+    """A default-wired engine — nothing overridden — for the pieces whose whole point is
+    what `_engine()` above replaces (the constructor's own wiring, the real backoff)."""
+    return TurnEngine(
+        provider=ScriptedProvider([]),
+        registry=ToolRegistry(),
+        permissions=PermissionEngine(workspace_root=tmp_path),
+        model="gpt-5.5",
+    )
 
 
 def _collect(engine, user_input):
@@ -68,6 +123,10 @@ def _collect(engine, user_input):
         return [ev async for ev in engine.run(user_input)]
 
     return asyncio.run(_run())
+
+
+async def _drain(stream):
+    return [ev async for ev in stream]
 
 
 def _types(events):
@@ -639,3 +698,850 @@ def test_ordinary_text_answer_still_completes(tmp_path):
     events = _collect(engine, "how does qwen format tool calls?")
     assert EventType.ERROR not in _types(events)
     assert next(ev for ev in events if ev.type == EventType.TURN_END).data["status"] == "completed"
+
+
+# -- turns that ended badly (owner report 2026-09-18) -------------------------------
+
+
+def _severed_turn(reasoning="Write file to reports/summary.md", **kw):
+    """What a cut-off stream actually leaves behind: thinking text, no answer, no tool
+    call, no usage frame, no finish reason — plus `truncated`, set by the provider that
+    noticed the stream never said it was done."""
+    return AssistantTurn(text=None, reasoning=reasoning, truncated=True, **kw)
+
+
+def _notices(engine):
+    return [m for m in engine.messages if m.get("role") == "notice"]
+
+
+def test_severed_stream_is_reported_like_a_provider_failure(tmp_path):
+    """The bug this group guards: the stream was cut mid-thought, the turn held nothing,
+    and the engine ended it "completed". The GUI then showed thinking that stopped on
+    "Write file to …" and went quiet, so the user read a dead turn as a finished one. An
+    answerless turn must report exactly like a provider failure — same ERROR event, same
+    retriable notice, no TURN_END — so the Retry button is offered. Automatic retry is off
+    here, so what's under test is the shape of the REPORT; the retry group below drives
+    the same failure with the budget switched on."""
+    engine, _ = _engine(tmp_path, [_severed_turn()])
+    events = _collect(engine, "write the summary")
+
+    assert EventType.ERROR in _types(events)
+    assert EventType.TURN_END not in _types(events)
+    err = next(ev for ev in events if ev.type == EventType.ERROR)
+    assert err.data["error_type"] == "TurnAborted"
+    assert err.data["reason"] == "no_finish"
+    assert "cut off" in err.data["error"]
+
+    notice = engine.messages[-1]
+    assert notice["role"] == "notice" and notice["kind"] == "turn_aborted"
+    assert notice["reason"] == "no_finish"
+    assert notice["text"] == err.data["error"]
+    assert engine._tail_is_retriable_error() is True
+
+    # The thinking the user watched is the only thing this turn produced, so it stays —
+    # ahead of the notice, which is the order the transcript reads in. It is marked
+    # `aborted`, and that mark takes the WHOLE message out of the provider feed: a blank
+    # assistant turn replayed on every later call is exactly what must not happen.
+    aborted = engine.messages[-2]
+    assert aborted["role"] == "assistant" and aborted["content"] == ""
+    assert aborted["reasoning"].startswith("Write file to")
+    assert aborted["aborted"] is True and not aborted.get("tool_calls")
+    assert not any(m.get("role") == "assistant" for m in engine._outbound_messages())
+
+
+def test_empty_turn_reason_separates_the_length_limit_from_a_real_empty_answer(tmp_path):
+    """Same ending, three different causes — and the user can only act on the right one
+    if the notice says which. `length` means "ask for less"; `empty` means the model
+    genuinely answered with nothing (and `no_finish` above means it never got to)."""
+    # Out of output budget: the provider said so, so `truncated` never enters into it.
+    engine, _ = _engine(tmp_path, [AssistantTurn(text="", finish_reason="length")])
+    events = _collect(engine, "write the summary")
+    err = next(ev for ev in events if ev.type == EventType.ERROR)
+    assert err.data["reason"] == "length"
+    assert "length limit" in err.data["error"]
+    assert engine.messages[-1]["reason"] == "length"
+
+    # A clean stop that produced nothing at all.
+    engine, _ = _engine(tmp_path, [AssistantTurn(text="   ", finish_reason="stop")])
+    events = _collect(engine, "write the summary")
+    err = next(ev for ev in events if ev.type == EventType.ERROR)
+    assert err.data["reason"] == "empty"
+    assert "empty response" in err.data["error"]
+    assert engine.messages[-1]["reason"] == "empty"
+
+
+def test_cut_off_answer_keeps_its_text_and_only_warns(tmp_path):
+    """The other half of the split: text DID arrive before the cut. The user has already
+    read it, so the turn still completes and the message stays — the truncation is a
+    warning appended after it, not a failure, and it must not be retriable."""
+    engine, _ = _engine(
+        tmp_path,
+        [AssistantTurn(text="Here are the first three findings:", truncated=True)],
+    )
+    events = _collect(engine, "summarize the findings")
+
+    assert EventType.ERROR not in _types(events)
+    assert _types(events)[-2:] == [EventType.TURN_TRUNCATED, EventType.TURN_END]
+    assert next(ev for ev in events if ev.type == EventType.TURN_END).data["status"] == "completed"
+    warn = next(ev for ev in events if ev.type == EventType.TURN_TRUNCATED)
+    assert warn.data["reason"] == "no_finish"
+
+    assert engine.messages[-2]["content"] == "Here are the first three findings:"
+    notice = engine.messages[-1]
+    assert notice["kind"] == "turn_truncated" and notice["reason"] == "no_finish"
+    assert notice["text"].startswith("The response may be incomplete")
+    # A completed turn is not a failed one — Retry must stay off.
+    assert engine._tail_is_retriable_error() is False
+
+
+def test_cut_off_answer_names_the_length_limit_when_the_provider_does(tmp_path):
+    engine, _ = _engine(
+        tmp_path, [AssistantTurn(text="Here are the first three", finish_reason="length")]
+    )
+    events = _collect(engine, "summarize the findings")
+    warn = next(ev for ev in events if ev.type == EventType.TURN_TRUNCATED)
+    assert warn.data["reason"] == "length"
+    assert "output length limit" in engine.messages[-1]["text"]
+
+
+def test_ordinary_turns_gain_no_new_notice_and_no_new_event(tmp_path):
+    """The lockdown for everything above: a normal answer and a normal tool turn must
+    behave byte-for-byte as they did before the classification existed."""
+    engine, _ = _engine(tmp_path, [_text_turn("all done")])
+    events = _collect(engine, "hi")
+    assert _types(events) == [
+        EventType.TURN_START,
+        EventType.ASSISTANT_MESSAGE,
+        EventType.TURN_END,
+    ]
+    assert _notices(engine) == []
+
+    engine, _ = _engine(
+        tmp_path,
+        [_tool_turn("list_files", {"path": "."}), _text_turn("there you go")],
+    )
+    events = _collect(engine, "what's here?")
+    assert EventType.TURN_TRUNCATED not in _types(events)
+    assert EventType.ERROR not in _types(events)
+    assert _notices(engine) == []
+
+
+def test_finish_reason_sidecars_persist_but_never_reach_the_provider(tmp_path):
+    """`finish_reason`/`truncated` are diagnostic sidecars: the record has to keep them
+    (dropping them is what made the 2026-09-18 report unexplainable from the transcript
+    alone), and no provider may ever see them — openai chat rejects unknown message keys."""
+    engine, _ = _engine(tmp_path, [AssistantTurn(text="ok", finish_reason="stop")])
+    _collect(engine, "hi")
+    persisted = engine.messages[-1]
+    assert persisted["finish_reason"] == "stop" and "truncated" not in persisted
+    outbound = engine._outbound_messages()[-1]
+    assert "finish_reason" not in outbound and "truncated" not in outbound
+    assert outbound["content"] == "ok"
+
+    engine, _ = _engine(tmp_path, [AssistantTurn(text="partial", truncated=True)])
+    _collect(engine, "hi")
+    persisted = next(m for m in engine.messages if m.get("role") == "assistant")
+    assert persisted["truncated"] is True and "finish_reason" not in persisted
+    assert not any(
+        "truncated" in m or "finish_reason" in m for m in engine._outbound_messages()
+    )
+
+
+# -- automatic retry of a dead model call -------------------------------------------
+
+
+class _Transient(Exception):
+    """Stands in for openai's APIConnectionError & co: the classifier matches on the
+    exception's NAME, so no vendor SDK has to be importable here."""
+
+
+class APIConnectionError(_Transient):
+    pass
+
+
+class AuthenticationError(Exception):
+    def __init__(self):
+        super().__init__("Error code: 401 - {'error': {'message': 'Incorrect API key'}}")
+        self.status_code = 401
+
+
+def _retry_notices(engine):
+    return [m for m in _notices(engine) if m["kind"] == "turn_retry"]
+
+
+def test_severed_stream_is_retried_and_the_second_attempt_answers(tmp_path):
+    """A cut stream is not a decision the model made — it's a call that never landed, so
+    the engine re-runs it instead of asking the user to click Retry for it. The recovered
+    turn ends normally, with only the marker to say a retry happened."""
+    engine, provider = _engine(
+        tmp_path, [_severed_turn(), _text_turn("wrote the summary")], retries=2
+    )
+    events = _collect(engine, "write the summary")
+
+    assert provider.calls == 2
+    assert EventType.ERROR not in _types(events)
+    assert next(ev for ev in events if ev.type == EventType.TURN_END).data["status"] == "completed"
+    # A retry re-runs the SAME round — it must not spend one of the turn's iterations.
+    assert next(ev for ev in events if ev.type == EventType.TURN_END).data["iterations"] == 1
+
+    retry = next(ev for ev in events if ev.type == EventType.TURN_RETRY)
+    assert (retry.data["reason"], retry.data["attempt"], retry.data["max"]) == ("no_finish", 1, 2)
+    marker = _retry_notices(engine)
+    assert len(marker) == 1 and marker[0]["reason"] == "no_finish"
+    assert not any(m["kind"] == "turn_aborted" for m in _notices(engine))
+    # …and nothing of the abandoned attempt survives into the history the model sees.
+    assert [m["content"] for m in engine.messages if m["role"] == "assistant"] == [
+        "wrote the summary"
+    ]
+
+
+def test_transient_provider_failure_is_retried(tmp_path):
+    """Same treatment for a call that died on the wire before any turn came back."""
+    engine, provider = _engine(
+        tmp_path, [APIConnectionError("connection reset"), _text_turn("recovered")], retries=2
+    )
+    events = _collect(engine, "write the summary")
+
+    assert provider.calls == 2
+    assert EventType.ERROR not in _types(events)
+    assert next(ev for ev in events if ev.type == EventType.TURN_END).data["status"] == "completed"
+    assert [n["reason"] for n in _retry_notices(engine)] == ["transient"]
+    assert engine.slept == [pytest.approx(2.0, rel=_RETRY_JITTER)]
+
+
+def test_retries_run_out_and_the_turn_reports_how_many_it_tried(tmp_path):
+    """The budget is bounded. Once it's gone the turn ends exactly as it would have with
+    no retry at all — provider-failure shape, retriable notice — and the copy admits the
+    machine already tried, so the user isn't invited to repeat a lost cause blindly."""
+    engine, provider = _engine(tmp_path, [_severed_turn()], loop=True, retries=2)
+    events = _collect(engine, "write the summary")
+
+    assert provider.calls == 3  # the original attempt plus two retries
+    assert [n["reason"] for n in _retry_notices(engine)] == ["no_finish", "no_finish"]
+    assert [n["attempt"] for n in _retry_notices(engine)] == [1, 2]
+
+    assert EventType.TURN_END not in _types(events)
+    err = next(ev for ev in events if ev.type == EventType.ERROR)
+    assert err.data["error_type"] == "TurnAborted" and err.data["retries"] == 2
+    assert "2 retries" in err.data["error"]
+    aborted = engine.messages[-1]
+    assert aborted["kind"] == "turn_aborted" and aborted["retries"] == 2
+    assert engine._tail_is_retriable_error() is True
+    # Three dead attempts, ONE kept message: only the attempt that finally gave up leaves
+    # its thinking behind, and even that never reaches a provider.
+    kept = [m for m in engine.messages if m.get("role") == "assistant"]
+    assert len(kept) == 1 and kept[0]["aborted"] is True
+    assert not any(m.get("role") == "assistant" for m in engine._outbound_messages())
+    assert engine.slept == [
+        pytest.approx(2.0, rel=_RETRY_JITTER),
+        pytest.approx(6.0, rel=_RETRY_JITTER),
+    ]
+
+
+def test_a_permanent_failure_is_never_retried(tmp_path):
+    """A bad key answers the same way three times over. Retrying it only makes the user
+    wait eight seconds for the diagnosis they could have had immediately."""
+    engine, provider = _engine(tmp_path, [AuthenticationError()], loop=True, retries=2)
+    events = _collect(engine, "write the summary")
+
+    assert provider.calls == 1
+    assert _retry_notices(engine) == [] and engine.slept == []
+    assert [n["kind"] for n in _notices(engine)] == ["error"]
+    assert next(ev for ev in events if ev.type == EventType.ERROR).data["error_type"] == (
+        "AuthenticationError"
+    )
+
+
+def test_hitting_the_length_limit_is_never_retried(tmp_path):
+    """Re-running the same prompt meets the same ceiling — the budget would buy nothing
+    but two more waits before the identical sentence."""
+    engine, provider = _engine(
+        tmp_path, [AssistantTurn(text="", finish_reason="length")], loop=True, retries=2
+    )
+    events = _collect(engine, "write the summary")
+
+    assert provider.calls == 1
+    assert _retry_notices(engine) == []
+    assert next(ev for ev in events if ev.type == EventType.ERROR).data["reason"] == "length"
+
+
+def test_stop_during_the_backoff_cancels_instead_of_retrying(tmp_path):
+    """The pause between attempts is dead time the user must be able to escape — the real
+    `retry_sleep` waits on the cancel event for exactly this reason."""
+    engine, provider = _engine(tmp_path, [_severed_turn()], loop=True, retries=2)
+
+    async def _stop_during_backoff(delay):
+        engine.request_interrupt()
+        return False
+
+    engine.retry_sleep = _stop_during_backoff
+    events = _collect(engine, "write the summary")
+
+    assert provider.calls == 1  # the second attempt never went out
+    assert EventType.INTERRUPTED in _types(events)
+    assert EventType.ERROR not in _types(events)
+    assert engine.messages[-1]["kind"] == "interrupted"
+
+
+def test_a_tool_heavy_turn_cannot_retry_forever(tmp_path):
+    """The per-call budget renews every round, so a long agentic turn could pay it over
+    and over. One cap covers the whole turn."""
+    script = []
+    for _ in range(_TURN_RETRY_CAP + 1):
+        script += [_severed_turn(), _tool_turn("list_files", {"path": "."})]
+    engine, provider = _engine(tmp_path, script, retries=1, max_iterations=20)
+    events = _collect(engine, "explore everything")
+
+    assert len(_retry_notices(engine)) == _TURN_RETRY_CAP
+    err = next(ev for ev in events if ev.type == EventType.ERROR)
+    assert err.data["error_type"] == "TurnAborted"
+    # The cap bit on the round after the budget ran out, not on the last scripted turn.
+    assert provider.calls == _TURN_RETRY_CAP * 2 + 1
+
+
+def test_the_abandoned_attempt_never_reaches_the_next_call(tmp_path):
+    """Context hygiene: what the provider is handed on the retry must be byte-identical
+    to what it was handed on the attempt that died."""
+    engine, provider = _engine(
+        tmp_path, [_severed_turn(), _text_turn("recovered")], retries=2
+    )
+    _collect(engine, "write the summary")
+    assert not any(
+        m.get("role") == "assistant" and not (m.get("content") or "").strip()
+        for m in engine._outbound_messages()
+    )
+    # The `turn_retry` marker is display-only too — notices never leave the machine.
+    assert all(m["role"] != "notice" for m in engine._outbound_messages())
+
+
+def test_retry_budget_default_and_env_override(monkeypatch):
+    """Two automatic retries by default; `OPENWORKER_MODEL_RETRIES` moves it, including
+    all the way to 0 ("just ask me"). Garbage falls back rather than disabling the bound."""
+    monkeypatch.delenv("OPENWORKER_MODEL_RETRIES", raising=False)
+    assert _model_retries() == 2
+    monkeypatch.setenv("OPENWORKER_MODEL_RETRIES", "0")
+    assert _model_retries() == 0
+    monkeypatch.setenv("OPENWORKER_MODEL_RETRIES", "3")
+    assert _model_retries() == 3
+    # Clamped to the turn-wide cap: a budget the turn can never spend would only show up
+    # as a lie in the "(1/9)" counter.
+    monkeypatch.setenv("OPENWORKER_MODEL_RETRIES", "9")
+    assert _model_retries() == _TURN_RETRY_CAP
+    for junk in ("", "  ", "lots", "-1"):
+        monkeypatch.setenv("OPENWORKER_MODEL_RETRIES", junk)
+        assert _model_retries() == 2, junk
+
+
+def test_retry_after_header_wins_over_the_schedule_but_is_capped():
+    """A vendor knows when its own queue drains, so its Retry-After beats our backoff —
+    but a five-minute hint would be indistinguishable from a hang, so it's capped."""
+    assert _retry_delay(1, retry_after=0.5) == 0.5
+    assert _retry_delay(1, retry_after=600.0) == _RETRY_AFTER_CAP
+    # "Retry immediately" against a backend that just refused us is how a bounded retry
+    # becomes a hot loop, so a non-positive hint falls back to the schedule.
+    for hint in (0.0, -3.0):
+        assert _retry_delay(1, retry_after=hint) == pytest.approx(2.0, rel=_RETRY_JITTER)
+    assert _retry_delay(1) == pytest.approx(2.0, rel=_RETRY_JITTER)
+    assert _retry_delay(2) == pytest.approx(6.0, rel=_RETRY_JITTER)
+    assert _retry_delay(9) == pytest.approx(6.0, rel=_RETRY_JITTER)  # past the schedule
+
+
+def test_the_configured_budget_is_wired_through_the_constructor(tmp_path, monkeypatch):
+    """`_engine()` overrides `model_retries` for determinism, which would hide a broken
+    constructor forever — so drive the real wiring once, end to end."""
+    monkeypatch.setenv("OPENWORKER_MODEL_RETRIES", "1")
+    engine = _default_engine(tmp_path)
+    assert engine.model_retries == 1
+    assert engine.retry_sleep == engine._sleep_unless_stopped
+    assert engine.clock is time.monotonic
+
+
+# -- the backoff wait itself ---------------------------------------------------------
+
+
+def test_backoff_returns_true_when_it_simply_elapses(tmp_path):
+    engine = _default_engine(tmp_path)
+    assert asyncio.run(engine._sleep_unless_stopped(0.01)) is True
+    # A non-positive delay is still a cancellation checkpoint, not a no-op.
+    assert asyncio.run(engine._sleep_unless_stopped(0)) is True
+
+
+def test_backoff_reports_a_stop_pressed_during_it(tmp_path):
+    """The wait IS the cancel event's wait, so Stop lands at once instead of six seconds
+    later. Both orders count: pressed during the pause, and pressed before it started."""
+    engine = _default_engine(tmp_path)
+
+    async def _stop_midway():
+        async def _press():
+            await asyncio.sleep(0.01)
+            engine.request_interrupt()
+
+        asyncio.get_running_loop().create_task(_press())
+        return await engine._sleep_unless_stopped(30.0)
+
+    assert asyncio.run(_stop_midway()) is False
+
+    already = _default_engine(tmp_path)
+    already.request_interrupt()
+    assert asyncio.run(already._sleep_unless_stopped(30.0)) is False
+    assert asyncio.run(already._sleep_unless_stopped(0)) is False
+
+
+def test_backoff_lets_an_outer_cancellation_through(tmp_path):
+    """Cancelling the turn's task must kill the backoff too — swallowing CancelledError
+    here would leave a stopped session sitting out a six-second wait it can't escape."""
+    engine = _default_engine(tmp_path)
+
+    async def _run():
+        task = asyncio.ensure_future(engine._sleep_unless_stopped(30.0))
+        await asyncio.sleep(0.01)
+        task.cancel()
+        await task
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(_run())
+
+
+# -- steering across a dead turn -----------------------------------------------------
+
+
+def _roles(engine):
+    return [
+        (m.get("role"), m.get("kind") or (m.get("content") or ""))
+        for m in engine.messages
+        if m.get("role") != "system"
+    ]
+
+
+def test_steering_queued_during_a_dead_turn_lands_with_that_turn(tmp_path):
+    """`queue_steering` is how a channel message (WeChat/iLink, a lead steering a worker,
+    a self-wake) reaches a running turn. If the abort path returns without draining it,
+    the message is neither in history nor in the dead-letter box: it silently reappears in
+    the MIDDLE of the next turn, after that turn's first answer. It has to land right
+    after the turn it was aimed at, exactly as it does when the turn ends normally — and
+    BEFORE the notice, so the notice stays the tail and Retry stays on offer."""
+    engine, _ = _engine(tmp_path, [_severed_turn()])
+    engine.queue_steering("actually, use last quarter's numbers")
+    _collect(engine, "write the summary")
+
+    assert _roles(engine) == [
+        ("user", "write the summary"),
+        ("assistant", ""),  # the thinking that was all this turn produced
+        ("user", "actually, use last quarter's numbers"),
+        ("notice", "turn_aborted"),
+    ]
+    assert engine._tail_is_retriable_error() is True
+
+
+def test_a_manual_retry_after_an_abort_carries_the_steering_once(tmp_path):
+    """…and the point of that ordering: pressing Retry re-runs the dead turn WITH the
+    correction the user sent while it was dying — once, not twice."""
+    engine, provider = _engine(
+        tmp_path, [_severed_turn(), _text_turn("used Q3 as asked")]
+    )
+    engine.queue_steering("actually, use last quarter's numbers")
+    _collect(engine, "write the summary")
+
+    outbound = engine._outbound_messages()
+    steering = [m for m in outbound if m.get("content") == "actually, use last quarter's numbers"]
+    assert len(steering) == 1
+
+    events = asyncio.run(_drain(engine.retry()))
+    assert provider.calls == 2
+    assert next(ev for ev in events if ev.type == EventType.TURN_END).data["status"] == (
+        "completed"
+    )
+    assert (
+        len(
+            [
+                m
+                for m in engine._outbound_messages()
+                if m.get("content") == "actually, use last quarter's numbers"
+            ]
+        )
+        == 1
+    )
+
+
+def test_steering_queued_during_a_retried_turn_reaches_the_retry(tmp_path):
+    """Corrections typed while "retrying…" is on screen are aimed at the attempt about to
+    go out, not at some later turn — so they have to be in its prompt."""
+    engine, provider = _engine(
+        tmp_path, [_severed_turn(), _text_turn("used Q3")], retries=2
+    )
+    seen: list[list[dict]] = []
+    original = provider.complete
+
+    def _recording(**kwargs):
+        seen.append([dict(m) for m in kwargs["messages"]])
+        return original(**kwargs)
+
+    provider.complete = _recording
+    engine.queue_steering("actually, use last quarter's numbers")
+    _collect(engine, "write the summary")
+
+    assert len(seen) == 2
+    assert not any("last quarter" in str(m.get("content")) for m in seen[0])
+    assert any("last quarter" in str(m.get("content")) for m in seen[1])
+
+
+# -- the truncation gate -------------------------------------------------------------
+
+
+def test_a_backend_that_never_reports_finish_reasons_is_not_accused_of_cutting_off(
+    tmp_path,
+):
+    """`truncated` only means "severed" for a backend that otherwise SAYS when it's done.
+    Trusting it blindly would put a "may be incomplete" warning under every single reply
+    from a compat endpoint that just doesn't send the field."""
+    engine, _ = _engine(
+        tmp_path,
+        [AssistantTurn(text="here you go", truncated=True)],
+        finish_reasons_seen=False,
+    )
+    events = _collect(engine, "hi")
+    assert EventType.TURN_TRUNCATED not in _types(events)
+    assert _notices(engine) == []
+
+
+def test_once_a_model_has_reported_a_finish_reason_truncation_is_believed(tmp_path):
+    """…and the moment that same model IS seen reporting one, its silence starts meaning
+    something. Driven through real rounds: round one reports `tool_calls`, round two is
+    cut off."""
+    engine, _ = _engine(
+        tmp_path,
+        [
+            _tool_turn("list_files", {"path": "."}),
+            AssistantTurn(text="here you go", truncated=True),
+        ],
+        finish_reasons_seen=False,
+    )
+    events = _collect(engine, "look around")
+    warn = next(ev for ev in events if ev.type == EventType.TURN_TRUNCATED)
+    assert warn.data["reason"] == "no_finish"
+
+
+def test_the_gate_is_per_model_so_a_switch_starts_the_observation_over(tmp_path):
+    """A model that reports finish reasons says nothing about the next one — the whole
+    point is watching THIS backend behave."""
+    engine, _ = _engine(
+        tmp_path, [AssistantTurn(text="one", finish_reason="stop")], retries=0
+    )
+    _collect(engine, "hi")
+    assert engine._trusts_truncation() is True
+    engine.switch_model("zai:glm-5.2")
+    assert engine._trusts_truncation() is False
+
+
+def test_the_gate_is_recovered_from_the_persisted_history(tmp_path):
+    """Learned once, remembered: `finish_reason` is a persisted sidecar, so a resumed
+    session — or a restart, or an evicted-and-rebuilt engine — starts out already knowing
+    this backend reports one. Without that, the first genuinely severed stream after every
+    restart would be filed as "the model returned an empty response": wrong on the facts,
+    and worth only the single courtesy retry an empty answer gets."""
+    history = [
+        {"role": "user", "content": "earlier"},
+        {
+            "role": "assistant",
+            "content": "earlier answer",
+            "finish_reason": "stop",
+            "usage": {"model": "gpt-5.5", "input": 10, "output": 2},
+        },
+    ]
+    engine, _ = _engine(
+        tmp_path, [_severed_turn()], finish_reasons_seen=False, messages=history
+    )
+    events = _collect(engine, "write the summary")
+    assert next(ev for ev in events if ev.type == EventType.ERROR).data["reason"] == (
+        "no_finish"
+    )
+
+
+def test_history_from_another_model_does_not_vouch_for_this_one(tmp_path):
+    """The record is keyed by the model that produced it — a different model's good
+    behaviour says nothing about the one in play now."""
+    history = [
+        {
+            "role": "assistant",
+            "content": "earlier answer",
+            "finish_reason": "stop",
+            "usage": {"model": "zai:glm-5.2", "input": 10, "output": 2},
+        }
+    ]
+    engine, _ = _engine(
+        tmp_path, [_severed_turn()], finish_reasons_seen=False, messages=history
+    )
+    assert engine._trusts_truncation() is False
+    events = _collect(engine, "write the summary")
+    assert next(ev for ev in events if ev.type == EventType.ERROR).data["reason"] == "empty"
+
+
+def test_history_without_a_usage_tag_counts_for_the_current_model(tmp_path):
+    """Compat endpoints that report no usage still report finish reasons. Those messages
+    carry no model tag, so they're attributed to the engine's own model — which is what
+    they were for every session that never switched."""
+    history = [{"role": "assistant", "content": "earlier", "finish_reason": "stop"}]
+    engine, _ = _engine(
+        tmp_path, [_severed_turn()], finish_reasons_seen=False, messages=history
+    )
+    assert engine._trusts_truncation() is True
+
+
+def test_an_untagged_message_from_before_a_switch_vouches_for_nobody(tmp_path):
+    """The one guess that must not be made. "Reports a finish reason but no usage" is the
+    exact shape of the compat endpoints this gate exists for, so an untagged message is
+    ordinary — and crediting one to whatever model happens to be loaded now would vouch
+    for a backend nobody has ever watched, which is the false positive the gate exists to
+    prevent."""
+    history = [
+        # Endpoint A: reports finish reasons, reports no usage, so carries no model tag.
+        {"role": "assistant", "content": "answer from A", "finish_reason": "stop"},
+        {"role": "notice", "kind": "model_switch", "text": "Model switched to B"},
+    ]
+    engine, _ = _engine(
+        tmp_path, [_severed_turn()], finish_reasons_seen=False, messages=history
+    )
+    assert engine._finish_reason_seen == set()
+    assert engine._trusts_truncation() is False
+
+
+def test_an_untagged_message_from_after_the_last_switch_does_count(tmp_path):
+    """…and the other side: once the switch is behind it, an untagged message can only
+    have come from the model in play now."""
+    history = [
+        {"role": "assistant", "content": "answer from A", "finish_reason": "stop"},
+        {"role": "notice", "kind": "model_switch", "text": "Model switched to B"},
+        {"role": "assistant", "content": "answer from B", "finish_reason": "stop"},
+    ]
+    engine, _ = _engine(
+        tmp_path, [_severed_turn()], finish_reasons_seen=False, messages=history
+    )
+    assert engine._finish_reason_seen == {"gpt-5.5"}
+    assert engine._trusts_truncation() is True
+
+
+def test_a_tagged_message_counts_wherever_it_sits(tmp_path):
+    """A `usage.model` tag names its own producer, so it needs no help from position —
+    including from before a switch."""
+    history = [
+        {
+            "role": "assistant",
+            "content": "answer from A",
+            "finish_reason": "stop",
+            "usage": {"model": "zai:glm-5.2", "input": 1, "output": 1},
+        },
+        {"role": "notice", "kind": "model_switch", "text": "Model switched to B"},
+    ]
+    engine, _ = _engine(
+        tmp_path, [_severed_turn()], finish_reasons_seen=False, messages=history
+    )
+    assert engine._finish_reason_seen == {"zai:glm-5.2"}
+    assert engine._trusts_truncation() is False
+
+
+def test_an_unproven_backend_still_reports_an_empty_turn(tmp_path):
+    """Degraded, not silent: without the gate the reason is `empty` rather than
+    `no_finish`, but the turn is still refused instead of passing as completed."""
+    engine, _ = _engine(tmp_path, [_severed_turn()], finish_reasons_seen=False)
+    events = _collect(engine, "write the summary")
+    err = next(ev for ev in events if ev.type == EventType.ERROR)
+    assert err.data["reason"] == "empty"
+    assert EventType.TURN_END not in _types(events)
+
+
+# -- blocked, not empty ---------------------------------------------------------------
+
+
+def test_a_filtered_response_is_reported_as_a_block_and_never_retried(tmp_path):
+    """Every provider normalizes its safety/guardrail stop to `content_filter`, because a
+    block is a decision: re-running it buys the identical refusal, three times the tokens
+    and eight seconds of the user's patience."""
+    engine, provider = _engine(
+        tmp_path,
+        [AssistantTurn(text="", finish_reason="content_filter")],
+        loop=True,
+        retries=2,
+    )
+    events = _collect(engine, "write the summary")
+
+    assert provider.calls == 1
+    assert _retry_notices(engine) == []
+    err = next(ev for ev in events if ev.type == EventType.ERROR)
+    assert err.data["reason"] == "filtered"
+    # Worded for the whole class, not just safety: recitation and blocklist hits land here
+    # too, and neither is a safety block.
+    assert err.data["error"] == "The provider blocked this response under its content policy."
+
+
+def test_a_plain_empty_answer_gets_one_courtesy_retry_not_the_full_budget(tmp_path):
+    """An empty turn with an ordinary stop is the weakest evidence of a transport fault
+    there is — it can equally be a model with nothing to say. One re-run, then report."""
+    engine, provider = _engine(
+        tmp_path,
+        [AssistantTurn(text="", finish_reason="stop")],
+        loop=True,
+        retries=2,
+    )
+    events = _collect(engine, "write the summary")
+
+    assert provider.calls == 2
+    assert [n["reason"] for n in _retry_notices(engine)] == ["empty"]
+    # The counter must promise what's actually available, not the configured budget.
+    assert _retry_notices(engine)[0]["max"] == 1
+    err = next(ev for ev in events if ev.type == EventType.ERROR)
+    assert err.data["reason"] == "empty" and err.data["retries"] == 1
+
+
+# -- what a dead attempt cost ---------------------------------------------------------
+
+
+def test_an_expensive_attempt_is_only_repeated_once(tmp_path):
+    """The 2026-09-18 incident thought for 232 seconds before the stream dropped. Running
+    that twice more spends twelve minutes and three times the tokens to arrive at the
+    same sentence, so a long attempt buys a single retry."""
+    engine, provider = _engine(tmp_path, [_severed_turn()], loop=True, retries=2)
+    ticks = iter([0.0, 120.0] * 10)
+    engine.clock = lambda: next(ticks)
+    events = _collect(engine, "write the summary")
+
+    assert provider.calls == 2
+    assert [n["max"] for n in _retry_notices(engine)] == [1]
+    assert next(ev for ev in events if ev.type == EventType.ERROR).data["retries"] == 1
+
+
+def test_a_quick_failure_still_gets_the_full_budget(tmp_path):
+    engine, provider = _engine(tmp_path, [_severed_turn()], loop=True, retries=2)
+    ticks = iter([0.0, 10.0] * 10)
+    engine.clock = lambda: next(ticks)
+    _collect(engine, "write the summary")
+
+    assert provider.calls == 3
+    assert [n["max"] for n in _retry_notices(engine)] == [2, 2]
+
+
+# -- through the real OpenAI-compatible stream ---------------------------------------
+
+
+def _sse_chunk(content=None, finish=None):
+    """Shaped like the SDK's streamed chunk objects, which is all OpenAIProvider reads."""
+    delta = SimpleNamespace(content=content, tool_calls=None)
+    return SimpleNamespace(choices=[SimpleNamespace(delta=delta, finish_reason=finish)])
+
+
+def _sse_tool_chunk(name, arguments, call_id="c1"):
+    call = SimpleNamespace(
+        index=0, id=call_id, function=SimpleNamespace(name=name, arguments=arguments)
+    )
+    delta = SimpleNamespace(content=None, tool_calls=[call])
+    return SimpleNamespace(choices=[SimpleNamespace(delta=delta, finish_reason=None)])
+
+
+def _stream_provider(*chunk_scripts):
+    """A real OpenAIProvider over a fake SDK client, one scripted stream per call — so the
+    seam between "what the provider builds from the wire" and "what the engine does with
+    it" is actually exercised, not assumed."""
+    scripts = list(chunk_scripts)
+
+    class _Client:
+        def __init__(self):
+            self.chat = SimpleNamespace(
+                completions=SimpleNamespace(create=lambda **kw: iter(scripts.pop(0)))
+            )
+
+    return OpenAIProvider(client=_Client())
+
+
+def _stream_engine(tmp_path, provider, *, retries=0, seen=True):
+    registry = ToolRegistry()
+    registry.register_all(ai.toolkits.files(root=str(tmp_path), allow_write=True))
+    engine = TurnEngine(
+        provider=provider,
+        registry=registry,
+        permissions=PermissionEngine(workspace_root=tmp_path),
+        model="gpt-5.5",
+    )
+    engine.model_retries = retries
+
+    async def _instant(_delay):
+        return not engine._cancel.is_set()
+
+    engine.retry_sleep = _instant
+    if seen:
+        engine._finish_reason_seen.add(engine.model)
+    return engine
+
+
+def test_a_real_stream_that_ends_without_a_finish_reason_reaches_the_engine_as_severed(
+    tmp_path,
+):
+    provider = _stream_provider([])  # the stream simply ends: no chunks, no finish
+    engine = _stream_engine(tmp_path, provider)
+    events = _collect(engine, "write the summary")
+
+    err = next(ev for ev in events if ev.type == EventType.ERROR)
+    assert err.data["error_type"] == "TurnAborted" and err.data["reason"] == "no_finish"
+    assert EventType.TURN_END not in _types(events)
+
+
+def test_a_real_stream_that_ends_normally_produces_no_new_notice(tmp_path):
+    provider = _stream_provider(
+        [_sse_chunk(content="all "), _sse_chunk(content="done"), _sse_chunk(finish="stop")]
+    )
+    engine = _stream_engine(tmp_path, provider, seen=False)
+    events = _collect(engine, "hi")
+
+    assert _types(events)[-1] == EventType.TURN_END
+    assert next(ev for ev in events if ev.type == EventType.TURN_END).data["status"] == (
+        "completed"
+    )
+    assert [m for m in engine.messages if m.get("role") == "notice"] == []
+    assert engine.messages[-1]["content"] == "all done"
+
+
+def test_a_real_stream_cut_off_mid_answer_warns_once_the_backend_is_proven(tmp_path):
+    """Both halves of the gate over one turn and two real streams: round one reports
+    `tool_calls` (proving this backend does say when it's done), round two streams text
+    and then simply stops. One turn on purpose — driving an engine from two separate
+    `asyncio.run()` loops races `_astream`'s thread bridge, which is a harness artifact,
+    not the behaviour under test."""
+    provider = _stream_provider(
+        [_sse_tool_chunk("list_files", '{"path": "."}'), _sse_chunk(finish="tool_calls")],
+        [_sse_chunk(content="half an ans")],
+    )
+    engine = _stream_engine(tmp_path, provider, seen=False)
+    events = _collect(engine, "look around, then summarize")
+
+    warn = next(ev for ev in events if ev.type == EventType.TURN_TRUNCATED)
+    assert warn.data["reason"] == "no_finish"
+    assert engine.messages[-2]["content"] == "half an ans"
+    assert next(ev for ev in events if ev.type == EventType.TURN_END).data["status"] == (
+        "completed"
+    )
+
+
+# -- a cut-off tool call ---------------------------------------------------------------
+
+
+def test_a_tool_turn_that_hit_the_ceiling_still_warns(tmp_path):
+    """The mangled-arguments path is fed by exactly this: a tool call that ran out of
+    output budget mid-JSON. The tools still run, but the user gets told why one of them
+    may have received half a call."""
+    engine, _ = _engine(
+        tmp_path,
+        [
+            AssistantTurn(
+                tool_calls=[ToolCall(id="c1", name="list_files", arguments={"path": "."})],
+                finish_reason="length",
+            ),
+            _text_turn("there you go"),
+        ],
+    )
+    events = _collect(engine, "what's here?")
+
+    warn = next(ev for ev in events if ev.type == EventType.TURN_TRUNCATED)
+    assert warn.data["reason"] == "length"
+    # The tool still ran and the turn still completed — this is a warning, not a stop.
+    assert EventType.TOOL_FINISHED in _types(events)
+    assert next(ev for ev in events if ev.type == EventType.TURN_END).data["status"] == (
+        "completed"
+    )

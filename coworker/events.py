@@ -37,6 +37,10 @@ class EventType(str, Enum):
     TOOL_FINISHED = "tool_finished"
     ITERATION_END = "iteration_end"
     TURN_END = "turn_end"
+    TURN_TRUNCATED = (
+        "turn_truncated"  # the answer arrived but was cut off — the turn still completes
+    )
+    TURN_RETRY = "turn_retry"  # a dead model call is being re-run automatically
     ERROR = "error"
     INTERRUPTED = "interrupted"
     COMPACTING = "compacting"  # compaction started — surfaces show a transient signal
