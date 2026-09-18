@@ -270,11 +270,14 @@ impl Dictation {
     }
 
     /// Re-checks packs that are already on disk, including installs made by older app versions.
-    /// This hashes every file; a passing run refreshes the verification marker.
+    ///
+    /// This is the same gate the recogniser goes through, on purpose: one place decides what the
+    /// bytes are worth, so the badge Settings shows, the pack an install skips and the model the
+    /// microphone admits can never disagree. It hashes every file; a passing run leaves a marker
+    /// behind, and a failing one takes away any marker that said otherwise.
     pub fn verify_models(&self, pack: Option<&str>) -> Result<(), DictationError> {
         for pack in models::packs_for(pack)? {
-            models::verify_pack_files(&self.model_dir, pack)?;
-            models::write_marker(&self.model_dir, pack)?;
+            models::ensure_pack_ready(&self.model_dir, pack)?;
         }
         Ok(())
     }
@@ -1206,6 +1209,44 @@ mod tests {
         gate.load(&dir, &TEST_PACK).unwrap();
         assert_eq!(mtime(&marker), long_ago, "the marker was rewritten for nothing");
 
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_failed_check_takes_away_the_badge_it_just_disproved() {
+        // Settings' own "verify" button lands here, and it used to leave a failing pack looking
+        // verified: the badge stayed, an install skipped the pack as already done, and the one
+        // control that repairs it did nothing. Going through the same gate as the recogniser is
+        // what keeps the three answers the same answer.
+        let dir = temp_dir("manual");
+        let dictation = Dictation::new(&dir);
+        let pack = &models::FINAL_PACK;
+        let pack_dir = pack.dir_path(&dir);
+        fs::create_dir_all(&pack_dir).unwrap();
+        // A few bytes under each pinned name. The length is wrong, so the check gives up before
+        // it hashes anything — the real packs are a couple of hundred megabytes each and no unit
+        // test needs to weigh that much to prove what happens to the record.
+        for file in pack.files {
+            fs::write(pack_dir.join(file.name), b"stub").unwrap();
+        }
+        let marker = pack.marker_path(&dir);
+        write_marker(&dir, pack).unwrap();
+        assert!(marker.is_file());
+
+        // One pack failing never reaches into another's record: the streaming pack is not on
+        // disk at all, and the check gives up on it before the final pack is ever looked at.
+        let error = dictation.verify_models(None).unwrap_err();
+        assert_eq!(error.key, err_key::MODEL_MISSING);
+        assert!(marker.is_file(), "an unrelated pack lost its marker");
+
+        // And the pack that is checked and fails has its record taken away, which is what puts
+        // `verified` back to false and stops an install skipping the pack as already done.
+        let error = dictation.verify_models(Some(pack.id)).unwrap_err();
+        assert_eq!(error.key, err_key::MODEL_CORRUPT);
+        assert!(!marker.exists(), "the failed check left its record behind");
+        assert!(!models::pack_status(&dir, pack).verified);
+
+        drop(dictation);
         fs::remove_dir_all(dir).unwrap();
     }
 
