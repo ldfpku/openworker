@@ -14,6 +14,8 @@ dressed up as an access problem.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Optional
 
 # Error-body markers, verbatim from the vendors' error codes/messages:
@@ -94,6 +96,181 @@ _RESTRICTED = "model_restricted"
 # (`'message': '...'`) shape. The guard's text contains no quotes, so the character
 # class is safe.
 _MESSAGE_RE = re.compile(r"[\"']message[\"']\s*:\s*[\"']([^\"']+)[\"']")
+
+
+# -- transient vs. permanent (the automatic-retry gate) --------------------------------
+#
+# Statuses where the request never got a considered answer, so re-sending the SAME request
+# can succeed: the queue was full (408/409/425/429), the backend fell over (500/502/503/
+# 504), or Anthropic was overloaded (529). Everything else — 400/401/403/404 and friends —
+# means the request itself was refused, and re-sending it only buys the same refusal.
+_TRANSIENT_STATUSES = frozenset({408, 409, 425, 429, 500, 502, 503, 504, 529})
+
+# The two statuses Cloudflare's shared-pool refusal actually arrives with (the 402
+# `wholesale rate limit exceeded` and the 429 concurrency refusal), plus None for a
+# failure that carries no status at all. `is_gateway_busy` matches on text, so this is
+# what stops it claiming a 400 that merely QUOTES an upstream 429.
+_GATEWAY_BUSY_STATUSES = frozenset({None, 402, 429})
+
+# Matched by NAME, not isinstance: every vendor SDK defines its own connection/timeout/
+# overload classes, and importing all of them here would defeat the point of the provider
+# layer (same reasoning as manager._is_timeout_error). openai + anthropic (APIConnection/
+# APITimeout/RateLimit/InternalServer/Overloaded), google-genai (ServiceUnavailable,
+# DeadlineExceeded, ResourceExhausted), botocore/bedrock (Throttling/ModelTimeout/
+# InternalServer/ServiceUnavailable/ModelNotReady) and the httpx/urllib3 wire errors
+# underneath them all.
+_TRANSIENT_EXC_NAMES = frozenset(
+    {
+        "apiconnectionerror",
+        "apitimeouterror",
+        "apiconnectiontimeouterror",
+        "ratelimiterror",
+        "internalservererror",
+        "internalserverexception",
+        "overloadederror",
+        "serviceunavailable",
+        "serviceunavailableerror",
+        "serviceunavailableexception",
+        "deadlineexceeded",
+        "resourceexhausted",
+        "throttlingexception",
+        "modeltimeoutexception",
+        "modelnotreadyexception",
+        "connectionerror",
+        "connectionreseterror",
+        "connectionaborted",
+        "remoteprotocolerror",
+        "protocolerror",
+        "readtimeout",
+        "writetimeout",
+        "connecttimeout",
+        "pooltimeout",
+        "incompleteread",
+        "chunkedencodingerror",
+    }
+)
+
+# Last resort, for backends that surface a bare RuntimeError carrying the vendor's text.
+_TRANSIENT_MARKERS = (
+    "connection reset",
+    "connection aborted",
+    "connection broken",
+    "server disconnected",
+    "peer closed connection",
+    "incomplete chunked read",
+    "temporarily unavailable",
+    "service unavailable",
+    "bad gateway",
+    "gateway timeout",
+    "overloaded",
+)
+
+# The OpenAI/Anthropic SDKs render a status into `str(exc)` as "Error code: 503 - {...}";
+# `is_gateway_busy` above already leans on that shape for its 429.
+_STATUS_IN_TEXT_RE = re.compile(r"error code:\s*(\d{3})")
+
+
+def _status_of(exc: BaseException) -> Optional[int]:
+    """The HTTP status behind a provider exception, or None when it carries none."""
+    for attr in ("status_code", "status"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    # botocore: ClientError.response["ResponseMetadata"]["HTTPStatusCode"].
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        status = (response.get("ResponseMetadata") or {}).get("HTTPStatusCode")
+        if isinstance(status, int):
+            return status
+    match = _STATUS_IN_TEXT_RE.search(str(exc).lower())
+    return int(match.group(1)) if match else None
+
+
+def is_transient_model_error(exc: BaseException) -> bool:
+    """Whether re-sending the same model call could plausibly succeed.
+
+    The gate for the engine's automatic retry. Deliberately conservative: a False here
+    costs one manual Retry click, a wrong True costs the user three round-trips and three
+    backoffs before the real (permanent) diagnosis reaches them.
+    """
+    text = str(exc).lower()
+    # The permanent markers are asked FIRST, before anything that reads loosely. Quota,
+    # credit and entitlement failures arrive on transient-LOOKING statuses — OpenAI bills
+    # an exhausted quota as 429, the gateway's "needs BYOK" as 402 — but nothing about the
+    # account changes in six seconds, so they are permanent for our purposes.
+    if _RESTRICTED in text:
+        return False
+    if any(marker in text for marker in _NO_QUOTA + _NEEDS_BYOK + _NO_ACCESS):
+        return False
+    status = _status_of(exc)
+    # Cloudflare's shared-pool refusal comes back as 402 OR 429 and is transient by
+    # construction — a slot frees up in seconds. It has to be asked before the status
+    # check, or the 402 half would be read as "permanent" and contradict the very function
+    # that exists to say this one IS worth waiting out. Two guards keep its loose test
+    # (the phrase "rate limited" plus a 429 ANYWHERE in the text) from over-claiming: the
+    # permanent markers above win, so an exhausted quota that happens to say "Rate
+    # limited" is still permanent; and the response's OWN status has to be one the gateway
+    # actually answers with, so a 400 that merely quotes an upstream 429 stays permanent
+    # too — quoting a status is not being given one.
+    if is_gateway_busy(exc) and status in _GATEWAY_BUSY_STATUSES:
+        return True
+    if status is not None:
+        return status in _TRANSIENT_STATUSES
+    seen: set[int] = set()
+    current: Optional[BaseException] = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, (TimeoutError, ConnectionError)):
+            return True
+        if type(current).__name__.lower() in _TRANSIENT_EXC_NAMES:
+            return True
+        current = current.__cause__ or current.__context__
+    return any(marker in text for marker in _TRANSIENT_MARKERS)
+
+
+def retry_after_seconds(exc: BaseException) -> Optional[float]:
+    """The vendor's own `Retry-After`, in seconds, when the 429 carried one. Best effort —
+    a header we can't read is no reason to fail the call, the caller just uses its own
+    backoff instead. Both RFC 9110 spellings are accepted: a delay in seconds, and an
+    HTTP-date (which some CDNs in front of model endpoints send instead)."""
+    for source in (getattr(exc, "retry_after", None), _header(exc, "retry-after")):
+        if source is None:
+            continue
+        raw = str(source).strip()
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            pass
+        moment = _http_date(raw)
+        if moment is not None:
+            # Relative to OUR clock, which is the only one the backoff can use; a date
+            # already in the past yields a non-positive value and the caller falls back
+            # to its own schedule.
+            return moment - datetime.now(timezone.utc).timestamp()
+    return None
+
+
+def _http_date(raw: str) -> Optional[float]:
+    try:
+        parsed = parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        return None
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:  # RFC 9110 dates are GMT; an SDK may hand one back naive
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+def _header(exc: BaseException, name: str) -> Optional[str]:
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    getter = getattr(headers, "get", None)
+    if not callable(getter):
+        return None
+    try:
+        return getter(name)
+    except Exception:  # noqa: BLE001 - a header we can't read is simply absent
+        return None
 
 
 def friendly_model_error(model: str, exc: Exception) -> Optional[str]:

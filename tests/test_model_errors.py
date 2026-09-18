@@ -3,8 +3,15 @@ matrix, both families' flagships as defaults, and friendly errors when an accoun
 use them (GPT-5.6 rolls out per-organization; quota/credits can run out on any model).
 """
 
+import pytest
+
 from coworker.config import Config
-from coworker.providers.errors import friendly_model_error
+from coworker.providers.errors import (
+    friendly_model_error,
+    is_gateway_busy,
+    is_transient_model_error,
+    retry_after_seconds,
+)
 from coworker.providers.matrix import MATRIX, models_for_provider
 from coworker.providers.registry import get_descriptor
 
@@ -111,3 +118,116 @@ def test_unrelated_errors_pass_through_raw():
         friendly_model_error("gpt-5.6-sol", RuntimeError("connection reset by peer"))
         is None
     )
+
+
+# -- transient vs. permanent (the automatic-retry gate) --------------------------------
+#
+# The engine re-runs a model call that never landed. A wrong True here costs the user
+# three round-trips and two backoffs before the real diagnosis arrives, so the classifier
+# is deliberately conservative — these pin both halves of that judgment.
+
+
+def _status_error(status, body=""):
+    exc = RuntimeError(f"Error code: {status} - {body}")
+    exc.status_code = status
+    return exc
+
+
+def test_wire_and_capacity_failures_are_transient():
+    for status in (408, 409, 425, 429, 500, 502, 503, 504, 529):
+        assert is_transient_model_error(_status_error(status)), status
+    for exc in (
+        TimeoutError("read timed out"),
+        ConnectionResetError("connection reset by peer"),
+        type("APIConnectionError", (Exception,), {})("upstream closed"),
+        type("OverloadedError", (Exception,), {})("overloaded"),
+        type("ThrottlingException", (Exception,), {})("slow down"),
+        RuntimeError("server disconnected without sending a response"),
+        RuntimeError("Error code: 502 - bad gateway"),
+    ):
+        assert is_transient_model_error(exc), type(exc).__name__
+
+
+def test_refusals_and_quota_failures_are_not_transient():
+    for status in (400, 401, 402, 403, 404, 422):
+        assert not is_transient_model_error(_status_error(status)), status
+    # OpenAI bills an exhausted quota as 429 and the gateway bills "needs BYOK" as 402:
+    # transient-LOOKING, but nothing about the account changes in six seconds.
+    assert not is_transient_model_error(
+        _status_error(429, "{'code': 'insufficient_quota'}")
+    )
+    assert not is_transient_model_error(
+        _status_error(402, "This model is not available via unified billing. Please use BYOK.")
+    )
+    assert not is_transient_model_error(
+        _status_error(403, "{'code': 'model_restricted'}")
+    )
+    assert not is_transient_model_error(RuntimeError("your prompt was rejected"))
+
+
+def test_the_gateways_busy_pool_counts_as_transient_despite_its_402():
+    """Cloudflare answers "the shared pool for this model is busy" with 402 OR 429, and
+    `is_gateway_busy` exists precisely to say that one IS worth waiting out. Asking the
+    status code first would have called the 402 half permanent and contradicted it."""
+    assert is_transient_model_error(
+        _status_error(402, "Wholesale rate limit exceeded for this gateway. Please use BYOK.")
+    )
+    busy_429 = _status_error(429, "{'code': 2018, 'message': 'Wholesale Rate limited'}")
+    assert is_gateway_busy(busy_429) and is_transient_model_error(busy_429)
+    # …and the OTHER 402, which really is permanent, still is.
+    assert not is_transient_model_error(
+        _status_error(402, "This model is not available via unified billing. Please use BYOK.")
+    )
+
+
+def test_the_busy_pool_test_is_loose_so_it_is_asked_last_and_only_on_its_own_statuses():
+    """`is_gateway_busy` matches on the phrase "rate limited" plus a 429 ANYWHERE in the
+    text, which is loose enough to over-claim twice. Two guards, both load-bearing: the
+    permanent markers are asked first, and the response's OWN status has to be one the
+    gateway actually answers with — quoting a status is not being given one."""
+    # An exhausted quota that happens to word itself as a rate limit is still permanent.
+    quota = _status_error(
+        429, "{'code':'insufficient_quota','message':'Rate limited, quota exceeded'}"
+    )
+    assert is_gateway_busy(quota) and not is_transient_model_error(quota)
+    # A 400 that merely quotes an upstream 429 was never rate-limited itself.
+    quoting = _status_error(400, "upstream said 'Rate limited' (429)")
+    assert is_gateway_busy(quoting) and not is_transient_model_error(quoting)
+
+
+def test_retry_after_also_accepts_an_http_date():
+    """RFC 9110 allows a date instead of a delay, and CDNs in front of model endpoints
+    send one. Read relative to our own clock — a date already past yields a non-positive
+    value and the caller falls back to its own schedule."""
+    from datetime import datetime, timedelta, timezone
+    from email.utils import format_datetime
+
+    class _Headers:
+        def __init__(self, value):
+            self.value = value
+
+        def get(self, name):
+            return self.value if name == "retry-after" else None
+
+    def _with(value):
+        exc = _status_error(503)
+        exc.response = type("R", (), {"headers": _Headers(value)})()
+        return exc
+
+    soon = datetime.now(timezone.utc) + timedelta(seconds=20)
+    assert retry_after_seconds(_with(format_datetime(soon))) == pytest.approx(20, abs=3)
+    past = datetime.now(timezone.utc) - timedelta(seconds=60)
+    assert retry_after_seconds(_with(format_datetime(past))) < 0
+    assert retry_after_seconds(_with("not a date and not a number")) is None
+
+
+def test_retry_after_is_read_when_the_vendor_sends_one():
+    class _Headers:
+        def get(self, name):
+            return "12" if name == "retry-after" else None
+
+    exc = _status_error(429)
+    exc.response = type("R", (), {"headers": _Headers()})()
+    assert retry_after_seconds(exc) == 12.0
+    assert retry_after_seconds(_status_error(429)) is None
+    assert retry_after_seconds(RuntimeError("no headers here")) is None
