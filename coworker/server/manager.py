@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .. import procutil
+from ..taskutil import spawn_retained
 from ..agent import build_engine
 from ..agents import get_agent
 from ..connections import (
@@ -326,6 +327,11 @@ class SessionManager:
         # `spawn_turn_task` below — same reasoning as `_autotitle_tasks` above: the loop
         # only holds a weak ref, so an unreferenced Task can be GC'd before it finishes.
         self._turn_tasks: set[asyncio.Task] = set()
+        # Background flows kicked off from a REST route or a team tick, where the
+        # caller does not await the result: MCP connect, connector MCP connect, cloud
+        # connection restore, Codex sign-in, team message delivery. Same weak-ref
+        # hazard as `_turn_tasks` above — see `spawn_background` below.
+        self._bg_tasks: set[asyncio.Task] = set()
         self._autotitle_attempts: dict[str, int] = {}
         # Opener-count signature of the last attempt: titling fires at TURN START (owner
         # catch 2026-08-24 — waiting for an agentic turn to COMPLETE left sessions
@@ -2959,7 +2965,11 @@ class SessionManager:
             finally:
                 self._team_inflight.discard(sid)
 
-        asyncio.create_task(_deliver())
+        if self.spawn_background(_deliver()) is None:
+            # No running loop to schedule on — spawn_background already closed the
+            # coroutine, so `_deliver`'s own `finally` never ran. Undo the marker by
+            # hand, or this sid would never be drained again.
+            self._team_inflight.discard(sid)
         return 1
 
     async def _drain_team_member(
@@ -3038,7 +3048,11 @@ class SessionManager:
             finally:
                 self._team_inflight.discard(session_id)
 
-        asyncio.create_task(_deliver())
+        if self.spawn_background(_deliver()) is None:
+            # No running loop to schedule on — spawn_background already closed the
+            # coroutine, so `_deliver`'s own `finally` never ran. Undo the marker by
+            # hand, or this session_id would never be drained again.
+            self._team_inflight.discard(session_id)
         return 1
 
     # Long comment/hand-off bodies are already durable on the board — the wake
@@ -6265,6 +6279,11 @@ class SessionManager:
         self._turn_tasks.add(task)
         task.add_done_callback(self._turn_tasks.discard)
         return task
+
+    def spawn_background(self, coro) -> asyncio.Task | None:
+        """Fire-and-forget a background flow (see `_bg_tasks` above) with a strong
+        reference kept for as long as it runs. Thin wrapper over `spawn_retained`."""
+        return spawn_retained(self._bg_tasks, coro)
 
     async def _resume_wake(self, wake) -> None:
         message = self._wake_message(wake)

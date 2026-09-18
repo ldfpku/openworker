@@ -1356,7 +1356,7 @@ def create_app(manager: SessionManager) -> FastAPI:
         # runs as a background task; the GUI polls /v1/mcp for the status flip
         # (authorizing → connected | needs_auth + last_error).
         manager.begin_mcp_connect(name)  # authorizing shows on the very next poll
-        asyncio.create_task(manager.connect_mcp(name))
+        manager.spawn_background(manager.connect_mcp(name))
         return {"ok": True, "started": True}
 
     @app.post("/v1/mcp/{name}/signout")
@@ -1446,7 +1446,7 @@ def create_app(manager: SessionManager) -> FastAPI:
         d = get_descriptor(name)
         if d is None or not d.mcp_url:
             return {"ok": False, "error": f"{name} has no MCP connect path"}
-        asyncio.create_task(manager.mcp_connect_connector(name))
+        manager.spawn_background(manager.mcp_connect_connector(name))
         return {"ok": True, "started": True}
 
     @app.post("/v1/connectors/weixin/qr-login")
@@ -1711,7 +1711,7 @@ def create_app(manager: SessionManager) -> FastAPI:
             except Exception:
                 pass  # sign-in stands; the user can still connect by hand
 
-        asyncio.get_running_loop().create_task(_restore_connections())
+        manager.spawn_background(_restore_connections())
         return HTMLResponse(
             _browser_page(
                 "Signed in",
@@ -2125,7 +2125,7 @@ def create_app(manager: SessionManager) -> FastAPI:
         # route for the flip (authorizing → signed_in | last_error). Same shape as
         # the MCP OAuth connect route.
         manager.begin_codex_signin()
-        asyncio.create_task(manager.codex_signin())
+        manager.spawn_background(manager.codex_signin())
         return {"ok": True, "started": True}
 
     @app.get("/v1/providers/openai-codex/status")
