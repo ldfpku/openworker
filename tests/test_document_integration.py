@@ -617,22 +617,96 @@ def test_a_refused_pptx_write_names_neither_in_app_writer(tmp_path):
 # -- packaging: the dependencies must survive a merge from upstream ----------------------
 
 
+def _spec_collectors(source: str | None = None) -> dict[str, set[str]]:
+    """{PyInstaller collector name -> the packages the spec collects with it}.
+
+    Read with `ast`, not `in spec`, because substring matching cannot tell the two cases
+    apart and the difference between them IS the bug below: the spec collects packages in
+    `for pkg in (...)` loops, so `'"docx"' in spec` is equally true whether docx sits in
+    the `collect_all` loop or the `collect_submodules` one. Direct calls with a literal
+    argument are read too, so rewriting the loop as `collect_all("docx")` still passes.
+
+    `source` overrides the real spec — used below to check this parser can actually tell
+    the two shapes apart, so its verdict on the real file is not taken on faith.
+    """
+    import ast
+    from pathlib import Path
+
+    if source is None:
+        source = (
+            Path(__file__).resolve().parents[1] / "packaging" / "openworker-server.spec"
+        ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    out: dict[str, set[str]] = {}
+
+    def _strings(node) -> set[str]:
+        return {
+            e.value
+            for e in getattr(node, "elts", [])
+            if isinstance(e, ast.Constant) and isinstance(e.value, str)
+        }
+
+    # `for pkg in ("a", "b"): … collector(pkg)` — credit every name in the tuple to every
+    # collector called anywhere inside the loop (including inside a try/except).
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.For):
+            continue
+        packages = _strings(node.iter)
+        if not packages:
+            continue
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name):
+                out.setdefault(inner.func.id, set()).update(packages)
+
+    # `collector("a")` written out directly.
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+            continue
+        first = node.args[0] if node.args else None
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            out.setdefault(node.func.id, set()).add(first.value)
+    return out
+
+
 def test_python_docx_and_markdown_it_are_declared_and_importable_in_fork():
     """Two pins and two real imports. CI installs the backend straight from pyproject and
     never smoke-tests a frozen build, so a merge that drops a line fails NOWHERE in this
     repo — it surfaces as "this build is missing python-docx" on a user's machine, where
-    there is no Python to fall back on. `docx` is collected with collect_all rather than
-    collect_submodules because the .docx starts from the package's own default template."""
+    there is no Python to fall back on.
+
+    `docx` must be collected by `collect_all`, which stages DATA files, and not merely by
+    `collect_submodules`, which stages code: a .docx is built by copying the package's own
+    `docx/templates/default.docx` (plus the .xml part templates beside it). Code-only
+    collection imports cleanly and then raises PackageNotFoundError on the first call —
+    the worst shape of failure available here, because every test in this repo still
+    passes and the break only appears on a user's machine. `markdown_it` is pure code, so
+    either collector is enough for it.
+    """
     from pathlib import Path
 
-    root = Path(__file__).resolve().parents[1]
-    pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
+    pyproject = (
+        Path(__file__).resolve().parents[1] / "pyproject.toml"
+    ).read_text(encoding="utf-8")
     assert "python-docx" in pyproject
     assert "markdown-it-py" in pyproject
 
-    spec = (root / "packaging" / "openworker-server.spec").read_text(encoding="utf-8")
-    assert '"docx"' in spec
-    assert '"markdown_it"' in spec
+    # The parser's whole job is telling the two loop shapes apart, so prove it does
+    # before trusting its verdict on the real spec — otherwise the assertions below
+    # could be passing because the parser finds everything everywhere.
+    staged = _spec_collectors('for pkg in ("docx", "x"):\n    d, b, h = collect_all(pkg)\n')
+    assert staged["collect_all"] == {"docx", "x"}
+    assert "collect_submodules" not in staged
+    code_only = _spec_collectors(
+        'for pkg in ("docx", "x"):\n    hiddenimports += collect_submodules(pkg)\n'
+    )
+    assert code_only.get("collect_all", set()) == set()  # the regression this guards
+    assert code_only["collect_submodules"] == {"docx", "x"}
+
+    collectors = _spec_collectors()
+    assert "docx" in collectors.get("collect_all", set()), sorted(collectors)
+    assert "markdown_it" in collectors.get("collect_submodules", set()) | collectors.get(
+        "collect_all", set()
+    )
 
     import docx  # noqa: F401  - the dependency itself, not a stub
     import markdown_it  # noqa: F401
