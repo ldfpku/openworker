@@ -350,12 +350,17 @@ describe("documentPreview", () => {
 
   it.each([
     ["markdown missing", {}],
-    ["markdown not a string", { markdown: 123 }],
+    ["markdown is undefined", { markdown: undefined }],
+    ["markdown is a number", { markdown: 123 }],
+    ["markdown is an array", { markdown: ["a", "b"] }],
+    ["markdown is an object", { markdown: { text: "a" } }],
     ["markdown empty", { markdown: "" }],
     ["markdown whitespace-only", { markdown: "   \n\n\t  " }],
     ["args itself is null", null],
+    ["args itself is undefined", undefined],
     ["args itself is a string", "nope"],
   ])("degrades to no preview (\"\") when %s", (_label, args) => {
+    expect(() => documentPreview(args)).not.toThrow();
     expect(documentPreview(args)).toBe("");
   });
 });
