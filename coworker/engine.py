@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import random
+import threading
 import time
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -240,6 +241,91 @@ async def _deny_all(_request: PermissionRequest) -> ApprovalOutcome:
     return ApprovalOutcome.DENY
 
 
+class StreamBridgeError(RuntimeError):
+    """The provider stream's thread bridge ended for a reason that isn't an answer.
+
+    Never expected. It exists so the bridge can never again end a stream QUIETLY: a silent
+    return there reaches the user as an assistant turn that simply came back empty, with
+    nothing in the events or the log to say why (2026-09-18).
+    """
+
+
+def _wake(future: asyncio.Future) -> None:
+    if not future.done():
+        future.set_result(True)
+
+
+class _StopSignal:
+    """The turn's Stop flag: `asyncio.Event`'s surface without its event-loop binding.
+
+    `asyncio.Event` binds itself to the first loop that awaits it and raises on every loop
+    after that (`asyncio.mixins._LoopBoundMixin`). An engine outlives loops — a subagent
+    tool runs its own via `asyncio.run` — and Stop is set from threads that have no loop at
+    all (the manager cancelling a team run, deleting a session). So the flag keeps its own
+    registry of waiters, one per loop, instead of belonging to one of them.
+
+    Supports exactly what the engine uses: `set`, `clear`, `is_set`, and an awaitable
+    `wait`. `is_set` is a plain attribute read, which is what makes it safe to poll from
+    the producer thread.
+    """
+
+    def __init__(self) -> None:
+        self._flag = False
+        # Guards "check the flag, then register" against "set the flag, then take the
+        # waiters", which is the only ordering that can drop a wake-up.
+        self._lock = threading.Lock()
+        self._waiters: list[tuple[asyncio.AbstractEventLoop, asyncio.Future]] = []
+
+    def is_set(self) -> bool:
+        return self._flag
+
+    def clear(self) -> None:
+        self._flag = False
+
+    def set(self) -> None:
+        with self._lock:
+            if self._flag:
+                return
+            self._flag = True
+            waiters, self._waiters = self._waiters, []
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None  # called from a thread with no loop of its own
+        # Resolved outside the lock: a waiter's own `finally` re-enters to deregister.
+        for loop, future in waiters:
+            if loop is running:
+                # Same loop, same thread — resolve inline, exactly as `asyncio.Event.set()`
+                # does, so a Stop doesn't arrive an event-loop turn later than it used to.
+                _wake(future)
+                continue
+            try:
+                loop.call_soon_threadsafe(_wake, future)
+            except RuntimeError:
+                pass  # that loop is closed; nobody is left there to wake
+
+    async def wait(self) -> bool:
+        if self._flag:
+            return True
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        with self._lock:
+            if self._flag:  # set() landed between the read above and the lock
+                return True
+            self._waiters.append((loop, future))
+        try:
+            return await future
+        finally:
+            # Cancelled, failed or woken, the registration goes: the bridge starts a fresh
+            # wait for every chunk, so a waiter that outlived its own task would pile up
+            # for the length of the answer.
+            with self._lock:
+                for index, (_loop, registered) in enumerate(self._waiters):
+                    if registered is future:
+                        del self._waiters[index]
+                        break
+
+
 class TurnEngine:
     def __init__(
         self,
@@ -408,7 +494,7 @@ class TurnEngine:
             self.messages and self.messages[0].get("role") == "system"
         ):
             self.messages.insert(0, {"role": "system", "content": instructions})
-        self._cancel = asyncio.Event()
+        self._cancel = _StopSignal()
         # Whether the latest assistant turn hit the output-token limit — decides which
         # diagnosis a mangled (unparseable-args) tool call gets answered with.
         self._turn_truncated = False
@@ -460,6 +546,14 @@ class TurnEngine:
             done, _ = await asyncio.wait(
                 {task, cancel_wait}, return_when=asyncio.FIRST_COMPLETED
             )
+            # The Stop wait FAILING is not the user pressing Stop. Read as one, it answers
+            # a pending approval with "interrupted" and nothing says otherwise — the same
+            # silence `_astream` used to hand the turn (2026-09-18).
+            if cancel_wait in done and not cancel_wait.cancelled():
+                failure = cancel_wait.exception()
+                if failure is not None:
+                    task.cancel()
+                    raise failure
             if task in done:
                 return task.result()
             task.cancel()
@@ -1162,15 +1256,21 @@ class TurnEngine:
             self.model_settings,
         )
         provider = self.provider
+        # Set when THIS stream's consumer leaves, for any reason at all: normal end, Stop,
+        # `aclose`/GeneratorExit, cancellation, error. One per stream (never engine state),
+        # so an abandoned producer stops pulling the wire instead of draining a whole
+        # response into a queue that was thrown away with the generator.
+        consumer_gone = threading.Event()
 
         def produce():
             try:
                 for chunk in provider.stream(
                     model=model, messages=messages, tools=tools, **settings
                 ):
-                    # User pressed Stop: drop the stream between chunks (reading the
-                    # asyncio.Event's flag from a thread is safe; we only read).
-                    if self._cancel.is_set():
+                    # User pressed Stop, or nobody is reading any more: drop the stream
+                    # between chunks (reading either flag from a thread is safe — both are
+                    # plain attribute reads, and we only read).
+                    if self._cancel.is_set() or consumer_gone.is_set():
                         break
                     loop.call_soon_threadsafe(queue.put_nowait, ("chunk", chunk))
             except Exception as exc:  # surfaced to the awaiting consumer
@@ -1179,25 +1279,53 @@ class TurnEngine:
                 loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
 
         loop.run_in_executor(None, produce)
-        while True:
-            # Race the queue against Stop so a stalled stream (no chunks arriving —
-            # the pre-first-token wait, a wedged connection) can't hold the turn.
-            get_task = asyncio.ensure_future(queue.get())
-            cancel_task = asyncio.ensure_future(self._cancel.wait())
-            done, _ = await asyncio.wait(
-                {get_task, cancel_task}, return_when=asyncio.FIRST_COMPLETED
-            )
-            cancel_task.cancel()
-            if get_task not in done:
+        get_task: Optional[asyncio.Future] = None
+        cancel_task: Optional[asyncio.Future] = None
+        try:
+            while True:
+                # Race the queue against Stop so a stalled stream (no chunks arriving —
+                # the pre-first-token wait, a wedged connection) can't hold the turn.
+                get_task = asyncio.ensure_future(queue.get())
+                cancel_task = asyncio.ensure_future(self._cancel.wait())
+                done, _ = await asyncio.wait(
+                    {get_task, cancel_task}, return_when=asyncio.FIRST_COMPLETED
+                )
+                # Four outcomes, told apart on purpose. Collapsing them into "not the
+                # queue, so the user stopped" is what silently dropped the last frame of a
+                # stream — reliably the `StreamChunk(turn=…)`, since that one always
+                # arrives after a wait — and handed the turn an empty answer instead.
+                stop_failed = (
+                    cancel_task.exception()
+                    if cancel_task in done and not cancel_task.cancelled()
+                    else None
+                )
+                cancel_task.cancel()
+                if stop_failed is not None:
+                    get_task.cancel()
+                    raise stop_failed
+                if get_task in done:
+                    kind, payload = get_task.result()
+                    if kind == "chunk":
+                        yield payload
+                        continue
+                    if kind == "error":
+                        raise payload
+                    return
                 get_task.cancel()
-                return  # interrupted — the producer exits on its own next chunk
-            kind, payload = get_task.result()
-            if kind == "chunk":
-                yield payload
-            elif kind == "error":
-                raise payload
-            else:
-                return
+                if self._cancel.is_set():
+                    return  # interrupted — the producer exits on its own next chunk
+                raise StreamBridgeError(
+                    "the model stream ended without delivering a turn and without a stop "
+                    "signal"
+                )
+        finally:
+            # Whatever the exit — return, raise, Stop, `aclose`, cancellation — tell the
+            # producer nobody is reading and leave no waiter registered on the stop flag.
+            # Nothing awaits here: a `finally` that awaits during GeneratorExit is an error.
+            consumer_gone.set()
+            for task in (get_task, cancel_task):
+                if task is not None and not task.done():
+                    task.cancel()
 
     async def _handle_tool_calls(
         self, tool_calls: list[ToolCall]

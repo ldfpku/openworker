@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import aisuite as ai
@@ -1501,9 +1502,9 @@ def test_a_real_stream_that_ends_normally_produces_no_new_notice(tmp_path):
 def test_a_real_stream_cut_off_mid_answer_warns_once_the_backend_is_proven(tmp_path):
     """Both halves of the gate over one turn and two real streams: round one reports
     `tool_calls` (proving this backend does say when it's done), round two streams text
-    and then simply stops. One turn on purpose — driving an engine from two separate
-    `asyncio.run()` loops races `_astream`'s thread bridge, which is a harness artifact,
-    not the behaviour under test."""
+    and then simply stops. One turn on purpose — the two halves belong to one turn's
+    history, and keeping them there says so. (Two separate `asyncio.run()` loops are fine
+    now; the bridge's cross-loop frame loss is covered below and is fixed.)"""
     provider = _stream_provider(
         [_sse_tool_chunk("list_files", '{"path": "."}'), _sse_chunk(finish="tool_calls")],
         [_sse_chunk(content="half an ans")],
@@ -1545,3 +1546,322 @@ def test_a_tool_turn_that_hit_the_ceiling_still_warns(tmp_path):
     assert next(ev for ev in events if ev.type == EventType.TURN_END).data["status"] == (
         "completed"
     )
+
+
+# -- the stream bridge's own lifecycle -------------------------------------------------
+
+# How many event-loop steps a test gives the bridge before calling it settled. Generous:
+# the bridge that gave up needed five, and a loop step costs nothing to spend.
+_BRIDGE_SETTLE_STEPS = 20
+
+
+class _GatedStream:
+    """A scripted SSE stream that parks the producer thread before wire chunk `park_at`.
+
+    The park is what makes these tests deterministic instead of lucky: while the producer
+    is held, the consumer provably HAS to wait for its next chunk, and that wait is the
+    one moment the bridge can lose one. `produced` counts how much of the wire the
+    producer actually pulled, which is how a producer left running is caught.
+    """
+
+    def __init__(self, chunks, park_at=0):
+        self.chunks = chunks
+        self.park_at = park_at
+        self.gate = threading.Event()
+        self.parked = threading.Event()
+        self.produced = 0
+
+    def __iter__(self):
+        for index, chunk in enumerate(self.chunks):
+            if index == self.park_at:
+                self.parked.set()
+                self.gate.wait()
+            self.produced = index + 1
+            yield chunk
+
+
+class _BrokenStop:
+    """A stop flag whose async wait always fails — what a cross-loop `asyncio.Event` did.
+
+    The bridge has to surface that, never mistake it for the user pressing Stop.
+    """
+
+    def is_set(self):
+        return False
+
+    def set(self):
+        pass
+
+    def clear(self):
+        pass
+
+    async def wait(self):
+        raise RuntimeError("stop flag is bound to a different event loop")
+
+
+def _counting_stream_provider(*chunk_scripts):
+    """`_stream_provider` plus a record of every wire call it actually made."""
+    scripts = list(chunk_scripts)
+    calls = []
+
+    def _create(**kwargs):
+        calls.append(kwargs)
+        return iter(scripts.pop(0))
+
+    class _Client:
+        def __init__(self):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=_create))
+
+    return OpenAIProvider(client=_Client()), calls
+
+
+def _release_when_parked(script):
+    """Open `script`'s gate from a plain thread, once the producer is really held.
+
+    It has to be off the loop: `asyncio.run()` joins the default executor as it exits, so
+    a producer still parked on the gate would wedge the loop's own shutdown.
+    """
+
+    def _wait_then_open():
+        script.parked.wait()
+        script.gate.set()
+
+    opener = threading.Thread(target=_wait_then_open, daemon=True)
+    opener.start()
+    return opener
+
+
+async def _drain_stream(engine, script=None):
+    chunks = []
+    try:
+        async for chunk in engine._astream():
+            chunks.append(chunk)
+    finally:
+        if script is not None:  # never leave a parked producer behind
+            script.parked.set()
+            script.gate.set()
+    return chunks
+
+
+def test_one_engine_streaming_on_a_second_event_loop_delivers_every_chunk(tmp_path):
+    """The bridge used to end the stream the first time it had to WAIT for a chunk on any
+    loop other than the one the engine's stop flag happened to bind to. The final
+    `StreamChunk(turn=…)` arrives after exactly such a wait, so the turn came back empty
+    for no reason the user, the events or the log could see."""
+    parked = _GatedStream(
+        [
+            _sse_chunk(content="second "),
+            _sse_chunk(content="loop"),
+            _sse_chunk(finish="stop"),
+        ]
+    )
+    provider, calls = _counting_stream_provider(
+        [_sse_chunk(content="first loop"), _sse_chunk(finish="stop")], parked
+    )
+    engine = _stream_engine(tmp_path, provider)
+    engine.messages.append({"role": "user", "content": "hi"})
+
+    assert asyncio.run(_drain_stream(engine))[-1].turn is not None
+
+    async def _on_a_second_loop():
+        stream = engine._astream()
+        step = asyncio.ensure_future(stream.__anext__())
+        chunks = []
+        try:
+            # The producer is held, so the queue is provably empty and the bridge's only
+            # correct move is to go on waiting. Stepping the loop — never the clock — is
+            # what makes that observable: the old bridge gave up within a few steps.
+            for _ in range(_BRIDGE_SETTLE_STEPS):
+                await asyncio.sleep(0)
+            still_waiting = not step.done()
+            parked.gate.set()
+            try:
+                chunks.append(await step)
+            except StopAsyncIteration:
+                pass
+            else:
+                async for chunk in stream:
+                    chunks.append(chunk)
+        finally:
+            parked.parked.set()
+            parked.gate.set()
+        return still_waiting, chunks
+
+    still_waiting, second = asyncio.run(_on_a_second_loop())
+
+    assert still_waiting, "the bridge abandoned a stream that had delivered nothing yet"
+    assert [c.text_delta for c in second if c.text_delta] == ["second ", "loop"]
+    assert second[-1].turn is not None and second[-1].turn.text == "second loop"
+    assert parked.produced == len(parked.chunks)
+    assert len(calls) == 2
+
+
+def test_a_stop_wait_that_fails_is_raised_not_read_as_a_stop(tmp_path):
+    """Belt and braces for the bridge: whatever goes wrong with the Stop wait, the turn
+    has to hear about it. Ending the stream quietly is what turned a broken wait into an
+    empty assistant reply with nothing to debug."""
+    parked = _GatedStream([_sse_chunk(content="never "), _sse_chunk(finish="stop")])
+    provider, _ = _counting_stream_provider(parked)
+    engine = _stream_engine(tmp_path, provider)
+    engine.messages.append({"role": "user", "content": "hi"})
+    engine._cancel = _BrokenStop()
+
+    opener = _release_when_parked(parked)
+    with pytest.raises(RuntimeError):
+        asyncio.run(_drain_stream(engine, parked))
+    opener.join(timeout=5)
+
+
+def test_two_turns_on_two_event_loops_both_complete(tmp_path):
+    """The shape that first caught this: one engine, one whole turn per `asyncio.run()`.
+    Each round has to stand on its own model call — an answer rescued by the automatic
+    retry would hide the very frame loss this guards."""
+    parked = _GatedStream(
+        [_sse_chunk(content="second"), _sse_chunk(finish="stop")], park_at=1
+    )
+    provider, calls = _counting_stream_provider(
+        [_sse_chunk(content="first"), _sse_chunk(finish="stop")], parked
+    )
+    engine = _stream_engine(tmp_path, provider)
+
+    first = _collect(engine, "round one")
+    opener = _release_when_parked(parked)
+    second = _collect(engine, "round two")
+    opener.join(timeout=5)
+
+    for events in (first, second):
+        assert next(
+            ev for ev in events if ev.type == EventType.TURN_END
+        ).data["status"] == ("completed")
+    assert [m["content"] for m in engine.messages if m.get("role") == "assistant"] == [
+        "first",
+        "second",
+    ]
+    assert len(calls) == 2  # one call per round: no retry papered over a lost frame
+
+
+def test_a_consumer_that_leaves_stops_the_producer(tmp_path):
+    """A read already in flight can't be interrupted, but the producer must not keep
+    pulling a stream nobody is reading: it used to drain the whole response into a queue
+    that had already been thrown away."""
+    parked = _GatedStream(
+        [_sse_chunk(content="a"), _sse_chunk(content="b"), _sse_chunk(finish="stop")]
+    )
+    provider, _ = _counting_stream_provider(parked)
+    engine = _stream_engine(tmp_path, provider)
+    engine.messages.append({"role": "user", "content": "hi"})
+
+    async def _leave_at_once():
+        loop = asyncio.get_running_loop()
+        # One worker, so "the producer has finished" becomes observable: the next job can
+        # only start once `produce()` returned. No sleeping, no polling.
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+        stream = engine._astream()
+        first = asyncio.ensure_future(stream.__anext__())
+        await asyncio.sleep(0)  # let the bridge start its producer, then walk away
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        await stream.aclose()
+        # Only now is the producer let go, so it cannot have got ahead of the departure.
+        parked.gate.set()
+        await loop.run_in_executor(None, lambda: None)
+
+    asyncio.run(_leave_at_once())
+
+    # One more chunk was already on the wire when the consumer left; nothing after it.
+    assert parked.produced == 1
+
+
+# -- the stop flag, which outlives any one event loop ----------------------------------
+
+
+def test_the_stop_flag_still_works_on_a_later_event_loop(tmp_path):
+    """`asyncio.Event` binds to the first loop that awaits it and raises on every loop
+    after that. An engine outlives loops — tools run their own — so its stop flag can't."""
+    engine = _default_engine(tmp_path)
+
+    async def _bind_and_walk_away():
+        waiter = asyncio.ensure_future(engine._cancel.wait())
+        await asyncio.sleep(0)
+        waiter.cancel()
+
+    asyncio.run(_bind_and_walk_away())
+
+    async def _stop_on_a_new_loop():
+        waiter = asyncio.ensure_future(engine._cancel.wait())
+        await asyncio.sleep(0)
+        engine.request_interrupt()
+        return await asyncio.wait_for(waiter, timeout=5)
+
+    assert asyncio.run(_stop_on_a_new_loop()) is True
+
+
+def test_a_stop_from_another_thread_wakes_the_waiter(tmp_path):
+    """Stop arrives off the loop thread too — the manager sets it when a team run is
+    cancelled or a session is deleted."""
+    engine = _default_engine(tmp_path)
+
+    async def _wait_for_another_thread():
+        waiter = asyncio.ensure_future(engine._cancel.wait())
+        await asyncio.sleep(0)
+        threading.Thread(target=engine.request_interrupt, daemon=True).start()
+        return await asyncio.wait_for(waiter, timeout=5)
+
+    assert asyncio.run(_wait_for_another_thread()) is True
+
+
+def test_a_cancelled_stop_wait_leaves_nothing_registered(tmp_path):
+    """Every streamed chunk starts a fresh stop wait, so a waiter that outlives its own
+    cancellation would pile up for the length of the answer."""
+    engine = _default_engine(tmp_path)
+
+    async def _cancel_a_waiter():
+        waiter = asyncio.ensure_future(engine._cancel.wait())
+        await asyncio.sleep(0)
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+
+    asyncio.run(_cancel_a_waiter())
+
+    assert not engine._cancel._waiters
+
+
+def test_a_stop_survives_a_waiter_whose_loop_is_gone(tmp_path):
+    """Stop is called from paths that can't know which loops are still alive (the manager
+    deleting a session). A dead loop among the waiters must not break the others."""
+    engine = _default_engine(tmp_path)
+    loop = asyncio.new_event_loop()
+
+    async def _park_a_waiter():
+        waiter = asyncio.ensure_future(engine._cancel.wait())
+        await asyncio.sleep(0)
+        # Left pending on purpose — that IS the scenario. Silence the destructor's
+        # complaint so the deliberate leak doesn't read as a test going wrong.
+        waiter._log_destroy_pending = False
+
+    try:
+        loop.run_until_complete(_park_a_waiter())
+    finally:
+        loop.close()  # the waiter is still registered; its loop is not
+
+    engine.request_interrupt()
+
+    assert engine._cancel.is_set()
+
+
+def test_a_failed_stop_wait_is_not_read_as_an_interruption(tmp_path):
+    """`_interruptible` has the bridge's shape and had the bridge's bug: a wait that blew
+    up satisfied the race and answered the pending approval with "interrupted"."""
+    engine = _default_engine(tmp_path)
+    engine._cancel = _BrokenStop()
+
+    async def _never_finishes():
+        await asyncio.sleep(3600)
+
+    async def _await_an_approval():
+        return await engine._interruptible(_never_finishes(), "interrupted")
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(_await_an_approval())
