@@ -47,15 +47,21 @@ def test_mcp_connect_route_retains_background_task(tmp_path, monkeypatch):
     monkeypatch.setattr(manager, "connect_mcp", fake_connect_mcp)
 
     with TestClient(create_app(manager)) as client:
-        resp = client.post("/v1/mcp/probe-server/connect")
-        assert resp.json() == {"ok": True, "started": True}
+        try:
+            resp = client.post("/v1/mcp/probe-server/connect")
+            assert resp.json() == {"ok": True, "started": True}
 
-        assert started.wait(timeout=2.0), "background connect_mcp() never started"
-        assert len(manager._bg_tasks) == 1
-        (task,) = manager._bg_tasks
-        assert not task.done()
-
-        gate.set()
+            assert started.wait(timeout=2.0), "background connect_mcp() never started"
+            assert len(manager._bg_tasks) == 1
+            (task,) = manager._bg_tasks
+            assert not task.done()
+        finally:
+            # Always release the worker thread blocked in `gate.wait()` — even (in
+            # fact, especially) if an assertion above just failed. Otherwise the
+            # TestClient portal's shutdown, right after this `with` block, hangs
+            # waiting for that permanently-blocked to_thread() work item instead of
+            # letting the real failure surface.
+            gate.set()
         _poll_until_empty(manager._bg_tasks)
 
 
@@ -72,17 +78,21 @@ def test_connector_mcp_connect_route_retains_background_task(tmp_path, monkeypat
     monkeypatch.setattr(manager, "mcp_connect_connector", fake_mcp_connect_connector)
 
     with TestClient(create_app(manager)) as client:
-        # "monday" is a real connector descriptor with mcp_url set (required for the
-        # route to get past its `d is None or not d.mcp_url` guard).
-        resp = client.post("/v1/connectors/monday/mcp-connect")
-        assert resp.json() == {"ok": True, "started": True}
+        try:
+            # "monday" is a real connector descriptor with mcp_url set (required for
+            # the route to get past its `d is None or not d.mcp_url` guard).
+            resp = client.post("/v1/connectors/monday/mcp-connect")
+            assert resp.json() == {"ok": True, "started": True}
 
-        assert started.wait(timeout=2.0), "background mcp_connect_connector() never started"
-        assert len(manager._bg_tasks) == 1
-        (task,) = manager._bg_tasks
-        assert not task.done()
-
-        gate.set()
+            assert started.wait(timeout=2.0), "background mcp_connect_connector() never started"
+            assert len(manager._bg_tasks) == 1
+            (task,) = manager._bg_tasks
+            assert not task.done()
+        finally:
+            # See test_mcp_connect_route_retains_background_task for why this must
+            # run unconditionally: an assertion failure above must not leave the
+            # to_thread() worker blocked forever and hang TestClient's teardown.
+            gate.set()
         _poll_until_empty(manager._bg_tasks)
 
 
@@ -99,15 +109,18 @@ def test_codex_signin_route_retains_background_task(tmp_path, monkeypatch):
     monkeypatch.setattr(manager, "codex_signin", fake_codex_signin)
 
     with TestClient(create_app(manager)) as client:
-        resp = client.post("/v1/providers/openai-codex/signin")
-        assert resp.json() == {"ok": True, "started": True}
+        try:
+            resp = client.post("/v1/providers/openai-codex/signin")
+            assert resp.json() == {"ok": True, "started": True}
 
-        assert started.wait(timeout=2.0), "background codex_signin() never started"
-        assert len(manager._bg_tasks) == 1
-        (task,) = manager._bg_tasks
-        assert not task.done()
-
-        gate.set()
+            assert started.wait(timeout=2.0), "background codex_signin() never started"
+            assert len(manager._bg_tasks) == 1
+            (task,) = manager._bg_tasks
+            assert not task.done()
+        finally:
+            # See test_mcp_connect_route_retains_background_task for why this must
+            # run unconditionally.
+            gate.set()
         _poll_until_empty(manager._bg_tasks)
 
 
@@ -135,16 +148,19 @@ def test_cloud_auth_callback_route_retains_background_task(tmp_path, monkeypatch
     monkeypatch.setattr(cloud, "sync_connections", fake_sync_connections)
 
     with TestClient(create_app(manager)) as client:
-        resp = client.get("/auth/callback", params={"code": "c", "state": "s"})
-        assert resp.status_code == 200
-        assert "Signed in" in resp.text
+        try:
+            resp = client.get("/auth/callback", params={"code": "c", "state": "s"})
+            assert resp.status_code == 200
+            assert "Signed in" in resp.text
 
-        assert started.wait(timeout=2.0), "background _restore_connections() never started"
-        assert len(manager._bg_tasks) == 1
-        (task,) = manager._bg_tasks
-        assert not task.done()
-
-        gate.set()
+            assert started.wait(timeout=2.0), "background _restore_connections() never started"
+            assert len(manager._bg_tasks) == 1
+            (task,) = manager._bg_tasks
+            assert not task.done()
+        finally:
+            # See test_mcp_connect_route_retains_background_task for why this must
+            # run unconditionally.
+            gate.set()
         _poll_until_empty(manager._bg_tasks)
 
 
@@ -201,18 +217,23 @@ async def test_drain_team_member_retains_background_delivery(tmp_path, monkeypat
 
     monkeypatch.setattr(manager, "deliver_to_session", fake_deliver)
 
-    n = await manager._drain_team_member(
-        team, session_id=worker_sid, actor="nia", is_lead=False
-    )
-    assert n == 1
-    await asyncio.wait_for(started.wait(), timeout=2.0)
+    try:
+        n = await manager._drain_team_member(
+            team, session_id=worker_sid, actor="nia", is_lead=False
+        )
+        assert n == 1
+        await asyncio.wait_for(started.wait(), timeout=2.0)
 
-    assert len(manager._bg_tasks) == 1
-    (task,) = manager._bg_tasks
-    assert not task.done()
-    assert manager._team_inflight == {worker_sid}
+        assert len(manager._bg_tasks) == 1
+        (task,) = manager._bg_tasks
+        assert not task.done()
+        assert manager._team_inflight == {worker_sid}
+    finally:
+        # Release the gate unconditionally: if an assertion above already failed,
+        # this still lets `_deliver` finish instead of leaking a pending task past
+        # the end of this test's event loop.
+        gate.set()
 
-    gate.set()
     await asyncio.wait_for(task, timeout=2.0)
     assert manager._bg_tasks == set()
     assert manager._team_inflight == set()
@@ -236,16 +257,20 @@ async def test_maybe_backstop_lead_retains_background_delivery(tmp_path, monkeyp
 
     monkeypatch.setattr(manager, "deliver_to_session", fake_deliver)
 
-    n = await manager._maybe_backstop_lead(team)
-    assert n == 1
-    await asyncio.wait_for(started.wait(), timeout=2.0)
+    try:
+        n = await manager._maybe_backstop_lead(team)
+        assert n == 1
+        await asyncio.wait_for(started.wait(), timeout=2.0)
 
-    assert len(manager._bg_tasks) == 1
-    (task,) = manager._bg_tasks
-    assert not task.done()
-    assert manager._team_inflight == {"lead-sid"}
+        assert len(manager._bg_tasks) == 1
+        (task,) = manager._bg_tasks
+        assert not task.done()
+        assert manager._team_inflight == {"lead-sid"}
+    finally:
+        # See test_drain_team_member_retains_background_delivery for why this must
+        # run unconditionally.
+        gate.set()
 
-    gate.set()
     await asyncio.wait_for(task, timeout=2.0)
     assert manager._bg_tasks == set()
     assert manager._team_inflight == set()
