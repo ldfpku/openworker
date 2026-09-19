@@ -8,12 +8,15 @@ signed in) cannot escape `codex_signin`, gets logged, and lands in `_codex_error
 
 2026-09-19 audit, item 3. `_codex_error` is displayed by the GUI as-is (no i18n
 pass — see `surfaces/gui/src/providers/ProviderSetup.tsx`'s `{error}}` span), so the
-bilingual "signed in, but setup didn't finish" framing lives in the frontend's
-`provider.oauth_post_signin_error` wrapper string, not in this backend text; the
-backend text itself only needs a plain, code-facing prefix that keeps it
-distinguishable from a bare sign-in failure — which is asserted here directly via
-the `signed_in=True` + non-empty `last_error` combination that a sign-in failure
-could never produce (tokens would never have been saved).
+bilingual "signed in, but setup didn't finish" framing lives entirely in the
+frontend's `provider.oauth_post_signin_error` wrapper string; `_codex_error` itself
+carries just the raw exception text (`str(exc) or exc.__class__.__name__`, the
+file's existing convention), same as the sign-in-failure branch above it — no
+"post-signin"/"setup" prefix, since that would be redundant with the frontend
+framing and never gets translated anyway. What actually tells a post-signin
+failure apart from a bare sign-in failure is `codex_status()`'s `signed_in=True`
+alongside a non-empty `last_error` — a bare sign-in failure never reaches that
+state, since no tokens were saved. That combination is what's asserted here.
 
 Isolation: a fresh `SessionManager(data_dir=tmp_path / "data")` (no real user state
 dir, no keyring). `codex_auth.sign_in` is monkeypatched to a fake that persists a
@@ -50,11 +53,13 @@ async def test_refresh_provider_failure_is_caught_and_reported(
     successful `codex_auth.sign_in`.
 
     Expected: `codex_signin` does not let the exception escape; it returns
-    normally, `_codex_authorizing` ends up false, `_codex_error` is written (in a
-    way that's distinguishable from a sign-in failure — see module docstring), a
-    WARNING+ log record is emitted, and `codex_status()` reports `signed_in=True`
-    together with the non-empty `last_error` — the combination that can only happen
-    when sign-in itself succeeded but a later step didn't.
+    normally, `_codex_authorizing` ends up false, `_codex_error` carries the
+    injected exception's text, a WARNING+ log record is emitted, and
+    `codex_status()` reports `signed_in=True` together with the non-empty
+    `last_error` — the combination that can only happen when sign-in itself
+    succeeded but a later step didn't (this, not the `_codex_error` wording, is
+    what makes the failure distinguishable from a bare sign-in failure — see
+    module docstring).
     """
     manager = SessionManager(data_dir=tmp_path / "data")
     monkeypatch.setattr(codex_auth, "sign_in", _fake_sign_in_persists_tokens)
@@ -70,14 +75,15 @@ async def test_refresh_provider_failure_is_caught_and_reported(
 
     assert manager._codex_authorizing is False
 
+    # Loose substring check, not the whole sentence — _codex_error just carries the
+    # exception's own text, same convention as the sign-in-failure branch above it.
     assert manager._codex_error and "refresh-provider-boom" in manager._codex_error
-    # Loose substring check (not the whole sentence): the text should read as a
-    # post-signin follow-up failure, not a plain sign-in failure.
-    assert "post-signin" in manager._codex_error or "setup" in manager._codex_error
 
     warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
     assert warnings, "the caught _refresh_provider failure must still be logged"
 
+    # This is the actual discriminator: a bare sign-in failure never saves tokens,
+    # so it could never produce signed_in=True together with a non-empty last_error.
     status = manager.codex_status()
     assert status["signed_in"] is True  # tokens were saved before the crash
     assert status["last_error"]
@@ -108,11 +114,12 @@ async def test_add_model_failure_is_caught_and_reported(tmp_path, monkeypatch, c
     assert manager._codex_authorizing is False
 
     assert manager._codex_error and "add-model-boom" in manager._codex_error
-    assert "post-signin" in manager._codex_error or "setup" in manager._codex_error
 
     warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
     assert warnings, "the caught add_model failure must still be logged"
 
+    # Same discriminator as the _refresh_provider case: signed_in=True + non-empty
+    # last_error is what marks this as a post-signin failure, not the text itself.
     status = manager.codex_status()
     assert status["signed_in"] is True
     assert status["last_error"]

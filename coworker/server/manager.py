@@ -4497,14 +4497,15 @@ class SessionManager:
         except Exception as exc:
             # Tokens are already saved at this point (the user IS signed in) — only
             # this convenience follow-up (recommended model, default promotion)
-            # failed. Same _codex_error channel as the sign-in failure above, but
-            # prefixed so it reads differently from a bare sign-in failure (and so
-            # `codex_status()`'s `signed_in=True` + non-empty `last_error` combo is
-            # unambiguous even without the prefix). This string reaches the GUI as-is
-            # (no i18n pass) — the bilingual "signed in, setup incomplete" framing
-            # around it lives in the frontend's wrapper string, not in this text.
+            # failed. Same _codex_error channel as the sign-in failure above. What
+            # tells this apart from a bare sign-in failure is `codex_status()`'s
+            # `signed_in=True` alongside a non-empty `last_error` — a plain sign-in
+            # failure never gets that far, since no tokens were saved. This string
+            # reaches the GUI as-is (no i18n pass); the bilingual "signed in, setup
+            # incomplete" framing around it lives in the frontend's wrapper string,
+            # not in this text, so no extra prefix is needed here.
             logger.warning("codex sign-in: post-signin setup failed", exc_info=True)
-            self._codex_error = f"post-signin setup failed: {exc}"
+            self._codex_error = str(exc) or exc.__class__.__name__
         return result
 
     def codex_status(self) -> dict[str, Any]:
