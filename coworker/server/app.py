@@ -1702,14 +1702,30 @@ def create_app(manager: SessionManager) -> FastAPI:
         # hostage to another broker round trip. Restored GitHub installs hot-add
         # the gateway so the relay connects without a restart.
         async def _restore_connections() -> None:
+            # Two separate try/excepts so a failure is at least logged under a
+            # message that says which remedy applies: a sync failure means
+            # connections weren't restored at all (nothing to reload), a refresh
+            # failure means they WERE restored but the gateway is still running on
+            # stale wiring until the user reconnects by hand or restarts.
             try:
                 out = await asyncio.to_thread(
                     lambda: cloud.sync_connections(manager.secrets, load_config())
                 )
-                if out.get("restored"):
-                    await manager.refresh_gateway()
             except Exception:
-                pass  # sign-in stands; the user can still connect by hand
+                logger.warning(
+                    "cloud sign-in: restoring managed connections failed",
+                    exc_info=True,
+                )
+                return  # sign-in stands; the user can still connect by hand
+            if out.get("restored"):
+                try:
+                    await manager.refresh_gateway()
+                except Exception:
+                    logger.warning(
+                        "cloud sign-in: gateway reload after connection restore "
+                        "failed",
+                        exc_info=True,
+                    )
 
         manager.spawn_background(_restore_connections())
         return HTMLResponse(
