@@ -2877,14 +2877,110 @@ def create_app(manager: SessionManager) -> FastAPI:
                         manager.save(session_id, engine)
                     if event.type.value == "turn_start":
                         # Title on the user's words the moment they land — never behind
-                        # a long agentic turn (owner catch 2026-08-24).
-                        manager._maybe_autotitle(session_id)
-            finally:
-                manager.mark_idle(session_id)
-                manager.save(session_id, engine)
-                await manager.broadcast_session(
-                    session_id, {"type": "turn_done", "data": {}}
+                        # a long agentic turn (owner catch 2026-08-24). Contained like
+                        # the same call inside `mark_idle`: naming a session is cosmetic
+                        # and must not take the turn down. Unguarded, a failing auto-title
+                        # ends the turn with no answer, and the `except` below then reports
+                        # it to the user as a failed turn.
+                        try:
+                            manager._maybe_autotitle(session_id)
+                        except Exception:
+                            logger.exception(
+                                "auto-title failed for session %s", session_id
+                            )
+            except asyncio.CancelledError:
+                # A cancel is not a failure of the turn: report nothing, let the
+                # `finally` below free the session and send `turn_done`, and re-raise so
+                # the Task ends up cancelled rather than "succeeded". `CancelledError` is
+                # a BaseException, so the clause below would miss it anyway; this one
+                # keeps it that way if that clause is ever widened.
+                raise
+            except Exception as exc:
+                # Nothing downstream handles this. `claim_turn` hands the coroutine to
+                # `manager.spawn_turn_task` -> `spawn_retained`, whose done callback only
+                # discards the Task (it never reads `.exception()`), and nothing awaits
+                # the Task. Before this clause, a raise out of the turn (e.g. a checkpoint
+                # `save` that raises, or an exception the engine does not catch itself)
+                # left a single ERROR-level record: asyncio's own "Task exception was
+                # never retrieved", which carries the full traceback and names
+                # `run_turn()` but sits on the `asyncio` logger with no session id. The
+                # client saw no failure at all: after `turn_start` it got only the
+                # `turn_done` from the `finally`. The background-turn path
+                # (`deliver_to_session`) already catches here too.
+                # Logged first: the client only ever gets the class name, so this is the
+                # one place the traceback is kept, and it must not wait on a report that
+                # may itself fail.
+                logger.exception("turn failed for session %s", session_id)
+                # One sentence for both the live frame and the persisted notice, so the
+                # two carry the same text. Only the exception's CLASS: `str(exc)` can
+                # carry an absolute path (an OSError names its file) or a secret; the
+                # detail belongs in the log.
+                notice = (
+                    f"the turn stopped unexpectedly ({type(exc).__name__}); "
+                    "see the app log for details"
                 )
+                try:
+                    # Recorded in the transcript, not only broadcast. Opening a session
+                    # rebuilds it from `/v1/sessions/{id}/messages` (the cached engine's
+                    # messages while it lives, the stored record after), and a notice item
+                    # only ever comes from a `role == "notice"` message there
+                    # (itemsFromMessages.ts); with a broadcast alone, nothing in those
+                    # messages recorded the failure. This appends to `engine.messages`;
+                    # the `finally`'s save below writes it to disk.
+                    # No double display: `_append_notice` broadcasts nothing, and the GUI
+                    # only REPLACES its items with that rebuild, when it opens a session
+                    # (App.tsx) — it never merges the two.
+                    # `kind="error"` also makes the tail retriable
+                    # (`engine._tail_is_retriable_error`), so the Retry this notice offers
+                    # re-runs the turn; without it, a retry frame only gets `turn_done` back.
+                    # Contained on its own: if the failure was a save, the `finally`'s save
+                    # may fail too, and losing the stored copy must not also cost the live
+                    # report below.
+                    engine._append_notice("error", notice)
+                except Exception:
+                    logger.exception(
+                        "could not persist the turn failure for session %s", session_id
+                    )
+                try:
+                    # Sent before the `turn_done` below, which is where the GUI ends the
+                    # turn (App.tsx: `setRunning(false)`), so the failure arrives while the
+                    # turn is still open. No `fatal` flag: `fatal` marks a session that
+                    # died before it went live (see `fail_connect`); this one is alive.
+                    await manager.broadcast_session(
+                        session_id, {"type": "error", "data": {"error": notice}}
+                    )
+                except Exception:
+                    logger.exception(
+                        "could not report the turn failure for session %s", session_id
+                    )
+            finally:
+                # Post-turn bookkeeping must not change the outcome of a turn that
+                # already ran. A raise here would reach nobody either, and one before the
+                # last step would skip the `turn_done` broadcast, leaving the GUI without
+                # its end-of-turn signal. Each step is contained separately, as in the
+                # `finally` of `SessionManager.deliver_to_session`. `mark_idle` frees the
+                # session in its first statement, so containing a failure after that
+                # cannot leave the session marked as running.
+                try:
+                    manager.mark_idle(session_id)
+                except Exception:
+                    logger.exception(
+                        "post-turn bookkeeping failed for session %s", session_id
+                    )
+                try:
+                    manager.save(session_id, engine)
+                except Exception:
+                    logger.exception(
+                        "post-turn save failed for session %s", session_id
+                    )
+                try:
+                    await manager.broadcast_session(
+                        session_id, {"type": "turn_done", "data": {}}
+                    )
+                except Exception:
+                    logger.exception(
+                        "turn_done broadcast failed for session %s", session_id
+                    )
 
         # This socket is now a live view of the session; background turns (channel delivery,
         # self-wake, durable resume) broadcast here too, not just locally driven run_turns.

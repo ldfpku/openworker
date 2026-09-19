@@ -767,6 +767,245 @@ def test_ws_turn_task_tracked_and_cleared(tmp_path):
         assert manager._turn_tasks == set()
 
 
+# -- an unexpected raise out of a WS turn (run_turn's outer except) --------------
+
+
+def _crash_once_on_save(manager, exc):
+    """Arm `manager.save` to raise `exc` exactly once, then restore the real method.
+
+    Armed after `ready`, the first `save` it meets is the `turn_start` checkpoint inside
+    `run_turn`'s `async for`, the spot where an escaping exception used to have no
+    receiver. Restoring on the way out keeps the `finally`'s own `save` working, so the
+    test exercises the error path without also breaking post-turn bookkeeping.
+    """
+    real = manager.save
+
+    def once(*args, **kwargs):
+        manager.save = real
+        raise exc
+
+    manager.save = once
+
+
+def test_ws_turn_crash_sends_error_before_turn_done(tmp_path, caplog):
+    """A raise out of a WS turn must reach the client AND the log, with the error frame
+    BEFORE `turn_done`.
+
+    `claim_turn` hands `run_turn` to `spawn_turn_task` -> `spawn_retained`, whose done
+    callback never reads `.exception()`, and nothing awaits the Task. Without an outer
+    `except`, this test's client got `['turn_start', 'turn_done']` (no sign of failure),
+    and the only ERROR record was asyncio's own "Task exception was never retrieved",
+    with no session id. `turn_done` is where the GUI ends the turn, so the error comes
+    first.
+    """
+    import logging
+
+    manager = SessionManager(
+        workspace=tmp_path, provider=ScriptedProvider([_text("never seen")])
+    )
+    client = TestClient(create_app(manager))
+    with caplog.at_level(logging.ERROR, logger="coworker.server"):
+        with client.websocket_connect("/ws/session/crash1") as ws:
+            assert ws.receive_json()["type"] == "ready"
+            _crash_once_on_save(
+                manager, RuntimeError("'gbk' codec can't encode C:/secrets/token")
+            )
+            ws.send_json({"type": "user_message", "text": "hello"})
+            events = []
+            while True:
+                event = ws.receive_json()
+                events.append(event)
+                if event["type"] == "turn_done":
+                    break
+
+    types = [e["type"] for e in events]
+    assert "error" in types, types
+    assert types.index("error") < types.index("turn_done")
+    assert types[-1] == "turn_done"
+
+    data = next(e for e in events if e["type"] == "error")["data"]
+    # Names the failure's class...
+    assert "RuntimeError" in data["error"]
+    # ...without handing the GUI `str(exc)`, which can carry an absolute path or a
+    # secret. The detail lives in the log instead.
+    assert "secrets" not in data["error"] and "gbk" not in data["error"]
+    # Not `fatal`: unlike a failed connect, the session is alive and this is retriable.
+    assert not data.get("fatal")
+
+    logged = [r for r in caplog.records if "turn failed for session" in r.getMessage()]
+    assert logged, [r.getMessage() for r in caplog.records]
+    assert logged[0].exc_info is not None  # a traceback, not just a one-liner
+
+    # The session is free again: a crashed turn must not leave it marked as running.
+    assert not manager.is_running("crash1")
+
+    # Exactly one error frame on the wire: appending the notice does not broadcast.
+    assert types.count("error") == 1
+    # ...and the notice is ON DISK. Read the store itself: `/v1/sessions/{id}/messages`
+    # serves the cached engine's in-memory messages while that engine is alive, so it
+    # would pass even if nothing had been saved. The stored record is what a reopened
+    # session is rebuilt from once the engine is gone (e.g. after a backend restart).
+    record = manager.session_store.load("crash1")
+    assert record is not None
+    notices = [
+        m
+        for m in record.messages
+        if m.get("role") == "notice" and m.get("kind") == "error"
+    ]
+    assert len(notices) == 1, record.messages
+    assert notices[0]["text"] == data["error"]  # the same sentence as the live frame
+
+
+def test_ws_turn_still_ends_when_the_error_report_itself_fails(tmp_path, caplog):
+    """The error frame is best-effort. `broadcast_session` already absorbs a failing
+    socket (it unregisters that client), so nothing is known to make it raise; this pins
+    the containment anyway. If the report does raise, it gets a log line of its own next
+    to the original one, instead of propagating out of a Task nothing retrieves.
+    `turn_done` lands either way (the `finally` runs even when the `except` block raises),
+    so that assertion pins the guarantee, not the guard: with the guard removed, the
+    "could not report" assertion is the one that fails."""
+    import logging
+
+    manager = SessionManager(
+        workspace=tmp_path, provider=ScriptedProvider([_text("never seen")])
+    )
+    client = TestClient(create_app(manager))
+    real_broadcast = manager.broadcast_session
+
+    async def fail_on_error_frames(session_id, message):
+        if message.get("type") == "error":
+            raise RuntimeError("error report failed")
+        await real_broadcast(session_id, message)
+
+    manager.broadcast_session = fail_on_error_frames
+    with caplog.at_level(logging.ERROR, logger="coworker.server"):
+        with client.websocket_connect("/ws/session/crash2") as ws:
+            assert ws.receive_json()["type"] == "ready"
+            _crash_once_on_save(manager, RuntimeError("checkpoint save blew up"))
+            ws.send_json({"type": "user_message", "text": "hello"})
+            types = _drain(ws)
+
+    assert "error" not in types, types  # the report never made it out...
+    assert types[-1] == "turn_done"  # ...but the turn still ended
+    assert not manager.is_running("crash2")
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("turn failed for session crash2" in m for m in messages), messages
+    assert any("could not report the turn failure" in m for m in messages), messages
+
+
+def test_ws_post_turn_bookkeeping_failure_still_ends_the_turn(tmp_path, caplog):
+    """A raise out of the post-turn bookkeeping must not change the outcome of a turn
+    that already ran. `mark_idle` frees the session in its first statement, so the
+    containment cannot leave it marked as running, and the two steps after it must still
+    run: the save (checked on disk; in this turn the in-turn checkpoints stop at the user
+    message, so only the `finally`'s save writes the answer) and the `turn_done`
+    broadcast."""
+    import logging
+
+    manager = SessionManager(
+        workspace=tmp_path, provider=ScriptedProvider([_text("all good")])
+    )
+    client = TestClient(create_app(manager))
+    real_mark_idle = manager.mark_idle
+
+    def mark_idle_then_fail(session_id):
+        real_mark_idle(session_id)  # the discard that frees the session DID happen
+        raise RuntimeError("post-turn bookkeeping blew up")
+
+    manager.mark_idle = mark_idle_then_fail
+    with caplog.at_level(logging.ERROR, logger="coworker.server"):
+        with client.websocket_connect("/ws/session/idlefail") as ws:
+            assert ws.receive_json()["type"] == "ready"
+            ws.send_json({"type": "user_message", "text": "hello"})
+            types = _drain(ws)
+
+    # The turn itself succeeded: bookkeeping trouble is not the user's problem...
+    assert "error" not in types, types
+    assert "assistant_message" in types and "turn_end" in types
+    # ...and the client got the whole turn, through to `turn_done`.
+    assert "turn_start" in types and types[-1] == "turn_done"
+    assert not manager.is_running("idlefail")
+    assert any(
+        "post-turn bookkeeping failed" in r.getMessage() for r in caplog.records
+    )
+    # The `finally`'s save ran despite the failure before it: the answer is on disk.
+    record = manager.session_store.load("idlefail")
+    assert record is not None
+    assert record.messages[-1]["role"] == "assistant"
+    assert record.messages[-1]["content"] == "all good"
+
+
+def test_ws_autotitle_failure_does_not_fail_the_turn(tmp_path, caplog):
+    """Naming a session is decorative. The in-loop `_maybe_autotitle` (on `turn_start`)
+    is contained like the same call inside `mark_idle`; with that guard removed, this
+    test's client got `['turn_start', 'error', 'turn_done']`: no answer, and the failed
+    auto-title reported as a failed turn."""
+    import logging
+
+    manager = SessionManager(
+        workspace=tmp_path, provider=ScriptedProvider([_text("all good")])
+    )
+    client = TestClient(create_app(manager))
+    manager._maybe_autotitle = lambda session_id: (_ for _ in ()).throw(
+        RuntimeError("titling blew up")
+    )
+    with caplog.at_level(logging.ERROR, logger="coworker.server"):
+        with client.websocket_connect("/ws/session/notitle") as ws:
+            assert ws.receive_json()["type"] == "ready"
+            ws.send_json({"type": "user_message", "text": "hello"})
+            types = _drain(ws)
+
+    assert "error" not in types, types
+    assert "assistant_message" in types and "turn_end" in types
+    assert types[-1] == "turn_done"
+    assert any("auto-title failed" in r.getMessage() for r in caplog.records)
+
+
+def test_ws_clean_turn_sends_no_error_frame(tmp_path):
+    """Regression guard for the above: a turn that simply works must not grow an error
+    frame, and it still ends with `turn_done`."""
+    client = _client(tmp_path, [_text("all good")])
+    with client.websocket_connect("/ws/session/clean1") as ws:
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_json({"type": "user_message", "text": "hello"})
+        types = _drain(ws)
+    assert "error" not in types, types
+    assert "assistant_message" in types and "turn_end" in types
+    assert types[-1] == "turn_done"
+
+
+def test_ws_cancelled_turn_is_not_reported_as_an_error(tmp_path):
+    """A cancelled turn is not a failed turn: `asyncio.CancelledError` must not become an
+    error frame, but the `finally` still has to free the session and send `turn_done`."""
+    import time
+
+    manager = SessionManager(
+        workspace=tmp_path,
+        provider=ScriptedProvider(
+            [_tool("write_file", {"path": "c.py", "content": "1" + chr(10)}), _text("done")]
+        ),
+    )
+    client = TestClient(create_app(manager))
+    with client.websocket_connect("/ws/session/cancel1") as ws:
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_json({"type": "user_message", "text": "make c.py"})
+        while ws.receive_json()["type"] != "permission_required":
+            pass
+        # Parked on the approval, i.e. mid-turn. Cancel on the server's own loop, not
+        # from this TestClient thread.
+        (task,) = manager._turn_tasks
+        task.get_loop().call_soon_threadsafe(task.cancel)
+        types = _drain(ws)
+
+    assert "error" not in types, types
+    assert types[-1] == "turn_done"
+    deadline = time.monotonic() + 5.0
+    while not task.done() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert task.cancelled()  # re-raised, not swallowed into a "successful" turn
+    assert not manager.is_running("cancel1")
+
+
 # -- turn task tracking (spawn_turn_task, method-level) --------------------------
 
 
