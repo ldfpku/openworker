@@ -2043,15 +2043,18 @@ class SessionManager:
         OAuth flow, and mark the connector profile `mode: "mcp"` on success.
 
         Any failure past the seed write — from `connect_mcp` itself, from writing the
-        connector profile, or even from the ordinary "connect failed" cleanup below —
-        rolls the seeded `mcp.json` entry back (owner decision: never leave one behind).
-        `list_mcp` skips connector-backed servers entirely, so a half-seeded entry would
-        be invisible on the MCP page yet still live for every agent session — worse than
-        the plain failed-connect case this function already guarded against (the
-        2026-07-20 asana leftover). The one accepted cost: if the MCP connection itself
-        actually succeeded and only the profile write after it failed, the rollback
-        removes a working connection too — retrying means redoing the OAuth round-trip.
-        The rollback is best-effort and must never mask the original failure."""
+        connector profile, or from the ordinary "connect failed" cleanup below — undoes
+        the seed write: restores whatever `mcp.json` entry was there before this call
+        (or removes it if there was none). `list_mcp` skips connector-backed servers
+        entirely, so a half-seeded entry would be invisible on the MCP page yet still
+        live for every agent session. Restoring rather than always deleting matters
+        because this same function also runs when the server is ALREADY connected (a
+        user re-clicking Connect): unconditionally deleting on a later failure would
+        silently disconnect a server that was working fine before this attempt. The one
+        accepted cost: if the MCP connection itself actually succeeded and only the
+        profile write after it failed, the rollback still undoes it — retrying means
+        redoing the OAuth round-trip. Every cleanup here is best-effort and must never
+        mask the real failure reason."""
         from ..connectors.descriptors import get_descriptor
         from ..connectors.tool_defs import mcp_pinned_tools
 
@@ -2060,7 +2063,22 @@ class SessionManager:
             return {"ok": False, "error": f"{name} has no MCP connect path"}
 
         seeded = False
+        prev_config: Optional[dict[str, Any]] = None
+
+        def _undo_seed() -> None:
+            # Restores the pre-call state rather than assuming "seeded → delete": this
+            # function also seeds over an ALREADY-connected server's entry (a re-click),
+            # and that one must survive a failed retry.
+            if prev_config is None:
+                delete_global_server(name)
+            else:
+                put_global_server(name, prev_config)
+
         try:
+            # Snapshotted INSIDE the try: a read failure here (corrupt file, IO error)
+            # is reported like any other failure below, with `seeded` still False so
+            # no cleanup is attempted — nothing was written yet.
+            prev_config = read_global().get(name)
             put_global_server(
                 name,
                 {
@@ -2082,11 +2100,20 @@ class SessionManager:
                     f"{name}:default", {**profile, "mode": "mcp", "enabled": True}
                 )
             else:
-                # A failed connect must take its seeded config with it: an enabled
-                # oauth entry with no tokens lingers forever (nothing owns it once
-                # the descriptor's mcp_url is gone) and re-arms at every session
-                # start — the owner-hit asana leftover, 2026-07-20.
-                delete_global_server(name)
+                # A failed connect must take its seeded config with it — restore
+                # whatever was there before (or remove it if there was nothing): the
+                # owner-hit asana leftover, 2026-07-20, generalized to re-connects.
+                try:
+                    _undo_seed()
+                except Exception:
+                    # This cleanup's own failure must not cost us the real connect
+                    # failure reason already sitting in `result` — log it separately
+                    # and still return `result` unchanged below.
+                    logger.warning(
+                        "mcp_connect_connector %s: cleanup after failed connect raised",
+                        name,
+                        exc_info=True,
+                    )
             return result
         except Exception as exc:
             msg = str(exc) or exc.__class__.__name__
@@ -2095,7 +2122,7 @@ class SessionManager:
             )
             if seeded:
                 try:
-                    delete_global_server(name)
+                    _undo_seed()
                 except Exception:
                     # Best-effort: a rollback that itself fails must not shadow the
                     # original failure above — it only gets its own log line.

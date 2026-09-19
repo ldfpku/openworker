@@ -168,16 +168,17 @@ async def test_mcp_connect_connector_seed_write_oserror_reports_error_without_wr
 async def test_mcp_connect_connector_profile_write_oserror_rolls_back_seeded_config(
     tmp_path, monkeypatch, caplog
 ):
-    """Inject further downstream: the seed config write goes through for real and the
-    (faked) OAuth connect reports success, then `self.secrets.put` — marking the
-    connector profile `mode: "mcp"` — raises OSError.
+    """Inject further downstream: "monday" has NO pre-existing config, the seed config
+    write goes through for real and the (faked) OAuth connect reports success, then
+    `self.secrets.put` — marking the connector profile `mode: "mcp"` — raises OSError.
 
     Expect (owner decision: "any failure rolls back", accepted cost: a genuinely
     successful MCP connection is torn down too if only the profile write fails):
     `mcp_connect_connector` returns `{"ok": False, "error": ...}`, logs a WARNING+, and
-    the seeded "monday" entry this call wrote to `mcp.json` is removed again — nothing
-    invisible-but-live is left behind (`list_mcp` skips connector-backed servers, so a
-    lingering entry here would never surface on the MCP page).
+    — since there was nothing to restore — the seeded "monday" entry this call wrote to
+    `mcp.json` is removed again: nothing invisible-but-live is left behind (`list_mcp`
+    skips connector-backed servers, so a lingering entry here would never surface on
+    the MCP page).
     """
     manager = SessionManager(data_dir=tmp_path / "data")
 
@@ -202,6 +203,92 @@ async def test_mcp_connect_connector_profile_write_oserror_rolls_back_seeded_con
     )
     assert any(r.levelno >= logging.WARNING for r in caplog.records), (
         "the failure was never logged"
+    )
+
+
+async def test_mcp_connect_connector_profile_write_oserror_restores_previous_config_when_one_existed(
+    tmp_path, monkeypatch, caplog
+):
+    """Inject the same failure as the previous test, but "monday" was ALREADY connected
+    before this call — its `mcp.json` entry exists (as if a user is re-clicking Connect
+    on a server that already works). The seed write overwrites it, the (faked) OAuth
+    connect reports success, then `self.secrets.put` raises OSError.
+
+    Expect: `mcp_connect_connector` returns `{"ok": False, "error": ...}` and the
+    ORIGINAL pre-existing "monday" entry is restored byte-for-byte — not deleted, and
+    not left as this attempt's freshly-seeded value. Deleting it here would silently
+    disconnect a server that was working fine before this attempt — a plain `delete`
+    only undoes a seed write correctly when there was nothing to undo it TO.
+    """
+    manager = SessionManager(data_dir=tmp_path / "data")
+    prior_config = {
+        "url": "https://mcp.monday.com/mcp",
+        "auth": "oauth",
+        "requires_approval": False,
+        "include_tools": ["get_user_context"],
+        "enabled": True,
+        # Distinguishes "the old, already-working config" from this call's fresh seed
+        # in the assertion below — the real seed never sets this key.
+        "custom_marker": "pre-existing-config",
+    }
+    manager.add_mcp("monday", prior_config)
+
+    async def fake_connect_mcp(_name):
+        return {"ok": True, "tools": 5}
+
+    monkeypatch.setattr(manager, "connect_mcp", fake_connect_mcp)
+
+    def boom(_profile, _data):
+        raise OSError("disk full while writing secrets.json")
+
+    monkeypatch.setattr(manager.secrets, "put", boom)
+
+    with caplog.at_level("WARNING", logger=_LOGGER_NAME):
+        result = await manager.mcp_connect_connector("monday")
+
+    assert result == {"ok": False, "error": "disk full while writing secrets.json"}
+    assert read_global()["monday"] == prior_config, (
+        "a failed connect on an ALREADY-connected server must restore its previous "
+        "config, not delete it or leave this attempt's fresh seed behind"
+    )
+    assert any(r.levelno >= logging.WARNING for r in caplog.records), (
+        "the failure was never logged"
+    )
+
+
+async def test_mcp_connect_connector_cleanup_failure_after_failed_connect_keeps_original_error(
+    tmp_path, monkeypatch, caplog
+):
+    """Inject: `connect_mcp` reports a normal (non-exception) failure — e.g. OAuth
+    rejected by the user — and the cleanup this triggers (there was no pre-existing
+    "monday" config, so the cleanup is a plain delete) itself raises OSError.
+
+    Expect: the returned `error` is still the ORIGINAL connect failure reason, not the
+    cleanup exception's message — overwriting it would hide why the connect actually
+    failed. The cleanup failure is logged separately as its own WARNING.
+    """
+    manager = SessionManager(data_dir=tmp_path / "data")
+
+    async def fake_connect_mcp(_name):
+        return {"ok": False, "error": "oauth rejected by the user"}
+
+    monkeypatch.setattr(manager, "connect_mcp", fake_connect_mcp)
+
+    def boom_delete(_name):
+        raise OSError("disk full while deleting the mcp.json entry")
+
+    monkeypatch.setattr(mgr_mod, "delete_global_server", boom_delete)
+
+    with caplog.at_level("WARNING", logger=_LOGGER_NAME):
+        result = await manager.mcp_connect_connector("monday")
+
+    assert result == {"ok": False, "error": "oauth rejected by the user"}, (
+        "a cleanup failure after a normal (non-exception) failed connect must not "
+        "overwrite the real connect failure reason"
+    )
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("cleanup after failed connect" in m for m in messages), (
+        "the cleanup failure must still be logged"
     )
 
 
