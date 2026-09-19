@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import stat
 import subprocess
 import sys
 import time
+from pathlib import Path
 
-from coworker.secrets import SecretStore
+import pytest
+
+from coworker.secrets import SecretStore, SecretStoreReadError
 
 
 def test_put_get_round_trip(tmp_path):
@@ -91,3 +96,168 @@ def test_delete(tmp_path):
     assert store.delete("x") is True
     assert store.delete("x") is False
     assert store.get("x") is None
+
+
+# --- unreadable store: never overwrite what cannot be read ------------------------
+#
+# Every writer here is a read-modify-write over the whole file. `_read` used to answer
+# `{}` for "file exists but would not read", so one transient failure -- a backup agent
+# holding a lock, an IO error, a torn or externally mangled file, cp936 bytes from some
+# other tool -- made the next save replace every provider key, OAuth token and connector
+# profile with the single entry being written. None of that is locally recoverable.
+
+
+def _unreadable(monkeypatch, path, exc):
+    """Make exactly `path` fail to read, leaving every other file alone."""
+    original = Path.read_text
+
+    def guarded(self, *args, **kwargs):
+        if self == path:
+            raise exc
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", guarded)
+
+
+def _stocked(tmp_path, name="secrets.json"):
+    """A store with two real credentials already on disk, plus its raw bytes."""
+    store = SecretStore(tmp_path / name)
+    store.put("provider:openai", {"type": "token", "api_key": "sk-REAL-1"})
+    store.put("gmail:me@x.com", {"type": "oauth", "refresh_token": "rt-REAL-2"})
+    return store, store.path.read_bytes()
+
+
+def test_put_refuses_when_read_raises_oserror(tmp_path, monkeypatch):
+    store, before = _stocked(tmp_path)
+    _unreadable(monkeypatch, store.path, OSError(13, "Permission denied"))
+    with pytest.raises(SecretStoreReadError) as caught:
+        store.put("provider:anthropic", {"type": "token", "api_key": "sk-NEW"})
+    assert caught.value.path == store.path
+    assert store.path.read_bytes() == before  # not one byte written
+
+
+def test_put_refuses_on_corrupt_json(tmp_path):
+    store, _ = _stocked(tmp_path)
+    torn = '{"provider:openai": {"api_key": "sk-REAL-1"}, "gmail'
+    store.path.write_text(torn, encoding="utf-8")
+    with pytest.raises(SecretStoreReadError):
+        store.put("provider:anthropic", {"type": "token", "api_key": "sk-NEW"})
+    assert store.path.read_text(encoding="utf-8") == torn
+
+
+def test_put_refuses_on_non_utf8_bytes(tmp_path):
+    """cp936 boxes have written GBK over coworker state files before; that used to
+    escape as a raw UnicodeDecodeError, which the old `except` clause never caught."""
+    store, _ = _stocked(tmp_path)
+    gbk = '{"provider:openai": {"note": "\u5bc6\u94a5"}}'.encode("gbk")
+    store.path.write_bytes(gbk)
+    with pytest.raises(SecretStoreReadError):
+        store.put("provider:anthropic", {"type": "token", "api_key": "sk-NEW"})
+    assert store.path.read_bytes() == gbk
+
+
+@pytest.mark.parametrize("body", ["null", "[]", '"a string"', "42"])
+def test_put_refuses_when_top_level_is_not_an_object(tmp_path, body):
+    store, _ = _stocked(tmp_path)
+    store.path.write_text(body, encoding="utf-8")
+    with pytest.raises(SecretStoreReadError):
+        store.put("provider:anthropic", {"api_key": "sk-NEW"})
+    assert store.path.read_text(encoding="utf-8") == body
+
+
+def test_delete_refuses_when_unreadable(tmp_path):
+    """`delete` used to answer False here -- "no such profile" -- which is a lie that
+    invites the caller to move on as though the credential were already gone."""
+    store, _ = _stocked(tmp_path)
+    store.path.write_text("not json at all", encoding="utf-8")
+    with pytest.raises(SecretStoreReadError):
+        store.delete("provider:openai")
+    assert store.path.read_text(encoding="utf-8") == "not json at all"
+
+
+def test_missing_file_still_accepts_the_first_secret(tmp_path):
+    store = SecretStore(tmp_path / "nested" / "secrets.json")
+    assert not store.path.exists()
+    store.put("provider:openai", {"type": "token", "api_key": "sk-1"})
+    assert store.get("provider:openai") == {"type": "token", "api_key": "sk-1"}
+
+
+@pytest.mark.parametrize("body", ["", "   \n\t "])
+def test_empty_file_is_treated_as_an_empty_store(tmp_path, body):
+    """The one deliberate hole: a zero-length file holds nothing left to protect, and
+    refusing it would strand the user with a store they can never add to again."""
+    store = SecretStore(tmp_path / "secrets.json")
+    store.path.write_text(body, encoding="utf-8")
+    store.put("provider:openai", {"type": "token", "api_key": "sk-1"})
+    assert store.get("provider:openai")["api_key"] == "sk-1"
+
+
+def test_writes_leave_neighbouring_profiles_alone(tmp_path):
+    store, _ = _stocked(tmp_path)
+    store.put("slack:default", {"type": "token", "bot_token": "xoxb"})
+    store.put("provider:openai", {"type": "token", "api_key": "sk-ROTATED"})
+    assert store.delete("gmail:me@x.com") is True
+    on_disk = json.loads(store.path.read_text(encoding="utf-8"))
+    assert set(on_disk) == {"provider:openai", "slack:default"}
+    assert on_disk["provider:openai"]["api_key"] == "sk-ROTATED"
+    assert on_disk["slack:default"]["bot_token"] == "xoxb"
+
+
+def test_read_paths_degrade_and_log_instead_of_raising(tmp_path, caplog):
+    """`get`/`status` run on session start, tool loading and every provider lookup, so
+    they must not raise -- but they must not stay quiet either."""
+    store, _ = _stocked(tmp_path)
+    store.path.write_text("{oops", encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="coworker.secrets"):
+        assert store.get("provider:openai") is None
+        assert store.status() == []
+        assert store.get("gmail:me@x.com") is None
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1  # once per failure streak, not once per call
+    assert str(store.path) in warnings[0].getMessage()
+
+
+def test_warning_fires_again_after_the_file_breaks_a_second_time(tmp_path, caplog):
+    store, good = _stocked(tmp_path)
+    with caplog.at_level(logging.WARNING, logger="coworker.secrets"):
+        store.path.write_text("{oops", encoding="utf-8")
+        store.get("x")
+        store.path.write_bytes(good)
+        assert store.get("provider:openai")["api_key"] == "sk-REAL-1"  # streak ends
+        store.path.write_text("{oops", encoding="utf-8")
+        store.get("x")
+    assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 2
+
+
+def test_degraded_read_cannot_lead_to_an_overwrite(tmp_path):
+    """The full loss chain, end to end: the UI reads "nothing configured" off a damaged
+    file and the user reconnects. The save must fail rather than clobber the file."""
+    store, before = _stocked(tmp_path)
+    store.path.write_text('{"provider:openai": {"api_k', encoding="utf-8")
+    assert store.status() == []  # looks like a fresh install
+    assert store.get("provider:openai") is None
+    with pytest.raises(SecretStoreReadError):
+        store.put("provider:openai", {"type": "token", "api_key": "sk-RECONFIGURED"})
+    assert store.path.read_bytes() != before  # still damaged...
+    assert b"sk-RECONFIGURED" not in store.path.read_bytes()  # ...but not overwritten
+
+
+def test_error_text_never_carries_secret_material(tmp_path):
+    store = SecretStore(tmp_path / "secrets.json")
+    store.path.write_text('{"provider:openai": {"api_key": "sk-LEAK-ME"', encoding="utf-8")
+    with pytest.raises(SecretStoreReadError) as caught:
+        store.put("x", {"a": 1})
+    exc = caught.value
+    assert "sk-LEAK-ME" not in str(exc) and "sk-LEAK-ME" not in repr(exc)
+    # json.JSONDecodeError keeps the whole document in `.doc`; it must not stay reachable.
+    assert exc.__cause__ is None and exc.__context__ is None
+
+
+def test_unreadable_dotenv_does_not_break_a_lookup(tmp_path, monkeypatch):
+    """`_load_dotenv` sits underneath `get`, which promises not to raise."""
+    store = SecretStore(tmp_path / "secrets.json")
+    store.put("docs:default", {"token": "${DOCS_TOKEN}"})
+    (tmp_path / ".env").write_bytes('DOCS_TOKEN="\u5bc6\u94a5"'.encode("gbk"))
+    assert store.get("docs:default")["token"] == "${DOCS_TOKEN}"  # ref left intact
+    _unreadable(monkeypatch, tmp_path / ".env", OSError(13, "Permission denied"))
+    assert store.get("docs:default")["token"] == "${DOCS_TOKEN}"
