@@ -886,9 +886,17 @@ class TurnEngine:
         async for event in self._handle_tool_calls(pending):
             yield event
         yield Event(EventType.ITERATION_END, {"iteration": 0})
-        if not self._cancel.is_set():
-            async for event in self._loop():
-                yield event
+        # Deliberately NOT gated on the stop flag any more. Returning here left a turn the
+        # user had stopped ending on `ITERATION_END` and nothing else — no `INTERRUPTED`
+        # event, no `interrupted` notice — so the transcript read as a resume that simply
+        # finished, which is the same silence the severed-stream work went after (a turn
+        # must never end without saying how). `_loop`'s first act is that same stop
+        # checkpoint, which ends the turn exactly the way every other stop path does, and
+        # it costs nothing: the check runs before the round does, so a stopped resume still
+        # makes no model call. Every pending call already has its result by here
+        # (`_handle_tool_calls` answers the ones it skips), so nothing is orphaned either.
+        async for event in self._loop():
+            yield event
 
     def _unanswered_trailing_tool_calls(self) -> list[ToolCall]:
         """The tool-calls of the last assistant message that don't yet have a tool result —

@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import time
 
+import aisuite as ai
 from coworker.engine import ApprovalOutcome, TurnEngine
 from coworker.events import EventType
 from coworker.permissions import PermissionEngine
@@ -303,6 +304,108 @@ def test_a_stop_relayed_into_a_child_engine_never_pays_for_a_model_call(tmp_path
     assert child_provider.calls == 0, "the stopped child still paid for a model round"
     assert [ev.type for ev in events] == [EventType.TURN_START, EventType.INTERRUPTED]
     assert child.messages[-1]["kind"] == "interrupted"
+
+
+def _suspended_history(call_id="call_r", name="list_files", arguments="{}"):
+    """A persisted thread stopped at an UNANSWERED trailing tool call — what durable
+    resume rebuilds from (`_unanswered_trailing_tool_calls` reads exactly this shape)."""
+    return [
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": name, "arguments": arguments},
+                }
+            ],
+        },
+    ]
+
+
+def _resume_engine(tmp_path, provider, messages):
+    registry = ToolRegistry()
+    registry.register_all(ai.toolkits.files(root=str(tmp_path)))  # read-only: no approval
+    return TurnEngine(
+        provider=provider,
+        registry=registry,
+        permissions=PermissionEngine(workspace_root=tmp_path),
+        model="gpt-5.5",
+        messages=messages,
+    )
+
+
+def _orphans(engine):
+    """tool_calls in history with no matching tool result — hosted chat templates reject
+    them, and durable resume would re-prompt them."""
+    answered = {m.get("tool_call_id") for m in engine.messages if m.get("role") == "tool"}
+    return [
+        tc.get("id")
+        for m in engine.messages
+        if m.get("role") == "assistant"
+        for tc in (m.get("tool_calls") or [])
+        if tc.get("id") not in answered
+    ]
+
+
+def test_stop_during_a_durable_resume_still_ends_the_turn_out_loud(tmp_path):
+    """A resume the user stops must end like every other stopped turn. It used to return
+    straight after ITERATION_END — no INTERRUPTED event, no interrupted notice — so the
+    transcript read as a resume that simply finished. Same silence the severed-stream work
+    went after, reached through the durable-resume door instead of the streaming one."""
+    provider = OneTurnProvider(AssistantTurn(text="never", finish_reason="stop"))
+    engine = _resume_engine(tmp_path, provider, _suspended_history())
+
+    async def run():
+        events = []
+        async for ev in engine.resume():
+            # `resume()` clears the flag as its first act, so the Stop can only be staged
+            # from here — which is also when it really lands (the user presses it while
+            # the re-processed call is being answered).
+            if ev.type == EventType.TURN_START:
+                engine.request_interrupt()
+            events.append(ev)
+        return events
+
+    events = asyncio.run(run())
+
+    assert events[-1].type == EventType.INTERRUPTED
+    assert engine.messages[-1]["role"] == "notice"
+    assert engine.messages[-1]["kind"] == "interrupted"
+    # …without buying a round for an answer nobody will read, and with no orphan left
+    # behind: the skipped call still got its "interrupted by user" result.
+    assert provider.calls == 0
+    assert _orphans(engine) == []
+    assert "interrupted by user" in _tool_results(engine)[0]["content"]
+
+
+def test_a_durable_resume_nobody_stopped_still_finishes_the_turn(tmp_path):
+    """The other half of dropping that guard: with no Stop in play the resume runs the
+    tool, enters the model loop and completes exactly as before."""
+    provider = OneTurnProvider(AssistantTurn(text="all done", finish_reason="stop"))
+    engine = _resume_engine(tmp_path, provider, _suspended_history())
+
+    async def run():
+        return [ev async for ev in engine.resume()]
+
+    events = asyncio.run(run())
+
+    assert [ev.type for ev in events] == [
+        EventType.TURN_START,
+        EventType.TOOL_PROPOSED,
+        EventType.TOOL_STARTED,
+        EventType.TOOL_FINISHED,
+        EventType.ITERATION_END,
+        EventType.ASSISTANT_MESSAGE,
+        EventType.TURN_END,
+    ]
+    assert events[-1].data["status"] == "completed"
+    assert provider.calls == 1
+    assert _orphans(engine) == []
+    assert _tool_results(engine)[0]["tool_call_id"] == "call_r"
+    assert not [m for m in engine.messages if m.get("role") == "notice"]
 
 
 def test_interrupt_hook_fires(tmp_path):
