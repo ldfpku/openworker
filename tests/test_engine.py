@@ -16,6 +16,7 @@ from coworker.engine import (
     _TURN_RETRY_CAP,
     ApprovalOutcome,
     PermissionRequest,
+    StreamBridgeError,
     TurnEngine,
     _model_retries,
     _retry_delay,
@@ -1710,6 +1711,110 @@ def test_a_stop_wait_that_fails_is_raised_not_read_as_a_stop(tmp_path):
     with pytest.raises(RuntimeError):
         asyncio.run(_drain_stream(engine, parked))
     opener.join(timeout=5)
+
+
+async def _settle_until_the_bridge_waits_on_the_stop_flag(engine):
+    """Step the loop until the bridge has provably registered on the Stop flag.
+
+    `_StopSignal` keeps its own waiter registry, so "the bridge is parked inside
+    `asyncio.wait`" is directly observable instead of guessed at from a step count — which
+    matters here because the window this opens is one event-loop step wide. Bounded, so a
+    bridge that never registers fails the assertion below instead of spinning forever.
+    """
+    for _ in range(_BRIDGE_SETTLE_STEPS):
+        if engine._cancel._waiters:
+            return True
+        await asyncio.sleep(0)
+    return False
+
+
+def test_a_stop_that_is_cleared_before_the_bridge_reads_it_is_raised_not_answered(
+    tmp_path,
+):
+    """`StreamBridgeError`'s one and only route, made deterministic.
+
+    The bridge waits on the queue and on the Stop flag together, then decides which woke
+    it by READING THE FLAG BACK. Set-then-clear is the one sequence where those two
+    disagree: the wait woke, the queue is provably empty (the producer is parked), and the
+    flag says nobody stopped anything. In production `clear()` comes from `run`/`retry`/
+    `resume` — a second turn started on this engine while this stream was still live.
+    """
+    parked = _GatedStream([_sse_chunk(content="never "), _sse_chunk(finish="stop")])
+    provider, _ = _counting_stream_provider(parked)
+    engine = _stream_engine(tmp_path, provider)
+    engine.messages.append({"role": "user", "content": "hi"})
+
+    async def _stop_then_unstop():
+        stream = engine._astream()
+        step = asyncio.ensure_future(stream.__anext__())
+        try:
+            registered = await _settle_until_the_bridge_waits_on_the_stop_flag(engine)
+            if registered:
+                # Same loop, same step: `set()` resolves the bridge's waiter inline
+                # (exactly as `asyncio.Event.set()` does) and `clear()` lands before the
+                # bridge is scheduled back in. No sleeping, no racing.
+                engine._cancel.set()
+                engine._cancel.clear()
+            else:
+                # A missed window must fail, never hang: with the producer held and no
+                # Stop coming, the bridge would wait for a chunk forever.
+                parked.parked.set()
+                parked.gate.set()
+            with pytest.raises(StreamBridgeError) as raised:
+                await step
+            produced, message = parked.produced, str(raised.value)
+        finally:
+            parked.parked.set()  # never leave a parked producer behind
+            parked.gate.set()
+        return registered, produced, message
+
+    registered, produced, message = asyncio.run(_stop_then_unstop())
+
+    assert registered, "the bridge never waited on the stop flag"
+    assert "without delivering a turn" in message
+    assert produced == 0  # the raise happened while the wire was still held
+
+
+def test_the_bridge_error_ends_the_turn_on_an_error_the_user_can_retry(tmp_path):
+    """What the same failure looks like from outside: an ordinary provider failure. It must
+    not reach the user as the empty assistant turn the bridge's silent return used to hand
+    them, and the tail has to stay retriable so the GUI still offers Retry."""
+    parked = _GatedStream([_sse_chunk(content="never "), _sse_chunk(finish="stop")])
+    provider, _ = _counting_stream_provider(parked)
+    engine = _stream_engine(tmp_path, provider)
+    outcome: dict[str, bool] = {}
+
+    async def _one_turn():
+        async def _stop_then_unstop():
+            outcome["registered"] = (
+                await _settle_until_the_bridge_waits_on_the_stop_flag(engine)
+            )
+            if outcome["registered"]:
+                engine._cancel.set()
+                engine._cancel.clear()
+            else:  # as above: a missed window fails the assertions, it never hangs
+                parked.parked.set()
+                parked.gate.set()
+
+        saboteur = asyncio.ensure_future(_stop_then_unstop())
+        try:
+            return [ev async for ev in engine.run("what's here?")]
+        finally:
+            parked.parked.set()
+            parked.gate.set()
+            await saboteur
+
+    events = asyncio.run(_one_turn())
+
+    assert outcome["registered"], "the bridge never waited on the stop flag"
+    assert _types(events) == [EventType.TURN_START, EventType.ERROR]
+    assert events[-1].data["error_type"] == "StreamBridgeError"
+    assert "without delivering a turn" in events[-1].data["error"]
+    # Nothing was passed off as an answer, and the turn ends on a notice that keeps Retry
+    # on offer — the whole point of raising instead of returning.
+    assert not [m for m in engine.messages if m.get("role") == "assistant"]
+    assert engine.messages[-1]["kind"] == "error"
+    assert engine._tail_is_retriable_error()
 
 
 def test_two_turns_on_two_event_loops_both_complete(tmp_path):

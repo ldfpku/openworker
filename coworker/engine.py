@@ -245,9 +245,29 @@ async def _deny_all(_request: PermissionRequest) -> ApprovalOutcome:
 class StreamBridgeError(RuntimeError):
     """The provider stream's thread bridge ended for a reason that isn't an answer.
 
-    Never expected. It exists so the bridge can never again end a stream QUIETLY: a silent
-    return there reaches the user as an assistant turn that simply came back empty, with
-    nothing in the events or the log to say why (2026-09-18).
+    `_astream` raises it on exactly one outcome, and the wording is deliberate about which:
+    the Stop wait WOKE — so the flag had been set — the queue delivered nothing, and by
+    the time the bridge reads the flag back it is clear again. Nothing but `clear()` can do
+    that, and only `run`/`retry`/`resume` call it, each as the first act of a turn. So this
+    is what "a second turn was started on this engine while an older stream was still live"
+    looks like from inside the bridge: the new turn wipes the Stop the user pressed, and the
+    older stream is left holding a wake-up that no longer stands for anything. Not "never
+    expected", then — expected precisely when the one-turn-per-engine claim leaks. The
+    WebSocket receive loop claims the session before it schedules a turn, and every
+    background turn (scheduled tasks, team delivery, self-wake, durable resume) has to
+    claim it too; one of those was found not doing so on 2026-09-18/19.
+
+    What it is NOT is the ordinary Stop, which leaves the flag set and returns quietly two
+    lines above. And it exists at all so the bridge can never again end a stream QUIETLY
+    for a reason it cannot name: a silent return there reaches the user as an assistant
+    turn that simply came back empty, with nothing in the events or the log to say why
+    (2026-09-18).
+
+    Upstream it is handled as an ordinary provider failure — `_loop`'s `except Exception`
+    around `_astream` reads it as neither a context overflow nor transient, so whatever text
+    had already streamed is persisted, an `error` notice is appended (which keeps Retry on
+    offer) and the turn ends on `EventType.ERROR` carrying `error_type="StreamBridgeError"`
+    and this message as its text.
     """
 
 
