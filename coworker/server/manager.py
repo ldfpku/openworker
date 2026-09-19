@@ -1967,11 +1967,29 @@ class SessionManager:
         list_mcp for the status flip."""
         from ..mcp import oauth as mcp_oauth
 
-        for server in load_mcp_servers(
-            self.default_workspace,
-            secrets=self.secrets,
-            workspace_trusted=self._mcp_workspace_trusted(self.default_workspace),
-        ):
+        try:
+            # Loading config (incl. `${VAR}` resolution) and the workspace-trust check
+            # both run before any server is even matched — a failure here used to
+            # escape this coroutine outright (it runs fire-and-forget via
+            # spawn_background), leaving `name` stuck in `_mcp_authorizing` forever
+            # (the GUI's /v1/mcp poll would show it "authorizing" with no error) and
+            # nothing recorded in `_mcp_errors`. Report it through the exact same
+            # channel the per-server `except` below already uses.
+            servers = load_mcp_servers(
+                self.default_workspace,
+                secrets=self.secrets,
+                workspace_trusted=self._mcp_workspace_trusted(self.default_workspace),
+            )
+        except Exception as exc:
+            msg = str(exc) or exc.__class__.__name__
+            self._mcp_errors[name] = msg[:500]
+            logger.warning(
+                "mcp %s: failed to load server config: %s", name, msg[:500], exc_info=True
+            )
+            self._mcp_authorizing.discard(name)
+            return {"ok": False, "error": self._mcp_errors[name]}
+
+        for server in servers:
             if server.name != name:
                 continue
             self._mcp_authorizing.add(name)
@@ -2013,39 +2031,71 @@ class SessionManager:
     async def mcp_connect_connector(self, name: str) -> dict[str, Any]:
         """One-click connect for an MCP-BACKED connector (descriptor.mcp_url): seed
         the global server entry pinned to the curated allowlist, run the browser
-        OAuth flow, and mark the connector profile `mode: "mcp"` on success."""
+        OAuth flow, and mark the connector profile `mode: "mcp"` on success.
+
+        Any failure past the seed write — from `connect_mcp` itself, from writing the
+        connector profile, or even from the ordinary "connect failed" cleanup below —
+        rolls the seeded `mcp.json` entry back (owner decision: never leave one behind).
+        `list_mcp` skips connector-backed servers entirely, so a half-seeded entry would
+        be invisible on the MCP page yet still live for every agent session — worse than
+        the plain failed-connect case this function already guarded against (the
+        2026-07-20 asana leftover). The one accepted cost: if the MCP connection itself
+        actually succeeded and only the profile write after it failed, the rollback
+        removes a working connection too — retrying means redoing the OAuth round-trip.
+        The rollback is best-effort and must never mask the original failure."""
         from ..connectors.descriptors import get_descriptor
         from ..connectors.tool_defs import mcp_pinned_tools
 
         d = get_descriptor(name)
         if d is None or not d.mcp_url:
             return {"ok": False, "error": f"{name} has no MCP connect path"}
-        put_global_server(
-            name,
-            {
-                "url": d.mcp_url,
-                "auth": "oauth",
-                # Server-level approval off: writes gate per-tool via the pinned
-                # read/write classification (prepare_mcp_tools); unknown vendor
-                # tools never load at all (include_tools).
-                "requires_approval": False,
-                "include_tools": mcp_pinned_tools(name),
-                "enabled": True,
-            },
-        )
-        result = await self.connect_mcp(name)
-        if result.get("ok"):
-            profile = self.secrets.get(f"{name}:default") or {}
-            self.secrets.put(
-                f"{name}:default", {**profile, "mode": "mcp", "enabled": True}
+
+        seeded = False
+        try:
+            put_global_server(
+                name,
+                {
+                    "url": d.mcp_url,
+                    "auth": "oauth",
+                    # Server-level approval off: writes gate per-tool via the pinned
+                    # read/write classification (prepare_mcp_tools); unknown vendor
+                    # tools never load at all (include_tools).
+                    "requires_approval": False,
+                    "include_tools": mcp_pinned_tools(name),
+                    "enabled": True,
+                },
             )
-        else:
-            # A failed connect must take its seeded config with it: an enabled
-            # oauth entry with no tokens lingers forever (nothing owns it once
-            # the descriptor's mcp_url is gone) and re-arms at every session
-            # start — the owner-hit asana leftover, 2026-07-20.
-            delete_global_server(name)
-        return result
+            seeded = True
+            result = await self.connect_mcp(name)
+            if result.get("ok"):
+                profile = self.secrets.get(f"{name}:default") or {}
+                self.secrets.put(
+                    f"{name}:default", {**profile, "mode": "mcp", "enabled": True}
+                )
+            else:
+                # A failed connect must take its seeded config with it: an enabled
+                # oauth entry with no tokens lingers forever (nothing owns it once
+                # the descriptor's mcp_url is gone) and re-arms at every session
+                # start — the owner-hit asana leftover, 2026-07-20.
+                delete_global_server(name)
+            return result
+        except Exception as exc:
+            msg = str(exc) or exc.__class__.__name__
+            logger.warning(
+                "mcp_connect_connector %s failed: %s", name, msg[:500], exc_info=True
+            )
+            if seeded:
+                try:
+                    delete_global_server(name)
+                except Exception:
+                    # Best-effort: a rollback that itself fails must not shadow the
+                    # original failure above — it only gets its own log line.
+                    logger.warning(
+                        "mcp_connect_connector %s: rollback cleanup failed",
+                        name,
+                        exc_info=True,
+                    )
+            return {"ok": False, "error": msg[:500]}
 
     async def signout_mcp(self, name: str) -> dict[str, Any]:
         """Drop the live connection (if any) and forget the stored OAuth tokens."""
