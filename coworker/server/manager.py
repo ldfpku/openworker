@@ -6301,8 +6301,13 @@ class SessionManager:
         self._running_sessions.discard(session_id)
         # Every turn path (WS, background delivery, durable resume) marks idle when it
         # finishes — the one shared post-turn moment, so auto-titling hooks in here and
-        # can never add latency to the response itself.
-        self._maybe_autotitle(session_id)
+        # can never add latency to the response itself. Contained: naming a session is
+        # cosmetic and must not take the rest of the post-turn bookkeeping (the team
+        # drain kick, the promotion rebuild) down with it.
+        try:
+            self._maybe_autotitle(session_id)
+        except Exception:
+            logger.exception("auto-title failed for %s", session_id)
         # Team sessions: a finished turn is the moment new board events exist (an
         # assign, a review transition) — kick the queue drain now instead of waiting
         # for the next scheduler tick. Cheap no-op for teamless sessions.
@@ -6400,8 +6405,24 @@ class SessionManager:
                 session_id, {"type": "error", "data": {"error": str(exc)}}
             )
         finally:
-            self.mark_idle(session_id)
-            await self.broadcast_session(session_id, {"type": "turn_done", "data": {}})
+            # Post-turn bookkeeping must never un-do a turn that already ran and was
+            # persisted. A raise out of either step used to propagate out of a
+            # SUCCESSFUL delivery — skipping the turn_done broadcast (the GUI never
+            # stops spinning) and, for a team wake, the caller's own cursor advance
+            # (the same digest is then delivered again next tick). Every caller of
+            # this method is on a path where that raise surfaces nowhere: a
+            # fire-and-forget task, a `run_coroutine_threadsafe` future nobody awaits,
+            # or an `except: pass`.
+            try:
+                self.mark_idle(session_id)
+            except Exception:
+                logger.exception("post-turn bookkeeping failed for %s", session_id)
+            try:
+                await self.broadcast_session(
+                    session_id, {"type": "turn_done", "data": {}}
+                )
+            except Exception:
+                logger.exception("turn_done broadcast failed for %s", session_id)
 
     # -- channel subscriptions (inbound messaging) ------------------------------
     async def _dispatch_inbound(self, event) -> None:
