@@ -30,13 +30,13 @@ const fmt = (t: number | null) =>
 function runStatusLabel(t: (key: string) => string, status?: string | null): string {
   switch (status) {
     case "ok":
-      return t("ok");
+      return t("automations.status_ok");
     case "running":
-      return t("running");
+      return t("automations.status_running");
     case "error":
-      return t("error");
+      return t("automations.status_error");
     case "skipped":
-      return t("skipped");
+      return t("automations.status_skipped");
     case "canceled":
       return t("automations.status_canceled");
     default:
