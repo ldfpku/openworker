@@ -37,6 +37,8 @@ function runStatusLabel(t: (key: string) => string, status?: string | null): str
       return t("error");
     case "skipped":
       return t("skipped");
+    case "canceled":
+      return t("automations.status_canceled");
     default:
       return status || "";
   }

@@ -6946,11 +6946,24 @@ class SessionManager:
                 f"{task.instructions}"
             )
             try:
+                # `request_interrupt()` (the user's Stop button) ends the turn NORMALLY —
+                # `engine.run()` returns instead of raising — so an interrupted run would
+                # otherwise fall straight into the success path below. The engine's own
+                # public signal for that is the INTERRUPTED event it yields right before
+                # ending the turn (see coworker/engine.py); every checkpoint that notices
+                # the stop flag routes through it. That is the contract to key off — not
+                # the private `engine._cancel` flag, which is an implementation detail
+                # this file has no business reaching into.
+                interrupted = False
                 async for _event in engine.run(opening):
-                    pass
+                    if _event.type.value == "interrupted":
+                        interrupted = True
                 run.result_text = _last_assistant_text(engine.messages)
                 run.artifacts = _recent_files(task.workspace, since=run.started_at)
-                run.status = "ok"
+                # A run the user stopped mid-flight produced nothing on purpose — recording
+                # it as "ok" (and telling notify_target "✓ done") would misreport a stop as
+                # a success. `_notify_task_done` itself picks the right wording per status.
+                run.status = "canceled" if interrupted else "ok"
                 if task.notify_on_completion:
                     await self._notify_task_done(task, run)
             except Exception as exc:
@@ -6968,12 +6981,25 @@ class SessionManager:
         finally:
             # Release only after the state above is fully persisted — mark_idle before
             # that save would let a WS client open a new turn on this session before
-            # the run's final status ever hit disk.
-            self.mark_idle(run.session_id)
+            # the run's final status ever hit disk. Must not raise past this point: the
+            # run's ok/error/canceled verdict is already persisted above, and a `mark_idle`
+            # failure escaping here would make `_run_claimed` (scheduler.py) treat this
+            # as the WHOLE run failing — adding a second, bogus "error" TaskRun beside the
+            # one already recorded (owner-hit 2026-09-19: one physical run, two history rows).
+            try:
+                self.mark_idle(run.session_id)
+            except Exception:
+                logger.exception(
+                    "post-scheduled-run bookkeeping failed for %s", run.session_id
+                )
         return run
 
     async def _notify_task_done(self, task, run: TaskRun) -> None:
+        """Tell the app + `notify_target` a run settled. `run.status` picks the wording:
+        a run the user stopped mid-flight (`"canceled"`) produced nothing on purpose, so
+        it must not read like the "✓ done" a real completion gets."""
         summary = (run.result_text or "").strip()[:280]
+        canceled = run.status == "canceled"
         # Notify any socket viewing this scheduled run's session (it's a durable session of its own).
         await self.broadcast_session(
             run.session_id,
@@ -6984,6 +7010,7 @@ class SessionManager:
                     "id": task.id,
                     "text": summary,
                     "run_id": run.run_id,
+                    "status": run.status,
                 },
             },
         )
@@ -6996,11 +7023,15 @@ class SessionManager:
                 sender = DEFAULT_SENDERS.get(platform)
                 creds = self.secrets.get(f"{platform}:default") or {}
                 if sender and creds.get("bot_token"):
+                    if canceled:
+                        text = f"⏹ {task.title}\n\n运行被手动停止，未产生结果。"
+                    else:
+                        text = f"✓ {task.title}\n\n{summary}"
                     await asyncio.to_thread(
                         sender,
                         creds["bot_token"],
                         chat_id,
-                        f"✓ {task.title}\n\n{summary}",
+                        text,
                         thread,
                     )
             except Exception:

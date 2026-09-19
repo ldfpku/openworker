@@ -357,6 +357,48 @@ async def test_scheduled_run_persists_continuable_session(tmp_path, monkeypatch)
     assert _last_assistant_text(engine.messages) == "Sure — here is more detail."
 
 
+# -- a genuine failure after engine.run() still records "error" (anti-regression) --
+async def test_scheduled_run_exception_after_engine_run_is_recorded_as_error(
+    tmp_path, monkeypatch
+):
+    """`_run_scheduled_task`'s inner `except Exception` must still catch a real failure
+    and record `status="error"` — the new `interrupted` bookkeeping above it must not
+    swallow or reclassify it. A plain provider exception doesn't reach this branch
+    (engine.py degrades those into an ERROR *event*, see the neighboring
+    `..._marks_idle_when_setup_raises` test), so the raise is forced right after
+    `engine.run()` completes, at `_last_assistant_text` — the first statement in the
+    same try block, still well inside the "did the run actually happen" success path.
+    """
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+    from coworker.server.manager import SessionManager
+
+    class ScriptedProvider(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            return AssistantTurn(text="done", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    manager = SessionManager(data_dir=tmp_path / "data", provider=ScriptedProvider())
+    task = _task(workspace=str(ws), agent="cowork")
+    manager.task_store.save(task)
+
+    def _boom(messages):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("coworker.server.manager._last_assistant_text", _boom)
+
+    run = await manager._run_scheduled_task(task, trigger="manual")
+
+    assert run.status == "error" and run.error == "boom"
+    persisted = manager.task_store.runs(task.id)
+    assert len(persisted) == 1 and persisted[0].status == "error"
+    assert manager.is_running(run.session_id) is False
+
+
 # -- concurrency: a scheduled run must mark its session busy --------------------
 async def test_scheduled_run_marks_session_busy_while_running(tmp_path, monkeypatch):
     """Bug: _run_scheduled_task never called mark_running, so a concurrent WS turn
@@ -531,6 +573,203 @@ async def test_scheduled_run_marks_idle_when_setup_raises(tmp_path, monkeypatch)
     runs = manager.task_store.runs(task.id)
     assert runs, "the run record should have been persisted before the failure"
     assert manager.is_running(runs[0].session_id) is False
+
+
+# -- a run stopped mid-flight is "canceled", not "ok" --------------------------
+async def test_scheduled_run_interrupted_mid_turn_is_canceled_not_ok(
+    tmp_path, monkeypatch
+):
+    """`request_interrupt()` (the Stop button) ends `engine.run()` NORMALLY — no
+    exception — so before the fix `_run_scheduled_task` fell straight into the success
+    path and recorded a zero-output, user-stopped run as `status="ok"`. The engine's own
+    public signal for "this turn ended because of Stop" is the INTERRUPTED event; the
+    provider is made to call `request_interrupt()` on the live engine mid-call (from the
+    executor thread `_astream` runs it on — `_StopSignal.set()` is documented safe from
+    any thread), which is exactly what a real Stop-button click races against."""
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+    from coworker.server.manager import SessionManager
+
+    class InterruptingProvider(ProviderClient):
+        def __init__(self):
+            self.engine = None  # set once _build_task_engine has built it
+
+        def complete(self, *, model, messages, tools=None, **settings):
+            assert self.engine is not None, "engine must be captured before first call"
+            self.engine.request_interrupt()
+            return AssistantTurn(text="ignored", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    provider = InterruptingProvider()
+    manager = SessionManager(data_dir=tmp_path / "data", provider=provider)
+    task = _task(workspace=str(ws), agent="cowork")
+    manager.task_store.save(task)
+
+    original_build = SessionManager._build_task_engine
+
+    def _capture(self, task, *, session_id):
+        engine = original_build(self, task, session_id=session_id)
+        provider.engine = engine
+        return engine
+
+    monkeypatch.setattr(SessionManager, "_build_task_engine", _capture)
+
+    run = await manager._run_scheduled_task(task, trigger="manual")
+
+    assert run.status == "canceled"
+    persisted = manager.task_store.runs(task.id)
+    assert len(persisted) == 1 and persisted[0].status == "canceled"
+    # The busy marker must still be released like any other ending.
+    assert manager.is_running(run.session_id) is False
+
+
+async def test_scheduled_run_canceled_notification_is_not_marked_done(
+    tmp_path, monkeypatch
+):
+    """The external notify_target message must not say "✓ done" for a run the user
+    stopped — that reads as the automation lying about having finished."""
+    from coworker.connectors import senders as senders_mod
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+    from coworker.server.manager import SessionManager
+
+    class InterruptingProvider(ProviderClient):
+        def __init__(self):
+            self.engine = None
+
+        def complete(self, *, model, messages, tools=None, **settings):
+            assert self.engine is not None
+            self.engine.request_interrupt()
+            return AssistantTurn(text="ignored", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    provider = InterruptingProvider()
+    manager = SessionManager(data_dir=tmp_path / "data", provider=provider)
+    task = _task(workspace=str(ws), agent="cowork", notify_target="telegram:12345")
+    manager.task_store.save(task)
+    manager.secrets.put("telegram:default", {"bot_token": "test-token"})
+
+    original_build = SessionManager._build_task_engine
+
+    def _capture(self, task, *, session_id):
+        engine = original_build(self, task, session_id=session_id)
+        provider.engine = engine
+        return engine
+
+    monkeypatch.setattr(SessionManager, "_build_task_engine", _capture)
+
+    sent: list[tuple] = []
+
+    def fake_sender(token, chat_id, text, thread_id=None):
+        sent.append((token, chat_id, text, thread_id))
+        from coworker.connectors.base import SendResult
+
+        return SendResult(ok=True, message_id="1")
+
+    monkeypatch.setitem(senders_mod.DEFAULT_SENDERS, "telegram", fake_sender)
+
+    run = await manager._run_scheduled_task(task, trigger="manual")
+
+    assert run.status == "canceled"
+    assert len(sent) == 1
+    text = sent[0][2]
+    assert not text.startswith("✓"), f"canceled run must not use the 'done' checkmark: {text!r}"
+    assert "完成" not in text
+
+
+# -- mark_idle failing must not double-record the run (bug: ok AND error rows) ------
+async def test_scheduled_run_survives_mark_idle_failure_with_single_record(
+    tmp_path, monkeypatch
+):
+    """`_run_scheduled_task`'s outer `finally` calls `mark_idle` bare. Before the fix, a
+    `mark_idle` exception propagated straight out of `_run_scheduled_task` — even though
+    the run's true verdict (`status="ok"`) was already persisted via
+    `task_store.add_run(run)` moments earlier. At the manager layer that just means the
+    coroutine raises after doing its job; the full double-write only happens one layer up,
+    in the scheduler (see the sibling `Scheduler`-level test below) — but a raise escaping
+    here at all is the bug, so pin that down directly first."""
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+    from coworker.server.manager import SessionManager
+
+    class ScriptedProvider(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            return AssistantTurn(text="done", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    manager = SessionManager(data_dir=tmp_path / "data", provider=ScriptedProvider())
+    task = _task(workspace=str(ws), agent="cowork")
+    manager.task_store.save(task)
+
+    def _boom(session_id):
+        raise RuntimeError("mark_idle boom")
+
+    monkeypatch.setattr(manager, "mark_idle", _boom)
+
+    # Must NOT raise: mark_idle's failure is logged, not propagated.
+    run = await manager._run_scheduled_task(task, trigger="manual")
+
+    assert run.status == "ok"
+    persisted = manager.task_store.runs(task.id)
+    assert len(persisted) == 1 and persisted[0].status == "ok"
+
+
+async def test_scheduler_mark_idle_failure_does_not_duplicate_run_record(
+    tmp_path, monkeypatch
+):
+    """End-to-end reproduction of the reported bug through the real `Scheduler`: before
+    the fix, `mark_idle`'s exception escaped `_run_scheduled_task` (which had already
+    persisted the run as `status="ok"`), so `Scheduler._run_claimed`'s `except Exception`
+    caught it and persisted a SECOND `TaskRun` with `status="error"` for the very same
+    run — one physical run, two history rows, and the task's own `last_status` clobbered
+    to "error" even though it actually succeeded."""
+    from coworker.automation import Scheduler
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+    from coworker.server.manager import SessionManager
+
+    class ScriptedProvider(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            return AssistantTurn(text="done", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    manager = SessionManager(data_dir=tmp_path / "data", provider=ScriptedProvider())
+    task = _task(workspace=str(ws), agent="cowork")
+    manager.task_store.save(task)
+
+    def _boom(session_id):
+        raise RuntimeError("mark_idle boom")
+
+    monkeypatch.setattr(manager, "mark_idle", _boom)
+
+    sched = Scheduler(manager.task_store, manager._run_scheduled_task)
+    run = await sched.run_task(task, trigger="manual")
+
+    assert run is not None and run.status == "ok"
+    persisted = manager.task_store.runs(task.id)
+    assert len(persisted) == 1, (
+        f"expected exactly one TaskRun, got {len(persisted)}: "
+        f"{[r.status for r in persisted]}"
+    )
+    assert persisted[0].status == "ok"
+    fresh = manager.task_store.get(task.id)
+    assert fresh.last_status == "ok"
 
 
 def test_task_engine_has_no_scheduling_tools(tmp_path, monkeypatch):

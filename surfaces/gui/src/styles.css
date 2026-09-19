@@ -1042,7 +1042,7 @@ button.link:disabled { color: var(--faint); cursor: default; }
 .sched-edit-instr { min-height: 96px; }
 .sched-run { border-bottom: 1px solid var(--line); }
 .sched-run-row { display: flex; align-items: center; justify-content: space-between; font-size: 13px; padding: 8px 2px; cursor: pointer; color: var(--muted); }
-.run-ok { color: var(--ok); } .run-error { color: var(--accent); } .run-running { color: var(--muted); }
+.run-ok { color: var(--ok); } .run-error { color: var(--accent); } .run-running { color: var(--muted); } .run-canceled { color: var(--muted); }
 /* UX-023: marks runs newer than the seen mark captured when the detail opened. */
 .run-new-pill {
   display: inline-block; margin-right: 8px; padding: 0 6px; border-radius: 999px;

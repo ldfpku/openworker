@@ -222,7 +222,7 @@ class TaskRun:
     run_id: str = field(default_factory=lambda: "run-" + uuid.uuid4().hex[:10])
     started_at: float = field(default_factory=_now)
     finished_at: Optional[float] = None
-    status: str = "running"  # running | ok | error | skipped
+    status: str = "running"  # running | ok | error | skipped | canceled
     result_text: Optional[str] = None
     artifacts: list[str] = field(default_factory=list)
     error: Optional[str] = None
