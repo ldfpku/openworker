@@ -13,13 +13,37 @@ target the **global** file.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
 from ..secrets import SecretStore, state_dir
 
+logger = logging.getLogger(__name__)
+
 _HTTP_TYPES = {"http", "https", "sse", "streamable-http", "streamable_http"}
+
+
+class MCPConfigError(RuntimeError):
+    """An `mcp.json` is there but could not be read or parsed.
+
+    Kept strictly apart from "the file isn't there": an absent file is a legal empty
+    config (the first `put_global_server` creates it), while a FAILED read means the
+    user's servers are quite possibly still on disk, just unread this once — the file
+    is locked by another process, the volume errored, an outside editor left half a
+    JSON object behind, the bytes aren't UTF-8.
+
+    Every mutator below is read-modify-write-the-WHOLE-file, so degrading a failed
+    read to `{}` would rewrite the file from an empty base and take every server the
+    user had with it — silently, irrecoverably, on one transient IO error. Mutators
+    therefore let this propagate and write nothing at all.
+    """
+
+    def __init__(self, path: Path, cause: BaseException) -> None:
+        self.path = path
+        self.cause = cause
+        super().__init__(f"cannot read MCP config {path}: {cause}")
 
 
 @dataclass
@@ -46,10 +70,37 @@ def global_mcp_path() -> Path:
 
 
 def _read(path: Path) -> dict[str, Any]:
+    """One `mcp.json` as raw JSON.
+
+    Missing (or blank) file → `{}`; anything else that goes wrong → `MCPConfigError`,
+    never a silent `{}` — see that exception for why a read failure must not be allowed
+    to look like an empty config. A non-object top level counts as unreadable too:
+    callers index the result with `.get`, so a stray JSON list used to surface as an
+    AttributeError from inside whichever caller happened to reach it first.
+    """
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
         return {}
+    except OSError as exc:
+        # Locked file, IO error, permission denied, a directory in the way.
+        raise MCPConfigError(path, exc) from exc
+    except ValueError as exc:  # UnicodeDecodeError: the file is there but isn't UTF-8
+        raise MCPConfigError(path, exc) from exc
+    if not text.strip():
+        # Deliberate narrow carve-out: an empty file holds no servers, so reading it as
+        # an empty config cannot lose anything, while refusing to write would wedge the
+        # user out of ever adding a server again without hand-deleting the file.
+        return {}
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise MCPConfigError(path, exc) from exc
+    if not isinstance(data, dict):
+        raise MCPConfigError(
+            path, TypeError(f"top level is {type(data).__name__}, not an object")
+        )
+    return data
 
 
 def _config_paths(
@@ -103,7 +154,17 @@ def load_mcp_servers(
     secrets = secrets or SecretStore()
     merged: dict[str, dict[str, Any]] = {}
     for path in _config_paths(workspace, workspace_trusted=workspace_trusted):
-        for name, raw in (_read(path).get("mcpServers") or {}).items():
+        try:
+            entries = _read(path).get("mcpServers") or {}
+        except MCPConfigError as exc:
+            # READ-ONLY path, and it sits on the session-open hot path: an unreadable
+            # file degrades to "contributes no servers" rather than failing session
+            # creation outright. Logged, never swallowed. The mutators below take the
+            # opposite side and refuse to write — that asymmetry is the point: missing
+            # servers for one turn is recoverable, an overwritten config is not.
+            logger.warning("skipping unreadable MCP config: %s", exc)
+            continue
+        for name, raw in entries.items():
             if isinstance(raw, dict):
                 merged.setdefault(name, raw)  # global first → global wins on clash
     return [_parse(name, raw, secrets) for name, raw in merged.items()]
@@ -111,7 +172,12 @@ def load_mcp_servers(
 
 # -- raw global-file mutation (REST) -------------------------------------------
 def read_global() -> dict[str, dict[str, Any]]:
-    """Raw `mcpServers` map from the global file (no `${VAR}` resolution)."""
+    """Raw `mcpServers` map from the global file (no `${VAR}` resolution).
+
+    No file yet → `{}`. Unreadable or corrupt file → raises `MCPConfigError`: callers
+    that merely display the list catch it and degrade, callers that are about to write
+    MUST let it through (see that exception's docstring).
+    """
     return dict(_read(global_mcp_path()).get("mcpServers") or {})
 
 
@@ -124,12 +190,25 @@ def _write_global(servers: dict[str, dict[str, Any]]) -> None:
 
 
 def put_global_server(name: str, config: dict[str, Any]) -> None:
+    """Add or replace ONE server, leaving the rest of the file as it was.
+
+    `read_global()` raising here is load-bearing and must not be caught: this is the
+    read-modify-write-whole-file mutator, so a failed read degraded to `{}` would write
+    a file holding only `name` and drop every other server the user had. On
+    `MCPConfigError` nothing is written at all and the caller reports the failure.
+    """
     servers = read_global()
     servers[name] = config
     _write_global(servers)
 
 
 def patch_global_server(name: str, changes: dict[str, Any]) -> bool:
+    """Merge `changes` into one existing server. `False` = no such server.
+
+    Raises `MCPConfigError` when the file cannot be read: "unreadable" is NOT "absent",
+    and answering `False` there would tell the user their server is gone while it sits
+    on disk untouched — and the next write-through would then be built on `{}`.
+    """
     servers = read_global()
     if name not in servers:
         return False
@@ -139,6 +218,11 @@ def patch_global_server(name: str, changes: dict[str, Any]) -> bool:
 
 
 def delete_global_server(name: str) -> bool:
+    """Remove one server. `False` = no such server; `MCPConfigError` = unreadable file.
+
+    A delete rewrites the whole file too, so an unreadable file has to stop it: the
+    servers that stay can only be preserved if they were read in the first place.
+    """
     servers = read_global()
     if name not in servers:
         return False

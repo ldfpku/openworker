@@ -77,6 +77,7 @@ from ..connectors.browser_automation import (
 )
 from ..connectors.parked import ParkedStore
 from ..mcp import (
+    MCPConfigError,
     MCPManager,
     build_callables,
     delete_global_server,
@@ -1909,8 +1910,19 @@ class SessionManager:
 
         from ..connectors.descriptors import get_descriptor
 
+        try:
+            configured = read_global()
+        except MCPConfigError as exc:
+            # Display-only, and the GUI polls this every few seconds — a corrupt file
+            # must not turn the whole MCP tab into a 500 loop. Degrades to "no rows"
+            # (what it already did before the read learned to fail loudly), but logs
+            # it. The mutators refuse to write in this state, so an empty tab here can
+            # no longer lead to the user's servers being overwritten.
+            logger.warning("list_mcp: %s", exc)
+            return []
+
         out = []
-        for name, raw in read_global().items():
+        for name, raw in configured.items():
             d = get_descriptor(name)
             if d is not None and d.mcp_url:
                 # Connector-backed server: surfaced on the Connectors page (its
@@ -1967,7 +1979,15 @@ class SessionManager:
         so a failing Test showed nothing until the lazy 5s tick (owner-hit
         2026-08-21 — the button looked dead). Known names only, so an unknown
         server can't wedge the flag (connect_mcp only clears it on a match)."""
-        if name in read_global():
+        try:
+            known = read_global()
+        except MCPConfigError as exc:
+            # Unreadable config: flag nothing. `connect_mcp` runs next and reports the
+            # failure through `_mcp_errors` — a flag set here with no matching server
+            # would be the stuck-"authorizing" bug this method exists to prevent.
+            logger.warning("begin_mcp_connect %s: %s", name, exc)
+            return
+        if name in known:
             self._mcp_authorizing.add(name)
 
     async def connect_mcp(self, name: str) -> dict[str, Any]:
@@ -2075,9 +2095,12 @@ class SessionManager:
                 put_global_server(name, prev_config)
 
         try:
-            # Snapshotted INSIDE the try: a read failure here (corrupt file, IO error)
-            # is reported like any other failure below, with `seeded` still False so
-            # no cleanup is attempted — nothing was written yet.
+            # Snapshotted INSIDE the try: `read_global` RAISES on a corrupt or
+            # unreadable file rather than answering `{}`, so a read failure here lands
+            # in the `except` below and is reported like any other failure, with
+            # `seeded` still False so no cleanup is attempted — nothing was written
+            # yet. That distinction is what keeps the seed below from rewriting
+            # `mcp.json` from an empty base and dropping every other server.
             prev_config = read_global().get(name)
             put_global_server(
                 name,
@@ -2145,15 +2168,31 @@ class SessionManager:
         return {"ok": True, "had_tokens": removed}
 
     def add_mcp(self, name: str, config: dict[str, Any]) -> dict[str, Any]:
-        put_global_server(name, config)
+        # Every mutator here rewrites the whole `mcp.json`, so an unreadable file is
+        # refused rather than written over from an empty base (mcp/config.py) — report
+        # the reason instead of letting it escape as a 500 and instead of the old
+        # silent success that took the user's other servers with it.
+        try:
+            put_global_server(name, config)
+        except MCPConfigError as exc:
+            logger.warning("add_mcp %s: %s", name, exc)
+            return {"ok": False, "name": name, "error": str(exc)}
         return {"ok": True, "name": name}
 
     def patch_mcp(self, name: str, changes: dict[str, Any]) -> dict[str, Any]:
-        ok = patch_global_server(name, changes)
+        try:
+            ok = patch_global_server(name, changes)
+        except MCPConfigError as exc:
+            logger.warning("patch_mcp %s: %s", name, exc)
+            return {"ok": False, "name": name, "error": str(exc)}
         return {"ok": ok, "name": name}
 
     def delete_mcp(self, name: str) -> dict[str, Any]:
-        ok = delete_global_server(name)
+        try:
+            ok = delete_global_server(name)
+        except MCPConfigError as exc:
+            logger.warning("delete_mcp %s: %s", name, exc)
+            return {"ok": False, "name": name, "error": str(exc)}
         if ok:
             # A later re-add under the same name starts clean, not pre-failed —
             # and not pre-trusted (the old entry's test says nothing about the new).

@@ -7,12 +7,15 @@ public bot identity captured at connect time.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from ..secrets import SecretStore
 from .catalog_copy import about_for, access_for
 from .descriptors import get_descriptor, list_descriptors
 from .tool_defs import patch_tool_settings, tool_dicts
+
+logger = logging.getLogger(__name__)
 
 _EXPERIMENTAL_KEY = "experimental:settings"
 
@@ -520,5 +523,16 @@ def disconnect_connector(secrets: SecretStore, name: str) -> dict[str, Any]:
         from ..mcp import oauth as mcp_oauth
 
         dropped_accounts = mcp_oauth.sign_out(name, secrets) or dropped_accounts
-        mcp_config.delete_global_server(name)
+        try:
+            mcp_config.delete_global_server(name)
+        except mcp_config.MCPConfigError:
+            # An unreadable `mcp.json` refuses whole-file rewrites (it cannot preserve
+            # servers it never read). Best-effort here: the disconnect itself is the
+            # `secrets.delete` below, and failing the whole call would leave the user
+            # unable to disconnect at all. The leftover entry is inert without tokens.
+            logger.warning(
+                "disconnect_connector %s: could not remove the seeded MCP entry",
+                name,
+                exc_info=True,
+            )
     return {"ok": secrets.delete(f"{name}:default") or dropped_accounts}

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from .client import MCPManager
 from .config import (
+    MCPConfigError,
     MCPServerDef,
     delete_global_server,
     load_mcp_servers,
@@ -18,6 +19,7 @@ from .tools import build_callables, tool_name
 
 __all__ = [
     "MCPManager",
+    "MCPConfigError",
     "MCPServerDef",
     "load_mcp_servers",
     "read_global",
