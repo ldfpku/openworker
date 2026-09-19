@@ -3075,10 +3075,11 @@ class SessionManager:
     # on every tick for as long as the store stays broken.
     #
     # So the advances that did not land are parked in `_team_pending_cursors` and the
-    # next drain of that member replays them FIRST, delivering nothing until they
-    # land. Owner ruling 2026-09-19: no in-place retry and no circuit breaker — a
-    # member whose bookkeeping keeps failing simply stays quiet until the store
-    # recovers, and every attempt is logged.
+    # next drain of that member replays them before DELIVERING anything again — but
+    # after the cancel check, which only reads (see `_drain_team_member`). Owner
+    # ruling 2026-09-19: no in-place retry and no circuit breaker — a member whose
+    # bookkeeping keeps failing simply stays quiet until the store recovers, and
+    # every attempt is logged.
 
     def _run_cursor_advance(self, advance: tuple[str, str, str, int]) -> None:
         kind, scope, holder, seq = advance
@@ -3153,7 +3154,7 @@ class SessionManager:
         return True
 
     def _flush_pending_cursors(self, team, *, session_id: str, actor: str) -> bool:
-        """Replay whatever bookkeeping this member still owes. True = clear to drain.
+        """Replay whatever bookkeeping this member still owes. True = clear to deliver.
 
         Popped before the replay and re-parked by `_advance_team_cursors` only if it
         fails again, so no failure path can leave a member permanently undrainable:
@@ -3169,27 +3170,27 @@ class SessionManager:
     async def _drain_team_member(
         self, team, *, session_id: str, actor: str, is_lead: bool
     ) -> int:
-        # A member that owes bookkeeping from an earlier wake settles it before it is
-        # looked at again: its queues still show the delivered batch, so draining now
-        # would re-deliver what it has already answered.
-        if not self._flush_pending_cursors(team, session_id=session_id, actor=actor):
-            return 0
+        chat_handle = "lead" if is_lead else actor
+
         # Interest follows the assignment relation: everyone's feed is the events
         # on their slice (assigned ∪ filed) — comments, moves, reassignments. The
         # lead additionally subscribes to the board-wide decision classes.
-        directs = self.team_store.feed_for(team.space, actor)
-        subs = (
-            self.team_store.subscribed_events(team.space, actor) if is_lead else []
-        )
-        if subs:
-            seen = {e["seq"] for e in subs}
-            directs = [e for e in directs if e["seq"] not in seen]
-        chat_handle = "lead" if is_lead else actor
-        chats = (
-            self.chat_store.unread_for(team.chat_group, chat_handle)
-            if team.chat_enabled and team.chat_group
-            else []
-        )
+        def _queues() -> tuple[list[dict], list[dict], list[dict]]:
+            directs = self.team_store.feed_for(team.space, actor)
+            subs = (
+                self.team_store.subscribed_events(team.space, actor) if is_lead else []
+            )
+            if subs:
+                seen = {e["seq"] for e in subs}
+                directs = [e for e in directs if e["seq"] not in seen]
+            chats = (
+                self.chat_store.unread_for(team.chat_group, chat_handle)
+                if team.chat_enabled and team.chat_group
+                else []
+            )
+            return directs, subs, chats
+
+        directs, subs, chats = _queues()
         # Cancel is top-priority: an in-flight worker gets interrupted NOW; the
         # queued notice (delivered when the turn dies) tells it why. Only for the
         # item's ASSIGNEE — a filer merely hears about it.
@@ -3213,6 +3214,21 @@ class SessionManager:
             engine = self._engines.get(session_id)
             if engine is not None:
                 engine.request_interrupt()
+        # A member that owes bookkeeping from an earlier wake settles it before it is
+        # DELIVERED to again: its queues still show the batch it already answered, so
+        # waking it now would hand it the same digest twice. Below the cancel check on
+        # purpose — spotting a cancel only reads the feed, so it does not depend on the
+        # cursors having moved, and a member whose store is broken must still be
+        # interrupted now instead of burning a turn on canceled work until it recovers.
+        if session_id in self._team_pending_cursors:
+            if not self._flush_pending_cursors(
+                team, session_id=session_id, actor=actor
+            ):
+                return 0
+            # The replay moved this member's cursors past the batch read above, so
+            # re-read: delivering the settled batch is exactly what the ledger exists
+            # to prevent.
+            directs, subs, chats = _queues()
         if not directs and not subs and not chats:
             return 0
         if self.is_running(session_id) or session_id in self._team_inflight:

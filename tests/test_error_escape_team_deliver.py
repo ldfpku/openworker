@@ -547,3 +547,79 @@ async def test_backstop_wake_failure_is_contained(tmp_path, monkeypatch, caplog)
     assert task.exception() is None, f"escaped: {task.exception()!r}"
     assert _manager_warnings(caplog)
     assert manager._team_inflight == set()
+
+
+# -- cancel outranks the bookkeeping gate --------------------------------------------
+
+
+class _InterruptSpy:
+    """Stands in for the member's live engine, counting interrupt requests. Only
+    `request_interrupt` is reached on this path, so nothing else is modelled."""
+
+    def __init__(self) -> None:
+        self.interrupts = 0
+
+    def request_interrupt(self) -> None:
+        self.interrupts += 1
+
+
+async def test_cancel_interrupts_in_flight_worker_while_bookkeeping_is_owed(
+    tmp_path, monkeypatch
+):
+    """A member owes cursor bookkeeping (the store is still broken) and the board
+    item it is working on is canceled while its turn is in flight.
+
+    Expected: the cancel still interrupts NOW. Detecting a cancel only READS the
+    feed, so it does not depend on the cursors having moved, and an unpaid ledger
+    entry must not defer it — the alternative is a worker that keeps burning tokens
+    on an item nobody wants until the sqlite db recovers. The no-redelivery rule
+    still holds: the drain delivers nothing while the books are owed.
+    """
+    from coworker.teams import Actor, Role
+
+    manager, team, space, item = _build_team(monkeypatch, tmp_path)
+    worker_sid = team.workers[0].session_id
+    delivered = _stub_delivery(manager, monkeypatch)
+    breaker = _Breaker(manager.team_store.consume_feed, "consume_feed")
+    monkeypatch.setattr(manager.team_store, "consume_feed", breaker)
+
+    # One wake is delivered and its feed cursor does not land: the member is now in
+    # the "owes bookkeeping" state, which is what the gate under test reacts to.
+    assert (
+        await manager._drain_team_member(
+            team, session_id=worker_sid, actor="nia", is_lead=False
+        )
+        == 1
+    )
+    await _finished_delivery_task(manager)
+    assert delivered == [worker_sid]
+    assert _pending_kinds(manager, worker_sid) == ["feed"]
+
+    # The worker is mid-turn, and the lead cancels the item it holds.
+    engine = _InterruptSpy()
+    manager._engines[worker_sid] = engine
+    manager.mark_running(worker_sid)
+    manager.team_store.transition(
+        space, Actor(id=team.lead_actor, role=Role.LEAD), item["id"], "canceled"
+    )
+    assert [
+        e
+        for e in manager.team_store.feed_for(space, "nia")
+        if e["kind"] == "item_transitioned"
+        and (e.get("payload") or {}).get("to") == "canceled"
+    ], "fixture wrong — the cancel never reached the worker's feed"
+
+    assert (
+        await manager._drain_team_member(
+            team, session_id=worker_sid, actor="nia", is_lead=False
+        )
+        == 0
+    ), "a member that owes bookkeeping must still not be delivered to"
+
+    assert engine.interrupts == 1, (
+        "the cancel never interrupted the in-flight worker — it keeps paying for a"
+        " turn on an item that was canceled until the store recovers"
+    )
+    assert delivered == [worker_sid], "the same digest was delivered twice"
+    assert manager._bg_tasks == set(), "a second delivery task was spawned"
+    assert _pending_kinds(manager, worker_sid) == ["feed"], "the ledger was lost"
