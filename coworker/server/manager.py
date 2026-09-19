@@ -443,6 +443,15 @@ class SessionManager:
         # board; the log carries only `attachment://` refs.
         self.attachment_store = AttachmentStore(base / "attachments")
         self._team_inflight: set[str] = set()
+        # Post-delivery bookkeeping a team member still owes: the `consume_*` calls
+        # that did not land although its wake WAS delivered (see
+        # `_advance_team_cursors`). Keyed by session id — the same identity
+        # `_team_inflight` uses. The next drain of that member replays these before it
+        # looks at its queues at all, and delivers nothing until they land, so a
+        # failing cursor write can no longer make one digest be answered — and paid
+        # for — on every tick. In memory only: a restart forgets it and at most one
+        # replay follows, which is the at-least-once contract this queue already has.
+        self._team_pending_cursors: dict[str, list[tuple[str, str, str, int]]] = {}
         # Lead-session last-turn timestamps for the check-in backstop (monotonic-ish
         # wall clock; restart resets the clock rather than firing a wake storm).
         self._team_last_alive: dict[str, float] = {}
@@ -3012,6 +3021,13 @@ class SessionManager:
                 await self.deliver_to_session(
                     sid, message, source=self._board_source(team, message)
                 )
+            except Exception:
+                # Same containment as the queue drain's `_deliver` below: this runs on
+                # a fire-and-forget task whose done-callback deliberately does not
+                # retrieve exceptions, so an escape here would surface nowhere but a
+                # stray "Task exception was never retrieved" at GC time. Nothing to
+                # consume — the backstop carries a computed digest, not a queue batch.
+                logger.exception("team %s: backstop wake for %s failed", team.team_id, sid)
             finally:
                 self._team_inflight.discard(sid)
 
@@ -3022,9 +3038,115 @@ class SessionManager:
             self._team_inflight.discard(sid)
         return 1
 
+    # -- post-delivery bookkeeping ----------------------------------------------
+    #
+    # Delivering a wake and consuming the batch it carried are two separate writes:
+    # the turn is dispatched first, the feed/subscription/chat cursors move past the
+    # batch second. When the second write fails (a locked or full sqlite db) the
+    # batch stays unconsumed although the agent has already answered it — and the
+    # next drain would hand it the very same digest, i.e. a second paid model turn,
+    # on every tick for as long as the store stays broken.
+    #
+    # So the advances that did not land are parked in `_team_pending_cursors` and the
+    # next drain of that member replays them FIRST, delivering nothing until they
+    # land. Owner ruling 2026-09-19: no in-place retry and no circuit breaker — a
+    # member whose bookkeeping keeps failing simply stays quiet until the store
+    # recovers, and every attempt is logged.
+
+    def _run_cursor_advance(self, advance: tuple[str, str, str, int]) -> None:
+        kind, scope, holder, seq = advance
+        if kind == "feed":
+            self.team_store.consume_feed(scope, holder, seq)
+        elif kind == "subscription":
+            self.team_store.consume_subscription(scope, holder, seq)
+        elif kind == "chat":
+            self.chat_store.consume(scope, holder, seq)
+        else:  # pragma: no cover — guards a future cursor kind against silent loss
+            raise ValueError(f"unknown cursor kind {kind!r}")
+
+    def _advance_team_cursors(
+        self,
+        session_id: str,
+        advances: list[tuple[str, str, str, int]],
+        *,
+        team_id: str,
+        actor: str,
+        replay: bool = False,
+    ) -> bool:
+        """Run this member's outstanding `consume_*` calls; never raises.
+
+        Caught as ONE unit rather than per cursor, but the ledger keeps only the
+        advances that are genuinely still behind — an advance that already landed is
+        popped, so a partial failure is not redone on the replay. Returns True when
+        the books are clean.
+        """
+        remaining = list(advances)
+        try:
+            while remaining:
+                self._run_cursor_advance(remaining[0])
+                remaining.pop(0)
+        except Exception as exc:
+            # The ledger first, before anything that could itself fail: the same full
+            # disk that broke the cursor write can break the dead-letter write below,
+            # and losing the ledger entry would put us back to replaying the digest.
+            self._team_pending_cursors[session_id] = remaining
+            names = ", ".join(kind for kind, *_ in remaining)
+            logger.exception(
+                "team %s: %s cursor advance for %s failed (%s still unconsumed after a"
+                " delivered wake) — holding off redelivery",
+                team_id,
+                "replayed" if replay else "post-delivery",
+                session_id,
+                names,
+            )
+            if not replay:
+                # Dead-letter on the FIRST failure only (the replay path logs instead),
+                # so a store that stays broken cannot flood the 200-entry store. The
+                # text is a one-liner on purpose: the digest itself is on the board.
+                try:
+                    self.unrouted.record(
+                        session_id,
+                        "-",
+                        f"team board wake for '{actor}' — bookkeeping still owed:"
+                        f" {names}",
+                        reason=(
+                            "delivered, but the cursor did not advance: the agent has"
+                            f" the message, the board still shows it unread ({exc})."
+                            " Redelivery is held off until the bookkeeping lands."
+                        ),
+                    )
+                except Exception:
+                    logger.exception(
+                        "team %s: could not dead-letter the cursor failure for %s",
+                        team_id,
+                        session_id,
+                    )
+            return False
+        self._team_pending_cursors.pop(session_id, None)
+        return True
+
+    def _flush_pending_cursors(self, team, *, session_id: str, actor: str) -> bool:
+        """Replay whatever bookkeeping this member still owes. True = clear to drain.
+
+        Popped before the replay and re-parked by `_advance_team_cursors` only if it
+        fails again, so no failure path can leave a member permanently undrainable:
+        the worst case is a lost ledger entry, which costs one replayed digest.
+        """
+        pending = self._team_pending_cursors.pop(session_id, None)
+        if not pending:
+            return True
+        return self._advance_team_cursors(
+            session_id, pending, team_id=team.team_id, actor=actor, replay=True
+        )
+
     async def _drain_team_member(
         self, team, *, session_id: str, actor: str, is_lead: bool
     ) -> int:
+        # A member that owes bookkeeping from an earlier wake settles it before it is
+        # looked at again: its queues still show the delivered batch, so draining now
+        # would re-deliver what it has already answered.
+        if not self._flush_pending_cursors(team, session_id=session_id, actor=actor):
+            return 0
         # Interest follows the assignment relation: everyone's feed is the events
         # on their slice (assigned ∪ filed) — comments, moves, reassignments. The
         # lead additionally subscribes to the board-wide decision classes.
@@ -3076,25 +3198,37 @@ class SessionManager:
         )
         self._team_inflight.add(session_id)
         source = self._board_source(team, message, rows=rows)
+        # The bookkeeping this delivery will owe, built out here rather than inside
+        # the closure so a failure can name exactly which cursors are still behind.
+        # The feed cursor advances past BOTH batches: a subs event deduped out of
+        # directs must not replay as a direct next tick.
+        advances: list[tuple[str, str, str, int]] = []
+        seqs = [e["seq"] for e in directs] + [e["seq"] for e in subs]
+        if seqs:
+            advances.append(("feed", team.space, actor, max(seqs)))
+        if subs:
+            advances.append(("subscription", team.space, actor, subs[-1]["seq"]))
+        if chats:
+            advances.append(("chat", team.chat_group, chat_handle, chats[-1]["seq"]))
 
         async def _deliver() -> None:
             try:
-                await self.deliver_to_session(session_id, message, source=source)
-                # Consume only after the turn dispatched: a crash before this replays
-                # the batch next tick (at-least-once, never silently lost).
-                # The feed cursor advances past BOTH batches: a subs event deduped
-                # out of directs must not replay as a direct next tick.
-                delivered = [e["seq"] for e in directs] + [e["seq"] for e in subs]
-                if delivered:
-                    self.team_store.consume_feed(team.space, actor, max(delivered))
-                if subs:
-                    self.team_store.consume_subscription(
-                        team.space, actor, subs[-1]["seq"]
+                try:
+                    await self.deliver_to_session(session_id, message, source=source)
+                except Exception:
+                    # The turn never dispatched, so the batch really is unconsumed:
+                    # leaving every cursor where it is replays it next tick, which is
+                    # the durable-until-consumed contract (at-least-once, never lost).
+                    logger.exception(
+                        "team %s: wake delivery to %s failed",
+                        team.team_id,
+                        session_id,
                     )
-                if chats:
-                    self.chat_store.consume(
-                        team.chat_group, chat_handle, chats[-1]["seq"]
-                    )
+                    return
+                # Consume only after the turn dispatched.
+                self._advance_team_cursors(
+                    session_id, advances, team_id=team.team_id, actor=actor
+                )
             finally:
                 self._team_inflight.discard(session_id)
 
