@@ -367,7 +367,70 @@ async def test_scheduled_run_marks_session_busy_while_running(tmp_path, monkeypa
         assert manager.try_mark_running(session_id) is False
     finally:
         release.set()  # never leave the worker thread (and pytest) blocked
-        await run_task
+        # No pytest-level timeout exists in this repo — if the assertions above ever
+        # fail for a reason other than "provider never entered" (e.g. release didn't
+        # actually unblock it), awaiting run_task bare could hang the whole suite.
+        # wait_for() bounds that wait without masking a real assertion error already
+        # in flight (asyncio.wait_for re-raises whatever run_task itself raises;
+        # TimeoutError only fires if run_task is still stuck after the deadline).
+        await asyncio.wait_for(run_task, timeout=10)
+
+
+async def test_scheduled_run_marks_busy_before_run_started_broadcast(tmp_path, monkeypatch):
+    """Pin down WHEN the busy marker must be set, not just that it eventually is.
+
+    `run.session_id` becomes visible to every open GUI window the moment
+    `automation_run_started` is broadcast (see `_run_scheduled_task`) — and that
+    broadcast's `await` is the ONLY await between the run's session id existing and
+    `engine.run()` beginning (no `await` inside `_build_task_engine` /
+    `_seed_task_permissions` — both are plain `def`s). That makes it the one
+    concurrency window a WS client could exploit to `claim_turn()` on this session
+    before this function ever builds its own engine.
+
+    T1 (`..._marks_session_busy_while_running`) only observes state once the
+    provider has been entered — long after this broadcast — so it would stay green
+    even if `mark_running` were moved to after the broadcast (e.g. to the top of the
+    `try:`). This test guards that ordering directly."""
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+    from coworker.server.manager import SessionManager
+
+    class ScriptedProvider(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            return AssistantTurn(text="done", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    manager = SessionManager(data_dir=tmp_path / "data", provider=ScriptedProvider())
+    task = _task(workspace=str(ws), agent="cowork")
+    manager.task_store.save(task)
+
+    observed: list[bool] = []
+    original_broadcast = manager.broadcast_event
+
+    async def spying_broadcast(event):
+        if event.get("type") == "automation_run_started":
+            # Record rather than assert here: an exception raised out of this spy
+            # would propagate out of _run_scheduled_task's except-less outer `try`
+            # (the broadcast call sits above the inner try/except that only wraps
+            # engine.run), so it would NOT be swallowed either way — but recording
+            # keeps this test robust to future refactors instead of depending on
+            # that propagation path.
+            observed.append(manager.is_running(event["data"]["session_id"]))
+        return await original_broadcast(event)
+
+    monkeypatch.setattr(manager, "broadcast_event", spying_broadcast)
+
+    run = await manager._run_scheduled_task(task, trigger="manual")
+    assert run.status == "ok"
+    assert observed == [True], (
+        "mark_running must happen before automation_run_started is broadcast — that "
+        "broadcast is the only await between the run's session id existing and "
+        "engine.run() starting, i.e. the concurrency window"
+    )
 
 
 async def test_scheduled_run_marks_idle_after_success(tmp_path, monkeypatch):
