@@ -40,6 +40,14 @@ class MCPConfigError(RuntimeError):
     therefore let this propagate and write nothing at all.
     """
 
+    # Stable machine code for the wire. The GUI translates ON this rather than on the
+    # prose (the contract personas' `PersonaRefused` already set), because `str(self)`
+    # names the absolute path of the user's `mcp.json` — exactly right in a log line,
+    # not something to hand a UI. `user_message` is the path-free English fallback for
+    # any client that has never heard of the code.
+    code = "config_unreadable"
+    user_message = "the MCP server config file could not be read"
+
     def __init__(self, path: Path, cause: BaseException) -> None:
         self.path = path
         self.cause = cause

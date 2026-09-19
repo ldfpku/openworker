@@ -476,7 +476,23 @@ export async function getMcpServers(): Promise<McpServer[]> {
   return (await res.json()).servers ?? [];
 }
 
-export async function addMcpServer(name: string, config: Record<string, any>) {
+/** What every MCP write answers with. A refusal is NOT a thrown error and not an
+ * empty reply: the server writes nothing when `mcp.json` cannot be read (it would
+ * otherwise rewrite the file from an empty base and drop the user's other servers),
+ * and says so here. `code` is the stable machine reason the UI translates on, `error`
+ * the English fallback — same contract as a refused persona write. Callers must check
+ * `ok`; swallowing it here is what made the failure silent. */
+export interface McpWriteResult {
+  ok: boolean;
+  name?: string;
+  code?: string;
+  error?: string;
+}
+
+export async function addMcpServer(
+  name: string,
+  config: Record<string, any>,
+): Promise<McpWriteResult> {
   const res = await fetch(`${httpBase()}/v1/mcp`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -485,7 +501,10 @@ export async function addMcpServer(name: string, config: Record<string, any>) {
   return res.json();
 }
 
-export async function patchMcpServer(name: string, changes: Record<string, any>) {
+export async function patchMcpServer(
+  name: string,
+  changes: Record<string, any>,
+): Promise<McpWriteResult> {
   const res = await fetch(`${httpBase()}/v1/mcp/${encodeURIComponent(name)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -494,7 +513,7 @@ export async function patchMcpServer(name: string, changes: Record<string, any>)
   return res.json();
 }
 
-export async function deleteMcpServer(name: string) {
+export async function deleteMcpServer(name: string): Promise<McpWriteResult> {
   const res = await fetch(`${httpBase()}/v1/mcp/${encodeURIComponent(name)}`, { method: "DELETE" });
   return res.json();
 }

@@ -209,7 +209,10 @@ def test_add_mcp_reports_the_read_failure_instead_of_wiping(tmp_path, monkeypatc
     out = manager.add_mcp("notes", {"command": "notes"})
     assert out["ok"] is False
     assert out["name"] == "notes"
-    assert "mcp.json" in out["error"]
+    # A stable machine code for the GUI to translate, and prose with NO absolute path:
+    # `str(exc)` names the user's config file and belongs in the log, not on the wire.
+    assert out["code"] == "config_unreadable"
+    assert out["error"] and str(tmp_path) not in out["error"]
     assert path.read_bytes() == before
 
 
@@ -221,9 +224,31 @@ def test_patch_and_delete_mcp_report_the_read_failure(tmp_path, monkeypatch):
 
     patched = manager.patch_mcp("sales-db", {"enabled": False})
     deleted = manager.delete_mcp("sales-db")
-    assert patched["ok"] is False and patched["error"]
-    assert deleted["ok"] is False and deleted["error"]
+    assert patched["ok"] is False and patched["code"] == "config_unreadable"
+    assert deleted["ok"] is False and deleted["code"] == "config_unreadable"
+    assert str(tmp_path) not in patched["error"] + deleted["error"]
     assert path.read_bytes() == before
+
+
+def test_the_refusal_sent_to_the_user_never_carries_the_file_path(tmp_path, monkeypatch):
+    """`MCPConfigError` keeps the path for the log and hands the wire a code instead.
+
+    The GUI shows `error` verbatim for any code it doesn't know, so this prose is
+    user-facing copy — an absolute home-directory path has no business in it.
+    """
+    manager = SessionManager(data_dir=tmp_path / "data")
+    path = _seed_two_servers()
+    _make_unreadable(monkeypatch, path)
+
+    out = manager.add_mcp("notes", {"command": "notes"})
+    assert out["error"] == "the MCP server config file could not be read"
+    assert str(path) not in out["error"] and "mcp.json" not in out["error"]
+
+    # The diagnostic form still names the file — that is what the log line prints.
+    with pytest.raises(MCPConfigError) as failure:
+        read_global()
+    assert str(path) in str(failure.value)
+    assert failure.value.code == "config_unreadable"
 
 
 def test_list_mcp_degrades_instead_of_raising(tmp_path, monkeypatch):
@@ -267,5 +292,6 @@ def test_mcp_connect_connector_reports_a_read_failure_and_writes_nothing(
 
     out = asyncio.run(manager.mcp_connect_connector("monday"))
     assert out["ok"] is False
-    assert "mcp.json" in out["error"]
+    assert out["code"] == "config_unreadable"
+    assert str(tmp_path) not in out["error"]
     assert path.read_bytes() == before

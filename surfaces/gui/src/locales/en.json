@@ -1786,6 +1786,8 @@
     "test_connection": "Test connection",
     "test_desc": "Starts the server and lists its tools — without opening a session.",
     "err_failed_connect": "failed to connect",
+    "err_config_unreadable": "Couldn't read the MCP config file — another program may have it open, or it is damaged. Nothing was changed.",
+    "err_save_failed": "Couldn't save that change.",
     "hide": "hide",
     "show": "show",
     "configuration": "Configuration",

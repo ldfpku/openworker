@@ -1742,6 +1742,8 @@
     "test_connection": "测试连接",
     "test_desc": "启动服务器并列出它的工具——不会开启会话。",
     "err_failed_connect": "连接失败",
+    "err_config_unreadable": "读不到 MCP 配置文件，可能正被别的程序占用，或者已经损坏了。本次没有做任何改动。",
+    "err_save_failed": "这次改动没能保存。",
     "hide": "收起",
     "show": "展开",
     "configuration": "配置",

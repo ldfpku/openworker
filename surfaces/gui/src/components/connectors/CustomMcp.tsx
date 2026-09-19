@@ -1,4 +1,5 @@
 import { isComposing } from "../../ime";
+import type { TFunction } from "i18next";
 import { useEffect, useState } from "react";
 import { getI18n, useTranslation } from "react-i18next";
 import {
@@ -9,6 +10,7 @@ import {
   patchMcpServer,
   signoutMcp,
   type McpServer,
+  type McpWriteResult,
 } from "../../api";
 import { formatRelative } from "../../relTime";
 import { Icon } from "../Icon";
@@ -84,6 +86,38 @@ export function mcpStatusLine(s: McpServer): string {
   return bits.join(" · ");
 }
 
+/**
+ * A refused MCP write, said out loud in the user's language.
+ *
+ * The server refuses to touch `mcp.json` when it cannot read the file first — rewriting
+ * it from an empty base would delete every other server the user has. That refusal used
+ * to die in `res.json()`: the row simply never appeared and the reason (the file is
+ * locked or damaged, the one thing the user can go and fix) was never shown. The wire
+ * carries a stable machine `code` because this app's primary UI is Chinese and the
+ * server's prose is English — the same contract, and the same fallback order, as
+ * `personaErrorText`: known code → localized copy, unknown code with prose → the
+ * server's words, nothing at all → the generic line.
+ */
+const MCP_ERROR_KEYS: Record<string, string> = {
+  config_unreadable: "mcp.err_config_unreadable",
+};
+
+export function mcpErrorText(r: McpWriteResult, t: TFunction): string {
+  const key = r.code ? MCP_ERROR_KEYS[r.code] : undefined;
+  if (key) return t(key);
+  return r.error || t("mcp.err_save_failed");
+}
+
+/** The inline danger line these surfaces already use for a server-side failure
+ * (the `last_error` excerpt and the tools-load error render exactly like this). */
+function McpError({ text, testId }: { text: string; testId: string }) {
+  return (
+    <div className="px-4 py-2.5 text-[13px] text-danger break-words" data-testid={testId}>
+      {text}
+    </div>
+  );
+}
+
 /** Neutral square badge for custom servers (no vendor logo to show). */
 function McpGlyph() {
   return (
@@ -104,6 +138,7 @@ export function CustomMcpGroup({
 }) {
   const { t } = useTranslation();
   const servers = serversProp;
+  const [presetErr, setPresetErr] = useState<string | null>(null);
   // A probe in flight ("Testing…" / "Signing in…") settles server-side within seconds,
   // but this page has no standing MCP poll — the chip froze on Testing forever
   // (owner-hit 2026-08-21, add-by-URL against a guarded server). While any row is
@@ -148,7 +183,14 @@ export function CustomMcpGroup({
               className={BTN_OUTLINE_SM + " cursor-pointer"}
               role="button"
               onClick={async () => {
-                await addMcpServer(p.name, p.config);
+                setPresetErr(null);
+                const res = await addMcpServer(p.name, p.config);
+                if (!res.ok) {
+                  // Nothing was written, so there is no row to click into and no
+                  // point starting the sign-in — say why, right here.
+                  setPresetErr(mcpErrorText(res, t));
+                  return;
+                }
                 await connectMcp(p.name); // opens the browser sign-in right away
                 onChanged();
               }}
@@ -157,6 +199,7 @@ export function CustomMcpGroup({
             </span>
           </div>
         ))}
+        {presetErr && <McpError text={presetErr} testId="mcp-preset-error" />}
       </div>
     </>
   );
@@ -225,7 +268,13 @@ export function AddMcpModal({
       setError(t("mcp.err_url"));
       return;
     }
-    await addMcpServer(n, { type: "http", url: u });
+    const res = await addMcpServer(n, { type: "http", url: u });
+    if (!res.ok) {
+      // Keep the modal open with the typing intact: closing on a refusal is what
+      // made this read as "it saved" when nothing had been written.
+      setError(mcpErrorText(res, t));
+      return;
+    }
     // Probe anonymously right away — the row shows Testing…, then Live, an
     // error, or Needs sign-in (401 → the OAuth switch on the detail page).
     await connectMcp(n);
@@ -251,7 +300,15 @@ export function AddMcpModal({
       return;
     }
     for (const [n, config] of entries) {
-      await addMcpServer(n, config as Record<string, any>);
+      const res = await addMcpServer(n, config as Record<string, any>);
+      if (!res.ok) {
+        // A pasted block can hold several servers. Stop at the first refusal rather
+        // than pressing on: whatever refused this one (an unreadable config file)
+        // will refuse the rest, and the modal stays open showing why.
+        setError(mcpErrorText(res, t));
+        onChanged();
+        return;
+      }
     }
     onChanged();
     onClose();
@@ -349,6 +406,11 @@ export function McpServerDetail({
   const [tools, setTools] = useState<{ name: string; description: string }[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [toolErr, setToolErr] = useState<string | null>(null);
+  // Two spots, because the controls sit in two places: the settings group at the top
+  // and the destructive action at the bottom. A refusal has to appear next to the
+  // control that bounced — a toggle that silently snaps back reads as a broken switch.
+  const [writeErr, setWriteErr] = useState<string | null>(null);
+  const [removeErr, setRemoveErr] = useState<string | null>(null);
 
   const isOauth = server.auth === "oauth";
   const authorizing = server.status === "authorizing";
@@ -363,7 +425,14 @@ export function McpServerDetail({
   // Anonymous connect came back 401/403: the fix is sign-in, so switch the entry
   // to OAuth (DCR — nothing to register) and start the browser flow right away.
   const signInWithOauth = async () => {
-    await patchMcpServer(server.name, { auth: "oauth" });
+    setWriteErr(null);
+    const res = await patchMcpServer(server.name, { auth: "oauth" });
+    if (!res.ok) {
+      // The entry was never switched to OAuth, so starting the browser flow would
+      // just fail again against the anonymous config.
+      setWriteErr(mcpErrorText(res, t));
+      return;
+    }
     await connectMcp(server.name);
     onChanged();
   };
@@ -398,7 +467,9 @@ export function McpServerDetail({
           <Toggle
             checked={server.enabled}
             onChange={async () => {
-              await patchMcpServer(server.name, { enabled: !server.enabled });
+              setWriteErr(null);
+              const res = await patchMcpServer(server.name, { enabled: !server.enabled });
+              if (!res.ok) setWriteErr(mcpErrorText(res, t));
               onChanged();
             }}
             title={t("mcp.enable_title")}
@@ -443,6 +514,7 @@ export function McpServerDetail({
             {server.last_error}
           </div>
         )}
+        {writeErr && <McpError text={writeErr} testId={`mcp-write-error-${server.name}`} />}
         <div className={ROW}>
           <span className="text-[13px] flex-1">{t("available.tools")}</span>
           <button className="text-[13px] text-muted hover:text-ink" onClick={loadTools} disabled={busy}>
@@ -491,8 +563,15 @@ export function McpServerDetail({
         <button
           className="text-[13px] text-danger/80 hover:text-danger"
           onClick={async () => {
-            await deleteMcpServer(server.name);
+            setRemoveErr(null);
+            const res = await deleteMcpServer(server.name);
             onChanged();
+            if (!res.ok) {
+              // Stay on the page: navigating away on a refusal would show the row
+              // still sitting in the list with no explanation for why.
+              setRemoveErr(mcpErrorText(res, t));
+              return;
+            }
             onGone();
           }}
           data-testid={`mcp-remove-${server.name}`}
@@ -500,6 +579,7 @@ export function McpServerDetail({
           {t("mcp.remove_server")}
         </button>
       </div>
+      {removeErr && <McpError text={removeErr} testId={`mcp-remove-error-${server.name}`} />}
     </div>
   );
 }

@@ -2143,6 +2143,13 @@ class SessionManager:
             logger.warning(
                 "mcp_connect_connector %s failed: %s", name, msg[:500], exc_info=True
             )
+            # An unreadable `mcp.json` answers with its stable code and a path-free
+            # message; the `str(exc)` that names the file stays in the log line above.
+            refused = (
+                {"ok": False, "code": exc.code, "error": exc.user_message}
+                if isinstance(exc, MCPConfigError)
+                else None
+            )
             if seeded:
                 try:
                     _undo_seed()
@@ -2154,7 +2161,7 @@ class SessionManager:
                         name,
                         exc_info=True,
                     )
-            return {"ok": False, "error": msg[:500]}
+            return refused or {"ok": False, "error": msg[:500]}
 
     async def signout_mcp(self, name: str) -> dict[str, Any]:
         """Drop the live connection (if any) and forget the stored OAuth tokens."""
@@ -2167,32 +2174,39 @@ class SessionManager:
         removed = mcp_oauth.sign_out(name, self.secrets)
         return {"ok": True, "had_tokens": removed}
 
+    def _mcp_config_refused(
+        self, name: str, where: str, exc: MCPConfigError
+    ) -> dict[str, Any]:
+        """One shape for "the config file is unreadable, so nothing was written".
+
+        Every mutator below rewrites the whole `mcp.json`, so an unreadable file is
+        refused rather than written over from an empty base (mcp/config.py). The user
+        has to hear WHY — it is the one thing they can go and fix — so the payload
+        carries the stable `code` the GUI translates on, plus a path-free English
+        `error` for other clients. `str(exc)`, which names the file, goes to the log.
+        """
+        logger.warning("%s %s: %s", where, name, exc)
+        return {"ok": False, "name": name, "code": exc.code, "error": exc.user_message}
+
     def add_mcp(self, name: str, config: dict[str, Any]) -> dict[str, Any]:
-        # Every mutator here rewrites the whole `mcp.json`, so an unreadable file is
-        # refused rather than written over from an empty base (mcp/config.py) — report
-        # the reason instead of letting it escape as a 500 and instead of the old
-        # silent success that took the user's other servers with it.
         try:
             put_global_server(name, config)
         except MCPConfigError as exc:
-            logger.warning("add_mcp %s: %s", name, exc)
-            return {"ok": False, "name": name, "error": str(exc)}
+            return self._mcp_config_refused(name, "add_mcp", exc)
         return {"ok": True, "name": name}
 
     def patch_mcp(self, name: str, changes: dict[str, Any]) -> dict[str, Any]:
         try:
             ok = patch_global_server(name, changes)
         except MCPConfigError as exc:
-            logger.warning("patch_mcp %s: %s", name, exc)
-            return {"ok": False, "name": name, "error": str(exc)}
+            return self._mcp_config_refused(name, "patch_mcp", exc)
         return {"ok": ok, "name": name}
 
     def delete_mcp(self, name: str) -> dict[str, Any]:
         try:
             ok = delete_global_server(name)
         except MCPConfigError as exc:
-            logger.warning("delete_mcp %s: %s", name, exc)
-            return {"ok": False, "name": name, "error": str(exc)}
+            return self._mcp_config_refused(name, "delete_mcp", exc)
         if ok:
             # A later re-add under the same name starts clean, not pre-failed —
             # and not pre-trusted (the old entry's test says nothing about the new).
