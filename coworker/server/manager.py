@@ -4352,13 +4352,25 @@ class SessionManager:
             return {"ok": False, "error": str(exc)}
         finally:
             self._codex_authorizing = False
-        self._refresh_provider("openai-codex")
-        # Same convenience as set_provider: surface the recommended model right away,
-        # and win the default when the current default's provider isn't usable.
-        added = "openai-codex:gpt-5.6-sol"
-        self.add_model(added)
-        if not self._provider_configured(self._model_provider(self.model)):
-            self.set_default_model(added)
+        try:
+            self._refresh_provider("openai-codex")
+            # Same convenience as set_provider: surface the recommended model right away,
+            # and win the default when the current default's provider isn't usable.
+            added = "openai-codex:gpt-5.6-sol"
+            self.add_model(added)
+            if not self._provider_configured(self._model_provider(self.model)):
+                self.set_default_model(added)
+        except Exception as exc:
+            # Tokens are already saved at this point (the user IS signed in) — only
+            # this convenience follow-up (recommended model, default promotion)
+            # failed. Same _codex_error channel as the sign-in failure above, but
+            # prefixed so it reads differently from a bare sign-in failure (and so
+            # `codex_status()`'s `signed_in=True` + non-empty `last_error` combo is
+            # unambiguous even without the prefix). This string reaches the GUI as-is
+            # (no i18n pass) — the bilingual "signed in, setup incomplete" framing
+            # around it lives in the frontend's wrapper string, not in this text.
+            logger.warning("codex sign-in: post-signin setup failed", exc_info=True)
+            self._codex_error = f"post-signin setup failed: {exc}"
         return result
 
     def codex_status(self) -> dict[str, Any]:

@@ -408,6 +408,11 @@ function OAuthSignIn({ info, tp, onChanged }: { info: ProviderInfo; tp: string; 
             {t("provider.sign_out")}
           </button>
         </div>
+        {info.last_error && (
+          <p className="text-[12px] text-warnInk mt-2" data-testid={`${tp}-oauth-post-signin-error`}>
+            {t("provider.oauth_post_signin_error", { error: info.last_error })}
+          </p>
+        )}
         <p className="text-[12px] text-faint mt-2">
           {t("provider.oauth_plan_note")}
         </p>

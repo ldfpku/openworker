@@ -1567,6 +1567,7 @@
     "oauth_finish_browser": "Finish signing in in the browser window.",
     "oauth_reopen": "Reopen the sign-in page",
     "oauth_start_error": "Couldn't start the sign-in.",
+    "oauth_post_signin_error": "Signed in, but couldn't finish setup: {{error}}",
     "copy_command": "Copy command",
     "test_save_hint": "Runs one read-only check, then saves.",
     "test_save_btn": "Test & save",

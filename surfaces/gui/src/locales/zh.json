@@ -1536,6 +1536,7 @@
     "oauth_finish_browser": "在浏览器窗口中完成登录。",
     "oauth_reopen": "重新打开登录页",
     "oauth_start_error": "无法启动登录。",
+    "oauth_post_signin_error": "已登录，但收尾配置未完成：{{error}}",
     "copy_command": "复制命令",
     "test_save_hint": "运行一次只读检查，然后保存。",
     "test_save_btn": "测试并保存",
