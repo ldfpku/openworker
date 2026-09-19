@@ -926,6 +926,22 @@ class TurnEngine:
         attempt = 0
         retries_used = 0
         while True:
+            # Stop, asked BEFORE the round is paid for. The checkpoint at the bottom of
+            # this body catches a Stop that landed during tool calls, but nothing caught
+            # one that landed before a round's first model call: `run`/`retry` clear the
+            # flag as their very first act, so a Stop that arrives just after that used to
+            # buy a whole round-trip whose answer is thrown away two screens further down
+            # (`self._cancel.is_set() and turn is None`). That window is not theoretical:
+            # it is how `explore` relays the parent session's Stop into its child engine
+            # (tools/subagent.py). The hook is attached on the child's first event, and
+            # `add_interrupt_hook` fires it on the spot when a Stop is already pending, so
+            # the child's flag is routinely set between `run()` clearing it and this loop
+            # starting. Skipping the call also means no producer thread is started, which
+            # is what keeps the child's `asyncio.run` teardown from joining one.
+            if self._cancel.is_set():
+                self._append_notice("interrupted")
+                yield Event(EventType.INTERRUPTED, {"iterations": iterations})
+                return
             # Two gates, whichever trips first. Both payloads carry BOTH numbers: a stop
             # that says only "max iterations reached" tells the user about a mechanism
             # instead of about their bill, and doesn't mention that replying continues —

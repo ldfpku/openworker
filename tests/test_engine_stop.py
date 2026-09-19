@@ -265,6 +265,46 @@ def test_stop_skips_remaining_tool_calls(tmp_path):
     assert "interrupted by user" in results[1]["content"]
 
 
+def _engine(tmp_path, provider):
+    return TurnEngine(
+        provider=provider,
+        registry=ToolRegistry(),
+        permissions=PermissionEngine(workspace_root=tmp_path),
+        model="gpt-5.5",
+    )
+
+
+def test_a_stop_relayed_into_a_child_engine_never_pays_for_a_model_call(tmp_path):
+    """The `explore` shape (tools/subagent.py), where a Stop routinely lands in the one
+    window nothing used to check: `run()` clears the flag as its first act, so the relay
+    hook can only be attached on the child's FIRST event — and `add_interrupt_hook` fires
+    it on the spot when a Stop is already pending. The child therefore starts its loop with
+    the flag already set, and used to spend a whole model round-trip before the check after
+    the stream looked at it. The answer to that call is discarded either way; the bill is
+    not."""
+    parent_turn = AssistantTurn(text="p", finish_reason="stop")
+    parent = _engine(tmp_path, OneTurnProvider(parent_turn))
+    child_provider = OneTurnProvider(AssistantTurn(text="report", finish_reason="stop"))
+    child = _engine(tmp_path, child_provider)
+    parent.request_interrupt()  # pressed while `explore` was still being dispatched
+
+    async def run():
+        events, detach = [], []
+        async for ev in child.run("research this"):
+            if not detach:  # `_relay_stop()`: first event, once per call
+                detach.append(parent.add_interrupt_hook(child.request_interrupt))
+            events.append(ev)
+        for remove in detach:
+            remove()
+        return events
+
+    events = asyncio.run(run())
+
+    assert child_provider.calls == 0, "the stopped child still paid for a model round"
+    assert [ev.type for ev in events] == [EventType.TURN_START, EventType.INTERRUPTED]
+    assert child.messages[-1]["kind"] == "interrupted"
+
+
 def test_interrupt_hook_fires(tmp_path):
     fired = []
     engine = TurnEngine(
