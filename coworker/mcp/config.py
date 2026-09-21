@@ -97,7 +97,11 @@ def _load(path: Path) -> tuple[dict[str, Any], Optional[str]]:
     gone by the time `_read` raises (see `MCPConfigError` for why that matters).
     """
     try:
-        text = path.read_text(encoding="utf-8")
+        # `utf-8-sig` so a leading BOM is simply dropped: Windows PowerShell 5.1 writes
+        # UTF-8 WITH one by default, and this is a file people save by hand. A BOM is
+        # not damage, and refusing it would lock the user out of every write for good.
+        # (What `_write_global` writes back stays plain BOM-less UTF-8.)
+        text = path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         return {}, None
     except OSError as exc:
@@ -105,10 +109,14 @@ def _load(path: Path) -> tuple[dict[str, Any], Optional[str]]:
         return {}, errno.errorcode.get(exc.errno or -1, type(exc).__name__)
     except ValueError as exc:  # UnicodeDecodeError: the file is there but isn't UTF-8
         return {}, type(exc).__name__
-    if not text.strip():
-        # Deliberate narrow carve-out: an empty file holds no servers, so reading it as
-        # an empty config cannot lose anything, while refusing to write would wedge the
-        # user out of ever adding a server again without hand-deleting the file.
+    if not text.replace("\x00", "").strip():
+        # Deliberate narrow carve-out: a file with NOTHING in it — zero bytes, only
+        # whitespace, or only NULs (what NTFS commonly leaves after power loss mid-write:
+        # the size got committed, the data never did). The real contents are already
+        # gone from it, so reading it as empty cannot lose anything, while refusing to
+        # write would wedge the user out of ever adding a server again without
+        # hand-deleting the file. Real JSON trailed by NULs is NOT this case: it still
+        # holds the user's servers, fails to parse below, and is refused.
         return {}, None
     try:
         data = json.loads(text)

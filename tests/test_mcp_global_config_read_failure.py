@@ -92,6 +92,48 @@ def test_a_blank_file_is_treated_as_an_empty_config():
     assert set(read_global()) == {"docs"}
 
 
+def test_a_bom_prefixed_file_is_read_not_refused():
+    """Windows PowerShell 5.1's `Set-Content`/`Out-File` write UTF-8 WITH a BOM, and
+    `mcp.json` is a file people open and save by hand. A BOM is not damage: refusing
+    it would lock the user out of every write for good over an invisible byte."""
+    path = global_mcp_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\xef\xbb\xbf" + json.dumps({"mcpServers": TWO_SERVERS}).encode())
+
+    assert read_global() == TWO_SERVERS
+    put_global_server("notes", {"command": "notes"})
+    assert set(read_global()) == {"sales-db", "docs", "notes"}
+    # What we write back stays plain BOM-less UTF-8.
+    assert path.read_bytes().startswith(b"{")
+
+
+def test_an_all_nul_file_is_treated_as_an_empty_config():
+    """All-NUL is what NTFS commonly leaves after power loss mid-write: the size was
+    committed, the data never was. The real contents are already gone from this file,
+    so — exactly like a zero-byte file — refusing would only wedge the user forever."""
+    path = global_mcp_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\x00" * 4096)
+
+    assert read_global() == {}
+    put_global_server("notes", {"command": "notes"})
+    assert read_global() == {"notes": {"command": "notes"}}
+
+
+def test_nul_padding_after_real_json_is_still_refused():
+    """The carve-out is for files with NOTHING in them. Real JSON trailed by NULs
+    still holds the user's servers — overwriting it is exactly the loss this module
+    exists to prevent, so it stays a refusal."""
+    path = global_mcp_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(json.dumps({"mcpServers": TWO_SERVERS}).encode() + b"\x00" * 64)
+    before = path.read_bytes()
+
+    with pytest.raises(MCPConfigError):
+        put_global_server("notes", {"command": "notes"})
+    assert path.read_bytes() == before
+
+
 def test_put_preserves_the_other_servers():
     """The plain read-modify-write guarantee, guarded so a later refactor can't quietly
     turn an add into a replace-everything."""
