@@ -282,7 +282,7 @@ class _StopSignal:
     `asyncio.Event` binds itself to the first loop that awaits it and raises on every loop
     after that (`asyncio.mixins._LoopBoundMixin`). No production path drives one engine
     across two event loops today — `explore` builds a fresh subagent engine per call and
-    runs it through exactly one `asyncio.run` (tools/subagent.py) — but staying
+    runs it on exactly one event loop of its own (tools/subagent.py) — but staying
     loop-agnostic here is defensive: it's what keeps tests, the CLI, and any future code
     that reuses one engine across separate `asyncio.run` calls from ever landing on
     "bound to a different loop", and it lets `set()` be called safely from any thread —
@@ -944,8 +944,8 @@ class TurnEngine:
             # (tools/subagent.py). The hook is attached on the child's first event, and
             # `add_interrupt_hook` fires it on the spot when a Stop is already pending, so
             # the child's flag is routinely set between `run()` clearing it and this loop
-            # starting. Skipping the call also means no producer thread is started, which
-            # is what keeps the child's `asyncio.run` teardown from joining one.
+            # starting. Skipping the call also means no producer thread is started, so no
+            # provider connection is opened only to be left hanging for a dead turn.
             if self._cancel.is_set():
                 self._append_notice("interrupted")
                 yield Event(EventType.INTERRUPTED, {"iterations": iterations})
@@ -1364,6 +1364,23 @@ class TurnEngine:
         # response into a queue that was thrown away with the generator.
         consumer_gone = threading.Event()
 
+        def deliver(item) -> bool:
+            """Hand `item` to the consumer's loop; False once that loop has been closed.
+
+            A Stop ends the consumer at once, while this thread can still be inside a
+            provider read that nothing interrupts. `explore` closes its child loop without
+            waiting for it (tools/subagent.py), so when the read finally returns there may
+            be no loop left, and `call_soon_threadsafe` raises on a closed one. Nobody is
+            listening by then, so the item is dropped rather than raised: raised, it would
+            only land in the executor's future, which nobody reads — and on the error path
+            it would replace the provider's own exception.
+            """
+            try:
+                loop.call_soon_threadsafe(queue.put_nowait, item)
+            except RuntimeError:  # the loop is closed; nobody is left to read this
+                return False
+            return True
+
         def produce():
             try:
                 for chunk in provider.stream(
@@ -1374,11 +1391,12 @@ class TurnEngine:
                     # plain attribute reads, and we only read).
                     if self._cancel.is_set() or consumer_gone.is_set():
                         break
-                    loop.call_soon_threadsafe(queue.put_nowait, ("chunk", chunk))
+                    if not deliver(("chunk", chunk)):
+                        break  # leaving the loop closes the stream, and its connection
             except Exception as exc:  # surfaced to the awaiting consumer
-                loop.call_soon_threadsafe(queue.put_nowait, ("error", exc))
+                deliver(("error", exc))
             finally:
-                loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
+                deliver(("done", None))
 
         loop.run_in_executor(None, produce)
         get_task: Optional[asyncio.Future] = None

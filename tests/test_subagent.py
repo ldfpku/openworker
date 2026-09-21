@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 
 import pytest
 from coworker.events import Event, EventType
@@ -352,3 +353,114 @@ def test_the_stop_hook_is_detached_when_the_explorer_blows_up(tmp_path, monkeypa
     with pytest.raises(RuntimeError):
         explore("look around")
     assert removals == ["removed"]
+
+
+# -- a stopped explore does not wait for the read it walked away from ------------------
+
+
+class _HeldChildStream:
+    """A child answer whose read hangs after the first delta, for at most `hold` seconds.
+
+    Stands in for a provider read that nothing can interrupt: the Stop ends the child's
+    turn at once, but the producer thread stays inside this read until the gate opens or
+    `hold` runs out. `closed` is set once the stream has been let go of, which is when a
+    real SDK stream closes its HTTP response.
+    """
+
+    def __init__(self, hold):
+        self.hold = hold
+        self.parked = threading.Event()
+        self.gate = threading.Event()
+        self.closed = threading.Event()
+        self.produced = 0
+
+    def __iter__(self):
+        try:
+            self.produced = 1
+            yield StreamChunk(text_delta="half a report, ")
+            self.parked.set()
+            self.gate.wait(self.hold)
+            self.produced = 2
+            yield StreamChunk(text_delta="then the rest")
+            self.produced = 3
+            yield StreamChunk(turn=AssistantTurn(text=_CHILD_REPORT, finish_reason="stop"))
+        finally:
+            self.closed.set()
+
+
+class _OneStreamProvider(ProviderClient):
+    def __init__(self, script):
+        self._script = script
+
+    def complete(self, **kwargs):  # pragma: no cover - streamed instead
+        raise NotImplementedError
+
+    def capabilities(self, model):
+        return ModelCapabilities()
+
+    def stream(self, *, model, messages, tools=None, **settings):
+        yield from self._script
+
+
+def test_a_stopped_explore_returns_without_waiting_for_its_producer(tmp_path, monkeypatch):
+    """`asyncio.run` ends by joining its default executor, for up to
+    `THREAD_JOIN_TIMEOUT` — 300 seconds on 3.13. After a Stop the child's turn is over in
+    milliseconds, but its producer thread is still inside a provider read that nothing can
+    interrupt, so `explore` sat there until that read came back or the join gave up, and
+    the parent session with it. It has to return as soon as the child's turn has ended.
+
+    Both waits are cut to fractions of a second here so a regression fails instead of
+    hanging: the join to `JOIN`, the read to `HOLD`."""
+    join, hold = 0.5, 1.0
+    monkeypatch.setattr(asyncio.constants, "THREAD_JOIN_TIMEOUT", join)
+    script = _HeldChildStream(hold)
+    stops = []
+
+    def _register(hook):
+        stops.append(hook)
+        return lambda: None
+
+    explore = explorer_tools(
+        workspace=tmp_path,
+        provider=_OneStreamProvider(script),
+        model="gpt-5.5",
+        register_stop_hook=_register,
+    )[0]
+    outcome = {}
+
+    def _call():
+        try:
+            outcome["result"] = explore("look around")
+        except BaseException as exc:  # reported below, never lost in the thread
+            outcome["error"] = exc
+        finally:
+            outcome["returned_at"] = time.monotonic()
+
+    worker = threading.Thread(target=_call, daemon=True)
+    worker.start()
+    try:
+        # Failure bounds only, never part of the happy path.
+        assert script.parked.wait(10)
+        assert stops, "the explorer never attached its Stop relay"
+        stopped_at = time.monotonic()
+        stops[0]()  # the parent's Stop, relayed into the child
+        worker.join(10)
+        assert not worker.is_alive()
+        still_reading = not script.closed.is_set()
+    finally:
+        script.gate.set()
+        worker.join(10)
+
+    assert "error" not in outcome, outcome.get("error")
+    elapsed = outcome["returned_at"] - stopped_at
+    assert elapsed < join / 2, (
+        f"explore took {elapsed:.3f}s to return after Stop; its producer holds the read "
+        f"for {hold}s"
+    )
+    assert still_reading  # it really did return with the read still in flight
+    assert "interrupted" in json.dumps(outcome["result"])
+    assert _CHILD_REPORT not in json.dumps(outcome["result"])
+    # Released, the producer pulls the chunk that was on the wire, lets go of the stream
+    # and nothing more.
+    assert script.closed.wait(10)
+    assert script.produced == 2

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Coroutine, Optional, TypeVar
 
 import aisuite as ai
 
@@ -37,6 +37,64 @@ key snippets, and note anything surprising you found along the way. If you could
 something, say what you searched so the caller doesn't repeat the same searches."""
 
 _CHILD_MAX_ITERATIONS = 10
+
+_T = TypeVar("_T")
+
+
+def _run_without_joining_executor(main: Coroutine[Any, Any, _T]) -> _T:
+    """`asyncio.run`, minus its wait for the loop's executor threads on the way out.
+
+    `asyncio.run` ends by joining the loop's default executor for up to
+    `asyncio.constants.THREAD_JOIN_TIMEOUT` — 300 seconds on Python 3.13. The child
+    engine's stream producer runs in that executor (`TurnEngine._astream`), and after a
+    Stop it is typically still inside a provider read that nothing can interrupt. The
+    child's turn was over in milliseconds, yet `explore` — and with it the parent's tool
+    call and the parent's whole turn — sat waiting for that read to come back, which a
+    stalled stream only does when the SDK's own read timeout fires.
+
+    Nothing the child's turn needs is left in that thread by then: the producer drops
+    what it would have delivered once the loop is closed, and lets go of the stream (and
+    with it the connection) as soon as the read returns — see `deliver` in `_astream`.
+    So everything else is done the way `asyncio.run` does it — a fresh loop, set as this
+    thread's loop while it runs, leftover tasks cancelled, async generators finalised —
+    and the executor is shut down without waiting, which is what `loop.close()` does.
+
+    The abandoned thread is still an ordinary executor worker: it ends when its read
+    returns, and a normal interpreter exit before that waits for it (`concurrent.futures`
+    joins its workers at exit). The desktop sidecar never exits that way — the shell kills
+    it and the orphan watchdog uses `os._exit` (server/run.py) — and the session's own
+    stream producers, on the server's loop, were always joined the same way.
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(main)
+    finally:
+        try:
+            _cancel_leftover_tasks(loop)
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        finally:
+            asyncio.set_event_loop(None)
+            loop.close()
+
+
+def _cancel_leftover_tasks(loop: asyncio.AbstractEventLoop) -> None:
+    """Cancel whatever `main` left running and wait them out, as `asyncio.run` does."""
+    leftover = asyncio.all_tasks(loop)
+    if not leftover:
+        return
+    for task in leftover:
+        task.cancel()
+    loop.run_until_complete(asyncio.gather(*leftover, return_exceptions=True))
+    for task in leftover:
+        if not task.cancelled() and task.exception() is not None:
+            loop.call_exception_handler(
+                {
+                    "message": "unhandled exception while closing the explorer's loop",
+                    "exception": task.exception(),
+                    "task": task,
+                }
+            )
 
 
 def build_explorer_engine(
@@ -117,7 +175,7 @@ def explorer_tools(
         def _relay_stop() -> None:
             """Put this child engine on the receiving end of the parent's Stop.
 
-            Attached on the child's FIRST event, not before `asyncio.run`: `run()` clears
+            Attached on the child's FIRST event, not before its loop starts: `run()` clears
             the stop flag as its first act, so a hook attached any earlier would have the
             Stop it relayed wiped and the explorer would finish as if nobody had pressed
             it. The other side of that window — the Stop landing between the dispatch and
@@ -141,9 +199,10 @@ def explorer_tools(
                     return report, f"error: {event.data.get('error', '')}"
             return report, status
 
-        # Tools execute in a worker thread (no running loop), so asyncio.run is safe.
+        # Tools execute in a worker thread (no running loop), so this thread can run a
+        # loop of its own — one that does not wait on a producer a Stop has abandoned.
         try:
-            report, status = asyncio.run(_run())
+            report, status = _run_without_joining_executor(_run())
         finally:
             # Whatever the exit — stopped, finished, blown up — the hook goes: it holds
             # this child engine, and with it a whole conversation history, alive on the

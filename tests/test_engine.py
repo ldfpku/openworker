@@ -1889,6 +1889,68 @@ def test_a_consumer_that_leaves_stops_the_producer(tmp_path):
     assert parked.produced == 1
 
 
+class _RecordingExecutor(ThreadPoolExecutor):
+    """One worker, and a handle on every job it was given — `run_in_executor` keeps the
+    job's own future to itself, and that future is where a producer's exception lands."""
+
+    def __init__(self):
+        super().__init__(max_workers=1)
+        self.jobs = []
+
+    def submit(self, fn, /, *args, **kwargs):
+        job = super().submit(fn, *args, **kwargs)
+        self.jobs.append(job)
+        return job
+
+
+def test_a_producer_abandoned_on_a_closed_loop_lets_go_quietly(tmp_path):
+    """A Stop ends the consumer at once, while its producer can still be sitting in a read
+    nothing can interrupt. `explore` closes its loop without waiting for that thread
+    (tools/subagent.py), so when the read finally returns the loop it would report to is
+    gone. The producer has to let go of the stream and leave — not raise from its
+    `finally` into a future nobody will ever read, and not reach for the next chunk."""
+    parked = _GatedStream(
+        [_sse_chunk(content="a"), _sse_chunk(content="b"), _sse_chunk(finish="stop")],
+        park_at=1,
+    )
+    provider, _ = _counting_stream_provider(parked)
+    engine = _stream_engine(tmp_path, provider)
+    engine.messages.append({"role": "user", "content": "hi"})
+    executor = _RecordingExecutor()
+    loop = asyncio.new_event_loop()
+    loop.set_default_executor(executor)
+    thread_errors = []
+    previous_hook = threading.excepthook
+    threading.excepthook = thread_errors.append
+
+    async def _stop_mid_answer():
+        chunks = []
+        async for chunk in engine._astream():
+            chunks.append(chunk)
+            engine.request_interrupt()  # after the first delta, with the next still unread
+        return chunks
+
+    try:
+        delivered = loop.run_until_complete(_stop_mid_answer())
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        loop.close()  # what `explore` does: no wait for the producer
+        assert [c.text_delta for c in delivered] == ["a"]
+        # Still inside the read when its loop went away; now the read returns.
+        assert parked.parked.wait(10)
+        parked.gate.set()
+        producer_error = executor.jobs[0].exception(timeout=10)
+    finally:
+        parked.gate.set()  # a parked producer would hold the test process at exit
+        threading.excepthook = previous_hook
+        executor.shutdown(wait=True)
+        if not loop.is_closed():
+            loop.close()
+
+    assert producer_error is None
+    assert thread_errors == []
+    assert parked.produced == 2  # the chunk already on the wire, and nothing after it
+
+
 # -- the stop flag, which outlives any one event loop ----------------------------------
 
 
