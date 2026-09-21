@@ -79,29 +79,31 @@ def state_dir() -> Path:
     return Path.home() / ".config" / "coworker"
 
 
-def _load_dotenv(path: Path) -> dict[str, str]:
-    """`${VAR}` fallbacks from the sidecar `.env`; unreadable means "no fallbacks".
+def _load_dotenv(path: Path) -> tuple[dict[str, str], str]:
+    """`${VAR}` fallbacks from the sidecar `.env`, plus why it could not be read.
 
-    This sits underneath `SecretStore.get`, which promises not to raise, so a locked
-    or non-UTF-8 `.env` (cp936 machines write those) must not become an exception out
-    of a credential lookup. Nothing is written from here, so degrading is safe: the
-    worst case is a `${VAR}` ref left unresolved, which `resolve` already handles.
+    Returns `(env, "")` normally (an empty env when there is no file) and
+    `({}, reason)` when the file exists but will not read. This sits underneath
+    `SecretStore.get`, which promises not to raise, so a locked or non-UTF-8 `.env`
+    (cp936 machines write those) must not become an exception out of a credential
+    lookup. Nothing is written from here, so degrading is safe: the worst case is a
+    `${VAR}` ref left unresolved, which `resolve` already handles. Logging is left to
+    the caller, which knows whether this failure is news.
     """
     env: dict[str, str] = {}
     try:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return env
+        return env, ""
     except (OSError, UnicodeDecodeError) as exc:
-        logger.warning("ignoring unreadable %s (%s)", path, type(exc).__name__)
-        return env
+        return env, type(exc).__name__
     for line in raw.splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
         env[key.strip()] = value.strip().strip('"').strip("'")
-    return env
+    return env, ""
 
 
 def _restrict_to_user(path: Path, *, is_dir: bool) -> None:
@@ -233,6 +235,7 @@ class SecretStore:
         self._dotenv_path = self.path.parent / ".env"
         self._lock = threading.Lock()
         self._read_warned = False
+        self._dotenv_warned = False
 
     # -- reads ------------------------------------------------------------------
     def get(self, profile: str) -> Optional[dict[str, Any]]:
@@ -247,7 +250,19 @@ class SecretStore:
 
     def resolve(self, value: Any) -> Any:
         """Resolve `${VAR}` refs in a value (recursively) from env + the local `.env`."""
-        env = _load_dotenv(self._dotenv_path)
+        env, error = _load_dotenv(self._dotenv_path)
+        if error:
+            # Once per failure streak, like `_read_or_empty`: this runs on every lookup.
+            if not self._dotenv_warned:
+                self._dotenv_warned = True
+                logger.warning(
+                    "ignoring unreadable %s (%s); ${VAR} refs that rely on it stay "
+                    "unresolved until it can be read again",
+                    self._dotenv_path,
+                    error,
+                )
+        else:
+            self._dotenv_warned = False
 
         def _walk(v: Any) -> Any:
             if isinstance(v, str):

@@ -413,6 +413,30 @@ def test_degraded_reads_never_log_secret_material(tmp_path, caplog, payload):
         assert not [t for t in _reachable_texts((record.getMessage(), record.args)) if _CANARY in t]
 
 
+def test_unreadable_dotenv_warns_once_per_failure_streak(tmp_path, caplog, monkeypatch):
+    """`resolve` runs on every lookup; a broken `.env` must not log on every one."""
+    monkeypatch.delenv("DOCS_TOKEN", raising=False)
+    store = SecretStore(tmp_path / "secrets.json")
+    store.put("docs:default", {"token": "${DOCS_TOKEN}"})
+    dotenv = tmp_path / ".env"
+    broken = 'DOCS_TOKEN="密钥"'.encode("gbk")
+
+    def warnings():
+        return [r for r in caplog.records if r.levelno == logging.WARNING]
+
+    with caplog.at_level(logging.WARNING, logger="coworker.secrets"):
+        dotenv.write_bytes(broken)
+        for _ in range(100):
+            assert store.get("docs:default")["token"] == "${DOCS_TOKEN}"
+        assert len(warnings()) == 1
+        assert str(dotenv) in warnings()[0].getMessage()
+        dotenv.write_text('DOCS_TOKEN="stand-in"\n', encoding="utf-8")
+        assert store.get("docs:default")["token"] == "stand-in"  # streak ends
+        dotenv.write_bytes(broken)
+        store.get("docs:default")
+        assert len(warnings()) == 2
+
+
 def test_unreadable_dotenv_does_not_break_a_lookup(tmp_path, monkeypatch):
     """`_load_dotenv` sits underneath `get`, which promises not to raise."""
     store = SecretStore(tmp_path / "secrets.json")
