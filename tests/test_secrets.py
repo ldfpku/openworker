@@ -9,10 +9,12 @@ import stat
 import subprocess
 import sys
 import time
+import traceback
 from pathlib import Path
 
 import pytest
 
+import coworker.secrets as secrets_module
 from coworker.secrets import SecretStore, SecretStoreReadError
 
 
@@ -316,6 +318,50 @@ def test_error_text_never_carries_secret_material(tmp_path, op, payload):
     # Nothing kept: only the path and a string reason, never an exception object.
     assert set(vars(exc)) == {"path", "detail"}
     assert isinstance(exc.detail, str)
+
+
+def _is_store_frame(filename):
+    """True for code in coworker/secrets.py. Only the store's own frames are checked:
+    the test's frames legitimately hold the payload it planted."""
+    norm = lambda p: os.path.normcase(os.path.abspath(p))  # noqa: E731
+    return norm(filename) == norm(secrets_module.__file__)
+
+
+@pytest.mark.parametrize("payload", _DAMAGED)
+@pytest.mark.parametrize("op", ["put", "delete"])
+def test_no_store_frame_keeps_the_plaintext(tmp_path, op, payload):
+    """A raised error drags every frame it left through along on `__traceback__`,
+    locals and all -- which a debugger, a crash reporter, or plain
+    `TracebackException(capture_locals=True)` will read. By the time the store raises,
+    none of its frames may still hold the file it could not use."""
+    store = SecretStore(tmp_path / "secrets.json")
+    store.path.write_bytes(payload)
+    with pytest.raises(SecretStoreReadError) as caught:
+        if op == "put":
+            store.put("x", {"a": 1})
+        else:
+            store.delete("provider:openai")
+    exc = caught.value
+
+    checked = []
+    tb = exc.__traceback__
+    while tb is not None:
+        frame = tb.tb_frame
+        if _is_store_frame(frame.f_code.co_filename):
+            checked.append(frame.f_code.co_name)
+            for name, value in frame.f_locals.items():
+                held = [t for t in _reachable_texts(value) if _CANARY in t]
+                assert not held, f"{frame.f_code.co_name}() still holds the file in {name!r}"
+        tb = tb.tb_next
+    # Guard against a vacuous pass: the filter must actually have matched our frames.
+    assert {op, "_read"} <= set(checked), checked
+
+    # The stock exit that renders those locals must come out clean too.
+    rendered = traceback.TracebackException.from_exception(exc, capture_locals=True)
+    ours = [fs for fs in rendered.stack if _is_store_frame(fs.filename)]
+    assert ours
+    for fs in ours:
+        assert not [v for v in (fs.locals or {}).values() if _CANARY in v], fs.name
 
 
 @pytest.mark.parametrize("payload", _DAMAGED)

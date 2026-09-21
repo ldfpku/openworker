@@ -20,7 +20,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 from . import procutil
 
@@ -181,6 +181,45 @@ def write_private_text(path: str | Path, content: str) -> Path:
     return _atomic_private_write(Path(path).expanduser(), content)
 
 
+class _Loaded(NamedTuple):
+    """What `_load_store` found. `store` is None exactly when `error` is set."""
+
+    store: Optional[dict[str, Any]]
+    error: str = ""  # safe to log: an errno string or an exception class name
+
+
+def _load_store(path: Path) -> _Loaded:
+    """Read and parse the secret file, reporting failure by value — never by raising.
+
+    Only this frame ever holds the file's plaintext (`raw`, and `data` once parsed).
+    An exception raised from here would carry this frame on its `__traceback__`,
+    locals and all, into any debugger, crash reporter or
+    `TracebackException(capture_locals=True)`. Returning instead lets the frame die
+    with its locals before `SecretStore._read` raises anything.
+
+    For the same reason nothing is raised from inside an `except` block, and no
+    exception object escapes: `UnicodeDecodeError.object` and
+    `json.JSONDecodeError.doc` each hold the entire file.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return _Loaded({})
+    except OSError as exc:
+        return _Loaded(None, str(exc))  # errno strings carry no file content
+    except UnicodeDecodeError as exc:
+        return _Loaded(None, type(exc).__name__)
+    if not raw.strip():
+        return _Loaded({})
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return _Loaded(None, type(exc).__name__)
+    if not isinstance(data, dict):
+        return _Loaded(None, "top-level JSON is not an object")
+    return _Loaded(data)
+
+
 class SecretStore:
     """File-backed secret store. Reads resolve `${VAR}` refs; status never leaks values."""
 
@@ -283,35 +322,14 @@ class SecretStore:
         file, but an fsync-less `os.replace` plus a power cut can still leave a
         zero-length one), and refusing to write would strand the user with a store they
         can never add to again without deleting the file by hand.
+
+        The reading and parsing live in `_load_store`, which never raises; by the time
+        this raises, the only frame that held the plaintext is already gone.
         """
-        # Every `raise` below happens *outside* its `except` block, on purpose. Raising
-        # from inside one leaves the original on `__context__` even with `from None`, and
-        # `json.JSONDecodeError` keeps the entire document in `.doc` — that would put the
-        # whole plaintext secret file one attribute hop away from any error reporter.
-        raw: Optional[str] = None
-        detail = ""
-        try:
-            raw = self.path.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            return {}
-        except OSError as exc:
-            detail = str(exc)  # errno strings carry no file content
-        except UnicodeDecodeError as exc:
-            detail = type(exc).__name__
-        if raw is None:
-            raise SecretStoreReadError(self.path, detail)
-        if not raw.strip():
-            return {}
-        data: Any = None
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            detail = type(exc).__name__
-        if detail:
-            raise SecretStoreReadError(self.path, detail)
-        if not isinstance(data, dict):
-            raise SecretStoreReadError(self.path, "top-level JSON is not an object")
-        return data
+        loaded = _load_store(self.path)
+        if loaded.store is None:
+            raise SecretStoreReadError(self.path, loaded.error)
+        return loaded.store
 
     def _read_or_empty(self, op: str) -> dict[str, Any]:
         """Read-only variant: degrade to "nothing configured", but say so in the log.
