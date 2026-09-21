@@ -107,6 +107,10 @@ class Scheduler:
     async def _run_claimed(
         self, task: ScheduledTask, *, trigger: str
     ) -> Optional[TaskRun]:
+        # `_tick` runs this as a fire-and-forget task (`spawn_retained` never retrieves a
+        # task's exception), so every store write below is contained and logged: a raise
+        # out of it (a locked or full db) used to vanish into asyncio's context-free "Task
+        # exception was never retrieved". Cancellation still goes straight through.
         try:
             run = await self.runner(task, trigger)
         except Exception as exc:
@@ -114,14 +118,20 @@ class Scheduler:
             run = TaskRun(
                 task_id=task.id, status="error", error=str(exc), trigger=trigger
             )
-            self.store.add_run(run)
+            try:
+                self.store.add_run(run)
+            except Exception:
+                logger.exception("could not record the failed run of task %s", task.id)
         finally:
             self._running_ids.discard(task.id)
         # advance the task (run_count/last_run) → save recomputes next_run.
-        fresh = self.store.get(task.id)
-        if fresh is not None:
-            fresh.run_count += 1
-            fresh.last_run = run.started_at if run else None
-            fresh.last_status = run.status if run else "error"
-            self.store.save(fresh)
+        try:
+            fresh = self.store.get(task.id)
+            if fresh is not None:
+                fresh.run_count += 1
+                fresh.last_run = run.started_at if run else None
+                fresh.last_status = run.status if run else "error"
+                self.store.save(fresh)
+        except Exception:
+            logger.exception("could not advance task %s after its run", task.id)
         return run
