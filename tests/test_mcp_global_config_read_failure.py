@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import traceback
 from pathlib import Path
 
 import pytest
@@ -118,7 +119,7 @@ def test_put_refuses_to_write_when_the_read_errors(monkeypatch):
         put_global_server("notes", {"command": "notes"})
 
     assert failure.value.path == path
-    assert isinstance(failure.value.cause, OSError)
+    assert failure.value.detail == "EACCES"
     assert path.read_bytes() == before, "the config on disk must be byte-for-byte intact"
 
 
@@ -132,7 +133,7 @@ def test_put_refuses_to_write_when_the_json_is_corrupt():
     with pytest.raises(MCPConfigError) as failure:
         put_global_server("notes", {"command": "notes"})
 
-    assert isinstance(failure.value.cause, json.JSONDecodeError)
+    assert failure.value.detail == "JSONDecodeError"
     assert path.read_bytes() == before, "the config on disk must be byte-for-byte intact"
 
 
@@ -195,6 +196,66 @@ def test_load_mcp_servers_degrades_on_an_unreadable_global_file(tmp_path):
         )
     }
     assert names == {"local"}
+
+
+# -- the exception must not be a way back into the file -------------------------
+# `mcp.json` can hold literal secrets (`env`/`headers` values, a token in a URL query).
+_FAKE_SECRET = "sk-live-FAKE-do-not-leak-7f3a9c"
+
+
+def _capture(fn, *args) -> MCPConfigError:
+    """Call `fn` and hand back the MCPConfigError it raised. Its own frame holds no file
+    contents, so anything the walk below finds really did come from the exception."""
+    try:
+        fn(*args)
+    except MCPConfigError as exc:
+        return exc
+    raise AssertionError(f"{fn.__name__} did not raise MCPConfigError")
+
+
+def _everything_reachable(exc: BaseException) -> list[str]:
+    """Every rendering of `exc` a future log line could plausibly produce."""
+    out = [repr(exc), str(exc), repr(exc.args), repr(vars(exc))]
+    out += traceback.format_exception(exc)
+    out += traceback.TracebackException.from_exception(exc, capture_locals=True).format()
+    seen: BaseException | None = exc
+    while seen is not None:  # the whole __cause__/__context__ chain, if any
+        out.append(repr(seen))
+        tb = seen.__traceback__
+        while tb is not None:
+            out += [repr(value) for value in tb.tb_frame.f_locals.values()]
+            tb = tb.tb_next
+        seen = seen.__cause__ or seen.__context__
+    return out
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # Half-written JSON: JSONDecodeError.doc is the whole document.
+        ('{"mcpServers": {"api": {"env": {"TOKEN": "' + _FAKE_SECRET + '"}').encode(),
+        # Valid JSON, but not UTF-8: UnicodeDecodeError.object is the whole byte string,
+        # and its repr prints it.
+        b'{"mcpServers": {"api": {"env": {"TOKEN": "'
+        + _FAKE_SECRET.encode()
+        + b'"}}, "\xd6\xd0": {}}}',
+        # Parses, but the top level isn't an object: the parsed list holds the secret.
+        ('["' + _FAKE_SECRET + '"]').encode(),
+    ],
+    ids=["corrupt-json", "not-utf8", "non-object"],
+)
+def test_the_exception_cannot_reach_the_file_contents(raw):
+    """No attribute, no chained exception, no rendering and no traceback frame's locals
+    may lead from the raised MCPConfigError back to what the file contains."""
+    path = global_mcp_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
+
+    for exc in (_capture(read_global), _capture(put_global_server, "notes", {"x": 1})):
+        assert exc.__cause__ is None and exc.__context__ is None
+        assert not hasattr(exc, "cause")
+        leaks = [r for r in _everything_reachable(exc) if _FAKE_SECRET in r]
+        assert leaks == [], f"file contents reachable from the exception: {leaks[:1]}"
 
 
 # -- the manager surface: the failure reaches the caller ------------------------

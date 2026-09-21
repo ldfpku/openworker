@@ -12,6 +12,7 @@ target the **global** file.
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 from dataclasses import dataclass, field
@@ -38,6 +39,17 @@ class MCPConfigError(RuntimeError):
     read to `{}` would rewrite the file from an empty base and take every server the
     user had with it — silently, irrecoverably, on one transient IO error. Mutators
     therefore let this propagate and write nothing at all.
+
+    It deliberately carries NOTHING from inside the file. `mcp.json` can hold literal
+    secrets — `env` and `headers` values, tokens in a URL query; that is why
+    `list_mcp` redacts before the REST layer — and the underlying exceptions embed the
+    contents wholesale (`JSONDecodeError.doc` is the entire document,
+    `UnicodeDecodeError.object` the entire raw byte string, printed by its `repr`). So
+    no `cause` attribute, no `__cause__`/`__context__` chain (`_read` raises outside
+    any `except` block), and no traceback frame whose locals hold the text (`_load`
+    reads and parses in a frame that is gone before the raise). `detail` is only ever
+    an errno name or a bare class name. One `logger.error("%r", exc)` away from a
+    leak is too close.
     """
 
     # Stable machine code for the wire. The GUI translates ON this rather than on the
@@ -48,10 +60,10 @@ class MCPConfigError(RuntimeError):
     code = "config_unreadable"
     user_message = "the MCP server config file could not be read"
 
-    def __init__(self, path: Path, cause: BaseException) -> None:
+    def __init__(self, path: Path, detail: str) -> None:
         self.path = path
-        self.cause = cause
-        super().__init__(f"cannot read MCP config {path}: {cause}")
+        self.detail = detail
+        super().__init__(f"cannot read MCP config {path}: {detail}")
 
 
 @dataclass
@@ -77,6 +89,36 @@ def global_mcp_path() -> Path:
     return state_dir() / "mcp.json"
 
 
+def _load(path: Path) -> tuple[dict[str, Any], Optional[str]]:
+    """Read and parse one `mcp.json`. Never raises: `(data, None)` or `({}, detail)`.
+
+    Everything that holds the file's contents — the text, the parsed value, and the
+    decode/parse exceptions that embed them — lives and dies in THIS frame, which is
+    gone by the time `_read` raises (see `MCPConfigError` for why that matters).
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}, None
+    except OSError as exc:
+        # Locked file, IO error, permission denied, a directory in the way.
+        return {}, errno.errorcode.get(exc.errno or -1, type(exc).__name__)
+    except ValueError as exc:  # UnicodeDecodeError: the file is there but isn't UTF-8
+        return {}, type(exc).__name__
+    if not text.strip():
+        # Deliberate narrow carve-out: an empty file holds no servers, so reading it as
+        # an empty config cannot lose anything, while refusing to write would wedge the
+        # user out of ever adding a server again without hand-deleting the file.
+        return {}, None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return {}, type(exc).__name__
+    if not isinstance(data, dict):
+        return {}, f"top level is {type(data).__name__}, not an object"
+    return data, None
+
+
 def _read(path: Path) -> dict[str, Any]:
     """One `mcp.json` as raw JSON.
 
@@ -86,28 +128,11 @@ def _read(path: Path) -> dict[str, Any]:
     callers index the result with `.get`, so a stray JSON list used to surface as an
     AttributeError from inside whichever caller happened to reach it first.
     """
-    try:
-        text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return {}
-    except OSError as exc:
-        # Locked file, IO error, permission denied, a directory in the way.
-        raise MCPConfigError(path, exc) from exc
-    except ValueError as exc:  # UnicodeDecodeError: the file is there but isn't UTF-8
-        raise MCPConfigError(path, exc) from exc
-    if not text.strip():
-        # Deliberate narrow carve-out: an empty file holds no servers, so reading it as
-        # an empty config cannot lose anything, while refusing to write would wedge the
-        # user out of ever adding a server again without hand-deleting the file.
-        return {}
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise MCPConfigError(path, exc) from exc
-    if not isinstance(data, dict):
-        raise MCPConfigError(
-            path, TypeError(f"top level is {type(data).__name__}, not an object")
-        )
+    data, failure = _load(path)
+    if failure is not None:
+        # Raised here, outside any `except` block and after `_load`'s frame is gone:
+        # no `__context__`, no `__cause__`, and no local in this frame holds the text.
+        raise MCPConfigError(path, failure)
     return data
 
 
