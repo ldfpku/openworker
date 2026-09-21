@@ -15,17 +15,30 @@ import pytest
 from fastapi.testclient import TestClient
 
 from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+from coworker.providers.base import SYSTEM_CONTEXT_OPEN
 from coworker.server import SessionManager, create_app
 
 
 class ScriptedProvider(ProviderClient):
-    """Queued turns + captured `messages` so tests can assert what the model saw."""
+    """Queued turns + captured `messages` so tests can assert what the model saw.
+
+    Only the engine's own calls land in `seen` and take from `_turns`. The manager's
+    auto-title completion goes through this same provider: it is fired on `turn_start`
+    (app.py `run_turn`) and again from `mark_idle`, and runs on a worker thread, so it
+    races the engine's call. Recorded in `seen`, it made "the last call" depend on thread
+    timing; popping `_turns`, it could take the engine's scripted answer and end the turn
+    in an error. Title calls are recognized by the titling system prompt, as in
+    tests/test_autotitle.py and tests/test_ui_refresh_e2e.py, and answered with the
+    "small-talk" sentinel, which the manager drops without storing or broadcasting it.
+    """
 
     def __init__(self, turns=None):
         self._turns = list(turns or [])
         self.seen: list[list[dict]] = []
 
     def complete(self, *, model, messages, tools=None, **settings):
+        if messages and "title chat sessions" in str(messages[0].get("content", "")):
+            return AssistantTurn(text="small-talk")
         self.seen.append(messages)
         return self._turns.pop(0)
 
@@ -327,7 +340,18 @@ def test_ws_force_run_frames_the_turn(tmp_path):
             events.append(evt)
             if evt["type"] == "turn_done":
                 break
-    framed = provider.seen[-1][-1]["content"]
+    # One model call, the engine's. Its last message is the per-turn `<system-context>`
+    # block, sent as a separate trailing user message (engine._outbound_messages), so
+    # the framed user message is the other user message in that call.
+    (sent,) = provider.seen
+    users = [
+        m
+        for m in sent
+        if m["role"] == "user"
+        and not str(m["content"]).startswith(SYSTEM_CONTEXT_OPEN)
+    ]
+    assert len(users) == 1, users
+    framed = users[0]["content"]
     assert 'load_skill("greet")' in str(framed)
     assert "hello" in str(framed)
     start = next(e for e in events if e["type"] == "turn_start")
