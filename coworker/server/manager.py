@@ -1706,36 +1706,48 @@ class SessionManager:
         self._spawn_weixin_task(self._announce_prompt_resolved(item, resolution, via))
 
     async def _announce_prompt_resolved(self, item, resolution: str, via: str) -> None:
-        from ..interactions import (
-            WX_ACK,
-            WX_RESOLVED_ELSEWHERE,
-            outcome_text,
-        )
+        # Always a fire-and-forget task (`notify_prompt_resolved` is sync by contract), and
+        # `spawn_retained` never retrieves a task's exception — so everything here, not just
+        # the broadcast, is contained: a raise out of the receipt's wording or the item's
+        # `wx` sidecar used to vanish into asyncio's context-free "Task exception was never
+        # retrieved". The receipt is best-effort; nobody is blocked on it, so a log it is.
+        try:
+            from ..interactions import (
+                WX_ACK,
+                WX_RESOLVED_ELSEWHERE,
+                outcome_text,
+            )
 
-        if via != "app":
-            # The app resolves its own card locally the moment the user clicks; every other
-            # surface has to push the outcome into the open session view.
-            try:
-                await self.broadcast_session(
-                    item.session_id,
-                    {
-                        "type": "prompt_resolved",
-                        "data": {
-                            "kind": item.kind,
-                            "via": via,
-                            "resolution": resolution,
+            if via != "app":
+                # The app resolves its own card locally the moment the user clicks; every
+                # other surface has to push the outcome into the open session view.
+                try:
+                    await self.broadcast_session(
+                        item.session_id,
+                        {
+                            "type": "prompt_resolved",
+                            "data": {
+                                "kind": item.kind,
+                                "via": via,
+                                "resolution": resolution,
+                            },
                         },
-                    },
-                )
-            except Exception:
-                logger.debug("prompt_resolved broadcast failed", exc_info=True)
-        wx = (getattr(item, "data", None) or {}).get("wx") or {}
-        if not wx.get("target") or via == "timeout":
-            return  # the watchdog already told WeChat why it closed
-        text = (WX_ACK if via == "weixin" else WX_RESOLVED_ELSEWHERE).format(
-            outcome=outcome_text(item, resolution)
-        )
-        await self._weixin_say(wx["target"], text)
+                    )
+                except Exception:
+                    logger.debug("prompt_resolved broadcast failed", exc_info=True)
+            wx = (getattr(item, "data", None) or {}).get("wx") or {}
+            if not wx.get("target") or via == "timeout":
+                return  # the watchdog already told WeChat why it closed
+            text = (WX_ACK if via == "weixin" else WX_RESOLVED_ELSEWHERE).format(
+                outcome=outcome_text(item, resolution)
+            )
+            await self._weixin_say(wx["target"], text)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "announcing the resolved prompt %s failed", getattr(item, "id", "?")
+            )
 
     async def _durable_resume(self, item) -> None:
         """Continue the turn that was suspended on `item`, now that it is answered and no
@@ -2495,6 +2507,23 @@ class SessionManager:
 
                 asyncio.get_running_loop().run_in_executor(None, _greet)
 
+        async def _commit_or_report(creds: dict[str, Any]) -> None:
+            # Nobody awaits the login task — the QR pane polls `weixin_qr_status` — so the
+            # polled state is the only way a commit failure can reach the user; left to
+            # escape, it parked the pane on "confirm on your phone" for good. Caught HERE,
+            # inside the shield: if `_run` were cancelled mid-commit, asyncio would mark the
+            # shielded failure retrieved without logging it anywhere.
+            try:
+                await _commit(creds)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.exception("weixin QR login: saving the confirmed login failed")
+                cur = self._weixin_qr
+                if cur is not None:
+                    cur.state = "failed"
+                    cur.error = str(exc) or exc.__class__.__name__
+
         async def _run() -> None:
             try:
                 creds = await qr_login_flow(on_state=_on_state)
@@ -2513,11 +2542,13 @@ class SessionManager:
             # listener silently offline until restart).
             self._weixin_qr_committing = True
             try:
-                await asyncio.shield(_commit(creds))
+                await asyncio.shield(_commit_or_report(creds))
             finally:
                 self._weixin_qr_committing = False
 
-        self._weixin_qr_task = asyncio.create_task(_run())
+        # Retained like every other background flow started from a REST route (the
+        # attribute alone is dropped the moment a restarted login replaces it).
+        self._weixin_qr_task = self.spawn_background(_run())
         return {"ok": True, "started": True}
 
     def weixin_qr_status(self) -> dict[str, Any]:
@@ -7537,12 +7568,15 @@ class SessionManager:
         '' = auto-pick) overrides when set. Every failure (provider error, empty, absurdly
         long) is swallowed — the title_from fallback stays; the small-talk sentinel leaves
         auto_title unset so the turn-2 retry can run."""
-        from ..providers.matrix import utility_model_for
-
-        title_model = str(self._prefs.get("autotitle_model") or "") or utility_model_for(
-            engine.model
-        )
         try:
+            # Inside the `try` on purpose: this runs as a fire-and-forget task whose
+            # exception nobody retrieves, and a raise here used to skip the `finally`
+            # too — stranding `_autotitle_inflight`, so the session was never titled again.
+            from ..providers.matrix import utility_model_for
+
+            title_model = str(
+                self._prefs.get("autotitle_model") or ""
+            ) or utility_model_for(engine.model)
             turn = await asyncio.to_thread(
                 engine.provider.complete,
                 model=title_model,
