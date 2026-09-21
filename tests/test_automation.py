@@ -537,7 +537,7 @@ async def test_scheduled_run_marks_idle_after_success(tmp_path, monkeypatch):
 
 async def test_scheduled_run_marks_idle_when_setup_raises(tmp_path, monkeypatch):
     """An exception during the run's setup must still release the busy marker via
-    `finally` — mirrors the existing _durable_resume guard shape (no `except`, just a
+    `finally` — mirrors the existing _durable_resume_turn guard shape (no `except`, just a
     `finally` around the busy marker; the exception still escapes to the caller).
 
     Note: a plain provider exception does NOT exercise this path — the engine's own
