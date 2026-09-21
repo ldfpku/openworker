@@ -123,10 +123,10 @@ def _unreadable(monkeypatch, path, exc):
 
 
 def _stocked(tmp_path, name="secrets.json"):
-    """A store with two real credentials already on disk, plus its raw bytes."""
+    """A store with two stand-in credentials already on disk, plus its raw bytes."""
     store = SecretStore(tmp_path / name)
-    store.put("provider:openai", {"type": "token", "api_key": "sk-REAL-1"})
-    store.put("gmail:me@x.com", {"type": "oauth", "refresh_token": "rt-REAL-2"})
+    store.put("provider:openai", {"type": "token", "api_key": "sk-STANDIN-1"})
+    store.put("gmail:me@x.com", {"type": "oauth", "refresh_token": "rt-STANDIN-2"})
     return store, store.path.read_bytes()
 
 
@@ -141,7 +141,7 @@ def test_put_refuses_when_read_raises_oserror(tmp_path, monkeypatch):
 
 def test_put_refuses_on_corrupt_json(tmp_path):
     store, _ = _stocked(tmp_path)
-    torn = '{"provider:openai": {"api_key": "sk-REAL-1"}, "gmail'
+    torn = '{"provider:openai": {"api_key": "sk-STANDIN-1"}, "gmail'
     store.path.write_text(torn, encoding="utf-8")
     with pytest.raises(SecretStoreReadError):
         store.put("provider:anthropic", {"type": "token", "api_key": "sk-NEW"})
@@ -262,7 +262,7 @@ def test_warning_fires_again_after_the_file_breaks_a_second_time(tmp_path, caplo
         store.path.write_text("{oops", encoding="utf-8")
         store.get("x")
         store.path.write_bytes(good)
-        assert store.get("provider:openai")["api_key"] == "sk-REAL-1"  # streak ends
+        assert store.get("provider:openai")["api_key"] == "sk-STANDIN-1"  # streak ends
         store.path.write_text("{oops", encoding="utf-8")
         store.get("x")
     assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 2
@@ -306,8 +306,9 @@ def _reachable_texts(root, depth=8):
     `vars` (`.object`, `.doc`), anything chained on `__cause__`/`__context__`, and the
     contents of containers -- recursively, so an exception kept as an attribute of the
     error is searched as deeply as the error itself."""
-    # `alive` pins every visited object: `vars()` and friends build temporaries, and a
-    # freed temporary's id can be reused, which would make `seen` skip a real object.
+    # `alive` pins every visited object: `vars()` and friends build temporaries, and
+    # a freed temporary's id can be reused -- `seen` would then skip an object it
+    # never searched.
     seen, alive, out = set(), [], []
 
     def walk(obj, left):
