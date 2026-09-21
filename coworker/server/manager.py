@@ -2150,6 +2150,8 @@ class SessionManager:
             )
             # An unreadable `mcp.json` answers with its stable code and a path-free
             # message; the `str(exc)` that names the file stays in the log line above.
+            # Defense in depth only: the route runs this through spawn_background and
+            # discards the result, so today nothing here reaches a UI either way.
             refused = (
                 {"ok": False, "code": exc.code, "error": exc.user_message}
                 if isinstance(exc, MCPConfigError)
