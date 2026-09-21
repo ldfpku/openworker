@@ -1054,6 +1054,72 @@ async def test_manual_run_steered_turn_ending_on_iteration_gate_is_ok(
     assert manager.task_store.get(task.id).last_status == "ok"
 
 
+def _notice(kind, text=None):
+    message = {"role": "notice", "kind": kind}
+    if text:
+        message["text"] = text
+    return message
+
+
+_USER = {"role": "user", "content": "run the task"}
+_REPLY = {"role": "assistant", "content": "done"}
+_CALL = {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "read_file"}}],
+}
+_RESULT = {"role": "tool", "tool_call_id": "c1", "content": "hello"}
+
+
+@pytest.mark.parametrize(
+    "messages, expected",
+    [
+        pytest.param([], ("ok", None), id="empty"),
+        pytest.param([_USER, _REPLY], ("ok", None), id="assistant_tail"),
+        pytest.param([_USER, _CALL, _RESULT], ("ok", None), id="tool_tail"),
+        pytest.param(
+            [_USER, _notice("turn_aborted", "the model returned nothing")],
+            ("error", "the model returned nothing"),
+            id="turn_aborted",
+        ),
+        pytest.param(
+            [_USER, _notice("error", "boom"), _notice("model_switch", "Model switched")],
+            ("error", "boom"),
+            id="error_then_model_switch",
+        ),
+        pytest.param(
+            [_USER, _notice("interrupted"), _notice("model_switch", "Model switched")],
+            ("canceled", None),
+            id="interrupted_then_model_switch",
+        ),
+        pytest.param(
+            [_USER, _REPLY, _notice("turn_truncated", "the reply may be cut off")],
+            ("ok", None),
+            id="truncated_after_reply",
+        ),
+        pytest.param(
+            [_USER, _CALL, _RESULT, {"role": "user", "content": "also check b.txt"}],
+            ("ok", None),
+            id="steering_tail_after_reply",
+        ),
+        pytest.param(
+            [{"role": "system", "content": "sys"}, _USER],
+            ("error", "the turn ended before any reply"),
+            id="user_tail_no_reply",
+        ),
+    ],
+)
+def test_run_outcome_from_transcript(messages, expected):
+    """The verdict table `finalize_manual_run` applies, one row per tail shape:
+    `turn_aborted` is a failed turn exactly like `error`; a `model_switch` after the
+    deciding notice changes nothing; `turn_truncated` is appended after an answer that
+    DID arrive (engine.py), so the turn completed; a steering `user` tail after a reply
+    is a normal ending."""
+    from coworker.server.manager import _run_outcome_from_transcript
+
+    assert _run_outcome_from_transcript(messages) == expected
+
+
 def _drive_manual_run_over_ws(manager, task, *, before_send=None, after_turn=None):
     """Run a manual run the way the GUI does — `POST .../run`, open the session WS, send
     the prompt, wait for `turn_done`, then `POST .../finalize` — and return
