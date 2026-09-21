@@ -17,10 +17,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import traceback
 from pathlib import Path
 
 import pytest
+
+from coworker.connectors.setup import disconnect_connector
 
 from coworker.mcp.config import (
     MCPConfigError,
@@ -298,6 +301,30 @@ def test_the_exception_cannot_reach_the_file_contents(raw):
         assert not hasattr(exc, "cause")
         leaks = [r for r in _everything_reachable(exc) if _FAKE_SECRET in r]
         assert leaks == [], f"file contents reachable from the exception: {leaks[:1]}"
+
+
+# -- connector disconnect: best-effort on the config, never on the disconnect ----
+def test_disconnecting_a_connector_survives_an_unreadable_config(caplog):
+    """An MCP-backed connector's disconnect also removes its seeded `mcp.json` entry.
+    With the file unreadable that removal is refused (it would rewrite servers it never
+    read) — but the disconnect itself must still go through: failing the whole call
+    would leave the user unable to disconnect at all. Logged, not raised."""
+    secrets = SecretStore()
+    secrets.put("monday:default", {"mode": "mcp", "enabled": True})
+    secrets.put("mcp-oauth:monday", {"tokens": {"access_token": "at"}})
+    path = _write_global_raw('{"mcpServers": {"monday": {"url"')
+    before = path.read_bytes()
+
+    with caplog.at_level(logging.WARNING, logger="coworker.connectors.setup"):
+        out = disconnect_connector(secrets, "monday")
+
+    assert out["ok"] is True
+    assert secrets.get("monday:default") is None, "the disconnect itself must happen"
+    assert secrets.get("mcp-oauth:monday") is None, "tokens must still be forgotten"
+    assert path.read_bytes() == before, "the unreadable config must be left alone"
+    assert any(
+        "could not remove the seeded MCP entry" in r.getMessage() for r in caplog.records
+    )
 
 
 # -- the manager surface: the failure reaches the caller ------------------------
