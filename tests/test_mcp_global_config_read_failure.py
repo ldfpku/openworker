@@ -273,6 +273,25 @@ def test_begin_mcp_connect_flags_nothing_on_an_unreadable_config(tmp_path, monke
     assert manager._mcp_authorizing == set()
 
 
+def test_connect_after_an_unreadable_config_leaves_no_flag_and_no_error(
+    tmp_path, monkeypatch
+):
+    """Pins what `begin_mcp_connect`'s comment says happens next, so the two can't drift
+    apart again. The flag is never left set; the connect answers "unknown MCP server";
+    and `_mcp_errors` stays EMPTY — a known gap (nothing from this path reaches the UI).
+    Whoever closes that gap updates this test and that comment together."""
+    manager = SessionManager(data_dir=tmp_path / "data")
+    path = _seed_two_servers()
+    _make_unreadable(monkeypatch, path)
+
+    manager.begin_mcp_connect("sales-db")
+    out = asyncio.run(manager.connect_mcp("sales-db"))
+
+    assert manager._mcp_authorizing == set()
+    assert out == {"ok": False, "error": "unknown MCP server: sales-db"}
+    assert manager._mcp_errors == {}
+
+
 def test_mcp_connect_connector_reports_a_read_failure_and_writes_nothing(
     tmp_path, monkeypatch
 ):

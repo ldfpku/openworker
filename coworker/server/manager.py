@@ -1977,14 +1977,19 @@ class SessionManager:
         """Flag `authorizing` BEFORE the background connect task starts. The GUI's
         fast poll keys off this status; the first refresh used to outpace the task,
         so a failing Test showed nothing until the lazy 5s tick (owner-hit
-        2026-08-21 — the button looked dead). Known names only, so an unknown
-        server can't wedge the flag (connect_mcp only clears it on a match)."""
+        2026-08-21 — the button looked dead). Known names only: `connect_mcp`
+        clears the flag on every exit path, match or not, but a name with no server
+        behind it has no row for the status to show on."""
         try:
             known = read_global()
         except MCPConfigError as exc:
-            # Unreadable config: flag nothing. `connect_mcp` runs next and reports the
-            # failure through `_mcp_errors` — a flag set here with no matching server
-            # would be the stuck-"authorizing" bug this method exists to prevent.
+            # Unreadable config: whether `name` is known can't be told, so flag nothing.
+            # What follows, stated plainly: `connect_mcp` runs next, its
+            # `load_mcp_servers` skips the unreadable file (logging it), matches no
+            # server, and returns "unknown MCP server" WITHOUT writing `_mcp_errors` —
+            # and the route discards that result (spawn_background). So nothing from
+            # this path reaches the UI; these log lines are the only record. Surfacing
+            # an unreadable config in the MCP list is a known gap, tracked separately.
             logger.warning("begin_mcp_connect %s: %s", name, exc)
             return
         if name in known:
