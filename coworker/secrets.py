@@ -202,14 +202,19 @@ def _load_store(path: Path) -> _Loaded:
     `json.JSONDecodeError.doc` each hold the entire file.
     """
     try:
-        raw = path.read_text(encoding="utf-8")
+        # utf-8-sig: the user manual sends people to hand-edit this file, and
+        # PowerShell 5.1 saves UTF-8 with a BOM. Writes stay plain UTF-8.
+        raw = path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         return _Loaded({})
     except OSError as exc:
         return _Loaded(None, str(exc))  # errno strings carry no file content
     except UnicodeDecodeError as exc:
         return _Loaded(None, type(exc).__name__)
-    if not raw.strip():
+    # Nothing but whitespace, or nothing but NUL bytes -- what NTFS can leave after a
+    # power cut. Either way the credentials are already gone from this file, so there
+    # is nothing left to protect; refusing would strand the user for good.
+    if not raw.replace("\x00", "").strip():
         return _Loaded({})
     try:
         data = json.loads(raw)
@@ -317,11 +322,13 @@ class SecretStore:
           some other tool. Answering `{}` made the next `put`/`delete` write that `{}`
           back with one key added, destroying every other credential on disk.
 
-        The one deliberate hole is a file that is empty or all whitespace: there is
-        nothing left in it to protect (`_atomic_private_write` never leaves a partial
-        file, but an fsync-less `os.replace` plus a power cut can still leave a
-        zero-length one), and refusing to write would strand the user with a store they
-        can never add to again without deleting the file by hand.
+        The one deliberate hole is a file holding nothing at all -- empty, all
+        whitespace, or all NUL bytes: there is nothing left in it to protect
+        (`_atomic_private_write` never leaves a partial file, but an fsync-less
+        `os.replace` plus a power cut can still leave a zero-length or zero-filled
+        one), and refusing to write would strand the user with a store they can never
+        add to again without deleting the file by hand. A leading UTF-8 BOM is accepted
+        too; it is how PowerShell 5.1 saves a hand-edited file.
 
         The reading and parsing live in `_load_store`, which never raises; by the time
         this raises, the only frame that held the plaintext is already gone.

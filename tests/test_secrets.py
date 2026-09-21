@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import json
 import logging
 import os
@@ -192,6 +193,42 @@ def test_empty_file_is_treated_as_an_empty_store(tmp_path, body):
     store.path.write_text(body, encoding="utf-8")
     store.put("provider:openai", {"type": "token", "api_key": "sk-1"})
     assert store.get("provider:openai")["api_key"] == "sk-1"
+
+
+def test_utf8_bom_file_is_read_and_saved_back_without_one(tmp_path):
+    """The user manual points people at this file, and PowerShell 5.1 saves UTF-8 with
+    a BOM. Read strictly as UTF-8, a hand-edited file became "unreadable": saving
+    refused for good while every read reported nothing configured."""
+    store = SecretStore(tmp_path / "secrets.json")
+    body = json.dumps({"weixin:default": {"type": "token", "token": "tok-stand-in"}})
+    store.path.write_bytes(codecs.BOM_UTF8 + body.encode("utf-8"))
+    assert store.get("weixin:default")["token"] == "tok-stand-in"
+    store.put("provider:openai", {"type": "token", "api_key": "sk-1"})
+    written = store.path.read_bytes()
+    assert not written.startswith(codecs.BOM_UTF8)  # saved back as plain UTF-8
+    assert set(json.loads(written.decode("utf-8"))) == {"weixin:default", "provider:openai"}
+
+
+@pytest.mark.parametrize("size", [1, 4096])
+def test_nul_filled_file_is_treated_as_an_empty_store(tmp_path, size):
+    """What NTFS can leave behind after a power cut: the old length, every byte zero.
+    The content is already gone, so this gets the same allowance as an empty file;
+    refusing it would strand the user with a store they can never write to."""
+    store = SecretStore(tmp_path / "secrets.json")
+    store.path.write_bytes(b"\x00" * size)
+    assert store.status() == []
+    store.put("provider:openai", {"type": "token", "api_key": "sk-1"})
+    assert store.get("provider:openai")["api_key"] == "sk-1"
+
+
+def test_nul_padding_after_real_content_is_still_refused(tmp_path):
+    """The NUL allowance covers a file with nothing else in it, not a damaged one."""
+    store = SecretStore(tmp_path / "secrets.json")
+    body = b'{"provider:openai": {"api_key": "sk-1"}}' + b"\x00" * 64
+    store.path.write_bytes(body)
+    with pytest.raises(SecretStoreReadError):
+        store.put("x", {"a": 1})
+    assert store.path.read_bytes() == body
 
 
 def test_writes_leave_neighbouring_profiles_alone(tmp_path):
