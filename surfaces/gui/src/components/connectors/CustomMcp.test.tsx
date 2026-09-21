@@ -107,6 +107,31 @@ describe("AddMcpModal — a refused add stays open and says why", () => {
   });
 });
 
+describe("AddMcpModal — a refused paste-JSON batch stops at the first refusal", () => {
+  it("shows the reason, adds nothing further, and keeps the modal open", async () => {
+    const { addMcpServer } = await import("../../api");
+    vi.mocked(addMcpServer).mockResolvedValueOnce(REFUSED);
+    const onClose = vi.fn();
+
+    render(<AddMcpModal onClose={onClose} onChanged={vi.fn()} />);
+    fireEvent.click(screen.getByTestId("mcp-add-tab-json"));
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: {
+        value: JSON.stringify({
+          mcpServers: { first: { command: "a" }, second: { command: "b" } },
+        }),
+      },
+    });
+    fireEvent.click(screen.getByText(en.manage.add_btn));
+
+    expect(await screen.findByText(en.mcp.err_config_unreadable)).toBeTruthy();
+    // Whatever refused the first (an unreadable config) refuses the rest: stop there.
+    expect(addMcpServer).toHaveBeenCalledTimes(1);
+    expect(addMcpServer).toHaveBeenCalledWith("first", { command: "a" });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
 describe("CustomMcpGroup — a refused quick-add says why", () => {
   it("shows the reason on the preset row and does not start the sign-in", async () => {
     const { addMcpServer, connectMcp } = await import("../../api");
@@ -131,6 +156,23 @@ describe("McpServerDetail — a refused write is never a silent snap-back", () =
 
     expect(await screen.findByTestId("mcp-write-error-sales-db")).toBeTruthy();
     expect(screen.getByText(en.mcp.err_config_unreadable)).toBeTruthy();
+  });
+
+  it("explains a refused switch-to-OAuth and does not start the sign-in", async () => {
+    // Anonymous connect hit a 401, so the page offers "Sign in", which first flips the
+    // entry to OAuth. If that write is refused, the entry is still anonymous and the
+    // browser flow would only fail again against it.
+    const { patchMcpServer, connectMcp } = await import("../../api");
+    vi.mocked(patchMcpServer).mockResolvedValueOnce(REFUSED);
+    const guarded: McpServer = { ...SERVER, transport: "http", auth: null, auth_hint: true };
+
+    render(<McpServerDetail server={guarded} onChanged={vi.fn()} onGone={vi.fn()} />);
+    fireEvent.click(screen.getByTestId("mcp-authfix-sales-db"));
+
+    expect(await screen.findByTestId("mcp-write-error-sales-db")).toBeTruthy();
+    expect(screen.getByText(en.mcp.err_config_unreadable)).toBeTruthy();
+    expect(patchMcpServer).toHaveBeenCalledWith("sales-db", { auth: "oauth" });
+    expect(connectMcp).not.toHaveBeenCalled();
   });
 
   it("stays on the page when a remove is refused", async () => {
