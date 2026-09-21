@@ -852,6 +852,92 @@ async def test_manual_run_prepare_and_finalize(tmp_path, monkeypatch):
     assert manager.task_store.get(task.id).run_count == 1
 
 
+async def test_manual_run_interrupted_is_canceled_not_ok(tmp_path, monkeypatch):
+    """A manual run never goes through `_run_scheduled_task`'s INTERRUPTED handling — the
+    GUI drives the turn straight over the session WS, and `finalize_manual_run` only finds
+    out afterward, from the persisted transcript. Before the fix it unconditionally wrote
+    `status="ok"` once the first turn had ended, so a run the user stopped mid-flight
+    (`request_interrupt()`, same public Stop-button path as the scheduled test above) was
+    recorded exactly like a real completion."""
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+    from coworker.server.manager import SessionManager
+
+    class InterruptingProvider(ProviderClient):
+        def __init__(self):
+            self.engine = None  # set once the manual run's engine exists
+
+        def complete(self, *, model, messages, tools=None, **settings):
+            assert self.engine is not None, "engine must be captured before first call"
+            self.engine.request_interrupt()
+            return AssistantTurn(text="ignored", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    provider = InterruptingProvider()
+    manager = SessionManager(data_dir=tmp_path / "data", provider=provider)
+    task = _task(workspace=str(ws), agent="cowork")
+    manager.task_store.save(task)
+
+    prep = manager.prepare_manual_run(task.id)
+    engine = manager.get_engine(prep["session_id"], workspace=str(ws), agent="cowork")
+    provider.engine = engine
+    async for _ in engine.run(prep["prompt"]):
+        pass
+    manager.save(prep["session_id"], engine)
+
+    out = manager.finalize_manual_run(task.id, prep["run_id"])
+    assert out["ok"] and out["run"]["status"] == "canceled"
+    persisted = manager.task_store.runs(task.id)
+    assert len(persisted) == 1 and persisted[0].status == "canceled"
+    assert manager.task_store.get(task.id).last_status == "canceled"
+
+
+async def test_manual_run_engine_error_is_error_not_ok(tmp_path, monkeypatch):
+    """A turn that ends on the engine's own public ERROR signal — here a reply the
+    endpoint can't parse as a tool call, `engine.py`'s `looks_like_unparsed_tool_call`
+    path, persisted as a `role="notice", kind="error"` message — is a crashed run, not a
+    successful one. Before the fix `finalize_manual_run` never looked at how the turn
+    ended and recorded it "ok" regardless."""
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+    from coworker.server.manager import SessionManager
+
+    leaked = "Let me check.\n<tool_call>\n<function=nope_not_a_tool>\n<parameter="
+
+    class ScriptedProvider(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            return AssistantTurn(text=leaked, finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    manager = SessionManager(data_dir=tmp_path / "data", provider=ScriptedProvider())
+    task = _task(workspace=str(ws), agent="cowork")
+    manager.task_store.save(task)
+
+    prep = manager.prepare_manual_run(task.id)
+    engine = manager.get_engine(prep["session_id"], workspace=str(ws), agent="cowork")
+    async for _ in engine.run(prep["prompt"]):
+        pass
+    manager.save(prep["session_id"], engine)
+    # Sanity: pin down the public signal this test (and the fix) relies on.
+    assert engine.messages[-1]["role"] == "notice"
+    assert engine.messages[-1]["kind"] == "error"
+
+    out = manager.finalize_manual_run(task.id, prep["run_id"])
+    assert out["ok"] and out["run"]["status"] == "error"
+    assert out["run"]["error"]
+    persisted = manager.task_store.runs(task.id)
+    assert len(persisted) == 1 and persisted[0].status == "error"
+    assert manager.task_store.get(task.id).last_status == "error"
+
+
 # -- REST ----------------------------------------------------------------------
 def test_automations_rest(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
