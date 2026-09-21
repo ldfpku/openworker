@@ -188,6 +188,7 @@ class _Loaded(NamedTuple):
 
     store: Optional[dict[str, Any]]
     error: str = ""  # safe to log: an errno string or an exception class name
+    blank: str = ""  # set when an existing file held nothing at all: what it held
 
 
 def _load_store(path: Path) -> _Loaded:
@@ -216,8 +217,10 @@ def _load_store(path: Path) -> _Loaded:
     # Nothing but whitespace, or nothing but NUL bytes -- what NTFS can leave after a
     # power cut. Either way the credentials are already gone from this file, so there
     # is nothing left to protect; refusing would strand the user for good.
+    if not raw.strip():
+        return _Loaded({}, blank="empty")
     if not raw.replace("\x00", "").strip():
-        return _Loaded({})
+        return _Loaded({}, blank="all NUL bytes")
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -235,6 +238,7 @@ class SecretStore:
         self._dotenv_path = self.path.parent / ".env"
         self._lock = threading.Lock()
         self._read_warned = False
+        self._blank_warned = False
         self._dotenv_warned = False
 
     # -- reads ------------------------------------------------------------------
@@ -351,6 +355,20 @@ class SecretStore:
         loaded = _load_store(self.path)
         if loaded.store is None:
             raise SecretStoreReadError(self.path, loaded.error)
+        if loaded.blank:
+            # Deliberate but never normal -- the store itself always writes at least
+            # `{}` -- so leave a trace for whoever later investigates missing
+            # credentials. Once per streak: this runs on every lookup.
+            if not self._blank_warned:
+                self._blank_warned = True
+                logger.warning(
+                    "secret store %s exists but is %s; treating it as an empty store "
+                    "(whatever it held is already gone)",
+                    self.path,
+                    loaded.blank,
+                )
+        else:
+            self._blank_warned = False
         return loaded.store
 
     def _read_or_empty(self, op: str) -> dict[str, Any]:
@@ -358,10 +376,16 @@ class SecretStore:
 
         `get`/`status` sit on hot paths — session start, tool loading, every provider
         lookup — so raising there would take down work that has nothing to do with the
-        damaged file. They degrade instead. Degrading normally opens its own path to
-        data loss (the UI shows no credential, the user reconnects, the save clobbers
-        the file); that path is closed here because `put` and `delete` share `_read`
-        and refuse to write at all while the file is unreadable.
+        damaged file. They degrade instead. Degrading opens its own path to data loss
+        (the UI shows no credential, the user reconnects, the save clobbers the file).
+        For a failure that lasts, that path is closed: `put` and `delete` re-read
+        through `_read` and refuse to write while the file stays unreadable.
+
+        Not closed: a failure that clears between the degraded read and the write. A
+        caller that rebuilt one profile from the empty read (`{**get(p), **patch}`)
+        then saves that profile without the fields it could not see. The rest of the
+        store survives -- the write re-reads the whole file -- but closing this needs
+        a locked read-modify-write `update`, which the store does not offer yet.
         """
         try:
             store = self._read()

@@ -221,7 +221,30 @@ def test_nul_filled_file_is_treated_as_an_empty_store(tmp_path, size):
     assert store.get("provider:openai")["api_key"] == "sk-1"
 
 
-def test_nul_padding_after_real_content_is_still_refused(tmp_path):
+@pytest.mark.parametrize(
+    "payload, kind",
+    [(b"", "empty"), (b"  \n\t", "empty"), (b"\x00" * 64, "NUL")],
+    ids=["zero-bytes", "whitespace", "nul-filled"],
+)
+def test_blank_file_is_logged_once(tmp_path, caplog, payload, kind):
+    """Taking a blank file as an empty store is deliberate, but never normal -- the store
+    itself always writes at least `{}` -- so leave a trace for whoever investigates the
+    missing credentials later. Once per streak, not once per lookup."""
+    store = SecretStore(tmp_path / "secrets.json")
+    store.path.write_bytes(payload)
+    with caplog.at_level(logging.WARNING, logger="coworker.secrets"):
+        for _ in range(5):
+            assert store.get("x") is None
+        assert store.status() == []
+        store.put("provider:openai", {"type": "token", "api_key": "sk-1"})
+        assert store.get("provider:openai")["api_key"] == "sk-1"
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert str(store.path) in warnings[0].getMessage()
+    assert kind in warnings[0].getMessage()
+
+
+def test_nul_padding_after_json_content_is_still_refused(tmp_path):
     """The NUL allowance covers a file with nothing else in it, not a damaged one."""
     store = SecretStore(tmp_path / "secrets.json")
     body = b'{"provider:openai": {"api_key": "sk-1"}}' + b"\x00" * 64
