@@ -1908,7 +1908,13 @@ def test_a_producer_abandoned_on_a_closed_loop_lets_go_quietly(tmp_path):
     nothing can interrupt. `explore` closes its loop without waiting for that thread
     (tools/subagent.py), so when the read finally returns the loop it would report to is
     gone. The producer has to let go of the stream and leave — not raise from its
-    `finally` into a future nobody will ever read, and not reach for the next chunk."""
+    `finally` into a future nobody will ever read, and not reach for the next chunk.
+
+    The loop runs on a thread of its own so that waiting for it is bounded from outside.
+    Until the gate opens the producer is parked with no timeout, so a Stop path that waits
+    for it would never return. On the test's own thread that would hang the whole run
+    instead of failing this one test, and `asyncio.wait_for` would only help while the
+    loop itself stays free to time out."""
     parked = _GatedStream(
         [_sse_chunk(content="a"), _sse_chunk(content="b"), _sse_chunk(finish="stop")],
         park_at=1,
@@ -1917,11 +1923,10 @@ def test_a_producer_abandoned_on_a_closed_loop_lets_go_quietly(tmp_path):
     engine = _stream_engine(tmp_path, provider)
     engine.messages.append({"role": "user", "content": "hi"})
     executor = _RecordingExecutor()
-    loop = asyncio.new_event_loop()
-    loop.set_default_executor(executor)
     thread_errors = []
     previous_hook = threading.excepthook
     threading.excepthook = thread_errors.append
+    outcome = {}
 
     async def _stop_mid_answer():
         chunks = []
@@ -1930,11 +1935,25 @@ def test_a_producer_abandoned_on_a_closed_loop_lets_go_quietly(tmp_path):
             engine.request_interrupt()  # after the first delta, with the next still unread
         return chunks
 
+    def _run_the_way_explore_does():
+        loop = asyncio.new_event_loop()
+        loop.set_default_executor(executor)
+        try:
+            outcome["delivered"] = loop.run_until_complete(_stop_mid_answer())
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        except BaseException as exc:  # reported below, never lost in the thread
+            outcome["error"] = exc
+        finally:
+            loop.close()  # what `explore` does: no wait for the producer
+
+    driver = threading.Thread(target=_run_the_way_explore_does, daemon=True)
+    driver.start()
     try:
-        delivered = loop.run_until_complete(_stop_mid_answer())
-        loop.run_until_complete(loop.shutdown_asyncgens())
-        loop.close()  # what `explore` does: no wait for the producer
-        assert [c.text_delta for c in delivered] == ["a"]
+        # Failure bounds only, never part of the happy path.
+        driver.join(10)
+        assert not driver.is_alive(), "the Stop path is waiting on the parked producer"
+        assert "error" not in outcome, outcome.get("error")
+        assert [c.text_delta for c in outcome["delivered"]] == ["a"]
         # Still inside the read when its loop went away; now the read returns.
         assert parked.parked.wait(10)
         parked.gate.set()
@@ -1942,9 +1961,11 @@ def test_a_producer_abandoned_on_a_closed_loop_lets_go_quietly(tmp_path):
     finally:
         parked.gate.set()  # a parked producer would hold the test process at exit
         threading.excepthook = previous_hook
-        executor.shutdown(wait=True)
-        if not loop.is_closed():
-            loop.close()
+        driver.join(10)
+        # No join on the worker here. Once the gate is open it has nothing left to wait
+        # on, and on the passing path its job is already done. A producer that hangs
+        # anyway should fail this test, not stall the run.
+        executor.shutdown(wait=False)
 
     assert producer_error is None
     assert thread_errors == []
