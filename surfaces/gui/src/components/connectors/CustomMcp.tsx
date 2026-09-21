@@ -108,8 +108,9 @@ export function mcpErrorText(r: McpWriteResult, t: TFunction): string {
   return r.error || t("mcp.err_save_failed");
 }
 
-/** The inline danger line these surfaces already use for a server-side failure
- * (the `last_error` excerpt and the tools-load error render exactly like this). */
+/** The inline danger line these surfaces already use for a server-side failure: the
+ * `last_error` excerpt's classes verbatim (the tools-load error line uses the same ones
+ * minus `break-words`). */
 function McpError({ text, testId }: { text: string; testId: string }) {
   return (
     <div className="px-4 py-2.5 text-[13px] text-danger break-words" data-testid={testId}>
