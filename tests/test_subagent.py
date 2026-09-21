@@ -223,8 +223,9 @@ def _run_until_parked_then_stop(engine, scripts, events):
     """Start a turn, press Stop once every script has parked, and wait for the turn out.
 
     Stop is pressed from the loop thread, which is where the WebSocket handler presses it.
-    The gates open in `finally` whatever happens: a producer left parked would wedge the
-    child's own `asyncio.run` as it joins its executor, and take the test process with it.
+    The gates open in `finally` whatever happens: a producer left parked would sit in its
+    executor thread for good, and `concurrent.futures` joins every worker when the test
+    process exits.
     """
 
     async def _turn():
@@ -464,3 +465,47 @@ def test_a_stopped_explore_returns_without_waiting_for_its_producer(tmp_path, mo
     # and nothing more.
     assert script.closed.wait(10)
     assert script.produced == 2
+
+
+def test_the_explorer_loop_still_cleans_up_the_way_asyncio_run_does():
+    """Only the executor join was dropped. Whatever the explorer leaves behind on its loop
+    is still wound down: tasks cancelled and awaited, async generators finalised."""
+    wound_down = []
+    kept = []
+
+    async def _answers():
+        try:
+            yield "first"
+            yield "second"  # pragma: no cover - never reached
+        finally:
+            wound_down.append("generator finalised")
+
+    async def _background():
+        try:
+            await asyncio.sleep(3600)  # cancelled at once; never actually waited
+        except asyncio.CancelledError:
+            wound_down.append("task cancelled")
+            raise
+
+    async def _main():
+        asyncio.ensure_future(_background())
+        answers = _answers()
+        kept.append(answers)  # alive and suspended when `_main` returns
+        await answers.__anext__()
+        await asyncio.sleep(0)  # let the background task start waiting
+        return "report"
+
+    assert subagent._run_without_joining_executor(_main()) == "report"
+    assert sorted(wound_down) == ["generator finalised", "task cancelled"]
+
+
+def test_the_explorer_loop_refuses_to_nest_inside_a_running_one(recwarn):
+    async def _main():  # pragma: no cover - must never start
+        return "report"
+
+    async def _nested():
+        with pytest.raises(RuntimeError, match="running event loop"):
+            subagent._run_without_joining_executor(_main())
+
+    asyncio.run(_nested())
+    assert not [w for w in recwarn if "never awaited" in str(w.message)]

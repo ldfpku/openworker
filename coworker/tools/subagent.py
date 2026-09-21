@@ -65,6 +65,13 @@ def _run_without_joining_executor(main: Coroutine[Any, Any, _T]) -> _T:
     it and the orphan watchdog uses `os._exit` (server/run.py) — and the session's own
     stream producers, on the server's loop, were always joined the same way.
     """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass  # no loop in this thread: the only way this is ever meant to be called
+    else:
+        main.close()  # never started; closing it spares the "never awaited" warning
+        raise RuntimeError("the explorer cannot run inside a running event loop")
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
