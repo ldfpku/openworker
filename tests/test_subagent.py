@@ -481,7 +481,10 @@ def test_the_explorer_loop_still_cleans_up_the_way_asyncio_run_does():
 
     async def _background():
         try:
-            await asyncio.sleep(3600)  # cancelled at once; never actually waited
+            # Cancelled at once on the passing path. The length is only a failure bound: a
+            # cleanup that waits for leftover tasks without cancelling them sits this out
+            # and then fails, instead of hanging the run for an hour.
+            await asyncio.sleep(10)
         except asyncio.CancelledError:
             wound_down.append("task cancelled")
             raise
