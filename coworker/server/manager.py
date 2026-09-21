@@ -325,6 +325,9 @@ class SessionManager:
         # {Inbox item id → item}. `mark_idle` starts them once that turn ends — see
         # `_durable_resume` and `_kick_deferred_resumes`.
         self._deferred_resumes: dict[str, dict[str, Any]] = {}
+        # Set first thing in `aclose`: from then on parked resumes stay parked (see
+        # `_parked_resume_blocker`).
+        self._closing = False
         # Sessions with an auto-title LLM call in flight (FB-010) — one call at a time.
         self._autotitle_inflight: set[str] = set()
         self._autotitle_tasks: set[asyncio.Task] = set()
@@ -1814,20 +1817,77 @@ class SessionManager:
         busy. One task runs them in order, each claiming the session afresh — one that
         finds it busy again (yet another turn got there first) simply parks itself again,
         so nothing overlaps and nothing is dropped. A resume with nothing left to do (the
-        turn that held the session already answered those calls) returns at once."""
-        parked = self._deferred_resumes.pop(session_id, None)
+        turn that held the session already answered those calls) returns at once.
+
+        Not while the process is going away (`_parked_resume_blocker`): then they stay
+        parked, and the log names each one."""
+        parked = self._deferred_resumes.get(session_id)
         if not parked:
             return
+        blocker = self._parked_resume_blocker()
+        if blocker is not None:
+            self._log_parked_left(session_id, parked.values(), blocker)
+            return
+        del self._deferred_resumes[session_id]
         items = list(parked.values())
 
         async def _run_parked() -> None:
-            for item in items:
-                await self._durable_resume(item)  # contains its own failures
+            for n, item in enumerate(items):
+                if self._closing:
+                    self._repark(session_id, items[n:], "shutting down")
+                    return
+                try:
+                    await self._durable_resume(item)  # contains its own failures
+                except asyncio.CancelledError:
+                    # Shutdown sweeping `_bg_tasks`. The item that was running got its own
+                    # bookkeeping on the way out; the ones after it never started.
+                    self._repark(session_id, items[n + 1 :], "the runner was cancelled")
+                    raise
 
         if self.spawn_background(_run_parked()) is None:
             # No running loop on this thread, so nothing can run them from here: keep them
             # parked for the next idle moment rather than drop the approvals.
             self._deferred_resumes.setdefault(session_id, {}).update(parked)
+
+    def _parked_resume_blocker(self) -> Optional[str]:
+        """Why parked durable resumes must not be started right now, or None if they may.
+
+        `mark_idle` is where they start, and it also runs while the process is going away:
+        in the `finally` of a turn that shutdown is cancelling (`asyncio.run` cancels every
+        task still pending when the server's main coroutine returns, `Scheduler.stop`
+        cancels in-flight runs), and in a turn that simply finishes after `aclose` began. A
+        resume started from there is a new task that no cancellation sweep has seen, and it
+        went on to run the approved tool mid-teardown. `Task.cancelling()` is what tells a
+        `finally` reached by cancellation apart from an ordinary end."""
+        if self._closing:
+            return "shutting down"
+        try:
+            task = asyncio.current_task()
+        except RuntimeError:  # no running loop on this thread
+            return None
+        if task is not None and task.cancelling():
+            return "the turn that ended was cancelled"
+        return None
+
+    def _repark(self, session_id: str, items: list[Any], why: str) -> None:
+        """Put resumes a runner will not start back where `_kick_deferred_resumes` finds
+        them, and say so in the log."""
+        if not items:
+            return
+        parked = self._deferred_resumes.setdefault(session_id, {})
+        for item in items:
+            parked[item.id] = item
+        self._log_parked_left(session_id, items, why)
+
+    @staticmethod
+    def _log_parked_left(session_id: str, items: Any, why: str) -> None:
+        ids = ", ".join(str(getattr(item, "id", "?")) for item in items)
+        logger.warning(
+            "not starting the parked resume(s) %s of session %s (%s); left parked",
+            ids,
+            session_id,
+            why,
+        )
 
     # -- MCP --------------------------------------------------------------------
     async def prepare_mcp_tools(
@@ -5974,6 +6034,9 @@ class SessionManager:
                 self.unregister_session_client(session_id, cb)
 
     async def aclose(self) -> None:
+        # Before anything is stopped: `Scheduler.stop` below cancels in-flight runs, and
+        # their `finally: mark_idle` must not start a parked durable resume on the way out.
+        self._closing = True
         await self.scheduler.stop()
         await self.stop_gateway()
         await self.mcp.aclose()
