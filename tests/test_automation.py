@@ -938,6 +938,66 @@ async def test_manual_run_engine_error_is_error_not_ok(tmp_path, monkeypatch):
     assert manager.task_store.get(task.id).last_status == "error"
 
 
+async def test_manual_run_unhandled_crash_before_reply_is_error_not_ok(
+    tmp_path, monkeypatch
+):
+    """A real engine bug — an exception raised from inside `_loop()` OUTSIDE the
+    provider-call try/except (so no "error" notice ever gets appended) — leaves the
+    persisted transcript ending on the plain `user` message the turn started with,
+    nothing else. `run_turn` in app.py has no outer except on `main` (the hardening
+    that would turn this into a persisted error notice lives on the unmerged
+    `claude/fix-d-run-turn-except`), so this is the shape a manual run's transcript
+    is actually left in when the engine itself crashes. Before this fix
+    `_run_outcome_from_transcript` treated "no notice at the tail" as "the turn
+    completed normally" unconditionally, so this recorded "ok" — identical to a run
+    that never got a chance to respond at all. The fix only reaches back to the
+    message BEFORE the crash: it cannot tell this apart from a crash after some tool
+    round (tail would then be `role="tool"`, still unhandled — see report)."""
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+    from coworker.server.manager import SessionManager
+    import coworker.engine as engine_mod
+
+    class ScriptedProvider(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            return AssistantTurn(text="ignored", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    def _boom(turn):
+        raise RuntimeError("injected engine bug")
+
+    # `_sanitize_mangled_calls` runs right after the provider call returns
+    # successfully — outside the try/except that surrounds the provider call itself
+    # (see `coworker/engine.py` around `_sanitize_mangled_calls(turn)`), so this
+    # reproduces an unhandled engine bug rather than a provider failure.
+    monkeypatch.setattr(engine_mod, "_sanitize_mangled_calls", _boom)
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    manager = SessionManager(data_dir=tmp_path / "data", provider=ScriptedProvider())
+    task = _task(workspace=str(ws), agent="cowork")
+    manager.task_store.save(task)
+
+    prep = manager.prepare_manual_run(task.id)
+    engine = manager.get_engine(prep["session_id"], workspace=str(ws), agent="cowork")
+    with pytest.raises(RuntimeError):
+        async for _ in engine.run(prep["prompt"]):
+            pass
+    # `run_turn`'s `finally` in app.py always saves + broadcasts turn_done even when
+    # the awaited turn raised — reproduce that here rather than relying on run_turn.
+    manager.save(prep["session_id"], engine)
+    # Sanity: pin down the shape this test (and the fix) relies on — no notice at all.
+    assert engine.messages[-1]["role"] == "user"
+
+    out = manager.finalize_manual_run(task.id, prep["run_id"])
+    assert out["ok"] and out["run"]["status"] == "error"
+    assert out["run"]["error"]
+    persisted = manager.task_store.runs(task.id)
+    assert len(persisted) == 1 and persisted[0].status == "error"
+    assert manager.task_store.get(task.id).last_status == "error"
+
+
 # -- REST ----------------------------------------------------------------------
 def test_automations_rest(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
