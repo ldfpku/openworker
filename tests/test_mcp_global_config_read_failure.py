@@ -354,6 +354,37 @@ def test_the_refusal_sent_to_the_user_never_carries_the_file_path(tmp_path, monk
     assert failure.value.code == "config_unreadable"
 
 
+def test_deleting_a_server_that_is_already_gone_succeeds(tmp_path):
+    """Idempotent delete: the user wants it gone and it is. Reporting that as a failure
+    put "Couldn't save that change." on the detail page and kept the user there."""
+    manager = SessionManager(data_dir=tmp_path / "data")
+    _seed_two_servers()
+
+    first = manager.delete_mcp("sales-db")
+    again = manager.delete_mcp("sales-db")
+    never = manager.delete_mcp("never-was")
+
+    assert first == {"ok": True, "name": "sales-db", "existed": True}
+    assert again == {"ok": True, "name": "sales-db", "existed": False}
+    assert never == {"ok": True, "name": "never-was", "existed": False}
+    assert set(read_global()) == {"docs"}
+
+
+def test_an_unreadable_config_is_not_mistaken_for_an_absent_server(tmp_path, monkeypatch):
+    """The other side of idempotent delete: "can't read the file" must never be taken
+    for "it isn't there" — the server may still be in the file, and removing one means
+    rewriting the rest. Still refused, still says why."""
+    manager = SessionManager(data_dir=tmp_path / "data")
+    path = _seed_two_servers()
+    before = path.read_bytes()
+    _make_unreadable(monkeypatch, path)
+
+    out = manager.delete_mcp("sales-db")
+    assert out["ok"] is False and out["code"] == "config_unreadable"
+    assert "existed" not in out
+    assert path.read_bytes() == before
+
+
 def test_list_mcp_degrades_instead_of_raising(tmp_path, monkeypatch):
     """Display-only, polled every few seconds by the GUI: it must not become a 500 loop.
     An empty tab here is no longer a step towards losing anything, because every

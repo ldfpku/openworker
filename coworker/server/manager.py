@@ -2211,29 +2211,37 @@ class SessionManager:
         try:
             ok = delete_global_server(name)
         except MCPConfigError as exc:
+            # Unreadable is NOT absent: the server may well still be in the file, and
+            # this delete would have to rewrite it. Still a refusal.
             return self._mcp_config_refused(name, "delete_mcp", exc)
-        if ok:
-            # A later re-add under the same name starts clean, not pre-failed —
-            # and not pre-trusted (the old entry's test says nothing about the new).
-            self._mcp_errors.pop(name, None)
-            self._mcp_auth_hints.discard(name)
-            if self._prefs.get("mcp_last_test", {}).pop(name, None) is not None:
-                self._save_prefs()
-            self._clear_mcp_notified(name)
-            # Removing a server must not leave its connection running until the next
-            # restart, nor its OAuth tokens + DCR registration in the secret store —
-            # "Remove" is the user saying this server is GONE (owner review 2026-08-21).
-            # The route runs in a threadpool; the shutdown event belongs to the loop.
-            conn = self.mcp._conns.get(name)
-            if conn is not None:
-                if self._loop is not None:
-                    self._loop.call_soon_threadsafe(conn.shutdown.set)
-                else:
-                    conn.shutdown.set()
-            from ..mcp import oauth as mcp_oauth
+        if not ok:
+            # Idempotent: the user asked for this server to be gone, and it is — a
+            # second click, a stale page, an entry hand-removed from `mcp.json`. That is
+            # not a failure, and answering `ok: false` put a "couldn't save" error on
+            # the detail page instead of leaving it. `existed` keeps the distinction for
+            # any caller that cares. The purge below stays gated on an actual removal.
+            return {"ok": True, "name": name, "existed": False}
+        # A later re-add under the same name starts clean, not pre-failed —
+        # and not pre-trusted (the old entry's test says nothing about the new).
+        self._mcp_errors.pop(name, None)
+        self._mcp_auth_hints.discard(name)
+        if self._prefs.get("mcp_last_test", {}).pop(name, None) is not None:
+            self._save_prefs()
+        self._clear_mcp_notified(name)
+        # Removing a server must not leave its connection running until the next
+        # restart, nor its OAuth tokens + DCR registration in the secret store —
+        # "Remove" is the user saying this server is GONE (owner review 2026-08-21).
+        # The route runs in a threadpool; the shutdown event belongs to the loop.
+        conn = self.mcp._conns.get(name)
+        if conn is not None:
+            if self._loop is not None:
+                self._loop.call_soon_threadsafe(conn.shutdown.set)
+            else:
+                conn.shutdown.set()
+        from ..mcp import oauth as mcp_oauth
 
-            mcp_oauth.sign_out(name, self.secrets)
-        return {"ok": ok, "name": name}
+        mcp_oauth.sign_out(name, self.secrets)
+        return {"ok": True, "name": name, "existed": True}
 
     async def mcp_tools(self, name: str) -> dict[str, Any]:
         """Connect one server and list its tools (name + description)."""

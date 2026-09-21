@@ -487,6 +487,9 @@ export interface McpWriteResult {
   name?: string;
   code?: string;
   error?: string;
+  // Delete only: false when the server was already gone. Still `ok` — deleting is
+  // idempotent, the user asked for it to be gone and it is.
+  existed?: boolean;
 }
 
 export async function addMcpServer(

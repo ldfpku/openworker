@@ -146,6 +146,19 @@ describe("McpServerDetail — a refused write is never a silent snap-back", () =
     expect(onGone).not.toHaveBeenCalled();
   });
 
+  it("navigates away when the server was already gone", async () => {
+    // Idempotent delete: a second click or a stale page is not a failure.
+    const { deleteMcpServer } = await import("../../api");
+    vi.mocked(deleteMcpServer).mockResolvedValueOnce({ ok: true, existed: false });
+    const onGone = vi.fn();
+
+    render(<McpServerDetail server={SERVER} onChanged={vi.fn()} onGone={onGone} />);
+    fireEvent.click(screen.getByTestId("mcp-remove-sales-db"));
+
+    await waitFor(() => expect(onGone).toHaveBeenCalled());
+    expect(screen.queryByTestId("mcp-remove-error-sales-db")).toBeNull();
+  });
+
   it("navigates away as usual when the remove succeeds", async () => {
     const onGone = vi.fn();
     render(<McpServerDetail server={SERVER} onChanged={vi.fn()} onGone={onGone} />);

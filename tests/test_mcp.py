@@ -263,7 +263,10 @@ def test_rest_crud(tmp_path, monkeypatch):
 
     assert client.delete("/v1/mcp/fs").json()["ok"] is True
     assert client.get("/v1/mcp").json()["servers"] == []
-    assert client.delete("/v1/mcp/fs").json()["ok"] is False
+    # Deleting again is idempotent: the server is gone, which is what was asked for.
+    # `existed` still tells the two apart.
+    again = client.delete("/v1/mcp/fs").json()
+    assert again["ok"] is True and again["existed"] is False
 
 
 # -- failure surfacing (drill 2026-08-20: silent startup crashes) ----------------
