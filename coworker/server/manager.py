@@ -321,6 +321,10 @@ class SessionManager:
         self._running_sessions: set[str] = (
             set()
         )  # sessions with an in-flight turn (busy)
+        # Durable resumes that found their session busy with another turn: session id →
+        # {Inbox item id → item}. `mark_idle` starts them once that turn ends — see
+        # `_durable_resume` and `_kick_deferred_resumes`.
+        self._deferred_resumes: dict[str, dict[str, Any]] = {}
         # Sessions with an auto-title LLM call in flight (FB-010) — one call at a time.
         self._autotitle_inflight: set[str] = set()
         self._autotitle_tasks: set[asyncio.Task] = set()
@@ -1734,21 +1738,84 @@ class SessionManager:
         await self._weixin_say(wx["target"], text)
 
     async def _durable_resume(self, item) -> None:
+        """Continue the turn that was suspended on `item`, now that it is answered and no
+        live `inbox.wait` is left to release (restart, evicted engine).
+
+        Contains its own failures, the way `deliver_to_session` does: one of its callers
+        (`_resume_after_reply`) runs it as a fire-and-forget task nobody awaits, and
+        `spawn_retained` deliberately never retrieves a task's exception — so a raise out of
+        here reached no one. The user who had just approved saw nothing happen, and the log
+        held only asyncio's context-free "Task exception was never retrieved". Logged with
+        its traceback and shown to whoever is viewing the session instead. A cancellation
+        is not a failure and goes through untouched."""
+        try:
+            await self._durable_resume_turn(item)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            session_id = getattr(item, "session_id", "?")
+            logger.exception("durable resume failed for %s", session_id)
+            await self.broadcast_session(
+                session_id,
+                {"type": "error", "data": {"error": str(exc) or exc.__class__.__name__}},
+            )
+
+    async def _durable_resume_turn(self, item) -> None:
         if not getattr(item, "tool_call_id", None):
             return  # nothing to reconstruct (legacy item) — best-effort: leave it
+        session_id = item.session_id
         # ensure_engine, not get_engine: a socket may be rebuilding this very session on a
         # worker thread right now (the user tapped Allow in the Inbox mid-reconnect), and
         # two engines for one id splice each other's turns into the jsonl.
-        engine = await self.ensure_engine(item.session_id)
+        engine = await self.ensure_engine(session_id)
         if engine is None or not hasattr(engine, "resume"):
             return
-        self.mark_running(item.session_id)
+        # Claim the session atomically, like every other turn. The caller's `is_running`
+        # check is stale by now: `ensure_engine` just waited on the engine lock and a worker
+        # thread, and a socket rebuilding this very session can have claimed it for the
+        # user's next message in that gap. `engine.resume()` on top of that turn would be a
+        # second turn on one engine — its first act, `_cancel.clear()`, wipes a Stop the
+        # user just pressed (the older stream then ends on StreamBridgeError), and the
+        # `mark_idle` below would release a claim that turn still holds. So a busy session
+        # parks the resume instead; `mark_idle` starts it once that turn has ended, and the
+        # approval is not lost.
+        if not self.try_mark_running(session_id):
+            self._deferred_resumes.setdefault(session_id, {})[item.id] = item
+            logger.info(
+                "session %s is busy; resuming %s once it goes idle", session_id, item.id
+            )
+            return
         try:
             async for _event in engine.resume():
                 pass
-            self.save(item.session_id, engine)
+            self.save(session_id, engine)
         finally:
-            self.mark_idle(item.session_id)
+            # Post-turn bookkeeping must not turn a resume that ran and was saved into a
+            # reported failure (same reasoning as `deliver_to_session`).
+            try:
+                self.mark_idle(session_id)
+            except Exception:
+                logger.exception("post-resume bookkeeping failed for %s", session_id)
+
+    def _kick_deferred_resumes(self, session_id: str) -> None:
+        """Start the durable resumes `_durable_resume_turn` parked while `session_id` was
+        busy. One task runs them in order, each claiming the session afresh — one that
+        finds it busy again (yet another turn got there first) simply parks itself again,
+        so nothing overlaps and nothing is dropped. A resume with nothing left to do (the
+        turn that held the session already answered those calls) returns at once."""
+        parked = self._deferred_resumes.pop(session_id, None)
+        if not parked:
+            return
+        items = list(parked.values())
+
+        async def _run_parked() -> None:
+            for item in items:
+                await self._durable_resume(item)  # contains its own failures
+
+        if self.spawn_background(_run_parked()) is None:
+            # No running loop on this thread, so nothing can run them from here: keep them
+            # parked for the next idle moment rather than drop the approvals.
+            self._deferred_resumes.setdefault(session_id, {}).update(parked)
 
     # -- MCP --------------------------------------------------------------------
     async def prepare_mcp_tools(
@@ -6545,6 +6612,12 @@ class SessionManager:
 
     def mark_idle(self, session_id: str) -> None:
         self._running_sessions.discard(session_id)
+        # A durable resume that found this session busy waits for exactly this moment.
+        # Started first, so a raise further down this bookkeeping can never strand it.
+        try:
+            self._kick_deferred_resumes(session_id)
+        except Exception:
+            logger.exception("could not start the parked resume for %s", session_id)
         # Every turn path (WS, background delivery, durable resume) marks idle when it
         # finishes — the one shared post-turn moment, so auto-titling hooks in here and
         # can never add latency to the response itself. Contained: naming a session is
@@ -6976,7 +7049,7 @@ class SessionManager:
         # client could claim_turn() on this same session while this function is still
         # building its engine and drive a second, concurrent turn on it (owner-hit
         # 2026-09-19: try_mark_running() must fail for a session already being run
-        # headlessly). No `except` here, same shape as `_durable_resume` — a raise
+        # headlessly). No `except` here, same shape as `_durable_resume_turn` — a raise
         # must still reach `mark_idle` in the `finally` below.
         self.mark_running(run.session_id)
         try:
@@ -7816,6 +7889,9 @@ class SessionManager:
         # A pending re-target belongs to the session being deleted — never to whatever
         # gets built under this id next.
         self._draft_carry.pop(session_id, None)
+        # ...and so do resumes parked on it: its Inbox items are closed below, and starting
+        # one later would rebuild the dead id as an empty session.
+        self._deferred_resumes.pop(session_id, None)
         if engine is not None:
             try:
                 # (was engine.interrupt() — a method that never existed; the AttributeError

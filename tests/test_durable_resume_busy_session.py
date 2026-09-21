@@ -40,12 +40,15 @@ async def _eventually(predicate, *, timeout: float = 10.0, what: str = "") -> No
 
 
 async def _settle(mgr: SessionManager, *, timeout: float = 10.0) -> None:
-    """Wait out every background flow the manager has in flight (a finished resume can
-    start another, so loop until none is left) — nothing is left pending at teardown."""
+    """Wait out every background flow the manager has in flight — parked resumes and the
+    auto-title calls `mark_idle` fires (a finished resume can start more, so loop until
+    none is left) — so nothing is left pending at teardown."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     while True:
-        pending = [t for t in mgr._bg_tasks if not t.done()]
+        pending = [
+            t for t in (*mgr._bg_tasks, *mgr._autotitle_tasks) if not t.done()
+        ]
         if not pending:
             return
         remaining = deadline - loop.time()
@@ -53,11 +56,21 @@ async def _settle(mgr: SessionManager, *, timeout: float = 10.0) -> None:
         await asyncio.wait(pending, timeout=remaining)
 
 
+class _ChatOnlyScript(ScriptedProvider):
+    """`ScriptedProvider`, except the post-turn auto-title call (every `mark_idle` can
+    fire one) is answered on the side instead of consuming the next scripted chat turn."""
+
+    def complete(self, *, model, messages, tools=None, **settings):
+        if messages and "title chat sessions" in str(messages[0].get("content", "")):
+            return _text("Approved File Write")
+        return super().complete(model=model, messages=messages, tools=tools, **settings)
+
+
 def _approval_manager(tmp_path, target):
     """A session whose model asks to write `target` (an approval prompt), then says Done."""
     return SessionManager(
         workspace=tmp_path,
-        provider=ScriptedProvider(
+        provider=_ChatOnlyScript(
             [
                 _tool("write_file", {"path": str(target), "content": "ok"}, "call_w"),
                 _text("Done — file written."),
