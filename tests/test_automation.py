@@ -1120,6 +1120,123 @@ def test_run_outcome_from_transcript(messages, expected):
     assert _run_outcome_from_transcript(messages) == expected
 
 
+_BOOKKEEPING_KINDS = [
+    "model_switch",
+    "mode_switch",
+    "mode_notice",
+    "mcp_error",
+    "project_presence",
+    "compacted",
+    "turn_retry",
+    "reviewer_paused",
+]
+
+
+@pytest.mark.parametrize("kind", _BOOKKEEPING_KINDS)
+@pytest.mark.parametrize(
+    "deciding, expected",
+    [
+        pytest.param(_notice("interrupted"), ("canceled", None), id="after_stop"),
+        pytest.param(_notice("error", "boom"), ("error", "boom"), id="after_error"),
+    ],
+)
+def test_bookkeeping_notice_does_not_change_the_verdict(kind, deciding, expected):
+    """A bookkeeping notice after the deciding one — say a mode switch between the Stop
+    and the finalize call — records something about the session, not about how the
+    turn ended, so the verdict stays the one the deciding notice gave."""
+    from coworker.server.manager import _run_outcome_from_transcript
+
+    messages = [_USER, deciding, _notice(kind, f"{kind} text")]
+    assert _run_outcome_from_transcript(messages) == expected
+
+
+def test_retry_notice_before_a_gate_does_not_read_as_a_reply():
+    """`turn_retry` announces a re-send; if the turn's gate stops it right there, what
+    precedes the retry notice decides — here nothing but the prompt, so no reply."""
+    from coworker.server.manager import _run_outcome_from_transcript
+
+    messages = [_USER, _notice("turn_retry", "Retrying (1/2)")]
+    assert _run_outcome_from_transcript(messages) == (
+        "error",
+        "the turn ended before any reply",
+    )
+
+
+def test_every_notice_kind_is_classified():
+    """Every kind passed to `_append_notice` anywhere in coworker/ is either one the
+    verdict is read from or a bookkeeping kind the walk looks through. A new kind that
+    is neither would silently be read as a completed turn wherever it lands last."""
+    import re
+    from pathlib import Path
+
+    import coworker
+    from coworker.server.manager import (
+        _BOOKKEEPING_NOTICE_KINDS,
+        _MANUAL_RUN_FAILED_NOTICE_KINDS,
+    )
+
+    root = Path(coworker.__file__).parent
+    pattern = re.compile(r'_append_notice\(\s*"([a-z_]+)"')
+    found = {
+        match.group(1)
+        for path in root.rglob("*.py")
+        for match in pattern.finditer(path.read_text(encoding="utf-8"))
+    }
+    # Sanity: the scan does see kinds from all three files that append notices.
+    assert {"interrupted", "mode_switch", "project_presence"} <= found, found
+    verdict_kinds = {"interrupted", "turn_truncated"} | _MANUAL_RUN_FAILED_NOTICE_KINDS
+    assert not (verdict_kinds & _BOOKKEEPING_NOTICE_KINDS)
+    assert set(_BOOKKEEPING_KINDS) == _BOOKKEEPING_NOTICE_KINDS
+    assert found - verdict_kinds - _BOOKKEEPING_NOTICE_KINDS == set()
+
+
+def test_manual_run_stop_then_mode_switch_is_still_canceled(tmp_path, monkeypatch):
+    """The reported sequence, over the real WS: the user stops the manual run, then
+    switches the session to plan mode before the GUI's finalize call lands. The
+    `mode_switch` notice that switch appends becomes the transcript tail and used to be
+    read as the verdict — "ok"."""
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+    from coworker.server.manager import SessionManager
+
+    class InterruptingProvider(ProviderClient):
+        def __init__(self):
+            self.engine = None  # captured once the WS has built the engine
+
+        def complete(self, *, model, messages, tools=None, **settings):
+            if messages and "title chat sessions" in str(messages[0].get("content", "")):
+                return AssistantTurn(text="small-talk", finish_reason="stop")
+            self.engine.request_interrupt()
+            return AssistantTurn(text="ignored", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    provider = InterruptingProvider()
+    manager = SessionManager(data_dir=tmp_path / "data", provider=provider)
+    task = _task(workspace=str(ws), agent="cowork")
+    manager.task_store.save(task)
+
+    def capture(session_id):
+        provider.engine = manager._engines[session_id]
+
+    def switch_to_plan(sock):
+        sock.send_json({"type": "set_mode", "mode": "plan"})
+        while sock.receive_json()["type"] != "mode_changed":
+            pass
+
+    prep, out = _drive_manual_run_over_ws(
+        manager, task, before_send=capture, after_turn=switch_to_plan
+    )
+
+    kinds = [m.get("kind") for m in manager.session_messages(prep["session_id"])[-2:]]
+    assert kinds == ["interrupted", "mode_switch"], kinds
+    assert out["ok"] and out["run"]["status"] == "canceled"
+    assert manager.task_store.get(task.id).last_status == "canceled"
+
+
 def _drive_manual_run_over_ws(manager, task, *, before_send=None, after_turn=None):
     """Run a manual run the way the GUI does — `POST .../run`, open the session WS, send
     the prompt, wait for `turn_done`, then `POST .../finalize` — and return

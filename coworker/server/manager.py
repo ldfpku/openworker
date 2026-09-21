@@ -8463,15 +8463,39 @@ def _last_assistant_text(messages: list[dict[str, Any]]) -> Optional[str]:
 # messages are what is left to read. Never the engine's private `_cancel` flag.
 _MANUAL_RUN_FAILED_NOTICE_KINDS = frozenset({"error", "turn_aborted"})
 
+# Notices that record something about the session, not how the turn ended — every
+# `_append_notice` kind in coworker/ except the four the verdict is read from
+# ("interrupted", "error", "turn_aborted", "turn_truncated"). The first five can land
+# AFTER a turn has already ended, e.g. a mode change between the Stop and the finalize
+# call; the last three are appended mid-turn and the turn carries on after them.
+# `test_every_notice_kind_is_classified` fails when a new kind is added without being
+# placed here or among the four.
+_BOOKKEEPING_NOTICE_KINDS = frozenset(
+    {
+        "model_switch",  # TurnEngine.switch_model: the session's model changed
+        "mode_switch",  # app.py `set_mode`: the permission mode changed
+        "mode_notice",  # app.py: the Auto-Approve explainer (connect or `set_mode`)
+        "mcp_error",  # app.py connect: an MCP server failed to start
+        "project_presence",  # SessionManager.add_root: the granted folder has memory
+        "compacted",  # TurnEngine._loop: history compacted, the turn goes on
+        "turn_retry",  # TurnEngine._announce_retry: an automatic re-send follows
+        "reviewer_paused",  # TurnEngine tool handling: auto-approve paused this turn
+    }
+)
+
 
 def _run_outcome_from_transcript(
     messages: list[dict[str, Any]],
 ) -> tuple[str, Optional[str]]:
     """How a run's own turn actually ended, from its transcript: `(status,
-    error_text)` with status in {"canceled", "error", "ok"}. Mirrors
-    `TurnEngine._tail_is_retriable_error`'s walk — transparent through a trailing
-    `model_switch` notice (switching models never itself ends a turn), decisive on the
-    first other notice found. No notice at the tail at all is normally a real
+    error_text)` with status in {"canceled", "error", "ok"}. Walks back from the tail
+    like `TurnEngine._tail_is_retriable_error`, but transparent through every
+    bookkeeping notice (`_BOOKKEEPING_NOTICE_KINDS`), not only `model_switch`: a notice
+    appended after the turn ended — the user switching to plan mode after pressing
+    Stop — must not turn `[..., interrupted, mode_switch]` into "ok". Decisive on the
+    first other notice found: "interrupted" is "canceled", the failed kinds are "error",
+    and `turn_truncated` (an answer arrived but may be cut short) or a kind this file
+    does not know is "ok". No notice at the tail at all is normally a real
     assistant/tool message, i.e. the turn completed — EXCEPT when the tail is a `user`
     message and the transcript holds no `assistant` message at all: the turn ended
     without a single reply and without a notice saying how.
@@ -8502,7 +8526,7 @@ def _run_outcome_from_transcript(
                 return "error", "the turn ended before any reply"
             return "ok", None
         kind = message.get("kind")
-        if kind == "model_switch":
+        if kind in _BOOKKEEPING_NOTICE_KINDS:
             continue
         if kind == "interrupted":
             return "canceled", None
