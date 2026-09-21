@@ -1968,6 +1968,12 @@ def test_a_producer_abandoned_on_a_closed_loop_lets_go_quietly(tmp_path):
         executor.shutdown(wait=False)
 
     assert producer_error is None
+    # This never distinguishes the fix either way: concurrent.futures.thread._WorkItem.run()
+    # catches every BaseException the submitted callable raises and stores it on the future
+    # instead of letting it reach the thread (verified by weakening the fix above and
+    # re-running: producer_error surfaced the RuntimeError while thread_errors stayed empty).
+    # Kept anyway as a defensive check against some other, unrelated exception escaping to
+    # threading.excepthook.
     assert thread_errors == []
     assert parked.produced == 2  # the chunk already on the wire, and nothing after it
 
