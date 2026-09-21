@@ -942,17 +942,14 @@ async def test_manual_run_unhandled_crash_before_reply_is_error_not_ok(
     tmp_path, monkeypatch
 ):
     """A real engine bug — an exception raised from inside `_loop()` OUTSIDE the
-    provider-call try/except (so no "error" notice ever gets appended) — leaves the
-    persisted transcript ending on the plain `user` message the turn started with,
-    nothing else. `run_turn` in app.py has no outer except on `main` (the hardening
-    that would turn this into a persisted error notice lives on the unmerged
-    `claude/fix-d-run-turn-except`), so this is the shape a manual run's transcript
-    is actually left in when the engine itself crashes. Before this fix
-    `_run_outcome_from_transcript` treated "no notice at the tail" as "the turn
-    completed normally" unconditionally, so this recorded "ok" — identical to a run
-    that never got a chance to respond at all. The fix only reaches back to the
-    message BEFORE the crash: it cannot tell this apart from a crash after some tool
-    round (tail would then be `role="tool"`, still unhandled — see report)."""
+    provider-call try/except (so the engine itself appends no "error" notice) — leaves
+    the transcript ending on the plain `user` message the turn started with, nothing
+    else, when nothing else appends a notice either. Over the real WS, `run_turn`'s
+    outer `except` (app.py) does append one (see `test_manual_run_crash_over_ws_is_error`);
+    this test drives `engine.run()` directly, so it models the turn whose notice never
+    got appended (`run_turn` contains a failure of that append and only logs it). Before
+    the fix `_run_outcome_from_transcript` treated "no notice at the tail" as "the turn
+    completed normally" unconditionally, so this recorded "ok"."""
     from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
     from coworker.server.manager import SessionManager
     import coworker.engine as engine_mod
@@ -995,6 +992,116 @@ async def test_manual_run_unhandled_crash_before_reply_is_error_not_ok(
     assert out["run"]["error"]
     persisted = manager.task_store.runs(task.id)
     assert len(persisted) == 1 and persisted[0].status == "error"
+    assert manager.task_store.get(task.id).last_status == "error"
+
+
+def _drive_manual_run_over_ws(manager, task, *, before_send=None, after_turn=None):
+    """Run a manual run the way the GUI does — `POST .../run`, open the session WS, send
+    the prompt, wait for `turn_done`, then `POST .../finalize` — and return
+    `(prep, finalize_response)`. The whole exchange runs on a daemon thread joined with a
+    deadline: this repo has no pytest timeout, and a regression that never sends
+    `turn_done` would otherwise block `receive_json()` forever."""
+    from urllib.parse import quote
+
+    from fastapi.testclient import TestClient
+
+    from coworker.server.app import create_app
+
+    client = TestClient(create_app(manager))
+    prep = client.post(f"/v1/automations/{task.id}/run").json()
+    url = (
+        f"/ws/session/{prep['session_id']}"
+        f"?workspace={quote(prep['workspace'])}&agent={prep['agent']}"
+    )
+    finalize_url = f"/v1/automations/{task.id}/runs/{prep['run_id']}/finalize"
+    box: dict = {}
+
+    def drive():
+        try:
+            with client.websocket_connect(url) as ws:
+                assert ws.receive_json()["type"] == "ready"
+                if before_send is not None:
+                    before_send(prep["session_id"])
+                ws.send_json({"type": "user_message", "text": prep["prompt"]})
+                while ws.receive_json()["type"] != "turn_done":
+                    pass
+                if after_turn is not None:
+                    after_turn(ws)
+                box["finalized"] = client.post(finalize_url).json()
+        except BaseException as exc:  # re-raised on the test thread below
+            box["error"] = exc
+
+    worker = threading.Thread(target=drive, daemon=True)
+    worker.start()
+    worker.join(timeout=30)
+    assert not worker.is_alive(), "manual run over WS never reached turn_done"
+    if "error" in box:
+        raise box["error"]
+    return prep, box["finalized"]
+
+
+@pytest.mark.parametrize("crash_at_round", [1, 2], ids=["before_reply", "after_tool_round"])
+def test_manual_run_crash_over_ws_is_error(tmp_path, monkeypatch, crash_at_round):
+    """An engine bug that escapes the turn, driven through the REAL session WS and the
+    finalize endpoint: `run_turn`'s outer `except` (app.py) appends a `kind="error"`
+    notice before `turn_done`, and `finalize_manual_run` must read that as "error" —
+    whether the crash hit before the first reply (round 1) or after a completed tool
+    round (round 2, tail `[..., tool, error notice]`). Without that notice the second
+    shape ends on a `tool` message, which reads as a completed turn."""
+    import coworker.engine as engine_mod
+    from coworker.providers import (
+        AssistantTurn,
+        ModelCapabilities,
+        ProviderClient,
+        ToolCall,
+    )
+    from coworker.server.manager import SessionManager
+
+    class ScriptedProvider(ProviderClient):
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, *, model, messages, tools=None, **settings):
+            if messages and "title chat sessions" in str(messages[0].get("content", "")):
+                return AssistantTurn(text="small-talk", finish_reason="stop")
+            self.calls += 1
+            if self.calls == 1:
+                call = ToolCall(id="call_1", name="read_file", arguments={"path": "a.txt"})
+                return AssistantTurn(tool_calls=[call])
+            return AssistantTurn(text="never reached", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    real_sanitize = engine_mod._sanitize_mangled_calls
+    rounds = {"n": 0}
+
+    def sanitize_then_crash(turn):
+        # Runs right after each provider call returns, outside the provider-call
+        # try/except in `_loop()`: a raise here escapes `engine.run()` unhandled.
+        rounds["n"] += 1
+        if rounds["n"] == crash_at_round:
+            raise RuntimeError("injected engine bug")
+        return real_sanitize(turn)
+
+    monkeypatch.setattr(engine_mod, "_sanitize_mangled_calls", sanitize_then_crash)
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "a.txt").write_text("hello\n", encoding="utf-8")
+    manager = SessionManager(data_dir=tmp_path / "data", provider=ScriptedProvider())
+    task = _task(workspace=str(ws), agent="cowork")
+    manager.task_store.save(task)
+
+    prep, out = _drive_manual_run_over_ws(manager, task)
+
+    record = manager.session_store.load(prep["session_id"])
+    tail = record.messages[-2:]
+    assert tail[-1]["role"] == "notice" and tail[-1]["kind"] == "error", tail
+    if crash_at_round == 2:
+        assert tail[0]["role"] == "tool", tail  # the crash came after a tool round
+    assert out["ok"] and out["run"]["status"] == "error"
+    assert out["run"]["error"] == tail[-1]["text"]
     assert manager.task_store.get(task.id).last_status == "error"
 
 

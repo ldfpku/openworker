@@ -8466,16 +8466,20 @@ def _run_outcome_from_transcript(
     `model_switch` notice (switching models never itself ends a turn), decisive on the
     first other notice found. No notice at the tail at all is normally a real
     assistant/tool message, i.e. the turn completed — EXCEPT when the tail is the bare
-    `user` message the turn started with and nothing else: on `main` (without the
-    unmerged `claude/fix-d-run-turn-except` hardening of `run_turn`), an unhandled
-    exception escaping the engine's own loop propagates out of `run_turn` before any
-    notice gets appended, so a real crash can leave the transcript looking exactly like
-    "never started". That shape is never legitimate for a manual run reaching this
-    function — `finalize_manual_run` only runs after the WS observed `turn_done`, which
-    `TurnEngine.run()` always yields TURN_START (and appends this same user message)
-    before — so treat it as the crash it is. This only catches a crash before the
-    turn's first reply; one after a tool round (tail `role="tool"`) still reads as
-    "ok" here and needs the persisted notice `claude/fix-d-run-turn-except` would add."""
+    `user` message the turn started with and nothing else.
+
+    An exception that escapes a WS turn does not leave that bare shape any more:
+    `run_turn`'s outer `except Exception` (app.py) appends a `kind="error"` notice before
+    `turn_done`, so a manual run's crash reaches this function as that notice and is
+    judged "error" here — both a crash before the first reply and one after a tool round
+    (tail `[..., tool, error notice]`); `test_manual_run_crash_over_ws_is_error` drives
+    both through the real WS and the finalize endpoint. The bare-`user` branch is what is
+    left for a turn that ended with no notice at all: `run_turn` contains a failure of
+    that `_append_notice` call and only logs it, and a caller driving `engine.run()`
+    directly (as the tests here do) gets no such notice. That shape is never legitimate
+    for a manual run reaching this function — `finalize_manual_run` only runs after the
+    WS observed `turn_done`, which `TurnEngine.run()` always yields TURN_START (and
+    appends this same user message) before — so treat it as the crash it is."""
     for message in reversed(messages or []):
         if message.get("role") != "notice":
             if message.get("role") == "user":
