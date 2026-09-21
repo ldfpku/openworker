@@ -7250,9 +7250,9 @@ class SessionManager:
         }
 
     def finalize_manual_run(self, task_id: str, run_id: str) -> dict[str, Any]:
-        """Mark a manual run complete once its first turn finished (the WS already saved the
-        session). Pulls result text + artifacts from the persisted transcript/workspace, and
-        reads that SAME transcript for how the turn actually ended.
+        """Mark a manual run complete once its first turn finished. Pulls result text from
+        the session's messages and artifacts from the workspace, and reads those SAME
+        messages for how the turn actually ended.
 
         A manual run never goes through `_run_scheduled_task` — the GUI drives the turn
         directly over the session WS, which knows nothing about the automation `TaskRun`,
@@ -7260,6 +7260,14 @@ class SessionManager:
         run's status is ever set. Before this looked at the transcript, a run the user
         stopped mid-flight — or one whose turn ended on the engine's own ERROR path — was
         unconditionally recorded "ok", same as a real completion (owner-hit 2026-09-22).
+
+        The messages come from `session_messages`, the same source the GUI rebuilds the
+        session from (`/v1/sessions/{id}/messages`): the cached engine's own list while it
+        is cached, else the stored record. Driven over the real WS, the engine was still
+        cached here in every case tried (normal, crash, stop, steering); `mark_idle` drops
+        it after a turn that promoted the session's project, and `run_turn` saves the
+        record right after that. The live list also carries a failure notice whose save
+        failed, which the stored record would not.
         """
         run = next(
             (r for r in self.task_store.runs(task_id) if r.run_id == run_id), None
@@ -7268,8 +7276,7 @@ class SessionManager:
         if run is None or task is None:
             return {"ok": False, "error": "not found"}
         if run.status == "running":
-            record = self.session_store.load(run.session_id)
-            messages = record.messages if record else []
+            messages = self.session_messages(run.session_id)
             run.result_text = _last_assistant_text(messages)
             run.artifacts = _recent_files(task.workspace, since=run.started_at)
             run.status, run.error = _run_outcome_from_transcript(messages)
@@ -8448,19 +8455,19 @@ def _last_assistant_text(messages: list[dict[str, Any]]) -> Optional[str]:
 
 
 # The trailing notice `kind`s that mean a turn did NOT complete normally — the exact set
-# `TurnEngine._tail_is_retriable_error` (engine.py) treats as a failed tail, plus
-# "interrupted" for a user-requested stop. These are read straight off `role == "notice"`
-# messages: the same public, persisted contract the GUI already renders from
-# (itemsFromMessages.ts) and the ONLY signal available here — a manual run's WS never
-# touches the automation TaskRun, so by the time this runs there is no live engine or
-# event to inspect, only what got saved. Never the engine's private `_cancel` flag.
+# `TurnEngine._tail_is_retriable_error` (engine.py) treats as a failed tail; "interrupted",
+# a user-requested stop, is handled on its own below. They are read straight off
+# `role == "notice"` messages, the same persisted contract the GUI renders a session from
+# (itemsFromMessages.ts). The turn's live events are gone by the time a manual run is
+# finalized (they went to the WS, which never touches the automation TaskRun), so the
+# messages are what is left to read. Never the engine's private `_cancel` flag.
 _MANUAL_RUN_FAILED_NOTICE_KINDS = frozenset({"error", "turn_aborted"})
 
 
 def _run_outcome_from_transcript(
     messages: list[dict[str, Any]],
 ) -> tuple[str, Optional[str]]:
-    """How a run's own turn actually ended, from its persisted transcript: `(status,
+    """How a run's own turn actually ended, from its transcript: `(status,
     error_text)` with status in {"canceled", "error", "ok"}. Mirrors
     `TurnEngine._tail_is_retriable_error`'s walk — transparent through a trailing
     `model_switch` notice (switching models never itself ends a turn), decisive on the

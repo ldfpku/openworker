@@ -855,7 +855,7 @@ async def test_manual_run_prepare_and_finalize(tmp_path, monkeypatch):
 async def test_manual_run_interrupted_is_canceled_not_ok(tmp_path, monkeypatch):
     """A manual run never goes through `_run_scheduled_task`'s INTERRUPTED handling — the
     GUI drives the turn straight over the session WS, and `finalize_manual_run` only finds
-    out afterward, from the persisted transcript. Before the fix it unconditionally wrote
+    out afterward, from the session's transcript. Before the fix it unconditionally wrote
     `status="ok"` once the first turn had ended, so a run the user stopped mid-flight
     (`request_interrupt()`, same public Stop-button path as the scheduled test above) was
     recorded exactly like a real completion."""
@@ -1103,6 +1103,45 @@ def test_manual_run_crash_over_ws_is_error(tmp_path, monkeypatch, crash_at_round
     assert out["ok"] and out["run"]["status"] == "error"
     assert out["run"]["error"] == tail[-1]["text"]
     assert manager.task_store.get(task.id).last_status == "error"
+
+
+def test_manual_run_finalize_reads_the_live_engine_when_saves_fail(tmp_path, monkeypatch):
+    """`finalize_manual_run` judges the same messages the GUI shows (`session_messages`):
+    the cached engine's list while it lives. Here every `save` fails — the case
+    `run_turn`'s own comment names ("if the failure was a save, the `finally`'s save may
+    fail too") — so the turn crashes at its `turn_start` checkpoint, `run_turn` appends
+    its error notice to the live engine, and nothing ever reaches the session store.
+    Reading only the stored record found no messages at all and recorded "ok"."""
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+    from coworker.server.manager import SessionManager
+
+    class ScriptedProvider(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            return AssistantTurn(text="never reached", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    manager = SessionManager(data_dir=tmp_path / "data", provider=ScriptedProvider())
+    task = _task(workspace=str(ws), agent="cowork")
+    manager.task_store.save(task)
+
+    def fail_every_save(session_id):
+        def save(*args, **kwargs):
+            raise OSError("disk full")
+
+        manager.save = save
+
+    prep, out = _drive_manual_run_over_ws(manager, task, before_send=fail_every_save)
+
+    assert manager.session_store.load(prep["session_id"]) is None  # nothing got saved
+    live = manager._engines[prep["session_id"]].messages
+    assert live[-1]["role"] == "notice" and live[-1]["kind"] == "error", live[-2:]
+    assert out["ok"] and out["run"]["status"] == "error"
+    assert out["run"]["error"] == live[-1]["text"]
 
 
 # -- REST ----------------------------------------------------------------------
