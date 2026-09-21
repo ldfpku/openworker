@@ -412,7 +412,13 @@ def test_a_stopped_explore_returns_without_waiting_for_its_producer(tmp_path, mo
     Both waits are cut to fractions of a second here so a regression fails instead of
     hanging: the join to `JOIN`, the read to `HOLD`."""
     join, hold = 0.5, 1.0
-    monkeypatch.setattr(asyncio.constants, "THREAD_JOIN_TIMEOUT", join)
+    # `THREAD_JOIN_TIMEOUT` was added in 3.12; pyproject declares `requires-python
+    # >= 3.10`, so `raising=True` (the default) would turn this into an
+    # AttributeError on 3.10/3.11. `raising=False` sets it unconditionally: on
+    # those interpreters the patch simply does nothing, but the fixed code no
+    # longer reads this constant at all, so the test still exercises the fixed
+    # behavior there.
+    monkeypatch.setattr(asyncio.constants, "THREAD_JOIN_TIMEOUT", join, raising=False)
     script = _HeldChildStream(hold)
     stops = []
 
