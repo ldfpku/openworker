@@ -242,15 +242,92 @@ def test_degraded_read_cannot_lead_to_an_overwrite(tmp_path):
     assert b"sk-RECONFIGURED" not in store.path.read_bytes()  # ...but not overwritten
 
 
-def test_error_text_never_carries_secret_material(tmp_path):
+# A made-up value planted in damaged files; no error, log line or frame may ever carry it.
+_CANARY = "sk-TEST-CANARY-0000"
+
+# One payload per way the file can fail to load. Each decode/parse error keeps the whole
+# file somewhere a shallow check misses: UnicodeDecodeError in its C-level `.object`,
+# JSONDecodeError in `.doc` (which its own repr() leaves out), and a parsed non-object
+# top level in whatever local still holds it.
+_DAMAGED = [
+    pytest.param(('{"provider:openai": {"api_key": "%s"' % _CANARY).encode(), id="torn-json"),
+    pytest.param(
+        ('{"provider:openai": {"api_key": "%s", "note": "密钥"}}' % _CANARY).encode(
+            "gbk"
+        ),
+        id="gbk-bytes",
+    ),
+    pytest.param(('["%s"]' % _CANARY).encode(), id="top-level-array"),
+]
+
+
+def _reachable_texts(root, depth=8):
+    """Every rendering of every object reachable from `root`: exception messages and
+    args, instance attributes (`vars`), the payloads decode/parse errors hide outside
+    `vars` (`.object`, `.doc`), anything chained on `__cause__`/`__context__`, and the
+    contents of containers -- recursively, so an exception kept as an attribute of the
+    error is searched as deeply as the error itself."""
+    # `alive` pins every visited object: `vars()` and friends build temporaries, and a
+    # freed temporary's id can be reused, which would make `seen` skip a real object.
+    seen, alive, out = set(), [], []
+
+    def walk(obj, left):
+        if obj is None or left < 0 or id(obj) in seen:
+            return
+        seen.add(id(obj))
+        alive.append(obj)
+        if isinstance(obj, BaseException):
+            out.extend((str(obj), repr(obj)))
+            walk(obj.args, left - 1)
+            walk(vars(obj), left - 1)
+            for attr in ("object", "doc"):
+                walk(getattr(obj, attr, None), left - 1)
+            walk(obj.__cause__, left - 1)
+            walk(obj.__context__, left - 1)
+        elif isinstance(obj, dict):
+            for key, value in obj.items():
+                walk(key, left - 1)
+                walk(value, left - 1)
+        elif isinstance(obj, (list, tuple, set, frozenset)):
+            for value in obj:
+                walk(value, left - 1)
+        else:
+            out.append(repr(obj))
+
+    walk(root, depth)
+    return out
+
+
+@pytest.mark.parametrize("payload", _DAMAGED)
+@pytest.mark.parametrize("op", ["put", "delete"])
+def test_error_text_never_carries_secret_material(tmp_path, op, payload):
     store = SecretStore(tmp_path / "secrets.json")
-    store.path.write_text('{"provider:openai": {"api_key": "sk-LEAK-ME"', encoding="utf-8")
+    store.path.write_bytes(payload)
     with pytest.raises(SecretStoreReadError) as caught:
-        store.put("x", {"a": 1})
+        if op == "put":
+            store.put("x", {"a": 1})
+        else:
+            store.delete("provider:openai")
     exc = caught.value
-    assert "sk-LEAK-ME" not in str(exc) and "sk-LEAK-ME" not in repr(exc)
-    # json.JSONDecodeError keeps the whole document in `.doc`; it must not stay reachable.
+    assert not [t for t in _reachable_texts(exc) if _CANARY in t]
+    # Nothing chained: raising inside an `except` block leaves the original on
+    # `__context__` even with `from None`.
     assert exc.__cause__ is None and exc.__context__ is None
+    # Nothing kept: only the path and a string reason, never an exception object.
+    assert set(vars(exc)) == {"path", "detail"}
+    assert isinstance(exc.detail, str)
+
+
+@pytest.mark.parametrize("payload", _DAMAGED)
+def test_degraded_reads_never_log_secret_material(tmp_path, caplog, payload):
+    store = SecretStore(tmp_path / "secrets.json")
+    store.path.write_bytes(payload)
+    with caplog.at_level(logging.DEBUG, logger="coworker.secrets"):
+        assert store.get("provider:openai") is None
+        assert store.status() == []
+    assert caplog.records  # the degradation was logged at all...
+    for record in caplog.records:  # ...and nothing it logged carries the file
+        assert not [t for t in _reachable_texts((record.getMessage(), record.args)) if _CANARY in t]
 
 
 def test_unreadable_dotenv_does_not_break_a_lookup(tmp_path, monkeypatch):
