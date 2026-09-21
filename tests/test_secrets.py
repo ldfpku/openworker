@@ -314,7 +314,7 @@ _CANARY = "sk-TEST-CANARY-0000"
 _DAMAGED = [
     pytest.param(('{"provider:openai": {"api_key": "%s"' % _CANARY).encode(), id="torn-json"),
     pytest.param(
-        ('{"provider:openai": {"api_key": "%s", "note": "密钥"}}' % _CANARY).encode(
+        ('{"provider:openai": {"api_key": "%s", "note": "\u5bc6\u94a5"}}' % _CANARY).encode(
             "gbk"
         ),
         id="gbk-bytes",
@@ -443,7 +443,7 @@ def test_unreadable_dotenv_warns_once_per_failure_streak(tmp_path, caplog, monke
     store = SecretStore(tmp_path / "secrets.json")
     store.put("docs:default", {"token": "${DOCS_TOKEN}"})
     dotenv = tmp_path / ".env"
-    broken = 'DOCS_TOKEN="密钥"'.encode("gbk")
+    broken = 'DOCS_TOKEN="\u5bc6\u94a5"'.encode("gbk")
 
     def warnings():
         return [r for r in caplog.records if r.levelno == logging.WARNING]
