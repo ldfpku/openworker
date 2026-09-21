@@ -364,8 +364,7 @@ class _HeldChildStream:
 
     Stands in for a provider read that nothing can interrupt: the Stop ends the child's
     turn at once, but the producer thread stays inside this read until the gate opens or
-    `hold` runs out. `closed` is set once the stream has been let go of, which is when a
-    real SDK stream closes its HTTP response.
+    `hold` runs out. `closed` is set once the producer has let go of the stream.
     """
 
     def __init__(self, hold):

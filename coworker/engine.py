@@ -1392,7 +1392,7 @@ class TurnEngine:
                     if self._cancel.is_set() or consumer_gone.is_set():
                         break
                     if not deliver(("chunk", chunk)):
-                        break  # leaving the loop closes the stream, and its connection
+                        break  # nobody left to read: let go of the stream, like a Stop
             except Exception as exc:  # surfaced to the awaiting consumer
                 deliver(("error", exc))
             finally:

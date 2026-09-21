@@ -49,12 +49,14 @@ def _run_without_joining_executor(main: Coroutine[Any, Any, _T]) -> _T:
     engine's stream producer runs in that executor (`TurnEngine._astream`), and after a
     Stop it is typically still inside a provider read that nothing can interrupt. The
     child's turn was over in milliseconds, yet `explore` — and with it the parent's tool
-    call and the parent's whole turn — sat waiting for that read to come back, which a
-    stalled stream only does when the SDK's own read timeout fires.
+    call and the parent's whole turn — sat waiting for that read to come back, which for
+    a stalled stream can be as late as the SDK's own read timeout.
 
-    Nothing the child's turn needs is left in that thread by then: the producer drops
-    what it would have delivered once the loop is closed, and lets go of the stream (and
-    with it the connection) as soon as the read returns — see `deliver` in `_astream`.
+    Nothing the child's turn needs is left in that thread by then: once the read returns,
+    the producer drops what it would have delivered to the closed loop, lets go of the
+    provider's stream and ends — see `deliver` in `_astream`. (The SDK's HTTP response is
+    closed when the garbage collector reclaims the SDK's stream object, exactly as after
+    any Stop; nothing here changes that.)
     So everything else is done the way `asyncio.run` does it — a fresh loop, set as this
     thread's loop while it runs, leftover tasks cancelled, async generators finalised —
     and the executor is shut down without waiting, which is what `loop.close()` does.
