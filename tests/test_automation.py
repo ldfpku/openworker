@@ -995,6 +995,65 @@ async def test_manual_run_unhandled_crash_before_reply_is_error_not_ok(
     assert manager.task_store.get(task.id).last_status == "error"
 
 
+async def test_manual_run_steered_turn_ending_on_iteration_gate_is_ok(
+    tmp_path, monkeypatch
+):
+    """Steering the user types mid-turn (`engine.queue_steering`) is appended as a
+    `user` message after the tool round. When `max_iterations` runs out right then, the
+    turn still ends NORMALLY (TURN_END `max_iterations_exceeded`) — on
+    `[user, assistant, tool, user]`. The no-reply fallback used to key on the `user`
+    tail alone and recorded this as an error "without any response"."""
+    from coworker.providers import (
+        AssistantTurn,
+        ModelCapabilities,
+        ProviderClient,
+        ToolCall,
+    )
+    from coworker.server.manager import SessionManager
+
+    class SteeredProvider(ProviderClient):
+        def __init__(self):
+            self.engine = None  # set once the manual run's engine exists
+
+        def complete(self, *, model, messages, tools=None, **settings):
+            self.engine.queue_steering("also check b.txt")
+            call = ToolCall(id="call_1", name="read_file", arguments={"path": "a.txt"})
+            return AssistantTurn(tool_calls=[call])
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "a.txt").write_text("hello\n", encoding="utf-8")
+    provider = SteeredProvider()
+    manager = SessionManager(data_dir=tmp_path / "data", provider=provider)
+    task = _task(workspace=str(ws), agent="cowork")
+    manager.task_store.save(task)
+
+    prep = manager.prepare_manual_run(task.id)
+    engine = manager.get_engine(prep["session_id"], workspace=str(ws), agent="cowork")
+    engine.max_iterations = 1
+    provider.engine = engine
+
+    async def drain():
+        return [event async for event in engine.run(prep["prompt"])]
+
+    events = await asyncio.wait_for(drain(), timeout=10)
+    manager.save(prep["session_id"], engine)
+    # Sanity: pin down the shape — a normal ending on a steering `user` tail.
+    (turn_end,) = [e for e in events if e.type.value == "turn_end"]
+    assert turn_end.data["status"] == "max_iterations_exceeded"
+    roles = [m["role"] for m in engine.messages if m["role"] != "system"]
+    assert roles == ["user", "assistant", "tool", "user"], roles
+
+    out = manager.finalize_manual_run(task.id, prep["run_id"])
+    assert out["ok"] and out["run"]["status"] == "ok"
+    assert out["run"]["error"] is None
+    assert manager.task_store.get(task.id).last_status == "ok"
+
+
 def _drive_manual_run_over_ws(manager, task, *, before_send=None, after_turn=None):
     """Run a manual run the way the GUI does — `POST .../run`, open the session WS, send
     the prompt, wait for `turn_done`, then `POST .../finalize` — and return

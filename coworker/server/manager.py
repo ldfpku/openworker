@@ -8472,25 +8472,34 @@ def _run_outcome_from_transcript(
     `TurnEngine._tail_is_retriable_error`'s walk — transparent through a trailing
     `model_switch` notice (switching models never itself ends a turn), decisive on the
     first other notice found. No notice at the tail at all is normally a real
-    assistant/tool message, i.e. the turn completed — EXCEPT when the tail is the bare
-    `user` message the turn started with and nothing else.
+    assistant/tool message, i.e. the turn completed — EXCEPT when the tail is a `user`
+    message and the transcript holds no `assistant` message at all: the turn ended
+    without a single reply and without a notice saying how.
 
-    An exception that escapes a WS turn does not leave that bare shape any more:
+    An exception that escapes a WS turn does not leave that shape any more:
     `run_turn`'s outer `except Exception` (app.py) appends a `kind="error"` notice before
     `turn_done`, so a manual run's crash reaches this function as that notice and is
     judged "error" here — both a crash before the first reply and one after a tool round
     (tail `[..., tool, error notice]`); `test_manual_run_crash_over_ws_is_error` drives
-    both through the real WS and the finalize endpoint. The bare-`user` branch is what is
+    both through the real WS and the finalize endpoint. The no-reply branch is what is
     left for a turn that ended with no notice at all: `run_turn` contains a failure of
     that `_append_notice` call and only logs it, and a caller driving `engine.run()`
-    directly (as the tests here do) gets no such notice. That shape is never legitimate
-    for a manual run reaching this function — `finalize_manual_run` only runs after the
-    WS observed `turn_done`, which `TurnEngine.run()` always yields TURN_START (and
-    appends this same user message) before — so treat it as the crash it is."""
-    for message in reversed(messages or []):
-        if message.get("role") != "notice":
-            if message.get("role") == "user":
-                return "error", "the turn ended without any response — see the app log for details"
+    directly (as the tests here do) gets no such notice.
+
+    A `user` tail by itself proves nothing: steering (`TurnEngine.queue_steering`, what
+    the user types while a turn runs) is appended as a `user` message after a reply or a
+    tool round, and when the iteration gate trips right after that the turn ends
+    normally (TURN_END `max_iterations_exceeded`) on `[user, assistant, tool, user]` —
+    that is a completed turn. Looking for ANY assistant message is enough because the
+    transcript passed in is a run's own session, created for that run, holding its
+    first turn (`finalize_manual_run` runs at that turn's `turn_done`).
+    """
+    messages = messages or []
+    for message in reversed(messages):
+        role = message.get("role")
+        if role != "notice":
+            if role == "user" and not any(m.get("role") == "assistant" for m in messages):
+                return "error", "the turn ended before any reply"
             return "ok", None
         kind = message.get("kind")
         if kind == "model_switch":
