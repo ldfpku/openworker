@@ -28,12 +28,12 @@ from types import SimpleNamespace
 import pytest
 
 from coworker.server.manager import SessionManager
-from coworker.sessions import SessionRecord
 from test_durable_resume_busy_session import (
     _GatedEngine,
     _approval_manager,
     _approved_after_restart,
     _eventually,
+    _persisted,
     _settle,
 )
 
@@ -179,20 +179,6 @@ async def test_aclose_cancelling_a_scheduled_run_does_not_start_the_resume(
     assert not target.exists()
     assert item.id in mgr._deferred_resumes.get(sid, {})
     assert _skip_logged(caplog, item.id)
-
-
-def _persisted(mgr: SessionManager, sid: str, workspace) -> None:
-    """The row every real parked resume's session has: its suspended tool call was
-    persisted when the prompt was raised (`persist_session`)."""
-    mgr.session_store.save(
-        SessionRecord(
-            session_id=sid,
-            workspace=str(workspace),
-            model="test-model",
-            mode="interactive",
-            messages=[{"role": "user", "content": "go"}],
-        )
-    )
 
 
 async def _park_two(mgr: SessionManager, sid: str, monkeypatch, tmp_path):

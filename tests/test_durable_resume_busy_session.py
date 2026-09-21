@@ -22,6 +22,7 @@ import asyncio
 from types import SimpleNamespace
 
 from coworker.server.manager import SessionManager
+from coworker.sessions import SessionRecord
 from test_durable_resume import (
     ScriptedProvider,
     _final_assistant_texts,
@@ -166,6 +167,20 @@ async def test_deferred_resume_waits_again_if_another_turn_gets_there_first(tmp_
     assert target.read_text() == "ok"
 
 
+def _persisted(mgr: SessionManager, sid: str, workspace) -> None:
+    """The row every real parked resume's session has: its suspended tool call was
+    persisted when the prompt was raised (`persist_session`)."""
+    mgr.session_store.save(
+        SessionRecord(
+            session_id=sid,
+            workspace=str(workspace),
+            model="test-model",
+            mode="interactive",
+            messages=[{"role": "user", "content": "go"}],
+        )
+    )
+
+
 class _GatedEngine:
     """Counts how many `resume()` turns are in flight at once; each one holds until
     `gate` opens. `messages` is read by the post-turn auto-title hook."""
@@ -202,6 +217,7 @@ async def test_two_resumes_of_one_session_never_overlap(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mgr, "ensure_engine", fake_ensure_engine)
     monkeypatch.setattr(mgr, "save", lambda *a, **k: None)
+    _persisted(mgr, "pair", tmp_path)  # a parked resume is only run for a live session
     first = SimpleNamespace(id="i1", session_id="pair", tool_call_id="c1")
     second = SimpleNamespace(id="i2", session_id="pair", tool_call_id="c2")
 

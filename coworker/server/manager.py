@@ -1833,6 +1833,18 @@ class SessionManager:
 
         async def _run_parked() -> None:
             for n, item in enumerate(items):
+                # `delete_session` drops what is still parked, but these items left
+                # `_deferred_resumes` when this runner was created — a delete since then
+                # never saw them. Resuming anyway rebuilt the dead id: `ensure_engine`
+                # makes a fresh engine holding nothing but its system prompt, and the save
+                # after the (empty) resume writes that back as a new session row.
+                if not await self._session_still_exists(session_id):
+                    logger.info(
+                        "session %s no longer exists; dropping its parked resume(s) %s",
+                        session_id,
+                        ", ".join(str(i.id) for i in items[n:]),
+                    )
+                    return
                 if self._closing:
                     self._repark(session_id, items[n:], "shutting down")
                     return
@@ -1868,6 +1880,18 @@ class SessionManager:
         if task is not None and task.cancelling():
             return "the turn that ended was cancelled"
         return None
+
+    async def _session_still_exists(self, session_id: str) -> bool:
+        """Whether `session_id` still has its store row (`delete_session` removes it).
+        Read off the loop, like `ensure_engine`'s build. A read that fails says nothing
+        either way, so it answers True and the resume goes on to meet whatever is wrong
+        inside `_durable_resume`, which contains its own failures."""
+        try:
+            record = await asyncio.to_thread(self.session_store.load, session_id)
+        except Exception:
+            logger.exception("could not check whether session %s still exists", session_id)
+            return True
+        return record is not None
 
     def _repark(self, session_id: str, items: list[Any], why: str) -> None:
         """Put resumes a runner will not start back where `_kick_deferred_resumes` finds
