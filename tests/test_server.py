@@ -16,6 +16,7 @@ from coworker.providers import (
 )
 from coworker.server import SessionManager, create_app
 from coworker.sessions import SessionRecord
+from coworker.testing.autotitle import autotitle_reply, is_autotitle_call
 
 
 class ScriptedProvider(ProviderClient):
@@ -34,8 +35,8 @@ class ScriptedProvider(ProviderClient):
         # load_browser_tools first, which puts browser_close in exactly the slot the
         # title eats. The small-talk sentinel also keeps titling inert — the manager
         # drops that title instead of writing or broadcasting it.
-        if messages and "title chat sessions" in str(messages[0].get("content", "")):
-            return _text("small-talk")
+        if is_autotitle_call(messages):
+            return autotitle_reply()
         return self._turns.pop(0)
 
     def capabilities(self, model):
@@ -458,8 +459,8 @@ def test_ws_allows_only_one_inflight_turn_per_session(tmp_path):
             # The fire-and-forget auto-title completion legitimately runs CONCURRENTLY
             # with the chat turn (it fires at turn start, owner catch 2026-08-24) — the
             # invariant under test is one CHAT turn at a time, so exclude title calls.
-            if messages and "title chat sessions" in str(messages[0].get("content", "")):
-                return _text("A Title")
+            if is_autotitle_call(messages):
+                return autotitle_reply(text="A Title")
             with self._lock:
                 self.active += 1
                 self.max_active = max(self.max_active, self.active)
@@ -573,6 +574,13 @@ def test_ws_error_persists_notice_and_retry_reruns(tmp_path):
             self.calls = 0
 
         def complete(self, *, model, messages, tools=None, **settings):
+            # Same race as ScriptedProvider above: auto-titling can reach this provider
+            # concurrently with the chat call it is scripted to fail-then-recover. Without
+            # this guard, a title call landing first burns the "outage" slot on a call
+            # nobody is asserting about, and the chat turn's own first call goes straight
+            # to "recovered" — the WS never emits the persisted-error path this test pins.
+            if is_autotitle_call(messages):
+                return autotitle_reply()
             self.calls += 1
             if self.calls == 1:
                 raise RuntimeError("outage")
