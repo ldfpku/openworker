@@ -16,6 +16,7 @@ from coworker.permissions import PermissionEngine
 from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient, ToolCall
 from coworker.server import create_app
 from coworker.server.manager import SessionManager
+from coworker.testing.autotitle import autotitle_reply, is_autotitle_call
 from coworker.tools import ToolRegistry
 
 
@@ -28,6 +29,11 @@ class CapturingProvider(ProviderClient):
         self.calls: list[list[dict]] = []
 
     def complete(self, *, model, messages, tools=None, **settings):
+        # A couple of cases here drive a real `_dispatch_inbound` -> `deliver_to_session`,
+        # whose `mark_idle` can reach this same provider (manager.py) — guard so a title
+        # call can never pop a turn meant for the scripted chat call.
+        if is_autotitle_call(messages):
+            return autotitle_reply()
         self.calls.append([dict(m) for m in messages])
         return self._turns.pop(0)
 
