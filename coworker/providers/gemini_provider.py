@@ -585,12 +585,30 @@ class GeminiProvider(ProviderClient):
             # goes through the httpx client without an explicit per-request timeout.
             #
             # This client is also what stream() uses (see _ensure_client's call site
-            # below), so `HttpOptions.timeout` doubles as the only per-provider read bound
-            # on the STREAM path anywhere in this tree. It does not make the bridge-level
-            # FirstChunkTimeout (engine.py) redundant — that one frees the *engine* on a
-            # stall via the bounded retry, while this is the backstop that eventually frees
-            # the *socket and thread* a wedged Gemini read is still holding, worst case
-            # 600s after FirstChunkTimeout gives up on it.
+            # below), so `HttpOptions.timeout` is the read bound on THIS provider's
+            # (plain `gemini/…`, API-key) STREAM path — NOT the only per-provider read
+            # bound on a stream path anywhere in this tree: openai and anthropic's SDKs
+            # already default to `Timeout(read=600, …)` and bedrock's botocore client
+            # defaults to a 60s `read_timeout` (grepped for `timeout` across
+            # anthropic_provider.py/openai_provider.py/openai_responses.py/
+            # bedrock_provider.py — none of those set one explicitly in their own code;
+            # it's inherited from the SDK's own default, unlike here). What makes this
+            # provider different is that google-genai 2.19.0's own default for an
+            # unconfigured client is UNBOUNDED (`timeout=None`, verified above), so this
+            # is the one provider where the bound has to be set explicitly rather than
+            # inherited from the SDK. `vertex_provider._family_client` sets the
+            # identical `HttpOptions.timeout=600_000` / `httpx.Timeout(600.0,
+            # connect=10.0)` on the client it injects for `vertex:gemini/…` models —
+            # that route bypasses this whole `if self._client is None:` branch (a
+            # `client=` was already passed to `GeminiProvider.__init__`), so it needed
+            # (and, as of this branch, has) the same explicit bound set at its own call
+            # site rather than inheriting it from here.
+            #
+            # None of this makes the bridge-level FirstChunkTimeout (engine.py)
+            # redundant — that one frees the *engine* on a stall via the bounded retry,
+            # while this is the backstop that eventually frees the *socket and thread* a
+            # wedged Gemini read is still holding, worst case 600s after
+            # FirstChunkTimeout gives up on it.
             request_timeout = httpx.Timeout(600.0, connect=10.0)
             self._client = genai.Client(
                 api_key=key,

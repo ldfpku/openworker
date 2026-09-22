@@ -548,20 +548,32 @@ class FirstChunkTimeout(TimeoutError):
     inside the provider's read and the socket is still open; both are released only when
     that read returns on the HTTP layer's own schedule (see `_FIRST_CHUNK_TIMEOUT_ENV`).
     So an engine that gives up here and retries can be holding two sockets, and a turn
-    that fails here leaves one behind for as long as the vendor SDK takes — or, for
-    `gemini_provider` only, up to the 600s bound its `_ensure_client` sets via
-    `HttpOptions.timeout=600_000` (NOT `client_args["timeout"]`, which google-genai
-    2.19.0 never consults for a real request — see the long comment at that call site
-    for why, verified there against the installed SDK with a MockTransport probe),
-    covering `stream()` too since it reuses that same client. That bound is a
+    that fails here leaves one behind for as long as the vendor SDK takes — or, for a
+    Gemini model, up to the 600s bound `HttpOptions.timeout=600_000` sets (NOT
+    `client_args["timeout"]`, which google-genai 2.19.0 never consults for a real
+    request — see the long comment at `gemini_provider._ensure_client` for why, verified
+    there against the installed SDK with a MockTransport probe). That bound is set on
+    TWO separate clients, both covering `stream()`: `gemini_provider._ensure_client`
+    sets it on the client it builds itself for the plain `gemini/…` (API-key) route, and
+    `vertex_provider._family_client` sets the identical bound on the client it injects
+    for `vertex:gemini/…` models — a model routed the second way does NOT go through
+    `_ensure_client`'s own client-building branch at all (that branch only runs when
+    `self._client is None`), so before `vertex_provider` set this explicitly there was
+    no such bound on that route; fixed together with this comment. Either way it is a
     resource-exhaustion backstop, not a turn-time limit tuned to this timeout, so a
     wedged Gemini stream still holds its socket and executor slot for up to 600s after
     this timeout gives up on it. It is also a single scalar covering connect as well as
     read/write/pool — there is no separate short connect timeout on this path, unlike
-    the client-level default `client_args` sets (which a real request never uses). No
-    other provider's STREAM path in this tree sets a read timeout of its own: the one
-    per-request timeout any of the rest set (`anthropic_provider._nonstreaming_timeout`)
-    is applied to `complete` only and says so itself.
+    the client-level default `client_args` sets (which a real request never uses).
+    Gemini is not the only provider whose STREAM path has a read bound — openai and
+    anthropic's SDKs default to `Timeout(read=600, …)` and bedrock's botocore client
+    defaults to a 60s `read_timeout` (see the bullet list at `_FIRST_CHUNK_TIMEOUT_ENV`
+    above, ~line 163, which this docstring does not re-derive) — Gemini is the one
+    provider where this repo sets the bound in its OWN code, because google-genai's
+    default for an unconfigured client is unbounded (`timeout=None`) rather than a
+    built-in figure like those three SDKs ship. The one per-request timeout any
+    provider's code sets outside of this (`anthropic_provider._nonstreaming_timeout`) is
+    applied to `complete` only and says so itself.
 
     And it is not only a socket. A parked producer also holds one worker of the loop's
     DEFAULT executor, which is what `asyncio.to_thread` uses too — so the same pool

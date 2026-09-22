@@ -217,7 +217,9 @@ def test_api_key_method_is_gemini_only():
 
 def test_api_key_method_builds_express_gemini_client(monkeypatch):
     """Express mode: the key goes to genai.Client WITHOUT project/location (the SDK
-    treats them as mutually exclusive with an API key)."""
+    treats them as mutually exclusive with an API key). `http_options` is asserted
+    separately below (test_ensure_client_bounds_the_vertex_injected_http_timeout) —
+    here we only pin the two identity kwargs."""
     from google import genai
 
     captured: dict = {}
@@ -234,7 +236,40 @@ def test_api_key_method_builds_express_gemini_client(monkeypatch):
     from coworker.providers import GeminiProvider
 
     assert isinstance(sub, GeminiProvider)
-    assert captured == {"vertexai": True, "api_key": "AQ.k"}
+    assert captured["vertexai"] is True
+    assert captured["api_key"] == "AQ.k"
+    assert set(captured) == {"vertexai", "api_key", "http_options"}
+
+
+def test_ensure_client_bounds_the_vertex_injected_http_timeout():
+    """The client vertex_provider injects for `vertex:gemini/*` models must carry the
+    same 600s/10s bound as gemini_provider._ensure_client's API-key path — same method
+    as test_gemini_provider.test_ensure_client_bounds_the_http_timeout: build a real
+    `genai.Client(vertexai=True, ...)` (no mock — this SDK's own client construction
+    does no network I/O) and read the underlying httpx clients' `timeout` directly.
+    Covers both auth shapes vertex_provider builds: the express (api_key) client and
+    the project/location (ADC/service-account) client."""
+    p_key = VertexProvider(
+        project="proj", location="us-east5", auth_method="api_key", api_key="AQ.k"
+    )
+    sub_key = p_key._family_client("gemini")
+    key_client = sub_key._ensure_client()
+    key_timeout = key_client._api_client._httpx_client.timeout
+    assert key_timeout.read == 600.0
+    assert key_timeout.connect == 10.0
+    key_async_timeout = key_client._api_client._async_httpx_client.timeout
+    assert key_async_timeout.read == 600.0
+    assert key_async_timeout.connect == 10.0
+
+    p_adc = VertexProvider(project="proj", location="us-east5", auth_method="adc")
+    sub_adc = p_adc._family_client("gemini")
+    adc_client = sub_adc._ensure_client()
+    adc_timeout = adc_client._api_client._httpx_client.timeout
+    assert adc_timeout.read == 600.0
+    assert adc_timeout.connect == 10.0
+    adc_async_timeout = adc_client._api_client._async_httpx_client.timeout
+    assert adc_async_timeout.read == 600.0
+    assert adc_async_timeout.connect == 10.0
 
 
 def test_verify_vertex_api_key_method(monkeypatch):

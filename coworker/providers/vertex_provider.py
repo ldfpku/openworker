@@ -159,17 +159,37 @@ class VertexProvider(ProviderClient):
         if client is None:
             if family == "gemini":
                 from google import genai
+                from google.genai import types
+                import httpx
 
+                # Same bound as gemini_provider._ensure_client, for the same reason: a
+                # stalled Vertex connection would otherwise hang the underlying httpx
+                # client forever (verified — see test_ensure_client_bounds_the_vertex_
+                # injected_http_timeout in test_vertex_provider.py, same method as
+                # test_gemini_provider.test_ensure_client_bounds_the_http_timeout).
+                # `HttpOptions.timeout` (ms) is what actually reaches the wire per
+                # request (see the long comment in gemini_provider._ensure_client);
+                # `client_args`/`async_client_args` are kept alongside it as the
+                # client-level default for the same reason that call site keeps them.
+                request_timeout = httpx.Timeout(600.0, connect=10.0)
+                http_options = types.HttpOptions(
+                    timeout=600_000,
+                    client_args={"timeout": request_timeout},
+                    async_client_args={"timeout": request_timeout},
+                )
                 if self._api_key:
                     # Express mode: the key excludes project/location (SDK enforces
                     # mutual exclusivity — the key already identifies the project).
-                    sdk = genai.Client(vertexai=True, api_key=self._api_key)
+                    sdk = genai.Client(
+                        vertexai=True, api_key=self._api_key, http_options=http_options
+                    )
                 else:
                     sdk = genai.Client(
                         vertexai=True,
                         project=self._project,
                         location=self._location,
                         credentials=self._explicit_credentials(),
+                        http_options=http_options,
                     )
                 client = GeminiProvider(client=sdk)
             else:
