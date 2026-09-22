@@ -210,6 +210,14 @@ _SLOW_FIRST_CHUNK_FRACTION = 0.5
 #
 # `auto` (the default) abandons the classified-safe set, `all` abandons every tool, `none`
 # restores the pre-2026-09-22 behaviour of always waiting. Anything else reads as `auto`.
+#
+# `all` means ALL: `write_file`, `replace_in_file`, `run_shell`, `send_message` and every
+# connector write are abandoned too. Abandoning does not stop them — the thread runs on —
+# so what `all` gives up is knowing what happened: the file is still written, the message
+# is still sent, and the turn ends telling the model "tool result unavailable". Nothing in
+# this file narrows it, and nothing should pick it on the user's behalf: it exists for
+# someone who has decided that a Stop which returns immediately is worth that, and it is
+# reached only by setting the variable by hand.
 _ABANDON_ENV = "OPENWORKER_STOP_ABANDONS_TOOLS"
 _ABANDON_MODES = frozenset({"auto", "all", "none"})
 _ABANDON_DEFAULT = "auto"
@@ -2021,7 +2029,10 @@ class TurnEngine:
           and which come back as interrupted within the same stop, and the ones named in
           `_SELF_INTERRUPTING_TOOLS`. Abandoning the wait would win that race and replace
           an accurate "interrupted by user" with "result unavailable". `all` is the manual
-          override that gives that distinction up.
+          override that gives that distinction up — along with every other exclusion here:
+          under `all` a `write_file` or a `run_shell` is abandoned too, which does not
+          stop it, only stops anyone finding out how it went. That is the user's explicit
+          choice, made by setting the environment variable; `auto` never does it.
         * Tools that classify READ but change state which outlives the turn:
           `_SIDE_EFFECTING_READS` by name, `_SIDE_EFFECTING_READ_CATEGORIES` by category.
           `classify` returns READ as a FALLBACK for anything it does not know that

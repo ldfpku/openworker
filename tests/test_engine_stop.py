@@ -10,6 +10,7 @@ import json
 import logging
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import aisuite as ai
@@ -980,6 +981,62 @@ def test_abandon_switch_auto_all_none(tmp_path, monkeypatch):
 
     monkeypatch.setenv("OPENWORKER_STOP_ABANDONS_TOOLS", "nonsense")
     assert _abandon_case(tmp_path, "read_thing") == ["abandoned"]
+
+
+def test_all_mode_abandons_a_write_without_stopping_it(tmp_path, monkeypatch):
+    """What `all` actually buys, so the docstring's warning is a checked statement.
+
+    Abandoning never stops a tool; it stops WAITING for one. Under `all` that reaches
+    the writes as well, so the file is written exactly as it would have been and the
+    turn ends telling the model the result is unavailable. Nobody should arrive here by
+    accident — it takes setting the environment variable by hand — but the option exists
+    and this is its shape.
+    """
+    monkeypatch.setenv("OPENWORKER_STOP_ABANDONS_TOOLS", "all")
+    target = tmp_path / "written-after-the-stop.txt"
+    registry = ToolRegistry()
+    started, release, written = (
+        threading.Event(),
+        threading.Event(),
+        threading.Event(),
+    )
+
+    def write_file(path: str, content: str):
+        """Still running when the user stops; finishes the write regardless."""
+        started.set()
+        release.wait(10)
+        Path(path).write_text(content, encoding="utf-8")
+        written.set()
+        return {"ok": True}
+
+    registry.register(write_file)
+
+    async def approve(_req):
+        return ApprovalOutcome.ONCE
+
+    engine = _run_tool_engine(
+        tmp_path,
+        registry,
+        [("write_file", {"path": str(target), "content": "landed"})],
+        approver=approve,
+    )
+
+    async def scenario():
+        _stop_once_started(engine, started)
+        return [ev async for ev in engine.run("go")]
+
+    try:
+        events = _run_without_joining_executor(scenario())
+        stopped_before_the_write = not written.is_set()
+    finally:
+        release.set()  # never leave the worker thread behind
+    assert written.wait(10)
+
+    assert stopped_before_the_write, "the turn outlasted the write; nothing was abandoned"
+    assert [ev.data["status"] for ev in _finished_events(events)] == ["abandoned"]
+    assert json.loads(_tool_results(engine)[0]["content"])["executed"] is True
+    # The write landed anyway — that is the trade, not a bug.
+    assert target.read_text(encoding="utf-8") == "landed"
 
 
 def _fake_mcp_tool(name):
