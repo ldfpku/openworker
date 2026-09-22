@@ -172,6 +172,16 @@ class MCPManager:
                         args=server.args,
                         env=server.env or None,
                         cwd=server.cwd,
+                        # SDK default is "strict": one non-UTF-8 byte anywhere in the
+                        # child's stdout (a stray console-codepage log line, a
+                        # mis-encoded string in an otherwise well-formed message) raises
+                        # UnicodeDecodeError inside the SDK's anyio TaskGroup, which
+                        # tears the whole connection down — every tool this server
+                        # provides disappears mid-session with no way to recover
+                        # (repro'd 2026-09-22, coworker/tests/test_mcp_stdio_decode.py).
+                        # "replace" keeps the connection alive and turns the bad bytes
+                        # into U+FFFD instead.
+                        encoding_error_handler="replace",
                     )
                     # Capture the child's stderr so a startup crash leaves evidence
                     # the UI can show (the SDK needs a real file descriptor here).
