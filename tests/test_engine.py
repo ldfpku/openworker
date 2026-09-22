@@ -1577,6 +1577,10 @@ class _GatedStream:
         self.gate = threading.Event()
         self.parked = threading.Event()
         self.produced = 0
+        # How many times something called .close() on THIS object (not on the throwaway
+        # generator __iter__ returns) — the same shape as the real SDK Stream objects
+        # OpenAIProvider.stream()'s `finally: close_stream(chunks)` targets.
+        self.closed = 0
 
     def __iter__(self):
         for index, chunk in enumerate(self.chunks):
@@ -1585,6 +1589,9 @@ class _GatedStream:
                 self.gate.wait()
             self.produced = index + 1
             yield chunk
+
+    def close(self):
+        self.closed += 1
 
 
 class _BrokenStop:
@@ -1607,13 +1614,21 @@ class _BrokenStop:
 
 
 def _counting_stream_provider(*chunk_scripts):
-    """`_stream_provider` plus a record of every wire call it actually made."""
+    """`_stream_provider` plus a record of every wire call it actually made.
+
+    Returns each script AS GIVEN, not wrapped in `iter()`: `OpenAIProvider.stream()` binds
+    the wire object it gets back to a local (`chunks`) and calls `close_stream(chunks)` on
+    it in `finally`, same as it would a real SDK Stream — wrapping the script in `iter()`
+    here would hand `close_stream` a throwaway generator instead of the `_GatedStream`
+    fixture itself, and its `.closed` counter would never move. A plain list script has no
+    `.close`, so `close_stream` is a no-op for it either way — see base.close_stream.
+    """
     scripts = list(chunk_scripts)
     calls = []
 
     def _create(**kwargs):
         calls.append(kwargs)
-        return iter(scripts.pop(0))
+        return scripts.pop(0)
 
     class _Client:
         def __init__(self):
@@ -1893,6 +1908,10 @@ def test_a_consumer_that_leaves_stops_the_producer(tmp_path):
 
     # One more chunk was already on the wire when the consumer left; nothing after it.
     assert parked.produced == 1
+    # The producer thread's own `for chunk in provider.stream(...)` broke and dropped its
+    # last reference to that generator before this thread went on — OpenAIProvider.stream()
+    # closed the wire object in its `finally` right then, not whenever GC next runs.
+    assert parked.closed == 1
 
 
 class _RecordingExecutor(ThreadPoolExecutor):
@@ -1982,6 +2001,12 @@ def test_a_producer_abandoned_on_a_closed_loop_lets_go_quietly(tmp_path):
     # threading.excepthook.
     assert thread_errors == []
     assert parked.produced == 2  # the chunk already on the wire, and nothing after it
+    # `executor.jobs[0].exception(...)` above only returns once the producer job itself
+    # has returned, so its `for chunk in provider.stream(...)` has already broken and
+    # dropped the generator by this point — OpenAIProvider.stream()'s `finally` ran and
+    # closed the wire object then, even though the loop it would have reported to was
+    # already gone.
+    assert parked.closed == 1
 
 
 # -- the first-chunk deadline ----------------------------------------------------------
