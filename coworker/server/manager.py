@@ -1940,30 +1940,45 @@ class SessionManager:
 
         async def _run_parked() -> None:
             for n, item in enumerate(items):
-                # `delete_session` drops what is still parked, but these items left
-                # `_deferred_resumes` when this runner was created — a delete since then
-                # never saw them. Resuming anyway rebuilt the dead id: `ensure_engine`
-                # makes a fresh engine holding nothing but its system prompt, and the save
-                # after the (empty) resume writes that back as a new session row. Not read
-                # once shutdown has begun: the items go back to the park just below anyway.
-                if not self._closing and not await self._session_still_exists(session_id):
-                    logger.info(
-                        "session %s no longer exists; dropping its parked resume(s) %s",
-                        session_id,
-                        ", ".join(str(i.id) for i in items[n:]),
-                    )
-                    return
-                # Checked after that await, so nothing can start a resume once `aclose`
-                # has begun.
-                if self._closing:
-                    self._repark(session_id, items[n:], "shutting down")
-                    return
+                entered = False
                 try:
+                    # `delete_session` drops what is still parked, but these items left
+                    # `_deferred_resumes` when this runner was created — a delete since
+                    # then never saw them. Resuming anyway rebuilt the dead id:
+                    # `ensure_engine` makes a fresh engine holding nothing but its system
+                    # prompt, and the save after the (empty) resume writes that back as a
+                    # new session row. Not read once shutdown has begun: the items go back
+                    # to the park just below anyway.
+                    if not self._closing and not await self._session_still_exists(
+                        session_id
+                    ):
+                        logger.info(
+                            "session %s no longer exists; dropping its parked resume(s) %s",
+                            session_id,
+                            ", ".join(str(i.id) for i in items[n:]),
+                        )
+                        return
+                    # Checked after that await, so nothing can start a resume once
+                    # `aclose` has begun.
+                    if self._closing:
+                        self._repark(session_id, items[n:], "shutting down")
+                        return
+                    entered = True
                     await self._durable_resume(item)  # contains its own failures
                 except asyncio.CancelledError:
-                    # Shutdown sweeping `_bg_tasks`. The item that was running got its own
-                    # bookkeeping on the way out; the ones after it never started.
-                    self._repark(session_id, items[n + 1 :], "the runner was cancelled")
+                    # The runner itself was cancelled (`asyncio.run` cancels every task
+                    # still pending when the server's main coroutine returns). Every await
+                    # in this body is covered, the existence read included: a cancellation
+                    # landing in that read used to leave this item and the rest neither
+                    # parked again nor logged. An item already handed to `_durable_resume`
+                    # may have claimed the session and run its approved call by now, so it
+                    # is only named, never parked again (a second run could repeat the
+                    # tool); the items after it never started.
+                    if entered:
+                        self._log_resume_cut_short(session_id, item)
+                        self._repark(session_id, items[n + 1 :], "the runner was cancelled")
+                    else:
+                        self._repark(session_id, items[n:], "the runner was cancelled")
                     raise
 
         if self.spawn_background(_run_parked()) is None:
@@ -2019,6 +2034,15 @@ class SessionManager:
         for item in items:
             parked[item.id] = item
         self._log_parked_left(session_id, items, why)
+
+    @staticmethod
+    def _log_resume_cut_short(session_id: str, item: Any) -> None:
+        logger.warning(
+            "the parked resume %s of session %s was cancelled partway through; it may "
+            "already have claimed the session and run its call, so it is not parked again",
+            getattr(item, "id", "?"),
+            session_id,
+        )
 
     @staticmethod
     def _log_parked_left(session_id: str, items: Any, why: str) -> None:

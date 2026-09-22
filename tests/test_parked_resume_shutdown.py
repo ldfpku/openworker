@@ -13,9 +13,10 @@ call came after `asyncio.run` had shut the default executor down.
 
 Asserted: neither a cancelled holding turn nor a turn that ends after `aclose` has begun
 starts a parked resume; a runner already going stops before its next item once shutdown
-begins, and one that is cancelled says which items it never started. Every skipped item is
-logged by id and left parked — dropping it would lose the approval for good if the
-cancellation were ever not a shutdown.
+begins, and one that is cancelled — wherever it is waiting — says which items it never
+started and names the one it cut short. Every skipped item is logged by id and left parked
+— dropping it would lose the approval for good if the cancellation were ever not a
+shutdown. The item cut short is not parked again: it may already have run its call.
 """
 
 from __future__ import annotations
@@ -284,6 +285,27 @@ async def test_parked_runner_stops_before_its_next_item_once_shutdown_begins(
     assert reads_after_close == []
 
 
+def _cut_short_logged(caplog, item_id: str) -> bool:
+    return any(
+        r.name == MANAGER_LOGGER
+        and r.levelno >= logging.WARNING
+        and item_id in r.getMessage()
+        and "cancelled partway" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+async def _cancel_runners(mgr: SessionManager) -> None:
+    """Cancel the parked-resume runner — what `asyncio.run` does to every task still
+    pending when the server's main coroutine returns."""
+    runners = [t for t in mgr._bg_tasks if not t.done()]
+    assert runners, "expected the parked-resume runner in _bg_tasks"
+    for task in runners:
+        task.cancel()
+    await asyncio.wait(runners, timeout=10)
+    assert all(t.done() for t in runners)
+
+
 async def test_cancelled_parked_runner_names_the_items_it_never_started(
     tmp_path, monkeypatch, caplog
 ):
@@ -295,12 +317,7 @@ async def test_cancelled_parked_runner_names_the_items_it_never_started(
     mgr.mark_idle(sid)
     try:
         await _eventually(lambda: engine.calls == 1, what="the first parked resume")
-        runners = [t for t in mgr._bg_tasks if not t.done()]
-        assert runners, "expected the parked-resume runner in _bg_tasks"
-        for task in runners:
-            task.cancel()  # shutdown sweeping the manager's background tasks
-        await asyncio.wait(runners, timeout=10)
-        assert all(t.done() for t in runners)
+        await _cancel_runners(mgr)
     finally:
         engine.gate.set()
     await _settle(mgr)
@@ -308,6 +325,90 @@ async def test_cancelled_parked_runner_names_the_items_it_never_started(
     assert engine.calls == 1
     assert "i2" in mgr._deferred_resumes.get(sid, {}), "an unstarted item vanished"
     assert _skip_logged(caplog, "i2"), "an unstarted item vanished without a log line"
+    # The one that was already running is named, and not parked again: it had claimed
+    # the session and was inside `engine.resume()` — a second run could repeat its call.
+    assert _cut_short_logged(caplog, "i1")
+    assert "i1" not in mgr._deferred_resumes.get(sid, {})
+
+
+@pytest.mark.parametrize("closing", [False, True], ids=["running", "closing"])
+async def test_runner_cancelled_during_the_existence_read_leaves_every_item_parked(
+    tmp_path, monkeypatch, caplog, closing
+):
+    """Cancelled while the check before the first item is still reading the store on a
+    worker thread (`_session_still_exists`) — with shutdown begun during that read, or
+    not. Neither item has started."""
+    mgr = SessionManager(data_dir=tmp_path / "data", workspace=str(tmp_path))
+    sid = f"runner-cancelled-in-read-{closing}"
+    caplog.set_level(logging.INFO, logger=MANAGER_LOGGER)
+    engine = await _park_two(mgr, sid, monkeypatch, tmp_path)
+
+    in_read = threading.Event()
+    release_read = threading.Event()
+    real_load = mgr.session_store.load
+
+    def blocking_load(session_id):
+        # Only the off-loop read blocks; anything reading on the loop thread goes through.
+        if threading.current_thread() is not threading.main_thread():
+            in_read.set()
+            release_read.wait(10)
+        return real_load(session_id)
+
+    monkeypatch.setattr(mgr.session_store, "load", blocking_load)
+    mgr.mark_idle(sid)
+    try:
+        await _eventually(in_read.is_set, what="the runner's existence read")
+        if closing:
+            mgr._closing = True
+        await _cancel_runners(mgr)
+    finally:
+        release_read.set()
+        engine.gate.set()
+    await _settle(mgr)
+
+    assert engine.calls == 0
+    # (parked again, logged) for each item, checked together so a failure shows both.
+    assert (
+        set(mgr._deferred_resumes.get(sid, {})),
+        _skip_logged(caplog, "i1"),
+        _skip_logged(caplog, "i2"),
+    ) == ({"i1", "i2"}, True, True), "unstarted items vanished"
+
+
+async def test_runner_cancelled_while_the_item_builds_its_engine_names_it(
+    tmp_path, monkeypatch, caplog
+):
+    """Cancelled while the first item is still inside `ensure_engine`, before it has
+    claimed the session: that item is named, the one after it goes back to the park."""
+    mgr = SessionManager(data_dir=tmp_path / "data", workspace=str(tmp_path))
+    sid = "runner-cancelled-in-ensure-engine"
+    caplog.set_level(logging.INFO, logger=MANAGER_LOGGER)
+    engine = await _park_two(mgr, sid, monkeypatch, tmp_path)
+
+    building = asyncio.Event()
+    never = asyncio.Event()
+
+    async def stuck_ensure_engine(session_id, **kwargs):
+        building.set()
+        await never.wait()
+
+    monkeypatch.setattr(mgr, "ensure_engine", stuck_ensure_engine)
+    mgr.mark_idle(sid)
+    try:
+        await asyncio.wait_for(building.wait(), timeout=10)
+        await _cancel_runners(mgr)
+    finally:
+        never.set()
+        engine.gate.set()
+    await _settle(mgr)
+
+    assert engine.calls == 0
+    assert not mgr.is_running(sid)
+    assert (
+        "i2" in mgr._deferred_resumes.get(sid, {}),
+        _skip_logged(caplog, "i2"),
+        _cut_short_logged(caplog, "i1"),
+    ) == (True, True, True), "(i2 parked again, i2 logged, i1 named)"
 
 
 def test_asyncio_run_teardown_does_not_run_a_parked_resume(tmp_path, caplog):
