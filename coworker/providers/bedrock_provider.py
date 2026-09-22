@@ -45,6 +45,7 @@ from .base import (
     StreamChunk,
     TokenUsage,
     ToolCall,
+    close_stream,
 )
 from .capabilities import capabilities_for
 
@@ -412,59 +413,67 @@ class _BedrockConverseClient(ProviderClient):
             model=model, messages=messages, tools=tools, settings=settings
         )
         response = self._call(self._ensure_client(), "converse_stream", kwargs)
+        # Named so `close_stream` has something to call — botocore hands back a plain dict
+        # with the EventStream under this key, not the stream object itself.
+        events = response.get("stream")
 
-        text_parts: list[str] = []
-        reasoning_parts: list[str] = []
-        tool_accum: dict[int, dict[str, str]] = {}
-        stop_reason = None
-        usage: Optional[TokenUsage] = None
+        try:
+            text_parts: list[str] = []
+            reasoning_parts: list[str] = []
+            tool_accum: dict[int, dict[str, str]] = {}
+            stop_reason = None
+            usage: Optional[TokenUsage] = None
 
-        for event in response.get("stream") or []:
-            if "contentBlockStart" in event:
-                start = (event["contentBlockStart"].get("start") or {}).get("toolUse")
-                if start:
-                    tool_accum[event["contentBlockStart"].get("contentBlockIndex", 0)] = {
-                        "id": start.get("toolUseId") or "",
-                        "name": start.get("name") or "",
-                        "json": "",
-                    }
-            elif "contentBlockDelta" in event:
-                block = event["contentBlockDelta"]
-                delta = block.get("delta") or {}
-                if delta.get("text"):
-                    text_parts.append(delta["text"])
-                    yield StreamChunk(text_delta=delta["text"])
-                elif "toolUse" in delta:
-                    acc = tool_accum.get(block.get("contentBlockIndex", 0))
-                    if acc is not None:
-                        acc["json"] += delta["toolUse"].get("input") or ""
-                elif "reasoningContent" in delta:
-                    thought = delta["reasoningContent"].get("text") or ""
-                    if thought:
-                        reasoning_parts.append(thought)
-                        yield StreamChunk(reasoning_delta=thought)
-            elif "messageStop" in event:
-                stop_reason = event["messageStop"].get("stopReason") or stop_reason
-            elif "metadata" in event:
-                usage = _usage_from(event["metadata"].get("usage")) or usage
+            for event in events or []:
+                if "contentBlockStart" in event:
+                    start = (event["contentBlockStart"].get("start") or {}).get("toolUse")
+                    if start:
+                        tool_accum[
+                            event["contentBlockStart"].get("contentBlockIndex", 0)
+                        ] = {
+                            "id": start.get("toolUseId") or "",
+                            "name": start.get("name") or "",
+                            "json": "",
+                        }
+                elif "contentBlockDelta" in event:
+                    block = event["contentBlockDelta"]
+                    delta = block.get("delta") or {}
+                    if delta.get("text"):
+                        text_parts.append(delta["text"])
+                        yield StreamChunk(text_delta=delta["text"])
+                    elif "toolUse" in delta:
+                        acc = tool_accum.get(block.get("contentBlockIndex", 0))
+                        if acc is not None:
+                            acc["json"] += delta["toolUse"].get("input") or ""
+                    elif "reasoningContent" in delta:
+                        thought = delta["reasoningContent"].get("text") or ""
+                        if thought:
+                            reasoning_parts.append(thought)
+                            yield StreamChunk(reasoning_delta=thought)
+                elif "messageStop" in event:
+                    stop_reason = event["messageStop"].get("stopReason") or stop_reason
+                elif "metadata" in event:
+                    usage = _usage_from(event["metadata"].get("usage")) or usage
 
-        tool_calls = [
-            ToolCall(
-                id=tool_accum[i]["id"],
-                name=tool_accum[i]["name"],
-                arguments=_parse_args(tool_accum[i]["json"]),
+            tool_calls = [
+                ToolCall(
+                    id=tool_accum[i]["id"],
+                    name=tool_accum[i]["name"],
+                    arguments=_parse_args(tool_accum[i]["json"]),
+                )
+                for i in sorted(tool_accum)
+            ]
+            yield StreamChunk(
+                turn=AssistantTurn(
+                    text="".join(text_parts) or None,
+                    tool_calls=tool_calls,
+                    finish_reason=_STOP_REASON_MAP.get(stop_reason, stop_reason),
+                    reasoning="".join(reasoning_parts) or None,
+                    usage=usage,
+                )
             )
-            for i in sorted(tool_accum)
-        ]
-        yield StreamChunk(
-            turn=AssistantTurn(
-                text="".join(text_parts) or None,
-                tool_calls=tool_calls,
-                finish_reason=_STOP_REASON_MAP.get(stop_reason, stop_reason),
-                reasoning="".join(reasoning_parts) or None,
-                usage=usage,
-            )
-        )
+        finally:
+            close_stream(events)
 
     def capabilities(self, model: str) -> ModelCapabilities:
         return capabilities_for(f"bedrock:other/{model}")
