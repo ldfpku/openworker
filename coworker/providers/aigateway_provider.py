@@ -719,6 +719,15 @@ class AIGatewayProvider(ProviderClient):
         real failure was something else (a network blip, the stand-in's own limiter). The
         alternative is a second diagnosis that contradicts the text already on screen; the
         gateway's Logs are where a mid-stream route failure is actually diagnosed.
+
+        This wrapper does its own stream closing nowhere on purpose: GeneratorExit (thrown
+        in when a caller stops iterating, e.g. engine._astream breaking on Stop) is a
+        BaseException, so `except Exception` below never sees it — it propagates straight
+        through this frame and into whichever sub-client `.stream()` generator is
+        currently suspended on `yield event`. Unwinding this frame drops that generator's
+        only reference, which finalizes (closes) it immediately, and it is that inner
+        generator's own try/finally — present on every provider that holds a real SDK
+        stream — that actually closes the underlying connection.
         """
         wire = wire_for(model)
         started = False
