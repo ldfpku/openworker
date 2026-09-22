@@ -834,3 +834,111 @@ def test_nonstreaming_timeout_tracks_the_sdk_estimate():
     assert _nonstreaming_timeout(128_000).read == 3600.0
     # A dead network must still fail fast rather than hang for the whole read budget.
     assert _nonstreaming_timeout(DEFAULT_MAX_TOKENS).connect == 5.0
+
+
+# -- explicit stream close (real SDK, no gc.collect anywhere in this test) -------------
+#
+# anthropic 1.2.0's Stream.__init__ sets `self._iterator = self.__stream__()`: a
+# generator frame that closes over `self`, forming a reference cycle. Stream's own
+# `response.close()` lives in that generator's `finally`, which only runs once garbage
+# collection breaks the cycle — dropping the last external reference is NOT enough by
+# itself (verified against this exact installed SDK with `esc_probe.py` during recon,
+# not re-verified here). `AnthropicProvider.stream()` now wraps its consuming loop in its
+# own `try/finally: close_stream(events)`, calling `Stream.close()` directly on the way
+# out regardless of what GC ever does. This pins that behavior end to end, against the
+# real `anthropic` SDK over a `MockTransport`, not the hand-rolled `_FakeClient` used
+# everywhere else in this file — same rationale as `_sdk_client` above.
+
+_SSE_STREAM_FRAMES = [
+    b'event: message_start\n'
+    b'data: {"type":"message_start","message":{"id":"m1","type":"message","role":'
+    b'"assistant","model":"m","content":[],"stop_reason":null,"stop_sequence":null,'
+    b'"usage":{"input_tokens":1,"output_tokens":0}}}\n\n',
+    b'event: content_block_start\n'
+    b'data: {"type":"content_block_start","index":0,'
+    b'"content_block":{"type":"text","text":""}}\n\n',
+    b'event: content_block_delta\n'
+    b'data: {"type":"content_block_delta","index":0,'
+    b'"delta":{"type":"text_delta","text":"hello"}}\n\n',
+    b'event: content_block_stop\n'
+    b'data: {"type":"content_block_stop","index":0}\n\n',
+    b'event: message_delta\n'
+    b'data: {"type":"message_delta","delta":{"stop_reason":"end_turn",'
+    b'"stop_sequence":null},"usage":{"output_tokens":5}}\n\n',
+    b'event: message_stop\n'
+    b'data: {"type":"message_stop"}\n\n',
+]
+
+
+def _recording_byte_stream(frames):
+    """The SSE body as a real `httpx2.SyncByteStream`, counting `close()` calls.
+
+    Registered as the mock response's `stream=`, not its `content=`: a `content=` response
+    is already fully buffered and reports `is_closed=True` before iteration even starts
+    (checked directly against this transport — not a useful stand-in for a live
+    connection). Subclassing `httpx2.SyncByteStream` is required, not just duck-typing
+    `__iter__`/`close` — httpx2's client asserts the type before using it, so the class is
+    built here, after the lazy `httpx2` import, rather than at module scope.
+    """
+    import httpx2 as hx
+
+    class _RecordingByteStream(hx.SyncByteStream):
+        def __init__(self, frames):
+            self._frames = list(frames)
+            self.closed = 0
+
+        def __iter__(self):
+            yield from self._frames
+
+        def close(self):
+            self.closed += 1
+
+    return _RecordingByteStream(frames)
+
+
+def _sdk_stream_client(body):
+    """A real `anthropic.Anthropic` streaming `body` (a `_recording_byte_stream`) over a
+    `MockTransport`."""
+    import httpx2 as hx
+    from anthropic import Anthropic
+
+    def handle(request):
+        return hx.Response(200, headers={"content-type": "text/event-stream"}, stream=body)
+
+    return Anthropic(
+        api_key="sk-ant-test",
+        http_client=hx.Client(transport=hx.MockTransport(handle)),
+    )
+
+
+def test_stream_closes_the_sdk_response_immediately_not_via_gc():
+    """Both an early abandon and a normal finish must close the connection the moment
+    `stream()`'s own generator ends — never by waiting on `gc.collect()`, which this test
+    never calls."""
+    body = _recording_byte_stream(_SSE_STREAM_FRAMES)
+    client = _sdk_stream_client(body)
+
+    gen = AnthropicProvider(client=client).stream(
+        model="claude-sonnet-4-6", messages=[{"role": "user", "content": "hi"}]
+    )
+    first = next(gen)
+    assert first.text_delta == "hello"
+    assert body.closed == 0  # still mid-stream, nothing has closed yet
+
+    # `gen.close()` is exactly what happens to the provider generator when
+    # engine._astream's producer thread breaks out of it on a Stop.
+    gen.close()
+    assert body.closed == 1
+
+
+def test_stream_closes_the_sdk_response_on_a_normal_finish_too():
+    body = _recording_byte_stream(_SSE_STREAM_FRAMES)
+    client = _sdk_stream_client(body)
+
+    chunks = list(
+        AnthropicProvider(client=client).stream(
+            model="claude-sonnet-4-6", messages=[{"role": "user", "content": "hi"}]
+        )
+    )
+    assert chunks[-1].turn is not None and chunks[-1].turn.text == "hello"
+    assert body.closed == 1
