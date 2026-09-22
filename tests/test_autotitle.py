@@ -13,12 +13,13 @@ import time
 
 from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
 from coworker.server.manager import SessionManager
+from coworker.testing.autotitle import AUTOTITLE_MARKER, is_autotitle_call
 
 
 class TitleAwareProvider(ProviderClient):
-    """Chat turns come from one queue; title calls (recognized by the titling system
-    prompt) are answered from another — so the fire-and-forget title call can never
-    steal a scripted chat turn."""
+    """Chat turns come from one queue; title calls (recognized via
+    coworker.testing.autotitle.is_autotitle_call) are answered from another — so the
+    fire-and-forget title call can never steal a scripted chat turn."""
 
     def __init__(self, chat_turns, titles):
         self._chat = list(chat_turns)
@@ -29,7 +30,7 @@ class TitleAwareProvider(ProviderClient):
         self.title_requests: list[dict] = []
 
     def complete(self, *, model, messages, tools=None, **settings):
-        if messages and "title chat sessions" in str(messages[0].get("content", "")):
+        if is_autotitle_call(messages):
             self.title_calls.append([dict(m) for m in messages])
             self.title_requests.append({"model": model, **settings})
             item = self._titles.pop(0)
@@ -271,3 +272,12 @@ async def test_maybe_autotitle_task_tracked_and_cleared(tmp_path):
     assert mgr._autotitle_tasks == set()
     assert sid not in mgr._autotitle_inflight
     assert mgr.session_store.title_state(sid)["auto_title"] == "Blocked Title"
+
+
+def test_autotitle_marker_matches_the_live_prompt():
+    """coworker/testing/autotitle.py's AUTOTITLE_MARKER is the string every scripted
+    ProviderClient double in tests/ keys off to recognize an auto-title call. Pin it
+    against the actual system prompt SessionManager sends (_AUTOTITLE_PROMPT) so a future
+    prompt rewrite that drops the marker fails HERE, loudly, instead of silently breaking
+    every provider double across tests/ that relies on is_autotitle_call."""
+    assert AUTOTITLE_MARKER in SessionManager._AUTOTITLE_PROMPT
