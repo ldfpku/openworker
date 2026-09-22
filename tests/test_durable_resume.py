@@ -10,6 +10,7 @@ from coworker.providers import (
     ToolCall,
 )
 from coworker.server.manager import SessionManager
+from coworker.testing.autotitle import autotitle_reply, is_autotitle_call
 
 
 class ScriptedProvider(ProviderClient):
@@ -17,6 +18,13 @@ class ScriptedProvider(ProviderClient):
         self._turns = list(turns)
 
     def complete(self, *, model, messages, tools=None, **settings):
+        # `_durable_resume`'s `mark_idle` (manager.py) fires with a freshly rebuilt
+        # engine in place, so `_maybe_autotitle` CAN reach this same provider once
+        # `engine.resume()` has drained `_turns` — an empty-queue `pop(0)` there is
+        # swallowed by `_generate_autotitle`'s own try/except, but guard it anyway so it
+        # can never eat a turn this file's scripts still need.
+        if is_autotitle_call(messages):
+            return autotitle_reply()
         return self._turns.pop(0)
 
     def capabilities(self, model):
