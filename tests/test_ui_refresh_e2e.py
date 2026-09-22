@@ -38,6 +38,7 @@ from coworker.providers.base import SYSTEM_CONTEXT_OPEN
 from coworker.server import create_app
 from coworker.server.manager import SessionManager
 from coworker.sessions import SessionRecord
+from coworker.testing.autotitle import autotitle_reply, is_autotitle_call
 
 SID = "incident"
 CHANNEL = "C_OPS"
@@ -60,16 +61,16 @@ class E2EProvider(ProviderClient):
     def complete(self, *, model, messages, tools=None, **settings):
         # The manager's fire-and-forget auto-title completion (manager.py, fired from
         # mark_idle) rides a worker thread and lands at a nondeterministic moment after
-        # the turn. Keep it out of `calls`, recognized by the titling system prompt the
+        # the turn. Keep it out of `calls`, recognized via coworker.testing.autotitle the
         # same way tests/test_autotitle.py does. Left in `calls` it makes every "how many
         # turns ran?" assertion a coin flip (it did: `assert 4 == 3` on CI, 2026-08-31),
         # and — the quieter trap — it pops `_turns`, so the moment anyone scripts a spare
         # turn the title silently eats it and the chat script diverges while the test
         # still passes. The small-talk sentinel keeps titling inert: the manager drops the
         # title before writing or broadcasting it.
-        if messages and "title chat sessions" in str(messages[0].get("content", "")):
+        if is_autotitle_call(messages):
             self.title_calls.append([dict(m) for m in messages])
-            return _text("small-talk")
+            return autotitle_reply()
         self.calls.append([dict(m) for m in messages])
         return self._turns.pop(0)
 
