@@ -1611,6 +1611,64 @@ async def test_scheduled_run_error_notification_is_not_marked_done(tmp_path, mon
     assert text.startswith(f"✗ {task.title}")
 
 
+_NOTIFY_TEXTS = [
+    pytest.param("completed", "ok", "✓ Daily brief\n\nDaily brief: all quiet.", id="ok"),
+    pytest.param(
+        "stop", "canceled", "⏹ Daily brief\n\n运行被手动停止，未产生结果。", id="canceled"
+    ),
+    pytest.param(
+        "provider_error",
+        "error",
+        "✗ Daily brief\n\n运行失败，详情见应用里这次运行的记录。",
+        id="error",
+    ),
+]
+
+
+@pytest.mark.parametrize("scenario, status, expected", _NOTIFY_TEXTS)
+async def test_scheduled_run_notification_text_per_status(
+    tmp_path, monkeypatch, scenario, status, expected
+):
+    """The exact message `notify_target` gets for each way a scheduled run settles. A
+    completed run gets "✓ <title>" and its summary; a stopped one and a failed one get
+    their own fixed wording. Pinned byte for byte, so a status mix-up (say, every run
+    announced as failed) or a changed wording turns this red."""
+    from coworker.connectors import senders as senders_mod
+    from coworker.connectors.base import SendResult
+    from coworker.server.manager import SessionManager
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    provider = _scenario_provider(scenario)
+    manager = SessionManager(data_dir=tmp_path / "data", provider=provider)
+    task = _task(workspace=str(ws), agent="cowork", notify_target="telegram:12345")
+    manager.task_store.save(task)
+    manager.secrets.put("telegram:default", {"bot_token": "test-token"})
+
+    original_build = SessionManager._build_task_engine
+
+    def _capture(self, task, *, session_id):
+        engine = original_build(self, task, session_id=session_id)
+        engine.retry_sleep = _no_wait
+        provider.engine = engine
+        return engine
+
+    monkeypatch.setattr(SessionManager, "_build_task_engine", _capture)
+    sent: list[tuple] = []
+
+    def fake_sender(token, chat_id, text, thread_id=None):
+        sent.append((token, chat_id, text))
+        return SendResult(ok=True, message_id="1")
+
+    monkeypatch.setitem(senders_mod.DEFAULT_SENDERS, "telegram", fake_sender)
+
+    run = await asyncio.wait_for(manager._run_scheduled_task(task, trigger="schedule"), 10)
+
+    assert run.status == status
+    assert sent == [("test-token", "12345", expected)]
+
+
 async def test_manual_run_verdict_is_the_first_turn_only(tmp_path, monkeypatch):
     """The first turn decides a manual run, as on the scheduled path: a first turn that
     fails and is then retried successfully from the session stays "error", and a second
