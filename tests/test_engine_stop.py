@@ -1089,6 +1089,56 @@ def test_explore_is_stopped_for_real_rather_than_abandoned(tmp_path):
     assert engine._abandonable(call) is False
 
 
+def test_the_pool_pressure_warning_rearms_between_bursts(tmp_path, caplog, monkeypatch):
+    """Abandoned threads sit in the loop's DEFAULT executor, which `_astream` also uses
+    for the provider's stream producer — so a full pool delays the next MODEL call, and
+    this warning is the only place that says so. It is about a BURST, and it was a
+    module-level one-shot that nothing ever reset: a process reported its first burst and
+    went quiet through every later one. Counters are patched through `monkeypatch` so the
+    process-wide state is restored for the rest of the suite.
+    """
+    from coworker import engine as engine_module
+
+    monkeypatch.setattr(engine_module, "_default_thread_pool_size", lambda: 2)
+    monkeypatch.setattr(engine_module, "_abandoned_live", 0)
+    monkeypatch.setattr(engine_module, "_abandoned_warned", False)
+
+    registry = ToolRegistry()
+
+    def read_thing():
+        """Never actually run here: the futures below stand in for its threads."""
+        return {}
+
+    registry.register(read_thing)
+    engine = _run_tool_engine(tmp_path, registry, [("read_thing", {})])
+
+    def warnings_so_far():
+        return sum("thread pool holds" in r.getMessage() for r in caplog.records)
+
+    async def two_bursts():
+        counted = []
+        for burst in range(2):
+            futures = []
+            for i in range(2):  # pool // 2 == 1, so the second one trips the warning
+                fut = asyncio.get_running_loop().create_future()
+                engine._abandon_tool_wait(
+                    ToolCall(id=f"b{burst}-{i}", name="read_thing", arguments={}), fut
+                )
+                futures.append(fut)
+            for fut in futures:
+                fut.set_result(({"rows": 1}, "ok"))  # the thread comes back
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)  # let the done-callbacks run
+            counted.append(warnings_so_far())
+        return counted
+
+    with caplog.at_level(logging.WARNING, logger="coworker.engine"):
+        counted = asyncio.run(two_bursts())
+
+    assert counted == [1, 2], counted
+    assert engine_module._abandoned_live == 0
+
+
 def test_read_classified_tools_that_mutate_are_waited_out(tmp_path):
     """`RiskClass.READ` is risk.py's FALLBACK for a tool it does not know that declares no
     approval — not a promise that the tool is pure. Four of the real ones mutate:

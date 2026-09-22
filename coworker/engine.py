@@ -2021,11 +2021,15 @@ class TurnEngine:
             if cancel_wait in done and not cancel_wait.cancelled():
                 failure = cancel_wait.exception()
                 if failure is not None:
-                    # The Stop wait FAILING is not the user pressing Stop (the 2026-09-18
-                    # defence in `_interruptible`). Read as one, it would throw away the
-                    # result of a tool nobody stopped. Fall back to the behaviour that
-                    # needs no stop signal at all: wait the tool out, as before this
-                    # change.
+                    # The Stop wait FAILING is not the user pressing Stop — the 2026-09-18
+                    # defence. Read as one, it would throw away the result of a tool
+                    # nobody stopped. The RESOLUTION here is deliberately not
+                    # `_interruptible`'s, which cancels the task and re-raises: re-raising
+                    # would come out of `_handle_tool_calls` with this call already
+                    # announced and no tool result written, i.e. the orphaned tool_call
+                    # this file exists to prevent. Falling back instead to the behaviour
+                    # that needs no stop signal at all — wait the tool out, as before this
+                    # change — costs only the latency the failure was going to cost anyway.
                     logger.warning(
                         "session %s: the stop signal failed while %s was running (%s: %s);"
                         " waiting for the tool instead of abandoning it",
@@ -2082,18 +2086,31 @@ class TurnEngine:
             if warn_pressure:
                 _abandoned_warned = True
         if warn_pressure:
+            # Naming the consequence, because the symptom it produces is unreadable
+            # otherwise. That pool is not only the tool pool: `_astream` submits the
+            # provider's stream producer to the SAME default executor
+            # (`loop.run_in_executor(None, produce)`), so a saturated pool delays the next
+            # MODEL call, not just the next tool — and the first-chunk clock does not
+            # start until the producer is actually running, which is what
+            # `first_chunk_deadline_waiting_on_executor` logs.
             logger.warning(
                 "%d tool threads are running with nobody waiting for them; the default "
-                "thread pool holds %d, so further work may queue behind them",
+                "thread pool holds %d and the provider's stream producer shares it, so "
+                "further work — including the next model call — may queue behind them",
                 live,
                 pool,
             )
 
         def _finished(fut: "asyncio.Future") -> None:
             try:
-                global _abandoned_live
+                global _abandoned_live, _abandoned_warned
                 with _abandoned_lock:
                     _abandoned_live -= 1
+                    if _abandoned_live <= 0:
+                        # Re-arm. The warning is about a BURST of abandoned threads; a
+                        # one-shot that is never reset would report the first burst in the
+                        # life of the process and stay silent through every later one.
+                        _abandoned_warned = False
                 detail = _abandoned_outcome(fut)
                 elapsed = (time.time() - started) if started is not None else None
                 age = f"{elapsed:.1f}s" if elapsed is not None else "an unknown time"
