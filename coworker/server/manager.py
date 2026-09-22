@@ -8513,8 +8513,8 @@ _BOOKKEEPING_NOTICE_KINDS = frozenset(
         "mode_notice",  # app.py: the Auto-Approve explainer (connect or `set_mode`)
         "mcp_error",  # app.py connect: an MCP server failed to start
         "project_presence",  # SessionManager.add_root: the granted folder has memory
-        "compacted",  # TurnEngine._loop: history compacted, the turn goes on
-        "turn_retry",  # TurnEngine._announce_retry: an automatic re-send follows
+        "compacted",  # TurnEngine._loop: history compacted mid-turn
+        "turn_retry",  # TurnEngine._announce_retry: a re-send is due (a gate may end it)
         "reviewer_paused",  # TurnEngine tool handling: auto-approve paused this turn
     }
 )
