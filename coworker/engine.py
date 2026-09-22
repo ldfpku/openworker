@@ -276,13 +276,40 @@ _SIDE_EFFECTING_READS = frozenset(
         "browser_read_page",
     }
 )
-# The on-demand tool loaders (`load_github_tools`, …) are the same case, excluded by
-# CATEGORY because their names vary with which connectors are configured. Each mutates
-# `ToolRegistry._tools` (tools/deferred.py `_load` → `register_all`), which the loop reads
-# unlocked every round trip in `registry.schemas()`; before this change no tool thread
-# could outlive its turn, so the two could not overlap, and abandoning is precisely what
-# would remove that guarantee.
-_SIDE_EFFECTING_READ_CATEGORY = "meta"
+# Two whole CATEGORIES are the same case. They are matched by category rather than by
+# name because their membership depends on which connectors are configured, so no name
+# list read off one machine's registry would be right on another's:
+#
+#   meta       the on-demand tool loaders (`load_github_tools`, …). Each mutates
+#              `ToolRegistry._tools` (tools/deferred.py `_load` → `register_all`), which
+#              the loop reads unlocked every round trip in `registry.schemas()`; before
+#              this change no tool thread could outlive its turn, so the two could not
+#              overlap, and abandoning is precisely what would remove that guarantee.
+#   connector  every connector read reaches its API through a credential path that WRITES.
+#              The account-patterned ones (`outlook_search_messages`,
+#              `outlook_list_events`, …) start at
+#              `integration_tools._account_profile`, which calls
+#              `cloud.ensure_fresh_connector_token` for a managed profile; the GitHub ones
+#              start at `_github_call` → `_github_auth` → `cloud.github_installation_token`,
+#              which fills the process-global `_GITHUB_TOKEN_CACHE` and, underneath it,
+#              `fresh_access_token` → `_store_cloud_tokens`. Those land in `SecretStore`,
+#              whose `put` is a read-modify-write of the whole secret FILE under an
+#              INSTANCE lock (secrets.py). So an abandoned connector read can rotate a
+#              refresh token on disk after the turn ended — state that outlives the turn
+#              and that the model never sees, the `load_skill` shape again. The browser
+#              tools above are in this category too and are named there as well, because
+#              their reason is a different and sharper one; naming them keeps that reason
+#              and its test attached to the names even if the category ever moves.
+#              (Read 2026-09-22. Not observed in a running session: reading the code is
+#              the whole evidence, which is enough to retire a claimed invariant but is
+#              not a measurement.)
+#
+# The cost is real and is accepted: Stop now waits out a connector read, bounded by that
+# path's own HTTP timeouts — 30 s in `integration_tools._request`, plus up to 20 s minting
+# an installation token and 15 s refreshing the cloud session. Typical calls return in
+# well under a second. The alternative was to keep them and stop claiming the invariant,
+# which would leave the one thing this set exists to state no longer true of it.
+_SIDE_EFFECTING_READ_CATEGORIES = frozenset({"meta", "connector"})
 # Process-wide, because the thread pool they occupy is process-wide.
 _abandoned_lock = threading.Lock()
 _abandoned_live = 0
@@ -1996,20 +2023,30 @@ class TurnEngine:
           an accurate "interrupted by user" with "result unavailable". `all` is the manual
           override that gives that distinction up.
         * Tools that classify READ but change state which outlives the turn:
-          `_SIDE_EFFECTING_READS` by name, and the on-demand loaders by category.
+          `_SIDE_EFFECTING_READS` by name, `_SIDE_EFFECTING_READ_CATEGORIES` by category.
           `classify` returns READ as a FALLBACK for anything it does not know that
           declares no approval, so without these the invariant this path rests on —
           discarding the result is the WHOLE loss — would simply be false for them. See
-          those constants for the enumeration and for how it was obtained. All of them
-          are fast except the two browser tools, which are excluded precisely because
-          they are not: they hold a process-wide single-worker executor and write the
-          GUI's browser state, so Stop waits them out rather than leaving them running
-          behind a turn it has already ended.
+          those constants for the enumeration and for how it was obtained. Most are fast
+          enough that excluding them costs Stop nothing; the browser tools and the
+          connector reads are not, and are excluded anyway.
+
+        What SURVIVES, after every member of the `cowork` persona's registry was walked
+        one at a time (2026-09-22) against three questions — does it hold a process-wide
+        or cross-session executor, lock or singleton; does either path write shared state,
+        a registry, a cursor, a cache or a file; is its runtime uncapped — is a short and
+        deliberately dull list: `read_file`, `grep`, `list_files` (local reads; `grep`'s
+        ripgrep child is capped by `subprocess.run(timeout=30)`) and `web_fetch`,
+        `web_search` (one private `httpx.Client` per call, 20 s timeouts, nothing
+        written). `propose_plan` and `request_directory` answer yes here too but never
+        arrive: `_handle_tool_calls` intercepts both by name and `continue`s before a call
+        can be cleared for execution, so `_run_tool` never sees them.
 
         The set is therefore only as good as the enumeration: a NEW tool that classifies
-        READ and quietly mutates something joins it automatically. Making that structural
-        rather than vigilant would mean an explicit allowlist instead of a fallback
-        classification, which is a larger change than this one.
+        READ and quietly mutates something joins it automatically unless it lands in one
+        of the excluded categories. Making that structural rather than vigilant would mean
+        an explicit allowlist instead of a fallback classification, which is a larger
+        change than this one.
         """
         mode = _abandon_mode()
         if mode == "none":
@@ -2022,7 +2059,7 @@ class TurnEngine:
         if category == "mcp" or tool_call.name in _SELF_INTERRUPTING_TOOLS:
             return False
         if (
-            category == _SIDE_EFFECTING_READ_CATEGORY
+            category in _SIDE_EFFECTING_READ_CATEGORIES
             or tool_call.name in _SIDE_EFFECTING_READS
         ):
             return False

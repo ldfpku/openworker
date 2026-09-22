@@ -1191,6 +1191,99 @@ def test_read_classified_tools_that_mutate_are_waited_out(tmp_path):
         assert abandonable(name) is True, name
 
 
+def test_the_auto_abandon_set_is_exactly_the_tools_that_were_audited(tmp_path):
+    """The whole `auto` set, pinned by name.
+
+    Every tool in the `cowork` persona's registry (deferred sets materialised) was walked
+    one at a time on 2026-09-22 against three questions: does it hold a process-wide or
+    cross-session executor, lock or singleton; does either path write shared state, a
+    registry, a cursor, a cache or a file; is its runtime uncapped. These seven answered
+    no to all three. The point of asserting EQUALITY rather than membership is that a new
+    tool cannot slip into the set unexamined — `RiskClass.READ` is risk.py's fallback, so
+    joining is the default, and this line is what makes joining deliberate.
+
+    `propose_plan` and `request_directory` are in the set only because `_abandonable`
+    would say yes if asked; `test_interactive_tools_never_reach_run_tool` below shows
+    they are never asked.
+    """
+    engine = build_engine(agent=cowork_agent(), workspace=tmp_path, roots=[])
+    registry = engine.registry
+    for name in list(getattr(registry, "_deferred", {})):
+        registry.get(name)
+    abandonable = {
+        name
+        for name in registry._tools
+        if engine._abandonable(ToolCall(id="c0", name=name, arguments={}))
+    }
+    assert abandonable == {
+        "read_file",
+        "grep",
+        "list_files",
+        "web_fetch",
+        "web_search",
+        "propose_plan",
+        "request_directory",
+    }
+    # The connector reads left the set with this audit: each reaches its API through a
+    # credential path that WRITES (`_account_profile` → `ensure_fresh_connector_token`,
+    # `_github_call` → `github_installation_token` → `fresh_access_token` →
+    # `_store_cloud_tokens`), and `SecretStore.put` is a read-modify-write of the whole
+    # secret file. None of them is registered in this environment — the deferred
+    # connector sets only materialise where that connector is configured, which is why
+    # the equality above is about the same seven names here as on a machine with GitHub
+    # and Outlook connected. So the rule is pinned on a stand-in instead: an unknown
+    # tool in that category, i.e. exactly how a connector read arrives at `_abandonable`.
+    for category in ("connector", "meta"):
+
+        def unregistered_read():  # pragma: no cover - never executed
+            return {}
+
+        unregistered_read.__name__ = f"a_new_{category}_read"
+        unregistered_read.__aisuite_tool_metadata__ = ai.ToolMetadata(
+            name=unregistered_read.__name__,
+            category=category,
+            risk_level="low",
+            capabilities=["read"],
+            requires_approval=False,
+        )
+        registry.register(unregistered_read)
+        call = ToolCall(id="c0", name=unregistered_read.__name__, arguments={})
+        # It really does arrive classified READ — that is what makes it a candidate.
+        assert classify(call.name, registry.get(call.name).metadata) is RiskClass.READ
+        assert engine._abandonable(call) is False, category
+
+
+def test_interactive_tools_never_reach_run_tool(tmp_path):
+    """Why `propose_plan` and `request_directory` being in the abandon set is harmless.
+
+    `_handle_tool_calls` dispatches both by name and `continue`s before the call can be
+    cleared for execution, so `_run_tool` — and with it `_abandonable` — never sees them.
+    Asserted behaviourally rather than by reading the branch, so that moving the
+    interception without moving the exclusion shows up here.
+    """
+    registry = ToolRegistry()
+
+    def propose_plan(plan: str):  # pragma: no cover - never executed, that's the point
+        raise AssertionError("propose_plan executed as an ordinary tool")
+
+    registry.register(propose_plan)
+    engine = _run_tool_engine(tmp_path, registry, [("propose_plan", {"plan": "x"})])
+    ran = []
+    engine._run_tool = lambda tc: ran.append(tc.name)  # would be awaited if reached
+
+    async def scenario():
+        return [ev async for ev in engine.run("go")]
+
+    events = asyncio.run(scenario())
+    assert ran == []
+    # It still answers the model — an intercepted call is answered, not dropped.
+    # (`OneTurnProvider` re-issues the same call every round trip, so there is one
+    # result per iteration, not one in total.)
+    results = _tool_results(engine)
+    assert results and json.loads(results[0]["content"])["approved"] is False
+    assert any(ev.type == EventType.TOOL_FINISHED for ev in events)
+
+
 def test_a_stopped_browser_wait_is_waited_out(tmp_path, monkeypatch):
     """The behavioural half of the browser exclusion, on the real `browser_wait`.
 
