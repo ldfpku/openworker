@@ -164,7 +164,7 @@ _TURN_ABORTED_RETRIED = " Automatic retry didn't help ({n} retries)."
 #   * OpenAI and Anthropic: `openai._constants.DEFAULT_TIMEOUT` and the anthropic
 #     equivalent are both `Timeout(connect=5.0, read=600, write=600, pool=600)`, with
 #     `DEFAULT_MAX_RETRIES = 2` and a timed-out request counted as retryable — by
-#     different routes: openai's `_base_client._request` catches `timeout_exceptions()`
+#     different routes: openai's `_base_client.request` catches `timeout_exceptions()`
 #     and retries while retries remain, anthropic's raises `APITimeoutError` and its
 #     `_should_retry_exception` names that type as retryable. ~1800s worst case, by the
 #     same multiplier `bounded_client` exists to defeat. (openai 3.3.1, anthropic 1.2.0.)
