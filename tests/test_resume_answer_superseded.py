@@ -14,7 +14,8 @@ Asserted: the resume still runs nothing (the conversation has moved on; replayin
 tool call behind the user's back would be worse), but it logs the fact and leaves an
 `answer_superseded` notice in the transcript, also pushed to whoever is viewing the session.
 A call that already has its real result — an earlier resume used the answer — gets no such
-notice.
+notice. The notice is written once the resume is done, never while a later prompt of the
+session is still pending (the last two tests).
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from test_durable_resume_busy_session import (
     _ChatOnlyScript,
     _approval_manager,
     _approved_after_restart,
+    _eventually,
     _settle,
 )
 
@@ -236,3 +238,146 @@ async def test_answer_already_used_is_not_reported(tmp_path, monkeypatch, caplog
     assert _notices(mgr, sid) == []
     assert _pushed(sent, sid) == []
     assert not _logged(caplog, item.id)
+
+
+# A stale answer while a LATER prompt of the same session is still pending. The resume of
+# the overtaken call X still calls `engine.resume()`, which continues the call that IS
+# trailing (Y): it re-raises Y's prompt, the approver saves the thread, and the resume
+# waits for Y's answer. Where the notice about X lands matters here: the loader
+# (`ConversationStore._repair_tool_pairing`) treats a call as pending only while its
+# assistant block is the very last message, so a notice saved after Y's block makes Y a
+# call "the thread moved past" on the next load — it gets the stand-in result, and Y's own
+# answer is then reported as superseded instead of running Y.
+
+
+def _two_prompt_manager(tmp_path, x_target, y_target) -> SessionManager:
+    return SessionManager(
+        workspace=tmp_path,
+        provider=_ChatOnlyScript(
+            [
+                _tool("write_file", {"path": str(x_target), "content": "x"}, "call_x"),
+                _tool("write_file", {"path": str(y_target), "content": "y"}, "call_y"),
+                _text("Done, y written."),
+            ]
+        ),
+    )
+
+
+async def _run_until_prompt(mgr: SessionManager, sid: str, engine, content: str, call_id: str):
+    """Run a turn until the prompt for `call_id` is a pending Inbox item, then simulate a
+    restart the way `_run_until_pending` does (cancel the suspended turn, drop the engine)."""
+
+    def pending_item():
+        return next((i for i in mgr.inbox.pending(sid) if i.tool_call_id == call_id), None)
+
+    async def turn() -> None:
+        async for _ in engine.run(content):
+            pass
+
+    task = asyncio.ensure_future(turn())
+    try:
+        await _eventually(lambda: pending_item() is not None, what=f"the {call_id} prompt")
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    mgr._engines.pop(sid, None)
+    mgr.mark_idle(sid)
+    return pending_item()
+
+
+async def _stale_answer_waiting_on_a_later_prompt(tmp_path, monkeypatch, sid: str):
+    """Prompt X pending across a restart; the user moves on and the model raises prompt Y,
+    also left pending across a restart; then the user answers the stale X. Returns with
+    X's resume blocked waiting for Y's answer."""
+    x_target, y_target = tmp_path / "x.txt", tmp_path / "y.txt"
+    mgr = _two_prompt_manager(tmp_path, x_target, y_target)
+    engine = mgr.get_engine(sid, agent="cowork", workspace=str(tmp_path))
+    item_x = await _run_until_pending(mgr, sid, engine)
+    assert item_x.tool_call_id == "call_x"
+    live = await mgr.ensure_engine(sid)
+    item_y = await _run_until_prompt(mgr, sid, live, "never mind, do something else", "call_y")
+
+    blocked_on_y = asyncio.Event()
+    real_wait = mgr.inbox.wait
+
+    async def wait_spy(item_id: str) -> str:
+        if item_id == item_y.id:
+            blocked_on_y.set()
+        return await real_wait(item_id)
+
+    monkeypatch.setattr(mgr.inbox, "wait", wait_spy)
+    resume_x = asyncio.ensure_future(mgr.resolve_inbox(item_x.id, "allow"))
+    await asyncio.wait_for(blocked_on_y.wait(), timeout=10)
+    return mgr, item_x, item_y, resume_x, x_target, y_target
+
+
+def _persisted_results_for(mgr: SessionManager, sid: str, call_id: str) -> list[str]:
+    rec = mgr.session_store.load(sid)
+    return [
+        str(m.get("content"))
+        for m in rec.messages
+        if m.get("role") == "tool" and m.get("tool_call_id") == call_id
+    ]
+
+
+async def test_stale_answer_does_not_bury_a_later_pending_prompt_across_a_restart(
+    tmp_path, monkeypatch, caplog
+):
+    sid = "stale-x-pending-y"
+    caplog.set_level(logging.INFO, logger=MANAGER_LOGGER)
+    mgr, item_x, item_y, resume_x, x_target, y_target = (
+        await _stale_answer_waiting_on_a_later_prompt(tmp_path, monkeypatch, sid)
+    )
+
+    # What a restart right now would reload: Y must still be the pending call, not a call
+    # the thread moved past.
+    assert _persisted_results_for(mgr, sid, "call_y") == [], (
+        "Y's pending call no longer loads as trailing: it got the stand-in result"
+    )
+
+    # ...and the restart itself, while X's resume is still waiting on Y.
+    resume_x.cancel()
+    try:
+        await resume_x
+    except asyncio.CancelledError:
+        pass
+    mgr._engines.pop(sid, None)
+    await _settle(mgr)
+
+    assert await asyncio.wait_for(mgr.resolve_inbox(item_y.id, "allow"), timeout=10)
+    await _settle(mgr)
+
+    assert y_target.exists() and y_target.read_text() == "y", "the approved Y never ran"
+    assert not x_target.exists()
+    assert _logged(caplog, item_x.id)
+    assert not _logged(caplog, item_y.id), "Y's own answer was reported as superseded"
+
+
+async def test_stale_answer_notice_lands_after_the_later_prompt_is_done(
+    tmp_path, monkeypatch, caplog
+):
+    """No restart: Y is answered while X's resume is still waiting on it, so Y runs inside
+    that resume. The notice about X is still left, once the continuation is done."""
+    sid = "stale-x-live-y"
+    caplog.set_level(logging.INFO, logger=MANAGER_LOGGER)
+    mgr, item_x, item_y, resume_x, x_target, y_target = (
+        await _stale_answer_waiting_on_a_later_prompt(tmp_path, monkeypatch, sid)
+    )
+    sent = _record_broadcasts(mgr, monkeypatch)
+
+    assert await asyncio.wait_for(mgr.resolve_inbox(item_y.id, "allow"), timeout=10)
+    assert await asyncio.wait_for(resume_x, timeout=10)
+    await _settle(mgr)
+
+    assert y_target.read_text() == "y"
+    assert not x_target.exists()
+    _assert_reported(mgr, sent, caplog, sid, item_x)
+    assert not _logged(caplog, item_y.id)
+    rec = mgr.session_store.load(sid)
+    assert rec.messages[-1].get("kind") == "answer_superseded", rec.messages[-1]
+    assert [r for r in _persisted_results_for(mgr, sid, "call_y") if "Wrote" in r], (
+        "expected Y's real result in the saved thread"
+    )

@@ -1812,15 +1812,27 @@ class SessionManager:
             )
             return
         try:
-            superseded = None
-            if self._answer_superseded(engine, item.tool_call_id):
-                superseded = self._note_superseded_answer(engine, item)
+            # Decided before `resume()` runs anything, but only written down once it has
+            # returned. `resume()` continues whatever calls ARE still trailing — a later
+            # prompt of this session the user has not answered yet, which it raises again
+            # and waits on, the approver saving the thread as it does. A notice appended
+            # before that save sat after the later call's assistant block, and the loader
+            # (`ConversationStore._repair_tool_pairing`) only leaves a call pending while
+            # its block is the very last message: after a restart the later call loaded
+            # with the stand-in result, could never be resumed, and its own answer was then
+            # reported here as superseded instead of running it. The price of waiting: if
+            # the process goes away while `resume()` waits on such a prompt, the notice is
+            # never written, and the log line below is all that is left of it.
+            superseded = self._answer_superseded(engine, item.tool_call_id)
+            if superseded:
+                self._log_superseded_answer(item)
             async for _event in engine.resume():
                 pass
+            notice = self._note_superseded_answer(engine, item) if superseded else None
             self.save(session_id, engine)
-            if superseded is not None:
+            if notice is not None:
                 await self.broadcast_session(
-                    session_id, {"type": "answer_superseded", "data": superseded}
+                    session_id, {"type": "answer_superseded", "data": notice}
                 )
         finally:
             # Post-turn bookkeeping must not turn a resume that ran and was saved into a
@@ -1864,13 +1876,24 @@ class SessionManager:
             return False
         return all(call.id != call_id for call in pending())
 
-    def _note_superseded_answer(self, engine, item) -> dict[str, Any]:
-        """Say that `item`'s answer was not applied (see `_answer_superseded`): a log line,
-        and an `answer_superseded` notice in the transcript — persisted by the save that
+    @staticmethod
+    def _log_superseded_answer(item) -> None:
+        logger.info(
+            "durable resume of %s on %s: the conversation has moved past call %s, so the "
+            "answer %r is not applied",
+            item.id,
+            item.session_id,
+            item.tool_call_id,
+            str(getattr(item, "resolution", "") or ""),
+        )
+
+    @staticmethod
+    def _note_superseded_answer(engine, item) -> dict[str, Any]:
+        """Say in the transcript that `item`'s answer was not applied (see
+        `_answer_superseded`): an `answer_superseded` notice, persisted by the save that
         follows, so it is there on reload. Returns the payload for the live event. The
         text is server-authored English; `prompt`/`resolution`/`tool` travel beside it so
         the GUI can word it in the user's language (promptResolved.ts)."""
-        session_id = item.session_id
         kind = str(getattr(item, "kind", "") or "")
         resolution = str(getattr(item, "resolution", "") or "")
         tool = None
@@ -1886,14 +1909,6 @@ class SessionManager:
                 "An answer came in after the conversation had moved on, so it was not "
                 "applied."
             )
-        logger.info(
-            "durable resume of %s on %s: the conversation has moved past call %s, so the "
-            "answer %r is not applied",
-            item.id,
-            session_id,
-            item.tool_call_id,
-            resolution,
-        )
         engine._append_notice(
             "answer_superseded",
             text,
