@@ -533,6 +533,7 @@ class GeminiProvider(ProviderClient):
             # Lazy import so the SDK is only required when actually talking to Gemini.
             from google import genai
             from google.genai import types
+            import httpx
 
             key = self._api_key or resolve_api_key(self._secrets)
             base_url = resolve_base_url(self._base_url)
@@ -551,10 +552,22 @@ class GeminiProvider(ProviderClient):
             if missing:
                 raise RuntimeError("；".join(missing) + "。")
 
+            # google-genai 2.19.0 leaves the underlying httpx client's `timeout` at `None`
+            # (unbounded) whenever `client_args`/`async_client_args` don't set it
+            # themselves (_api_client.py's `_maybe_set`, ~line 1131: `if 'timeout' not in
+            # args: args['timeout'] = None`) — a stalled relay/upstream connection would
+            # hang forever instead of erroring. This is a resource-exhaustion backstop,
+            # not a user-facing turn time limit: 600s aligns with the analogous
+            # non-streaming guard in anthropic_provider._nonstreaming_timeout, and connect
+            # stays short so a dead network still fails fast.
+            request_timeout = httpx.Timeout(600.0, connect=10.0)
             self._client = genai.Client(
                 api_key=key,
                 http_options=types.HttpOptions(
-                    base_url=base_url, headers=headers or None
+                    base_url=base_url,
+                    headers=headers or None,
+                    client_args={"timeout": request_timeout},
+                    async_client_args={"timeout": request_timeout},
                 ),
             )
         return self._client
