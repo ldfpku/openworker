@@ -195,7 +195,8 @@
       "hidden_count_label": "{{n}} hidden",
       "hidden_tip": "Removed by your privacy filters before the agent saw the results — agents get no trace of these.",
       "tried_skill_pre": "Tried skill: ",
-      "tried_skill_post": " — not available"
+      "tried_skill_post": " — not available",
+      "abandoned": "Stopped waiting; the tool may still be running"
     },
     "turn": {
       "declined": "{{count}} declined",

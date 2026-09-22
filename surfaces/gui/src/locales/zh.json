@@ -193,7 +193,8 @@
       "hidden_count_label": "{{n}} 项已隐藏",
       "hidden_tip": "这些内容在代理看到结果前已被您的隐私过滤器移除——代理不会获得任何相关痕迹。",
       "tried_skill_pre": "已尝试技能：",
-      "tried_skill_post": "——不可用"
+      "tried_skill_post": "——不可用",
+      "abandoned": "已停止等待，工具可能仍在后台运行"
     },
     "turn": {
       "declined": "{{count}} 已拒绝",

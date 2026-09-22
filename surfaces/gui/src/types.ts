@@ -136,6 +136,19 @@ export interface Attachment {
   text?: string; // text files
 }
 
+// How a tool step ended, as the server's `tool_finished` event reports it (engine.py).
+// "…" is the local-only running state the GUI stamps while the step is in flight.
+// "interrupted" = the call never ran, the user stopped first. "abandoned" = the turn
+// stopped WAITING for a call that had already started: the tool very likely ran, and may
+// still be running, but its result was discarded (engine.py `_abandoned_tool`).
+export type ToolStatus =
+  | "…"
+  | "ok"
+  | "error"
+  | "denied"
+  | "interrupted"
+  | "abandoned";
+
 // Transcript items
 // `ts` = unix seconds (the server's canonical-message stamp; live items stamp locally).
 // Optional: sessions saved before the server stamped timestamps have none.
@@ -158,7 +171,7 @@ export type Item =
   // `startedAt` = local browser clock (ms) stamped when the call was proposed — used only to
   // tick a running step's elapsed time (§ timeline); replayed history never carries it, so the
   // elapsed display simply doesn't render for past turns.
-  | { kind: "tool"; id: string; name: string; args: any; status: string; preview?: string; hidden?: number; standingRule?: string; reviewerReason?: string; allowAnyway?: boolean; approvalOrigin?: string; approvalNote?: string; approvalGrant?: string; startedAt?: number }
+  | { kind: "tool"; id: string; name: string; args: any; status: ToolStatus; preview?: string; hidden?: number; standingRule?: string; reviewerReason?: string; allowAnyway?: boolean; approvalOrigin?: string; approvalNote?: string; approvalGrant?: string; startedAt?: number }
   | {
       kind: "approval";
       name: string;

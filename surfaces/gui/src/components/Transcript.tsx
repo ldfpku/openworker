@@ -303,7 +303,20 @@ function StepRow({
             {t("transcript.step.hidden_count_label", { n: tool.hidden })}
           </span>
         )}
-        {failed && <span className="text-[11px] text-danger shrink-0">{tool.status}</span>}
+        {failed && (
+          // "abandoned" is the one status that needs explaining rather than naming: the
+          // tool was not stopped, the turn stopped waiting for it (engine.py), so the
+          // honest line says the work may still be going.
+          <span
+            className={
+              "text-[11px] shrink-0 " +
+              (tool.status === "abandoned" ? "text-warnInk" : "text-danger")
+            }
+            data-testid={tool.status === "abandoned" ? "tool-abandoned" : undefined}
+          >
+            {tool.status === "abandoned" ? t("transcript.step.abandoned") : tool.status}
+          </span>
+        )}
         {!running && (
           <button
             className="ml-auto shrink-0 text-[11px] text-faint opacity-0 group-hover:opacity-100 cursor-pointer"

@@ -402,3 +402,36 @@ describe("mode notice", () => {
     expect(screen.getByText("Context compacted").className).not.toContain("notice-block");
   });
 });
+
+
+// Stop that does not wait for the tool (engine.py, 2026-09-22): the call was not stopped,
+// the turn stopped WAITING for it. Naming the raw status ("abandoned") would read as a
+// failure of the tool, which is the one thing it is not.
+describe("abandoned tool step", () => {
+  const ABANDONED: Item[] = [
+    { kind: "user", text: "search the docs" },
+    { kind: "tool", id: "t1", name: "web_search", args: { query: "x" }, status: "abandoned" },
+  ];
+
+  it("explains the state instead of printing it", () => {
+    const { container } = render(<Transcript items={ABANDONED} onApprove={vi.fn()} />);
+    fireEvent.click(container.querySelector("summary.stepgroup-head")!);
+    const chip = screen.getByTestId("tool-abandoned");
+    expect(chip.textContent).toBe("Stopped waiting; the tool may still be running");
+    expect(chip.textContent).not.toContain("abandoned");
+    // Warned, not errored: nothing failed.
+    expect(chip.className).toContain("text-warnInk");
+    expect(chip.className).not.toContain("text-danger");
+  });
+
+  it("leaves other non-ok statuses printing their own name", () => {
+    const items: Item[] = [
+      { kind: "user", text: "x" },
+      { kind: "tool", id: "t1", name: "read_file", args: {}, status: "error" },
+    ];
+    const { container } = render(<Transcript items={items} onApprove={vi.fn()} />);
+    fireEvent.click(container.querySelector("summary.stepgroup-head")!);
+    expect(screen.queryByTestId("tool-abandoned")).toBeNull();
+    expect(screen.getByText("error").className).toContain("text-danger");
+  });
+});

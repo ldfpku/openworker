@@ -48,6 +48,7 @@ import type {
   SessionInfo,
   SessionUsage,
   TodoItem,
+  ToolStatus,
   WsEvent,
 } from "./types";
 import { fullPersonaName, isProjectScoped } from "./personaScope";
@@ -2741,7 +2742,7 @@ function WaitingForAgent({ label }: { label?: string }) {
 function updateLastTool(
   items: Item[],
   name: string,
-  status: string,
+  status: ToolStatus,
   preview?: string,
   hidden?: number,
   standingRule?: string,
