@@ -244,10 +244,37 @@ _SELF_INTERRUPTING_TOOLS = frozenset({"explore"})
 #                    result is demonstrably NOT the whole loss.
 #   todo_write       rewrites the session's todo list.
 #   shell_task_kill  kills a background shell task.
-# Each is microseconds-to-milliseconds except `load_skill` on a cold catalog, so waiting
-# them out costs Stop essentially nothing — which is the trade this set makes.
+#   browser_wait     )  both run through `_BrowserController.call`
+#   browser_read_page)  (connectors/browser_automation.py), which is three separate
+#                    problems at once. Its `_submit` is `self._executor.submit(fn).result()`
+#                    on a module-level `ThreadPoolExecutor(max_workers=1)` shared by every
+#                    session in the process, so an abandoned call keeps the ONE browser
+#                    worker until it ends — the next turn's browser tools and the GUI's
+#                    `GET /v1/browser/state` (app.py → `manager.browser_state` →
+#                    `_BROWSER.state()`, which uses the same `_submit`) queue behind it.
+#                    Its success path then calls `_refresh_page_state()` and
+#                    `_touch(last_action=…, last_result="ok")`, i.e. writes the
+#                    user-visible `_state` dict AFTER the stop, where the model cannot see
+#                    it. And `browser_wait` has no cap on how long that lasts: only the
+#                    no-`target` branch clamps to 30 s (`page.wait_for_timeout(max(1,
+#                    min(ms, 30000)))`); with a `target` it is
+#                    `_target_locator(page, target).wait_for(timeout=max(1, int(ms)))`,
+#                    a timeout the MODEL chooses. These two were listed in 2497f66's
+#                    "actual set" but not examined; read 2026-09-22.
+# Everything else here is microseconds-to-milliseconds (`load_skill` on a cold catalog is
+# the exception), so waiting it out costs Stop essentially nothing. The two browser tools
+# are the case where the exclusion does cost Stop real time — and taking that cost is the
+# point: a ten-minute `browser_wait(target=…)` is exactly the call that must not be left
+# holding the shared worker with the turn already reported as over.
 _SIDE_EFFECTING_READS = frozenset(
-    {"load_skill", "shell_task_output", "todo_write", "shell_task_kill"}
+    {
+        "load_skill",
+        "shell_task_output",
+        "todo_write",
+        "shell_task_kill",
+        "browser_wait",
+        "browser_read_page",
+    }
 )
 # The on-demand tool loaders (`load_github_tools`, …) are the same case, excluded by
 # CATEGORY because their names vary with which connectors are configured. Each mutates
@@ -1973,8 +2000,11 @@ class TurnEngine:
           `classify` returns READ as a FALLBACK for anything it does not know that
           declares no approval, so without these the invariant this path rests on —
           discarding the result is the WHOLE loss — would simply be false for them. See
-          those constants for the enumeration and for how it was obtained; all of them are
-          fast, so the exclusion costs Stop next to nothing.
+          those constants for the enumeration and for how it was obtained. All of them
+          are fast except the two browser tools, which are excluded precisely because
+          they are not: they hold a process-wide single-worker executor and write the
+          GUI's browser state, so Stop waits them out rather than leaving them running
+          behind a turn it has already ended.
 
         The set is therefore only as good as the enumeration: a NEW tool that classifies
         READ and quietly mutates something joins it automatically. Making that structural

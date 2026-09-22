@@ -1150,6 +1150,10 @@ def test_read_classified_tools_that_mutate_are_waited_out(tmp_path):
     * `shell_task_output` is a destructive read: `read_new` advances a cursor, so an
       abandoned call eats that slice of the background task's output for good.
     * `todo_write` rewrites the session's todo list; `shell_task_kill` kills a task.
+    * `browser_wait` and `browser_read_page` go through `_BrowserController.call`, which
+      occupies the process-wide single-worker browser executor and writes the GUI's
+      `_state` on the success path. `test_a_stopped_browser_wait_is_waited_out` below is
+      the behavioural half of this.
 
     So does every on-demand loader: `_load` calls `registry.register_all`, mutating the
     dict the loop iterates unlocked in `schemas()` every round trip. Nothing could outlive
@@ -1166,7 +1170,14 @@ def test_read_classified_tools_that_mutate_are_waited_out(tmp_path):
     def abandonable(name):
         return engine._abandonable(ToolCall(id="c0", name=name, arguments={}))
 
-    mutating_reads = ["load_skill", "shell_task_output", "todo_write", "shell_task_kill"]
+    mutating_reads = [
+        "load_skill",
+        "shell_task_output",
+        "todo_write",
+        "shell_task_kill",
+        "browser_wait",
+        "browser_read_page",
+    ]
     loaders = [n for n in registry._tools if n.startswith("load_") and n.endswith("_tools")]
     assert loaders, "expected the on-demand loaders to be registered"
     for name in mutating_reads + loaders:
@@ -1178,6 +1189,85 @@ def test_read_classified_tools_that_mutate_are_waited_out(tmp_path):
     # …and the exclusions are surgical: ordinary reads are still abandoned.
     for name in ("read_file", "grep", "list_files", "web_fetch"):
         assert abandonable(name) is True, name
+
+
+def test_a_stopped_browser_wait_is_waited_out(tmp_path, monkeypatch):
+    """The behavioural half of the browser exclusion, on the real `browser_wait`.
+
+    `browser_wait` is the worst case in the set: the only tool DESIGNED to be slow, and
+    the only one whose duration the model picks without a cap — the `target` branch is
+    `wait_for(timeout=max(1, int(milliseconds)))`, no clamp (the branch without a target
+    clamps to 30 s). Abandoning it would leave the process-wide
+    `ThreadPoolExecutor(max_workers=1)` in `_BrowserController` occupied for as long as
+    the model asked for, with the turn already reported as over, and would let the tool
+    write `_BROWSER._state` — what `GET /v1/browser/state` serves the GUI panel — after
+    the stop, where the model never sees it.
+
+    Playwright is not installed here, so `_BROWSER.page()` is stubbed with a page whose
+    `wait_for_timeout` blocks on a gate; everything between the engine and that gate is
+    the real code path. The loop is a long-lived one (`_run_without_joining_executor`,
+    i.e. `asyncio.run` minus the executor join): plain `asyncio.run` would join an
+    abandoned thread on the way out and hide the very difference this pins.
+    """
+    from coworker.connectors.browser_automation import (
+        _BROWSER,
+        make_browser_automation_tools,
+    )
+
+    started, release = threading.Event(), threading.Event()
+
+    class _GatedPage:
+        url = "https://example.invalid/page"
+
+        def wait_for_timeout(self, milliseconds):
+            started.set()
+            release.wait(10)
+
+    monkeypatch.setattr(_BROWSER, "page", lambda: (_GatedPage(), None))
+    # `_state` is on the module-level singleton, so leave it as it was found.
+    monkeypatch.setattr(_BROWSER, "_state", dict(_BROWSER._state))
+
+    registry = ToolRegistry()
+    browser_wait = next(
+        fn for fn in make_browser_automation_tools() if fn.__name__ == "browser_wait"
+    )
+    registry.register(browser_wait)
+    engine = _run_tool_engine(
+        tmp_path, registry, [("browser_wait", {"milliseconds": 600000})]
+    )
+    assert (
+        engine._abandonable(ToolCall(id="c0", name="browser_wait", arguments={}))
+        is False
+    )
+
+    def release_after_stop():
+        started.wait(10)
+        time.sleep(0.4)  # the turn must still be here when this lands
+        release.set()
+
+    async def scenario():
+        _stop_once_started(engine, started)
+        threading.Thread(target=release_after_stop, daemon=True).start()
+        clock = time.monotonic()
+        events = [ev async for ev in engine.run("go")]
+        return events, time.monotonic() - clock
+
+    try:
+        events, elapsed = _run_without_joining_executor(scenario())
+    finally:
+        release.set()  # never leave the ONE browser worker pinned
+
+    finished = _finished_events(events)
+    assert [ev.data["status"] for ev in finished] == ["ok"], finished
+    # The real result reached the model, not the "unavailable" placeholder.
+    assert json.loads(_tool_results(engine)[0]["content"]) == {
+        "ok": True,
+        "url": "https://example.invalid/page",
+    }
+    assert elapsed >= 0.4, f"the turn let go of browser_wait after {elapsed:.2f}s"
+    # The `_state` write the panel reads happened inside the turn, not after it.
+    assert _BROWSER._state["last_action"] == "wait"
+    assert _BROWSER._state["last_result"] == "ok"
 
 
 def test_a_torn_down_abandoned_tool_is_not_logged_as_finished(tmp_path, caplog):
