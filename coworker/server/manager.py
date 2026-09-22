@@ -1746,6 +1746,9 @@ class SessionManager:
             )
             await self._weixin_say(wx["target"], text)
         except asyncio.CancelledError:
+            # Defensive, not load-bearing: CancelledError is a BaseException (Python 3.8+),
+            # so the `except Exception` below never catches it anyway. This keeps a
+            # cancellation passing through should that clause ever be widened.
             raise
         except Exception:
             logger.exception(
@@ -1766,6 +1769,9 @@ class SessionManager:
         try:
             await self._durable_resume_turn(item)
         except asyncio.CancelledError:
+            # Defensive, not load-bearing: CancelledError is a BaseException (Python 3.8+),
+            # so the `except Exception` below never catches it anyway. This keeps a
+            # cancellation passing through should that clause ever be widened.
             raise
         except Exception as exc:
             session_id = getattr(item, "session_id", "?")

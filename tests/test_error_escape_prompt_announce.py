@@ -52,3 +52,37 @@ async def test_receipt_failure_is_logged_not_left_in_the_task(
         if r.name == MANAGER_LOGGER and r.levelno >= logging.ERROR and r.exc_info
     ]
     assert logged, "the failure must be logged with its traceback"
+
+
+async def test_cancellation_is_not_swallowed_or_logged(tmp_path, monkeypatch, caplog):
+    """Containing failures must not contain cancellation: shutdown cancels these tasks, and
+    one that turned that into an ordinary return (or an error log) would break it."""
+    mgr = SessionManager(data_dir=tmp_path / "data", workspace=str(tmp_path))
+    item = SimpleNamespace(
+        id="inbox-2",
+        session_id="announce",
+        kind="approval",
+        title="Run the build?",
+        data={"wx": {"target": "weixin:wxid_peer"}},
+    )
+    entered = asyncio.Event()
+
+    async def parked_say(target, text):
+        entered.set()
+        await asyncio.Event().wait()  # released only by the cancel below
+
+    monkeypatch.setattr(mgr, "_weixin_say", parked_say)
+    caplog.set_level(logging.INFO, logger=MANAGER_LOGGER)
+
+    mgr.notify_prompt_resolved(item, "allow", via="app")
+    (task,) = mgr._wx_tasks
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+    finally:
+        task.cancel()
+    await asyncio.wait({task}, timeout=5)
+
+    assert task.cancelled(), "the cancellation was swallowed"
+    assert not [
+        r for r in caplog.records if r.name == MANAGER_LOGGER and r.levelno >= logging.ERROR
+    ], "a cancellation was logged as a failure"
