@@ -293,7 +293,8 @@ _SIDE_EFFECTING_READS = frozenset(
 #              the loop reads unlocked every round trip in `registry.schemas()`; before
 #              this change no tool thread could outlive its turn, so the two could not
 #              overlap, and abandoning is precisely what would remove that guarantee.
-#   connector  every connector read reaches its API through a credential path that WRITES.
+#   connector  every connector read that calls a REMOTE API reaches it through a
+#              credential path that WRITES.
 #              The account-patterned ones (`outlook_search_messages`,
 #              `outlook_list_events`, …) start at
 #              `integration_tools._account_profile`, which calls
@@ -305,9 +306,10 @@ _SIDE_EFFECTING_READS = frozenset(
 #              INSTANCE lock (secrets.py). So an abandoned connector read can rotate a
 #              refresh token on disk after the turn ended — state that outlives the turn
 #              and that the model never sees, the `load_skill` shape again. The browser
-#              tools above are in this category too and are named there as well, because
-#              their reason is a different and sharper one; naming them keeps that reason
-#              and its test attached to the names even if the category ever moves.
+#              tools above are in this category too, but for a different and sharper
+#              reason (a local Playwright page, no credentials); they are named above as
+#              well, so that reason and its test stay attached to the names even if the
+#              category rule ever moves.
 #              (Read 2026-09-22. Not observed in a running session: reading the code is
 #              the whole evidence, which is enough to retire a claimed invariant but is
 #              not a measurement.)
