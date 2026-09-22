@@ -310,6 +310,89 @@ def test_complete_never_marks_truncated():
     assert turn.truncated is False and turn.finish_reason is None
 
 
+# -- explicit close of the wire stream ------------------------------------------------
+
+
+class _CountingChunks:
+    """A fake wire stream with the same shape `close_stream` cares about: iterable, with
+    a `.close()` that counts calls — and, optionally, one that raises mid-iteration so the
+    "the finally still runs, and the real error still wins" case is exercised too."""
+
+    def __init__(self, chunks, raise_at=None, exc=None):
+        self._chunks = list(chunks)
+        self.raise_at = raise_at
+        self.exc = exc
+        self.closed = 0
+
+    def __iter__(self):
+        index = 0
+        for chunk in self._chunks:
+            if self.raise_at is not None and index == self.raise_at:
+                raise self.exc
+            yield chunk
+            index += 1
+        # `raise_at == len(chunks)` reads as "raise instead of ending normally" — a
+        # connection dying with nothing left queued, the shape a real severed stream
+        # takes (no sentinel chunk to point the error at, just no more to give).
+        if self.raise_at is not None and self.raise_at == index:
+            raise self.exc
+
+    def close(self):
+        self.closed += 1
+
+
+class _CountingStreamClient:
+    """`client.chat.completions.create(**kwargs)` hands back `wire` itself — not
+    `iter(wire)` — the same as `_StreamClient`'s next-door cousin above but returning the
+    object `close_stream(chunks)` is meant to close, not a throwaway `iter()` generator
+    that would swallow the `.close()` call unnoticed."""
+
+    def __init__(self, wire):
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=lambda **kw: wire))
+
+
+def test_stream_closes_the_wire_when_the_consumer_leaves_early():
+    wire = _CountingChunks(
+        [_chunk(content="a"), _chunk(content="b"), _chunk(finish="stop")]
+    )
+    gen = OpenAIProvider(client=_CountingStreamClient(wire)).stream(
+        model="gpt-5.5", messages=[]
+    )
+    first = next(gen)
+    assert first.text_delta == "a"
+    assert wire.closed == 0  # nothing has closed yet, mid-stream
+    gen.close()  # what engine._astream's producer triggers on a Stop
+    assert wire.closed == 1
+
+
+def test_stream_closes_the_wire_on_a_normal_finish():
+    wire = _CountingChunks([_chunk(content="a"), _chunk(finish="stop")])
+    out = list(
+        OpenAIProvider(client=_CountingStreamClient(wire)).stream(
+            model="gpt-5.5", messages=[]
+        )
+    )
+    assert out[-1].turn.text == "a"
+    assert wire.closed == 1
+
+
+def test_stream_closes_the_wire_and_still_raises_the_real_error_mid_stream():
+    """The wire raising mid-iteration must reach the caller exactly as-is — closing it in
+    `finally` must never swallow or replace that exception."""
+    boom = RuntimeError("boom")
+    wire = _CountingChunks([_chunk(content="a")], raise_at=1, exc=boom)
+    gen = OpenAIProvider(client=_CountingStreamClient(wire)).stream(
+        model="gpt-5.5", messages=[]
+    )
+    assert next(gen).text_delta == "a"
+    import pytest
+
+    with pytest.raises(RuntimeError) as err:
+        next(gen)
+    assert err.value is boom
+    assert wire.closed == 1
+
+
 # -- OpenAI-compatible vendor providers (Z AI, DeepSeek, Kimi, MiniMax, Qwen, xAI, Mistral) ------
 
 COMPAT_VENDORS = {
