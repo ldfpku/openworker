@@ -1926,8 +1926,11 @@ class SessionManager:
         earlier resume already used the answer, or the turn that held the session moved
         the conversation past the call — the case `_answer_superseded` reports.
 
-        Not while the process is going away (`_parked_resume_blocker`): then they stay
-        parked, and the log names each one."""
+        Not once `aclose` has begun, and (where the interpreter has `Task.cancelling()`)
+        not from the `finally` of a turn that was cancelled, whoever cancelled it
+        (`_parked_resume_blocker`; shutdown is the canceller this guards against): then
+        they stay parked for the next `mark_idle` of this session, and the log names each
+        one."""
         parked = self._deferred_resumes.get(session_id)
         if not parked:
             return
@@ -1948,7 +1951,11 @@ class SessionManager:
                     # `ensure_engine` makes a fresh engine holding nothing but its system
                     # prompt, and the save after the (empty) resume writes that back as a
                     # new session row. Not read once shutdown has begun: the items go back
-                    # to the park just below anyway.
+                    # to the park just below anyway. This only covers a delete that lands
+                    # before the check: one that lands while the resume is already running
+                    # still brings the session back — the resume ends `interrupted` and its
+                    # save writes the row again — which is the general race of deleting a
+                    # session whose turn is running, not handled here.
                     if not self._closing and not await self._session_still_exists(
                         session_id
                     ):
