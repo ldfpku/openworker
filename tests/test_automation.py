@@ -1538,6 +1538,59 @@ async def test_scheduled_run_error_notification_is_not_marked_done(tmp_path, mon
     assert text.startswith(f"✗ {task.title}")
 
 
+async def test_manual_run_verdict_is_the_first_turn_only(tmp_path, monkeypatch):
+    """The first turn decides a manual run, as on the scheduled path: a first turn that
+    fails and is then retried successfully from the session stays "error", and a second
+    finalize call (the GUI only makes one) changes nothing — no re-judging on the later
+    turn, no second count."""
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+    from coworker.server.manager import SessionManager
+
+    class FailsOnceProvider(ProviderClient):
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, *, model, messages, tools=None, **settings):
+            self.calls += 1
+            if self.calls == 1:
+                raise ValueError("the endpoint rejected the request")
+            return AssistantTurn(text="Daily brief: all quiet.", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    manager = SessionManager(data_dir=tmp_path / "data", provider=FailsOnceProvider())
+    task = _task(workspace=str(ws), agent="cowork")
+    manager.task_store.save(task)
+
+    prep = manager.prepare_manual_run(task.id)
+    engine = manager.get_engine(prep["session_id"], workspace=str(ws), agent="cowork")
+
+    async def drain(events):
+        async for _ in events:
+            pass
+
+    await asyncio.wait_for(drain(engine.run(prep["prompt"])), timeout=10)
+    manager.save(prep["session_id"], engine)
+    first = manager.finalize_manual_run(task.id, prep["run_id"])
+    assert first["run"]["status"] == "error"
+
+    # The user presses Retry on the error notice; this time the turn completes.
+    await asyncio.wait_for(drain(engine.retry()), timeout=10)
+    manager.save(prep["session_id"], engine)
+    assert engine.messages[-1]["role"] == "assistant"
+
+    again = manager.finalize_manual_run(task.id, prep["run_id"])
+    assert again["run"]["status"] == "error"
+    persisted = manager.task_store.runs(task.id)
+    assert len(persisted) == 1 and persisted[0].status == "error"
+    assert manager.task_store.get(task.id).run_count == 1
+    assert manager.task_store.get(task.id).last_status == "error"
+
+
 def test_every_interrupted_event_follows_an_interrupted_notice():
     """`_run_scheduled_task` takes its verdict from the transcript and keeps the
     INTERRUPTED event only as a second witness. That is sound because the engine appends

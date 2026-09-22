@@ -7281,6 +7281,13 @@ class SessionManager:
         it after a turn that promoted the session's project, and `run_turn` saves the
         record right after that. The live list also carries a failure notice whose save
         failed, which the stored record would not.
+
+        Only the run's FIRST turn decides, as on the scheduled path (which runs one turn
+        per run): the GUI calls this once, at the first `turn_done` (App.tsx clears its
+        pending-run ref right there), and a later call finds the run no longer "running"
+        and changes nothing. So a first turn that fails and is then retried successfully
+        from the session stays "error" in the run history; before the transcript was
+        read here, every manual run showed "ok" whatever happened.
         """
         run = next(
             (r for r in self.task_store.runs(task_id) if r.run_id == run_id), None
