@@ -7015,13 +7015,15 @@ class SessionManager:
             )
             try:
                 # `request_interrupt()` (the user's Stop button) ends the turn NORMALLY —
-                # `engine.run()` returns instead of raising — so an interrupted run would
-                # otherwise fall straight into the success path below. The engine's own
-                # public signal for that is the INTERRUPTED event it yields right before
-                # ending the turn (see coworker/engine.py); every checkpoint that notices
-                # the stop flag routes through it. That is the contract to key off — not
-                # the private `engine._cancel` flag, which is an implementation detail
-                # this file has no business reaching into.
+                # `engine.run()` returns instead of raising — so a stopped run must not
+                # fall into the success path below. Every INTERRUPTED event that
+                # coworker/engine.py yields comes right after an "interrupted" notice it
+                # appends; tests/test_automation.py pins that pairing in
+                # `test_every_interrupted_event_follows_an_interrupted_notice`.
+                # The verdict below is read from that notice in the transcript; the event
+                # is only collected here as a second witness. Neither is the private
+                # `engine._cancel` flag, an implementation detail this file has no
+                # business reaching into.
                 interrupted = False
                 async for _event in engine.run(opening):
                     if _event.type.value == "interrupted":
