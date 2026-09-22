@@ -729,6 +729,13 @@ def test_stop_abandons_the_wait_for_a_read_tool(tmp_path):
         ),
         "executed": True,
     }
+    # The display-only sidecar that keeps the card honest after a reload: the GUI rebuilds
+    # tool steps from the transcript, where the `tool_finished` event no longer exists, and
+    # without this it renders a replayed step as a green success (itemsFromMessages.ts).
+    assert results[0]["_display"] == {"status": "abandoned"}
+    # …and it is display-only: no model ever sees it.
+    outbound = [m for m in engine._outbound_messages() if m.get("role") == "tool"]
+    assert outbound and all("_display" not in m for m in outbound)
     # The real result never arrives late, and the per-call side tables are clear.
     assert len(_tool_results(engine)) == 1
     assert tables == ({}, {}, {})

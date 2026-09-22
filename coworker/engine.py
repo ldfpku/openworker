@@ -2250,7 +2250,15 @@ class TurnEngine:
             ),
             "executed": True,
         }
-        self.messages.append(_tool_result_message(tool_call, result))
+        message = _tool_result_message(tool_call, result)
+        # The GUI rebuilds its tool cards from the transcript after a reload, and there it
+        # has only the stored message to go on — the `tool_finished` event that carried
+        # `status: "abandoned"` is long gone. Without this sidecar the card came back
+        # green (`itemsFromMessages.ts` defaults every replayed step to "ok"), telling the
+        # user the call succeeded. `_display` is display-only metadata: `_outbound_messages`
+        # strips it, so no model ever sees it.
+        message["_display"] = {"status": "abandoned"}
+        self.messages.append(message)
         # Same side tables `_record_result` clears, cleared here for the same reason: they
         # are keyed by tool_call.id and nothing else will ever come back for this one.
         self._approval_origins.pop(tool_call.id, None)

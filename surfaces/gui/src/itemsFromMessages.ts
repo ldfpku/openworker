@@ -40,12 +40,19 @@ export function itemsFromMessages(messages: ConversationMessage[]): Item[] {
   // "reviewer"/"bypass"/"user"/"reviewer_denied" — persisted in the same sidecar so the
   // quiet chips survive reload.
   const approvalMeta: Record<string, { origin: string; note?: string; grant?: string }> = {};
+  // A replayed step has no `tool_finished` event to take its status from, so every one of
+  // them used to come back "ok". An abandoned call is not "ok": the turn stopped waiting
+  // for it, the result was thrown away, and the tool may still be running. The engine
+  // marks those in the same `_display` sidecar (`_abandoned_tool`). Only this one status
+  // is carried: the rest are still inferred, so nothing else silently changes shape here.
+  const abandoned: Record<string, true> = {};
   for (const m of messages || []) {
     if (m.role === "tool" && m.tool_call_id) {
       results[m.tool_call_id] =
         typeof m.content === "string" ? m.content : JSON.stringify(m.content);
       const hidden = Number(m._display?.hidden_by_filters || 0);
       if (hidden > 0) hiddenCounts[m.tool_call_id] = hidden;
+      if (m._display?.status === "abandoned") abandoned[m.tool_call_id] = true;
       if (m._display?.approval_origin)
         approvalMeta[m.tool_call_id] = {
           origin: String(m._display.approval_origin),
@@ -94,7 +101,7 @@ export function itemsFromMessages(messages: ConversationMessage[]): Item[] {
           id: tc.id,
           name: tc.function?.name,
           args,
-          status: denied ? "denied" : "ok",
+          status: denied ? "denied" : abandoned[tc.id] ? "abandoned" : "ok",
           preview,
           ...(hidden ? { hidden } : {}),
           ...(meta ? { approvalOrigin: meta.origin } : {}),

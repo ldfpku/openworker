@@ -33,6 +33,35 @@ describe("itemsFromMessages _display sidecar", () => {
     expect(tools[1].hidden).toBeUndefined();
     expect(tools[0].preview).not.toContain("hidden"); // content stays clean
   });
+
+  it("replays an abandoned step as abandoned, not as a green success", () => {
+    // After a reload there is no `tool_finished` event left to take the status from, so
+    // every replayed step defaulted to "ok" — including a call the turn stopped WAITING
+    // for, whose result was discarded and whose tool may still be running. The engine
+    // marks those in the same sidecar (`_abandoned_tool`).
+    const items = itemsFromMessages([
+      { role: "user", content: "search the web" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          { id: "t1", function: { name: "web_search", arguments: '{"query":"x"}' } },
+          { id: "t2", function: { name: "read_file", arguments: '{"path":"a"}' } },
+        ],
+      },
+      {
+        role: "tool",
+        tool_call_id: "t1",
+        content:
+          '{"error": "tool result unavailable", "reason": "stopped waiting for the tool; it may have completed after the stop", "executed": true}',
+        _display: { status: "abandoned" },
+      },
+      { role: "tool", tool_call_id: "t2", content: '{"content": "hi"}' },
+    ] as any);
+
+    const tools = items.filter((i: any) => i.kind === "tool") as any[];
+    expect(tools.map((s) => s.status)).toEqual(["abandoned", "ok"]);
+  });
 });
 
 describe("itemsFromMessages timestamps", () => {
