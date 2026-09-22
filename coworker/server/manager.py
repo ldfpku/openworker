@@ -8491,14 +8491,23 @@ _RUN_FAILED_NOTICE_KINDS = frozenset({"error", "turn_aborted"})
 # Notices that record something about the session, not how the turn ended — every
 # `_append_notice` kind in coworker/ except the four the verdict is read from
 # ("interrupted", "error", "turn_aborted", "turn_truncated"). The first five come from
-# the session's own handlers (connect, set_mode, set_model, add_root), not from the turn
-# loop, so they can land AFTER the run's turn has ended and before the run is judged.
-# Driven that way over the real WS — Stop, then the action, then the finalize call — in
-# tests/test_automation.py: `mode_switch` (set_mode to plan), `project_presence`
-# (add_root on a folder with project memory) and `mcp_error` (the reconnect after a
-# backend restart, with a server that fails to start). `model_switch` (set_model) and
-# `mode_notice` (set_mode to Auto-Approve, or a connect in that mode) are read from
-# app.py/engine.py, not driven here.
+# the session's own handlers (connect, set_mode, set_model, add_root), so they can land
+# AFTER the run's turn has ended and before the run is judged — EXCEPT `project_presence`
+# (`add_root`), which is ALSO reachable from inside the turn loop: `add_root` is what the
+# `directory_requester`/`inbox_directory_requester` tool approvers call when the agent's
+# own `request_directory` call is granted mid-turn (app.py, manager.py), so the notice can
+# land between that tool's call and its result instead of after the turn ends. Either way
+# the walk still reads the verdict correctly, because it looks through the notice either
+# to what came before it (after the turn) or to the tool result that follows it
+# (mid-turn). Driven that way over the real WS — Stop, then the action, then the finalize
+# call — in tests/test_automation.py: `mode_switch` (set_mode to plan), `project_presence`
+# (add_root on a folder with project memory, after the turn ended) and `mcp_error` (the
+# reconnect after a backend restart, with a server that fails to start). The mid-turn
+# `project_presence` shape — `[..., assistant, project_presence, tool, assistant]` from a
+# granted `request_directory` — was measured with a temporary pytest probe over the real
+# WS (not an existing test). `model_switch` (set_model) and `mode_notice` (set_mode to
+# Auto-Approve, or a connect in that mode) are read from app.py/engine.py, not driven
+# here.
 #
 # The last three are appended from inside the turn loop (engine.py), and the turn does
 # not always go on past them: an answerless round's `turn_retry` can be the last thing
