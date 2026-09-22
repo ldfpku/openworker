@@ -263,6 +263,14 @@ def _two_prompt_manager(tmp_path, x_target, y_target) -> SessionManager:
     )
 
 
+async def _cancel_and_wait(task: asyncio.Future, what: str) -> None:
+    """Cancel `task` and wait for it to finish — bounded, so a task that ignores the
+    cancellation fails the test instead of hanging it."""
+    task.cancel()
+    await asyncio.wait({task}, timeout=10)
+    assert task.done(), f"{what} did not stop when cancelled"
+
+
 async def _run_until_prompt(mgr: SessionManager, sid: str, engine, content: str, call_id: str):
     """Run a turn until the prompt for `call_id` is a pending Inbox item, then simulate a
     restart the way `_run_until_pending` does (cancel the suspended turn, drop the engine)."""
@@ -278,11 +286,7 @@ async def _run_until_prompt(mgr: SessionManager, sid: str, engine, content: str,
     try:
         await _eventually(lambda: pending_item() is not None, what=f"the {call_id} prompt")
     finally:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        await _cancel_and_wait(task, "the suspended turn")
     mgr._engines.pop(sid, None)
     mgr.mark_idle(sid)
     return pending_item()
@@ -339,11 +343,7 @@ async def test_stale_answer_does_not_bury_a_later_pending_prompt_across_a_restar
     )
 
     # ...and the restart itself, while X's resume is still waiting on Y.
-    resume_x.cancel()
-    try:
-        await resume_x
-    except asyncio.CancelledError:
-        pass
+    await _cancel_and_wait(resume_x, "X's resume")
     mgr._engines.pop(sid, None)
     await _settle(mgr)
 
