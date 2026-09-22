@@ -15,8 +15,10 @@ Asserted: neither a cancelled holding turn nor a turn that ends after `aclose` h
 starts a parked resume; a runner already going stops before its next item once shutdown
 begins, and one that is cancelled — wherever it is waiting — says which items it never
 started and names the one it cut short. Every skipped item is logged by id and left parked
-— dropping it would lose the approval for good if the cancellation were ever not a
-shutdown. The item cut short is not parked again: it may already have run its call.
+rather than dropped: not every cancellation is a shutdown (a connector refresh cancels a
+WeChat turn in flight — manager `_parked_resume_blocker`, read from the code), and a dropped
+item would lose the approval for good. The item cut short is not parked again: it may
+already have run its call.
 """
 
 from __future__ import annotations

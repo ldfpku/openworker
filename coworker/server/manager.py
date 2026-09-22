@@ -1933,10 +1933,13 @@ class SessionManager:
         the conversation past the call — the case `_answer_superseded` reports.
 
         Not once `aclose` has begun, and (where the interpreter has `Task.cancelling()`)
-        not from the `finally` of a turn that was cancelled, whoever cancelled it
-        (`_parked_resume_blocker`; shutdown is the canceller this guards against): then
-        they stay parked for the next `mark_idle` of this session, and the log names each
-        one."""
+        not from the `finally` of a turn that was cancelled, whoever cancelled it —
+        shutdown, or a connector refresh cancelling a WeChat turn in flight (see
+        `_parked_resume_blocker`). Then they stay parked in memory and the log names each
+        one. Nothing schedules another start (read from the code): only the next
+        `mark_idle` of this same session, which comes when some later turn of it ends,
+        starts them. Until then the approved call has not run, and a process exit in
+        between loses the park, which lives only in memory."""
         parked = self._deferred_resumes.get(session_id)
         if not parked:
             return
@@ -1958,10 +1961,15 @@ class SessionManager:
                     # prompt, and the save after the (empty) resume writes that back as a
                     # new session row. Not read once shutdown has begun: the items go back
                     # to the park just below anyway. This only covers a delete that lands
-                    # before the check: one that lands while the resume is already running
-                    # still brings the session back — the resume ends `interrupted` and its
-                    # save writes the row again — which is the general race of deleting a
-                    # session whose turn is running, not handled here.
+                    # before the check. Two later ones still bring the session back, and
+                    # neither is handled here:
+                    # - between this check and `ensure_engine` building the engine (read
+                    #   from the code, not reproduced);
+                    # - while the resume is already running (reproduced): `delete_session`
+                    #   returns ok and the row reads None right after, but the resume goes
+                    #   on to end `interrupted`, and its final save writes the row back.
+                    #   That is the general race of deleting a session whose turn is
+                    #   running, not something particular to parked resumes.
                     if not self._closing and not await self._session_still_exists(
                         session_id
                     ):
@@ -2002,13 +2010,22 @@ class SessionManager:
     def _parked_resume_blocker(self) -> Optional[str]:
         """Why parked durable resumes must not be started right now, or None if they may.
 
-        `mark_idle` is where they start, and it also runs while the process is going away:
-        in the `finally` of a turn that shutdown is cancelling (`asyncio.run` cancels every
-        task still pending when the server's main coroutine returns, `Scheduler.stop`
-        cancels in-flight runs), and in a turn that simply finishes after `aclose` began. A
-        resume started from there is a new task that no cancellation sweep has seen, and it
-        went on to run the approved tool mid-teardown. `Task.cancelling()` is what tells a
-        `finally` reached by cancellation apart from an ordinary end."""
+        `mark_idle` is where they start, and it also runs in the `finally` of a turn that
+        was cancelled rather than ended, and in a turn that ends after `aclose` began. The
+        cancellers known so far:
+        - Shutdown (reproduced; tests/test_parked_resume_shutdown.py): `asyncio.run`
+          cancels every task still pending when the server's main coroutine returns, and
+          `aclose` -> `Scheduler.stop` cancels in-flight scheduled runs. A resume started
+          from there is a new task that no cancellation sweep has seen, and it went on to
+          run the approved tool mid-teardown.
+        - A connector refresh, while the process keeps running (read from the code, not
+          reproduced end to end): `refresh_gateway` -> `stop_gateway` -> `Gateway.stop` ->
+          the WeChat adapter's `disconnect()` cancels its `_msg_tasks`, and such a task can
+          be awaiting `handle_message` -> `Gateway._on_inbound` -> `_dispatch_inbound` ->
+          `deliver_to_session`, whose `finally` calls `mark_idle`.
+        `Task.cancelling()` tells a `finally` reached by cancellation apart from an ordinary
+        end, but not who cancelled, so both are treated alike: the resumes stay parked
+        (`_kick_deferred_resumes` says what that costs)."""
         if self._closing:
             return "shutting down"
         try:
