@@ -1648,9 +1648,13 @@ class TurnEngine:
                         self.model,
                         waited,
                     )
+                    # Whole seconds for the ordinary case (the default is 120), two
+                    # decimals below one — a deadline set in milliseconds must not report
+                    # itself as "sent nothing for 0s".
+                    shown = f"{waited:.0f}" if waited >= 1 else f"{waited:.2f}"
                     raise FirstChunkTimeout(
                         f"{self.model} accepted the request but sent nothing for "
-                        f"{waited:.0f}s — the connection looks wedged. "
+                        f"{shown}s — the connection looks wedged. "
                         f"({_FIRST_CHUNK_TIMEOUT_ENV})"
                     )
                 get_task.cancel()
