@@ -1787,13 +1787,18 @@ class SessionManager:
             return
         # Claim the session atomically, like every other turn. The caller's `is_running`
         # check is stale by now: `ensure_engine` just waited on the engine lock and a worker
-        # thread, and a socket rebuilding this very session can have claimed it for the
-        # user's next message in that gap. `engine.resume()` on top of that turn would be a
-        # second turn on one engine — its first act, `_cancel.clear()`, wipes a Stop the
-        # user just pressed (the older stream then ends on StreamBridgeError), and the
-        # `mark_idle` below would release a claim that turn still holds. So a busy session
-        # parks the resume instead; `mark_idle` starts it once that turn has ended, and the
-        # approval is not lost.
+        # thread, and another turn can have claimed the session in that gap. Resuming on
+        # top of it anyway (the old unconditional `mark_running`) did different damage
+        # depending on that turn:
+        # - the user's next message (a socket turn) appends a user message after the
+        #   suspended call, so `engine.resume()` finds nothing trailing and returns before
+        #   it touches the stop flag — but the `mark_idle` below then released the claim
+        #   that turn still held, and the session read idle while it was still running;
+        # - another resume of this session that has not run the call yet leaves it
+        #   trailing, so this `resume()`'s `_cancel.clear()` wiped a Stop the user had
+        #   pressed on that one, and both resumes ran the approved tool.
+        # So a busy session parks the resume instead: `mark_idle` starts it again once that
+        # turn has ended (`_answer_superseded` covers the call that turn moved past).
         if not self.try_mark_running(session_id):
             self._deferred_resumes.setdefault(session_id, {})[item.id] = item
             logger.info(
@@ -1896,7 +1901,7 @@ class SessionManager:
         """Start the durable resumes `_durable_resume_turn` parked while `session_id` was
         busy. One task runs them in order, each claiming the session afresh — one that
         finds it busy again (yet another turn got there first) simply parks itself again,
-        so nothing overlaps and nothing is dropped. A resume whose call is no longer
+        so nothing overlaps. A resume whose call is no longer
         pending runs nothing: an earlier resume already used the answer, or the turn that
         held the session moved the conversation past the call — the case
         `_answer_superseded` reports.
