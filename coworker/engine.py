@@ -189,8 +189,10 @@ _TURN_ABORTED_RETRIED = " Automatic retry didn't help ({n} retries)."
 # parked in the provider's read and the socket is still open; both are let go only when
 # that read finally returns on the numbers above (Gemini's 600s bound included — it frees
 # the *socket*, not this deadline: at the `_FIRST_CHUNK_TIMEOUT_DEFAULT` of 120s this
-# deadline still fires first for a wedged Gemini call, same as for the unbounded
-# providers) — and NOTHING IN THIS TREE SHORTENS A SOCKET'S OWN WAIT BELOW THOSE NUMBERS.
+# deadline still fires first for a wedged Gemini call, same as for OpenAI/Anthropic
+# (SDK read=600s) — but not for Bedrock, whose botocore `read_timeout` of 60s is BELOW
+# 120s and so fires first there instead) — and NOTHING IN THIS TREE SHORTENS A SOCKET'S
+# OWN WAIT BELOW THOSE NUMBERS.
 # The gain this deadline provides is exactly one thing: the user (and the automatic
 # retry) stops waiting on a wedged call, instead of waiting out whichever of the
 # per-provider figures above the SDK actually enforces.
