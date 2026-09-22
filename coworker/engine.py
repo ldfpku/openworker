@@ -156,11 +156,24 @@ _TURN_ABORTED_RETRIED = " Automatic retry didn't help ({n} retries)."
 # had no answer for: the Stop race below covers the user changing their mind, but nothing
 # covered the user simply waiting. The agent loop deliberately passes no `timeout`, so
 # each vendor SDK's own defaults are all that ever ends such a call (`base.bounded_client`
-# says as much: "the agent loop wants the SDK's own resilience"). Measured against
-# scripted stalls on this tree, 2026-09-22 — not production incidents, and the Gemini and
-# Bedrock figures are the scoping run's, not re-derived here: OpenAI/Anthropic ~1800s
-# worst case (a 600s read timeout times the SDK's own max_retries=2, the same multiplier
-# `bounded_client` exists to defeat), Gemini unbounded, Bedrock ~60s times its retries.
+# says as much: "the agent loop wants the SDK's own resilience"). What those defaults are
+# was READ OFF THE SDKs installed in this repo's venv on 2026-09-22 — no live provider was
+# stalled, and none of this comes from a production incident:
+#
+#   * OpenAI and Anthropic: `openai._constants.DEFAULT_TIMEOUT` and the anthropic
+#     equivalent are both `Timeout(connect=5.0, read=600, write=600, pool=600)`, with
+#     `DEFAULT_MAX_RETRIES = 2` and a timed-out request counted as retryable. ~1800s worst
+#     case, by the same multiplier `bounded_client` exists to defeat. (openai 3.3.1,
+#     anthropic 1.2.0.)
+#   * Bedrock: `bedrock_provider._ensure_client` builds the boto3 client with no
+#     `botocore.config.Config`, so botocore's default `read_timeout` — 60s, read off
+#     `botocore.config.Config().read_timeout` — is what applies. How many attempts
+#     botocore stacks on top of that was NOT derived here.
+#   * Gemini: `gemini_provider` passes `types.HttpOptions(base_url=…, headers=…)` and no
+#     `timeout` at all, so whatever google-genai defaults to is the only bound. The
+#     scoping run for this change called that unbounded; this comment does not re-derive
+#     it, so treat "unbounded" as that run's figure, not as measured here.
+#
 # So "eventually" is between ten minutes and never, and until then the turn shows a
 # spinner and the server log shows nothing at all.
 #
