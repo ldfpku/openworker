@@ -120,6 +120,56 @@ async def test_cancelled_holding_turn_leaves_the_resume_parked(
     assert started == [item.id]
 
 
+class _TaskWithoutCancelling(asyncio.Task):
+    """A task the way Python 3.10 has them: no `Task.cancelling()` (pyproject admits 3.10;
+    CI runs a newer interpreter, so this is simulated)."""
+
+    @property
+    def cancelling(self):
+        raise AttributeError("'Task' object has no attribute 'cancelling'")
+
+
+async def test_ordinary_turn_end_starts_the_resume_without_task_cancelling(
+    tmp_path, caplog
+):
+    target = tmp_path / "approved.txt"
+    mgr = _approval_manager(tmp_path, target)
+    sid = "no-task-cancelling"
+    item, _live = await _approved_after_restart(mgr, sid, tmp_path)
+    caplog.set_level(logging.INFO, logger=MANAGER_LOGGER)
+
+    assert mgr.try_mark_running(sid)  # a turn holds the session
+    try:
+        await asyncio.wait_for(mgr._durable_resume(item), timeout=10)
+        assert item.id in mgr._deferred_resumes.get(sid, {}), "should have parked"
+    finally:
+
+        async def turn_ends() -> None:
+            mgr.mark_idle(sid)
+
+        # ...and ends normally, on a task without `cancelling`.
+        ended = _TaskWithoutCancelling(turn_ends())
+        await asyncio.wait_for(ended, timeout=10)
+    assert not hasattr(ended, "cancelling")
+
+    def errors() -> list[str]:
+        return [
+            f"{r.getMessage()} | {r.exc_info[1]!r}" if r.exc_info else r.getMessage()
+            for r in caplog.records
+            if r.levelno >= logging.ERROR
+        ]
+
+    assert errors() == [], "mark_idle could not start the parked resume"
+    await _eventually(
+        lambda: target.exists() and not mgr.is_running(sid),
+        what="the parked resume to run after the turn ended",
+    )
+    await _settle(mgr)
+    assert target.read_text() == "ok"
+    assert item.id not in mgr._deferred_resumes.get(sid, {})
+    assert errors() == []
+
+
 async def test_turn_ending_after_shutdown_began_does_not_start_the_resume(
     tmp_path, monkeypatch, caplog
 ):

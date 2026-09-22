@@ -1987,7 +1987,14 @@ class SessionManager:
             task = asyncio.current_task()
         except RuntimeError:  # no running loop on this thread
             return None
-        if task is not None and task.cancelling():
+        # `Task.cancelling()` only exists from Python 3.11, and pyproject still admits 3.10
+        # (requires-python >=3.10). Called unconditionally, it raised AttributeError there,
+        # which `mark_idle` logs as a failure to start the parked resumes — on every idle
+        # transition, so they were never started at all. Without the method this code has
+        # no way to tell a cancelled `finally` from an ordinary end: on such an interpreter
+        # only `_closing` guards.
+        cancelling = getattr(task, "cancelling", None)
+        if cancelling is not None and cancelling():
             return "the turn that ended was cancelled"
         return None
 
