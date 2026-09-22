@@ -150,6 +150,30 @@ _TURN_RETRY_TEXT = {
 # Appended to the give-up sentence so the user knows the machine already tried.
 _TURN_ABORTED_RETRIED = " Automatic retry didn't help ({n} retries)."
 
+# -- the first-chunk deadline --------------------------------------------------------
+#
+# A provider that ACCEPTS the request and then sends nothing is the one stall the bridge
+# had no answer for: the Stop race below covers the user changing their mind, but nothing
+# covered the user simply waiting. What the HTTP layer underneath would eventually do was
+# measured on this tree (2026-09-22, scripted stalls, not production incidents):
+# OpenAI/Anthropic ~1800s worst case (a 600s read timeout times the SDK's own
+# max_retries=2), Gemini unbounded, Bedrock ~60s times its retries. So "eventually" is
+# between ten minutes and never, and until then the turn shows a spinner and the server
+# log shows nothing at all.
+#
+# This bounds the WAIT, not the resources. When it fires the producer thread is still
+# parked in the provider's read and the socket is still open; both are let go only when
+# that read finally returns on the numbers above. The gain claimed here is therefore
+# exactly one thing: the user (and the automatic retry) stops waiting on a wedged call.
+_FIRST_CHUNK_TIMEOUT_ENV = "OPENWORKER_FIRST_CHUNK_TIMEOUT"
+_FIRST_CHUNK_TIMEOUT_DEFAULT = 120.0
+# Spellings that mean "no deadline at all" — for a self-hosted endpoint whose queue really
+# can hold a request for many minutes before the first token.
+_FIRST_CHUNK_TIMEOUT_OFF = frozenset({"off", "none", "never"})
+# Logged when a first chunk DID arrive, but took more than this share of the deadline.
+# Data for a later decision about a between-chunks deadline; it changes no behaviour.
+_SLOW_FIRST_CHUNK_FRACTION = 0.5
+
 
 def _model_retries() -> int:
     """How many times one dead model call is re-run automatically. Garbage falls back to
@@ -178,6 +202,30 @@ def _long_attempt_seconds() -> float:
         if value > 0:
             return value
     return _LONG_ATTEMPT_DEFAULT
+
+
+def _first_chunk_timeout() -> Optional[float]:
+    """Seconds a stream may deliver nothing at all before it counts as wedged, or None
+    for no deadline.
+
+    Garbage, 0 and negatives fall back to the default — the same rule `_oneshot_timeout`
+    uses (server/manager.py) and deliberately NOT the rule `_model_retries` uses: there,
+    "0" is a meaningful answer ("ask me instead of retrying"), here "wait forever" is the
+    failure this exists to prevent, so it has to be spelled out rather than fallen into.
+    `off`/`none`/`never` (any case) is that explicit spelling.
+    """
+    raw = (os.environ.get(_FIRST_CHUNK_TIMEOUT_ENV) or "").strip()
+    if not raw:
+        return _FIRST_CHUNK_TIMEOUT_DEFAULT
+    if raw.lower() in _FIRST_CHUNK_TIMEOUT_OFF:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return _FIRST_CHUNK_TIMEOUT_DEFAULT
+    if value > 0:
+        return value
+    return _FIRST_CHUNK_TIMEOUT_DEFAULT
 
 
 def _retry_delay(attempt: int, retry_after: Optional[float] = None) -> float:
@@ -280,6 +328,29 @@ class StreamBridgeError(RuntimeError):
     had already streamed is persisted, an `error` notice is appended (which keeps Retry on
     offer) and the turn ends on `EventType.ERROR` carrying `error_type="StreamBridgeError"`
     and this message as its text.
+    """
+
+
+class FirstChunkTimeout(TimeoutError):
+    """The provider accepted the request and then sent nothing for `first_chunk_timeout`.
+
+    Raised by `_astream` only while the stream is still empty — the deadline is armed when
+    the producer thread reports that it has entered `provider.stream()`, and disarmed by
+    the first chunk of any kind, thinking text included. Nothing bounds the gaps BETWEEN
+    chunks; a stream that has started and then stalls still hangs exactly as before.
+
+    It subclasses `TimeoutError` on purpose, and that is the whole integration: the
+    isinstance arm of `providers/errors.is_transient_model_error` matches `TimeoutError`,
+    so the bounded automatic retry added in v0.6.5 picks this up with no change to the
+    retry code, to the `turn_retry` reasons, or to the GUI's localized sentences — it
+    arrives as an ordinary `reason="transient"` failure. (Verified by test, not assumed:
+    `test_a_first_chunk_timeout_is_transient_to_the_retry_gate`.)
+
+    What it is NOT is a resource bound. When it is raised the producer thread is still
+    inside the provider's read and the socket is still open; both are released only when
+    that read returns on the HTTP layer's own schedule (see `_FIRST_CHUNK_TIMEOUT_ENV`).
+    So an engine that gives up here and retries can be holding two sockets, and a turn
+    that fails here leaves one behind for as long as the vendor SDK takes.
     """
 
 
@@ -543,6 +614,10 @@ class TurnEngine:
         # cancel event, which is what makes Stop bite DURING the pause and not after it.
         # `clock` is the matching seam for "how long did the dead attempt run".
         self.model_retries = _model_retries()
+        # How long `_astream` waits for the FIRST chunk before calling the connection
+        # wedged (None = no deadline). Read once here so a test can set the attribute
+        # instead of the environment; see `FirstChunkTimeout`.
+        self.first_chunk_timeout: Optional[float] = _first_chunk_timeout()
         self.retry_sleep: Callable[[float], Awaitable[bool]] = self._sleep_unless_stopped
         self.clock: Callable[[], float] = time.monotonic
         # Model ids seen reporting a finish reason at least once. A backend that simply
@@ -786,26 +861,45 @@ class TurnEngine:
         """
         return self.model in self._finish_reason_seen
 
-    def _retry_budget(self, reason: str, elapsed: float) -> int:
+    def _retry_budget(
+        self, reason: str, elapsed: float, *, long_attempt: bool = False
+    ) -> int:
         """How many automatic retries THIS failure is worth, before the turn-wide cap.
 
         Three ceilings stack: the configured budget, the reason's own (a bare empty answer
         is weak evidence of a transport fault), and the cost of the attempt that just
         died — repeating a four-minute call twice more spends twelve minutes and three
-        times the tokens to reach the same sentence."""
+        times the tokens to reach the same sentence.
+
+        `long_attempt` forces that third ceiling on regardless of the clock. A first-chunk
+        timeout passes it because the two knobs are independent: the deadline defaults to
+        120s and so lands past `_LONG_ATTEMPT_DEFAULT` (90s) on its own, but
+        `_LONG_ATTEMPT_ENV` can be raised above it, and then the worst case would be the
+        full budget times a full deadline each — three two-minute waits before the user
+        hears anything. The caller knows which failure this is, so it says so instead of
+        leaving the bound to a coincidence between two defaults.
+        """
         if reason not in _RETRIABLE_ABORT_REASONS and reason != "transient":
             return 0
         budget = self.model_retries
         budget = min(budget, _REASON_RETRY_CAP.get(reason, budget))
-        if elapsed >= _long_attempt_seconds():
+        if long_attempt or elapsed >= _long_attempt_seconds():
             budget = min(budget, _LONG_ATTEMPT_RETRIES)
         return budget
 
-    def _may_retry(self, reason: str, attempt: int, used: int, elapsed: float) -> bool:
+    def _may_retry(
+        self,
+        reason: str,
+        attempt: int,
+        used: int,
+        elapsed: float,
+        *,
+        long_attempt: bool = False,
+    ) -> bool:
         """Whether one more automatic attempt is allowed: this failure's budget, the
         turn-wide cap, and nobody having pressed Stop."""
         return (
-            attempt < self._retry_budget(reason, elapsed)
+            attempt < self._retry_budget(reason, elapsed, long_attempt=long_attempt)
             and used < _TURN_RETRY_CAP
             and not self._cancel.is_set()
         )
@@ -1059,13 +1153,26 @@ class TurnEngine:
                 # applies to its own mid-stream re-send). Thinking text doesn't count —
                 # the surfaces drop it when the retry is announced.
                 elapsed = self.clock() - round_started
+                # A first-chunk timeout is a long attempt BY CONSTRUCTION, whatever the
+                # clock says — see `_retry_budget`. (`elapsed` here is the whole round,
+                # which for this failure is the deadline plus whatever preceded the call;
+                # the flag is what keeps the bound from depending on that.)
+                long_attempt = isinstance(exc, FirstChunkTimeout)
                 if (
                     not streamed
                     and is_transient_model_error(exc)
-                    and self._may_retry("transient", attempt, retries_used, elapsed)
+                    and self._may_retry(
+                        "transient",
+                        attempt,
+                        retries_used,
+                        elapsed,
+                        long_attempt=long_attempt,
+                    )
                 ):
                     shown_max = min(
-                        self._retry_budget("transient", elapsed),
+                        self._retry_budget(
+                            "transient", elapsed, long_attempt=long_attempt
+                        ),
                         _TURN_RETRY_CAP - retries_used,
                     )
                     attempt += 1
@@ -1367,7 +1474,13 @@ class TurnEngine:
     # -- helpers ----------------------------------------------------------------
     async def _astream(self):
         """Bridge the provider's blocking stream generator to the async loop via a
-        thread + queue, so text deltas surface live without blocking the event loop."""
+        thread + queue, so text deltas surface live without blocking the event loop.
+
+        Raises `FirstChunkTimeout` when the provider accepts the request and then sends
+        nothing at all for `self.first_chunk_timeout` seconds — bounding the wait only,
+        not the socket, and only before the first chunk. Raises `StreamBridgeError` on the
+        one outcome documented there, and returns quietly on the ordinary Stop.
+        """
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()
         tools = self.registry.schemas() or None
@@ -1382,6 +1495,11 @@ class TurnEngine:
         # so an abandoned producer stops pulling the wire instead of draining a whole
         # response into a queue that was thrown away with the generator.
         consumer_gone = threading.Event()
+        # When the producer thread actually began pulling the wire, or None while it is
+        # still waiting for a slot in the executor. Written once from that thread and read
+        # from the loop — a single float assignment, which is why no lock is needed. This
+        # is what the first-chunk deadline is measured from; see the branch that reads it.
+        started_at: list[Optional[float]] = [None]
 
         def deliver(item) -> bool:
             """Hand `item` to the consumer's loop; False once that loop has been closed.
@@ -1401,6 +1519,22 @@ class TurnEngine:
             return True
 
         def produce():
+            # "The wire is being pulled from NOW", and the only thing that starts the
+            # first-chunk clock. The producer runs on the DEFAULT executor, shared with
+            # `_handle_tool_calls`' `to_thread` and dozens of `to_thread` calls in
+            # `server/`, so under concurrency this thread can sit in the pool's queue for
+            # an unbounded time before it runs at all. Timing that wait as if the provider
+            # were slow would invent a timeout and retry into the very queue that caused
+            # it — so until this is written, there is no deadline.
+            #
+            # Written before the call, and claiming no more than that. Providers differ on
+            # when they touch the wire: `stream()` is a generator function on OpenAI,
+            # Anthropic, Gemini, the AI Gateway and the Responses API (so nothing at all
+            # happens until the first `next()` a line below) and a plain function
+            # returning an iterator on Bedrock, Vertex and the router. What is true for
+            # every one of them at this line is that this thread is RUNNING rather than
+            # queued, which is the distinction the deadline needs.
+            started_at[0] = self.clock()
             try:
                 for chunk in provider.stream(
                     model=model, messages=messages, tools=tools, **settings
@@ -1420,19 +1554,29 @@ class TurnEngine:
         loop.run_in_executor(None, produce)
         get_task: Optional[asyncio.Future] = None
         cancel_task: Optional[asyncio.Future] = None
+        # `deadline` is the configured first-chunk bound (None switches it off), read once
+        # so a mid-stream attribute change can't confuse the arithmetic below. `armed` is
+        # what THIS wait is given: the deadline until a chunk arrives, then None forever.
+        deadline = self.first_chunk_timeout
+        armed: Optional[float] = deadline
         try:
             while True:
                 # Race the queue against Stop so a stalled stream (no chunks arriving —
-                # the pre-first-token wait, a wedged connection) can't hold the turn.
-                get_task = asyncio.ensure_future(queue.get())
+                # the pre-first-token wait, a wedged connection) can't hold the turn, and
+                # against the first-chunk deadline while that is still armed.
+                if get_task is None:
+                    get_task = asyncio.ensure_future(queue.get())
                 cancel_task = asyncio.ensure_future(self._cancel.wait())
                 done, _ = await asyncio.wait(
-                    {get_task, cancel_task}, return_when=asyncio.FIRST_COMPLETED
+                    {get_task, cancel_task},
+                    timeout=armed,
+                    return_when=asyncio.FIRST_COMPLETED,
                 )
-                # Four outcomes, told apart on purpose. Collapsing them into "not the
-                # queue, so the user stopped" is what silently dropped the last frame of a
-                # stream — reliably the `StreamChunk(turn=…)`, since that one always
-                # arrives after a wait — and handed the turn an empty answer instead.
+                # Five outcomes now (the deadline joined the four), told apart on purpose.
+                # Collapsing them into "not the queue, so the user stopped" is what
+                # silently dropped the last frame of a stream — reliably the
+                # `StreamChunk(turn=…)`, since that one always arrives after a wait — and
+                # handed the turn an empty answer instead.
                 stop_failed = (
                     cancel_task.exception()
                     if cancel_task in done and not cancel_task.cancelled()
@@ -1444,12 +1588,71 @@ class TurnEngine:
                     raise stop_failed
                 if get_task in done:
                     kind, payload = get_task.result()
+                    get_task = None
                     if kind == "chunk":
+                        if armed is not None:
+                            began = started_at[0]
+                            waited = self.clock() - began if began is not None else 0.0
+                            # Against the configured deadline, never against `armed` —
+                            # `armed` may be the remainder of a re-armed wait.
+                            if waited > (deadline or 0.0) * _SLOW_FIRST_CHUNK_FRACTION:
+                                # Telemetry only, and the reason it is here rather than in
+                                # the timeout branch: what a between-chunks deadline would
+                                # have to be set to is knowable only from streams that DID
+                                # answer, slowly. Nothing branches on it.
+                                logger.info(
+                                    "slow_first_chunk: session=%s model=%s "
+                                    "elapsed=%.1fs",
+                                    self.audit_context.get("session_id") or "-",
+                                    self.model,
+                                    waited,
+                                )
+                        # Disarmed for the rest of the stream — any chunk counts, thinking
+                        # text included. Nothing bounds the gaps between chunks.
+                        armed = None
                         yield payload
                         continue
                     if kind == "error":
                         raise payload
                     return
+                # Neither task finished, so `asyncio.wait`'s own timeout expired — the one
+                # way `done` can be empty, and the only way the first-chunk deadline can
+                # fire. This HAS to be asked before the `StreamBridgeError` below: that one
+                # is reached by falling through, so a deadline that fired here would
+                # otherwise be reported as "a second turn was started on this engine",
+                # which is a different bug with a different fix and no automatic retry.
+                if not done:
+                    began = started_at[0]
+                    waited = self.clock() - began if began is not None else 0.0
+                    if began is None or waited < deadline:
+                        # Either the producer is STILL QUEUED in the shared default
+                        # executor — nothing has been asked of the provider, so there is
+                        # nothing to time yet — or it got its slot part-way through this
+                        # wait, and what is owed is the rest of ITS clock, not another
+                        # whole deadline. Either way, wait again.
+                        #
+                        # The queue task is dropped and remade rather than carried: a
+                        # pending `Queue.get()` leaves the item in the queue, so nothing
+                        # is lost, and it cannot be left registered or the next
+                        # `put_nowait` would wake an orphan that nobody is awaiting. It is
+                        # provably still pending here — `asyncio.wait` returned with it
+                        # unfinished and no await has run since.
+                        get_task.cancel()
+                        get_task = None
+                        armed = deadline if began is None else max(deadline - waited, 0.0)
+                        continue
+                    get_task.cancel()
+                    logger.info(
+                        "first_chunk_timeout: session=%s model=%s waited=%.1fs",
+                        self.audit_context.get("session_id") or "-",
+                        self.model,
+                        waited,
+                    )
+                    raise FirstChunkTimeout(
+                        f"{self.model} accepted the request but sent nothing for "
+                        f"{waited:.0f}s — the connection looks wedged. "
+                        f"({_FIRST_CHUNK_TIMEOUT_ENV})"
+                    )
                 get_task.cancel()
                 if self._cancel.is_set():
                     return  # interrupted — the producer exits on its own next chunk

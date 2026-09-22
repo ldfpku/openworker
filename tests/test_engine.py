@@ -11,13 +11,17 @@ from types import SimpleNamespace
 import aisuite as ai
 import pytest
 from coworker.engine import (
+    _FIRST_CHUNK_TIMEOUT_ENV,
+    _LONG_ATTEMPT_ENV,
     _RETRY_AFTER_CAP,
     _RETRY_JITTER,
     _TURN_RETRY_CAP,
     ApprovalOutcome,
+    FirstChunkTimeout,
     PermissionRequest,
     StreamBridgeError,
     TurnEngine,
+    _first_chunk_timeout,
     _model_retries,
     _retry_delay,
 )
@@ -31,6 +35,7 @@ from coworker.providers import (
     StreamChunk,
     ToolCall,
 )
+from coworker.providers.errors import is_transient_model_error
 from coworker.tools import ToolRegistry
 
 
@@ -1976,6 +1981,419 @@ def test_a_producer_abandoned_on_a_closed_loop_lets_go_quietly(tmp_path):
     # threading.excepthook.
     assert thread_errors == []
     assert parked.produced == 2  # the chunk already on the wire, and nothing after it
+
+
+# -- the first-chunk deadline ----------------------------------------------------------
+
+# Short enough that a test spends a tenth of a second on it, long enough that scheduling
+# a thread and waking the loop on a busy machine can't trip it by accident.
+_TEST_DEADLINE = 0.1
+# How long a "it must NOT give up" test waits before believing the bridge. Several
+# deadlines' worth of real time, so a wrongly-armed deadline has fired well before it.
+_PAST_THE_DEADLINE = _TEST_DEADLINE * 4
+
+
+def _sse_reasoning_chunk(reasoning):
+    """A wire chunk carrying thinking text and nothing else — `reasoning_content` is the
+    spelling `_delta_reasoning` reads for most compat vendors (openai_provider.py)."""
+    delta = SimpleNamespace(content=None, tool_calls=None, reasoning_content=reasoning)
+    return SimpleNamespace(choices=[SimpleNamespace(delta=delta, finish_reason=None)])
+
+
+class _SilentStream:
+    """A wire that sends `lead`, then goes quiet until `release` is set (or `hold` runs
+    out), then sends `rest`.
+
+    With an empty `lead` this is the failure the deadline exists for: the request was
+    accepted and nothing at all came back. The wait is BOUNDED, unlike `_GatedStream`'s
+    gate, because these producers are not always freed by the path under test —
+    `asyncio.run()` joins the default executor as it exits, and a producer parked with no
+    timeout would wedge that join instead of failing a test. `hold` is a failure bound
+    only; every test below frees it deliberately.
+    """
+
+    def __init__(self, *, lead=(), rest=(), hold=5.0):
+        self.lead = list(lead)
+        self.rest = list(rest)
+        self.hold = hold
+        self.release = threading.Event()
+        self.quiet = threading.Event()  # the producer has reached the silence
+        self.produced = 0
+
+    def __iter__(self):
+        for chunk in self.lead:
+            self.produced += 1
+            yield chunk
+        self.quiet.set()
+        self.release.wait(self.hold)
+        for chunk in self.rest:
+            self.produced += 1
+            yield chunk
+
+
+def _deadline_engine(tmp_path, *scripts, retries=0, deadline=_TEST_DEADLINE, asked=True):
+    """An engine over scripted wires, with the first-chunk deadline turned down to a tenth
+    of a second. The knob is set on the instance, which is the seam the constructor's
+    `_first_chunk_timeout()` exists to leave open — the parser itself is covered below.
+
+    `asked` seeds the user turn that a bare `_astream` call needs; the tests that go
+    through `run()` pass False, because `run` appends it itself.
+    """
+    provider, calls = _counting_stream_provider(*scripts)
+    engine = _stream_engine(tmp_path, provider, retries=retries)
+    engine.first_chunk_timeout = deadline
+    if asked:
+        engine.messages.append({"role": "user", "content": "hi"})
+    return engine, calls
+
+
+def test_a_stream_that_sends_nothing_at_all_gives_up_on_the_deadline(tmp_path):
+    """The gap the bridge had no answer for: the provider accepted the request and then
+    said nothing. Before this the bridge waited on the queue with no timeout at all, so
+    the turn sat on `turn_start` for as long as the HTTP layer underneath took to notice —
+    up to ~1800s on the OpenAI/Anthropic SDK defaults, and forever on Gemini."""
+    script = _SilentStream()
+    engine, _ = _deadline_engine(tmp_path, script)
+
+    async def _wait_it_out():
+        try:
+            with pytest.raises(FirstChunkTimeout) as raised:
+                async for _ in engine._astream():
+                    pass
+            return str(raised.value)
+        finally:
+            script.release.set()
+
+    message = asyncio.run(_wait_it_out())
+
+    # Named for what it is, and NOT reported as the bridge's other silent-queue outcome:
+    # `StreamBridgeError` means "a second turn was started on this engine", which is a
+    # different bug, with a different fix, and no automatic retry.
+    assert "accepted the request but sent nothing" in message
+    assert _FIRST_CHUNK_TIMEOUT_ENV in message
+    assert script.produced == 0
+
+
+def test_the_first_chunk_disarms_the_deadline(tmp_path):
+    """The deadline covers the pre-first-token wait only. Once the stream has started,
+    the gaps between chunks are not bounded by this (and a model that thinks for four
+    minutes between two deltas must not be killed as "wedged")."""
+    script = _SilentStream(
+        lead=[_sse_chunk(content="hello")], rest=[_sse_chunk(finish="stop")]
+    )
+    engine, _ = _deadline_engine(tmp_path, script)
+
+    async def _one_chunk_then_silence():
+        stream = engine._astream()
+        try:
+            first = await stream.__anext__()
+            assert first.text_delta == "hello"
+            assert script.quiet.wait(5)  # the wire really is silent now
+            step = asyncio.ensure_future(stream.__anext__())
+            await asyncio.sleep(_PAST_THE_DEADLINE)
+            still_waiting = not step.done()
+            script.release.set()
+            rest = [await step]
+            async for chunk in stream:
+                rest.append(chunk)
+            return still_waiting, rest
+        finally:
+            script.release.set()
+
+    still_waiting, rest = asyncio.run(_one_chunk_then_silence())
+
+    assert still_waiting, "the deadline was still armed after the first chunk arrived"
+    assert rest[-1].turn is not None and rest[-1].turn.text == "hello"
+
+
+def test_thinking_text_counts_as_a_first_chunk(tmp_path):
+    """A model that thinks before it writes is answering, not wedged — the first chunk is
+    whatever arrives first, and for a reasoning model that is a `reasoning_delta`."""
+    script = _SilentStream(
+        lead=[_sse_reasoning_chunk("let me think")],
+        rest=[_sse_chunk(content="done"), _sse_chunk(finish="stop")],
+    )
+    engine, _ = _deadline_engine(tmp_path, script)
+
+    async def _think_then_go_quiet():
+        stream = engine._astream()
+        try:
+            first = await stream.__anext__()
+            assert first.reasoning_delta == "let me think"
+            assert first.text_delta is None
+            assert script.quiet.wait(5)
+            step = asyncio.ensure_future(stream.__anext__())
+            await asyncio.sleep(_PAST_THE_DEADLINE)
+            still_waiting = not step.done()
+            script.release.set()
+            await step
+            async for _ in stream:
+                pass
+            return still_waiting
+        finally:
+            script.release.set()
+
+    assert asyncio.run(
+        _think_then_go_quiet()
+    ), "thinking text did not disarm the deadline"
+
+
+def test_a_stop_before_the_deadline_is_still_read_as_a_stop(tmp_path):
+    """The deadline joins the Stop race; it must not take it over. A user who gives up on
+    a silent stream first gets the ordinary quiet return, not an error."""
+    script = _SilentStream(hold=10.0)
+    engine, _ = _deadline_engine(tmp_path, script, deadline=10.0)
+
+    async def _stop_while_it_is_silent():
+        stream = engine._astream()
+        try:
+            step = asyncio.ensure_future(stream.__anext__())
+            assert await _settle_until_the_bridge_waits_on_the_stop_flag(engine)
+            engine.request_interrupt()
+            with pytest.raises(StopAsyncIteration):
+                await step
+        finally:
+            script.release.set()
+
+    asyncio.run(_stop_while_it_is_silent())
+
+
+def test_the_deadline_can_be_switched_off(tmp_path):
+    """`OPENWORKER_FIRST_CHUNK_TIMEOUT=off` restores the old behaviour exactly — for a
+    self-hosted endpoint whose queue really can hold a request for many minutes."""
+    script = _SilentStream(rest=[_sse_chunk(content="slow"), _sse_chunk(finish="stop")])
+    engine, _ = _deadline_engine(tmp_path, script, deadline=None)
+
+    async def _no_deadline_at_all():
+        stream = engine._astream()
+        try:
+            step = asyncio.ensure_future(stream.__anext__())
+            # Not `quiet.wait()`: a blocking wait here would hold the loop that has yet to
+            # START the bridge, so the producer would never run and the wait would time
+            # out. Sleeping lets both run, and by the far side the wire is provably quiet.
+            await asyncio.sleep(_PAST_THE_DEADLINE)
+            assert script.quiet.is_set()
+            still_waiting = not step.done()
+            script.release.set()
+            chunks = [await step]
+            async for chunk in stream:
+                chunks.append(chunk)
+            return still_waiting, chunks
+        finally:
+            script.release.set()
+
+    still_waiting, chunks = asyncio.run(_no_deadline_at_all())
+
+    assert still_waiting, "a switched-off deadline still gave up"
+    assert chunks[-1].turn is not None and chunks[-1].turn.text == "slow"
+
+
+def test_an_ordinary_stream_is_untouched_by_the_deadline(tmp_path):
+    """The whole normal path, with the deadline armed at 50ms: a stream that answers
+    promptly must not notice it exists."""
+    engine, calls = _deadline_engine(
+        tmp_path,
+        [_sse_chunk(content="hi there"), _sse_chunk(finish="stop")],
+        asked=False,
+    )
+
+    events = _collect(engine, "say hi")
+
+    assert next(ev for ev in events if ev.type == EventType.TURN_END).data["status"] == (
+        "completed"
+    )
+    assert [m["content"] for m in engine.messages if m.get("role") == "assistant"] == [
+        "hi there"
+    ]
+    assert len(calls) == 1  # no retry papered over anything
+
+
+def test_a_producer_still_queued_in_the_thread_pool_is_not_timed(tmp_path):
+    """The deadline is armed by the PRODUCER, not by `_astream` starting.
+
+    `loop.run_in_executor(None, …)` uses the default pool, shared with
+    `_handle_tool_calls`' `to_thread` and dozens of `to_thread` calls in `server/`. Under
+    concurrency the producer can sit in that pool's queue for an unbounded time without
+    the provider having been asked for anything yet. Timing that as provider silence
+    would invent a timeout and retry into the very queue that caused it, so the clock
+    only starts once the producer says it has entered `provider.stream()`.
+
+    One worker, deliberately occupied, is that state made deterministic.
+    """
+    script = _SilentStream(
+        rest=[_sse_chunk(content="eventually"), _sse_chunk(finish="stop")]
+    )
+    engine, _ = _deadline_engine(tmp_path, script)
+    occupied = threading.Event()
+    free_the_pool = threading.Event()
+
+    def _hog():
+        occupied.set()
+        free_the_pool.wait(10)
+
+    async def _queued_behind_a_busy_pool():
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+        hog = loop.run_in_executor(None, _hog)
+        try:
+            assert occupied.wait(5)
+            stream = engine._astream()
+            step = asyncio.ensure_future(stream.__anext__())
+            # Several deadlines' worth of real time with the producer not yet running.
+            await asyncio.sleep(_PAST_THE_DEADLINE)
+            still_waiting = not step.done()
+            free_the_pool.set()
+            script.release.set()
+            chunks = [await step]
+            async for chunk in stream:
+                chunks.append(chunk)
+            return still_waiting, chunks
+        finally:
+            free_the_pool.set()
+            script.release.set()
+            await hog
+
+    still_waiting, chunks = asyncio.run(_queued_behind_a_busy_pool())
+
+    assert still_waiting, "a producer that had not started yet was timed as if it had"
+    assert chunks[-1].turn is not None and chunks[-1].turn.text == "eventually"
+
+
+def _release_silent_scripts_as_the_turn_reports(engine, user_input, scripts):
+    """Run one whole turn, freeing stalled producers ONE AT A TIME — the oldest each time
+    the engine says it has given up on an attempt (the retry announcement, or the final
+    error), in the order the scripts are handed to the wire.
+
+    Freeing them from outside would race the deadline, freeing them all at once would let
+    the NEXT attempt answer instantly (with an empty stream, since a stalled script has
+    nothing queued behind its silence), and leaving them parked would make
+    `asyncio.run()`'s executor shutdown wait out every `hold`.
+    """
+    pending = list(scripts)
+
+    async def _one_turn():
+        events = []
+        try:
+            async for event in engine.run(user_input):
+                events.append(event)
+                if event.type in (EventType.TURN_RETRY, EventType.ERROR) and pending:
+                    pending.pop(0).release.set()
+        finally:
+            for script in scripts:
+                script.release.set()
+        return events
+
+    return asyncio.run(_one_turn())
+
+
+def test_a_first_chunk_timeout_is_transient_to_the_retry_gate():
+    """The one line that makes the rest of this free: `FirstChunkTimeout` subclasses
+    `TimeoutError`, which is an isinstance arm of `is_transient_model_error`. So v0.6.5's
+    bounded automatic retry picks it up with no change to the retry code, the
+    `turn_retry` reasons, or the GUI's localized sentences."""
+    assert is_transient_model_error(
+        FirstChunkTimeout(
+            "gpt-5.5 accepted the request but sent nothing for 120s — the connection "
+            f"looks wedged. ({_FIRST_CHUNK_TIMEOUT_ENV})"
+        )
+    )
+
+
+def test_a_first_chunk_timeout_is_retried_and_the_retry_can_answer(tmp_path):
+    """End to end: a wedged call is re-sent rather than handed to the user as a Retry
+    button, and it arrives as an ordinary `reason="transient"` failure."""
+    stalled = _SilentStream()
+    engine, calls = _deadline_engine(
+        tmp_path,
+        stalled,
+        [_sse_chunk(content="second time lucky"), _sse_chunk(finish="stop")],
+        retries=1,
+        asked=False,
+    )
+
+    events = _release_silent_scripts_as_the_turn_reports(engine, "hi", [stalled])
+
+    retries = [ev for ev in events if ev.type == EventType.TURN_RETRY]
+    assert [ev.data["reason"] for ev in retries] == ["transient"]
+    assert next(ev for ev in events if ev.type == EventType.TURN_END).data["status"] == (
+        "completed"
+    )
+    assert [m["content"] for m in engine.messages if m.get("role") == "assistant"] == [
+        "second time lucky"
+    ]
+    assert len(calls) == 2
+
+
+def test_a_first_chunk_timeout_that_keeps_happening_ends_the_turn_on_an_error(tmp_path):
+    """The budget is bounded: when every attempt wedges, the turn ends on an error the
+    user can act on, not on a fourth silent wait."""
+    stalled = [_SilentStream(), _SilentStream()]
+    engine, calls = _deadline_engine(tmp_path, *stalled, retries=1, asked=False)
+
+    events = _release_silent_scripts_as_the_turn_reports(engine, "hi", stalled)
+
+    assert len([ev for ev in events if ev.type == EventType.TURN_RETRY]) == 1
+    error = next(ev for ev in events if ev.type == EventType.ERROR)
+    assert error.data["error_type"] == "FirstChunkTimeout"
+    assert "accepted the request but sent nothing" in error.data["error"]
+    assert len(calls) == 2
+    assert engine._tail_is_retriable_error()
+
+
+def test_a_first_chunk_timeout_is_only_worth_one_retry_whatever_the_clock_says(
+    tmp_path, monkeypatch
+):
+    """The budget clamp is carried by the caller, not by two defaults happening to line
+    up. The deadline defaults to 120s and `_LONG_ATTEMPT_DEFAULT` is 90s, so the "long
+    attempt" ceiling would normally apply on elapsed time alone — but
+    `OPENWORKER_MODEL_RETRY_LONG_ATTEMPT_SECONDS` can be raised past the deadline, and
+    then the worst case would be the full budget times a full deadline each."""
+    monkeypatch.setenv(_LONG_ATTEMPT_ENV, "600")
+    engine = _default_engine(tmp_path)
+    engine.model_retries = 3
+
+    assert engine._retry_budget("transient", elapsed=1.0) == 3
+    assert engine._retry_budget("transient", elapsed=1.0, long_attempt=True) == 1
+
+
+def test_the_clamp_holds_through_a_real_turn(tmp_path, monkeypatch):
+    """…and the call site really passes it: three retries configured, the clock ceiling
+    lifted out of the way, and the wedged call still gets exactly one re-send."""
+    monkeypatch.setenv(_LONG_ATTEMPT_ENV, "600")
+    stalled = [_SilentStream(), _SilentStream(), _SilentStream(), _SilentStream()]
+    engine, calls = _deadline_engine(tmp_path, *stalled, retries=3, asked=False)
+
+    events = _release_silent_scripts_as_the_turn_reports(engine, "hi", stalled)
+
+    assert len([ev for ev in events if ev.type == EventType.TURN_RETRY]) == 1
+    assert len(calls) == 2  # the original and one retry, not the configured four
+    assert next(ev for ev in events if ev.type == EventType.ERROR)
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        (None, 120.0),  # unset
+        ("", 120.0),
+        ("   ", 120.0),
+        ("off", None),
+        ("OFF", None),
+        ("none", None),
+        ("Never", None),
+        ("0", 120.0),  # NOT honoured — "wait forever" has to be spelled out
+        ("-5", 120.0),
+        ("banana", 120.0),
+        ("30", 30.0),
+        ("  45.5  ", 45.5),
+    ],
+)
+def test_the_first_chunk_deadline_knob(monkeypatch, raw, expected):
+    if raw is None:
+        monkeypatch.delenv(_FIRST_CHUNK_TIMEOUT_ENV, raising=False)
+    else:
+        monkeypatch.setenv(_FIRST_CHUNK_TIMEOUT_ENV, raw)
+
+    assert _first_chunk_timeout() == expected
 
 
 # -- the stop flag, which outlives any one event loop ----------------------------------
