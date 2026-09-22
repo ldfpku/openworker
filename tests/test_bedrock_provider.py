@@ -221,6 +221,104 @@ def test_converse_stream_accumulates_text_and_tool():
     assert final.truncated is False
 
 
+# -- explicit close of the wire stream ----------------------------------------------
+
+
+class _CountingEventStream:
+    """A fake `response["stream"]` with the shape `close_stream` cares about: iterable,
+    with a `.close()` that counts calls — and, optionally, one that raises mid-iteration.
+
+    `_FakeConverse.converse_stream` above wraps its events in `iter(...)` before handing
+    them back, which is realistic for `converse()` but loses the object identity
+    `close_stream` needs to reach — botocore's real `converse_stream()` instead returns
+    `{"stream": <EventStream>}`, an object with its own `.close()` (see
+    bedrock_provider.stream()'s comment on `events = response.get("stream")`), so this
+    fake mirrors THAT shape, not `_FakeConverse`'s.
+    """
+
+    def __init__(self, events, raise_at=None, exc=None):
+        self._events = list(events)
+        self.raise_at = raise_at
+        self.exc = exc
+        self.closed = 0
+
+    def __iter__(self):
+        index = 0
+        for event in self._events:
+            if self.raise_at is not None and index == self.raise_at:
+                raise self.exc
+            yield event
+            index += 1
+        if self.raise_at is not None and self.raise_at == index:
+            raise self.exc
+
+    def close(self):
+        self.closed += 1
+
+
+class _CountingStreamConverse:
+    """`converse_stream(**kwargs)` returns `{"stream": wire}` — `wire` itself, the object
+    `close_stream(events)` in `stream()` is meant to close."""
+
+    def __init__(self, wire):
+        self._wire = wire
+
+    def converse_stream(self, **kwargs):
+        return {"stream": self._wire}
+
+
+def test_stream_closes_the_wire_when_the_consumer_leaves_early():
+    wire = _CountingEventStream(
+        [
+            {"contentBlockDelta": {"delta": {"text": "a"}, "contentBlockIndex": 0}},
+            {"contentBlockDelta": {"delta": {"text": "b"}, "contentBlockIndex": 0}},
+        ]
+    )
+    gen = _BedrockConverseClient(client=_CountingStreamConverse(wire)).stream(
+        model="m", messages=[{"role": "user", "content": "x"}]
+    )
+    first = next(gen)
+    assert first.text_delta == "a"
+    assert wire.closed == 0
+    gen.close()  # what engine._astream's producer triggers on a Stop
+    assert wire.closed == 1
+
+
+def test_stream_closes_the_wire_on_a_normal_finish():
+    wire = _CountingEventStream(
+        [
+            {"contentBlockDelta": {"delta": {"text": "a"}, "contentBlockIndex": 0}},
+            {"messageStop": {"stopReason": "end_turn"}},
+        ]
+    )
+    chunks = list(
+        _BedrockConverseClient(client=_CountingStreamConverse(wire)).stream(
+            model="m", messages=[{"role": "user", "content": "x"}]
+        )
+    )
+    assert chunks[-1].turn.text == "a"
+    assert wire.closed == 1
+
+
+def test_stream_closes_the_wire_and_still_raises_the_real_error_mid_stream():
+    """The wire raising mid-iteration must reach the caller exactly as-is — closing it in
+    `finally` must never swallow or replace that exception."""
+    boom = RuntimeError("boom")
+    wire = _CountingEventStream(
+        [{"contentBlockDelta": {"delta": {"text": "a"}, "contentBlockIndex": 0}}],
+        raise_at=1,
+        exc=boom,
+    )
+    gen = _BedrockConverseClient(client=_CountingStreamConverse(wire)).stream(
+        model="m", messages=[{"role": "user", "content": "x"}]
+    )
+    assert next(gen).text_delta == "a"
+    with pytest.raises(RuntimeError) as err:
+        next(gen)
+    assert err.value is boom
+    assert wire.closed == 1
+
+
 def test_a_guardrail_stop_is_not_reported_as_a_plain_stop():
     """`guardrail_intervened` / `content_filtered` map to `content_filter`, never `stop`:
     the engine re-runs an empty turn that merely stopped, and re-running a blocked one
