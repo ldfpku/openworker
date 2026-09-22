@@ -8558,8 +8558,12 @@ def _run_outcome_from_transcript(
     (`test_retry_then_token_gate_reaches_the_no_reply_branch`). Two more ways in:
     `run_turn` contains a failure of its `_append_notice` call and only logs it (read
     from app.py, not driven), and a caller driving `engine.run()` directly gets no
-    notice at all when an exception escapes it
-    (`test_manual_run_unhandled_crash_before_reply_is_error_not_ok` pins that shape).
+    DECIDING notice for the crash itself when an exception escapes it — pinned only for
+    a crash before any reply, where the transcript ends on the plain `user` message with
+    no notice of any kind before it
+    (`test_manual_run_unhandled_crash_before_reply_is_error_not_ok`); an escape after an
+    earlier `turn_retry` or `reviewer_paused` in that same turn would still leave that
+    bookkeeping notice trailing the prompt, not driven here.
 
     A `user` tail by itself proves nothing: steering (`TurnEngine.queue_steering`) is
     appended as a `user` message after a reply or a tool round, and when the iteration
