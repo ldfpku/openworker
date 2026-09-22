@@ -665,6 +665,94 @@ def test_stream_requests_stream_flag():
     assert fake.kwargs["stream"] is True
 
 
+# -- explicit close of the wire stream --------------------------------------------------
+
+
+class _CountingEvents:
+    """A fake wire stream with the shape `close_stream` cares about: iterable, with a
+    `.close()` that counts calls — and, optionally, one that raises mid-iteration."""
+
+    def __init__(self, events, raise_at=None, exc=None):
+        self._events = list(events)
+        self.raise_at = raise_at
+        self.exc = exc
+        self.closed = 0
+
+    def __iter__(self):
+        index = 0
+        for event in self._events:
+            if self.raise_at is not None and index == self.raise_at:
+                raise self.exc
+            yield event
+            index += 1
+        if self.raise_at is not None and self.raise_at == index:
+            raise self.exc
+
+    def close(self):
+        self.closed += 1
+
+
+class _CountingEventsClient:
+    """`responses.create(**kwargs)` hands back `wire` itself — the object
+    `close_stream(events)` in `stream()` is meant to close — not `iter(wire)`."""
+
+    def __init__(self, wire):
+        self.responses = SimpleNamespace(create=lambda **kw: wire)
+
+
+def test_stream_closes_the_wire_when_the_consumer_leaves_early():
+    wire = _CountingEvents(
+        [
+            SimpleNamespace(type="response.output_text.delta", delta="a"),
+            SimpleNamespace(type="response.output_text.delta", delta="b"),
+        ]
+    )
+    gen = OpenAIResponsesProvider(client=_CountingEventsClient(wire)).stream(
+        model="m", messages=[{"role": "user", "content": "x"}]
+    )
+    first = next(gen)
+    assert first.text_delta == "a"
+    assert wire.closed == 0
+    gen.close()  # what engine._astream's producer triggers on a Stop
+    assert wire.closed == 1
+
+
+def test_stream_closes_the_wire_on_a_normal_finish():
+    final = _response([_message_item("a")])
+    wire = _CountingEvents(
+        [
+            SimpleNamespace(type="response.output_text.delta", delta="a"),
+            SimpleNamespace(type="response.completed", response=final),
+        ]
+    )
+    chunks = list(
+        OpenAIResponsesProvider(client=_CountingEventsClient(wire)).stream(
+            model="m", messages=[{"role": "user", "content": "x"}]
+        )
+    )
+    assert chunks[-1].turn.text == "a"
+    assert wire.closed == 1
+
+
+def test_stream_closes_the_wire_and_still_raises_the_real_error_mid_stream():
+    """The wire raising mid-iteration must reach the caller exactly as-is — closing it in
+    `finally` must never swallow or replace that exception."""
+    boom = RuntimeError("boom")
+    wire = _CountingEvents(
+        [SimpleNamespace(type="response.output_text.delta", delta="a")],
+        raise_at=1,
+        exc=boom,
+    )
+    gen = OpenAIResponsesProvider(client=_CountingEventsClient(wire)).stream(
+        model="m", messages=[{"role": "user", "content": "x"}]
+    )
+    assert next(gen).text_delta == "a"
+    with pytest.raises(RuntimeError) as err:
+        next(gen)
+    assert err.value is boom
+    assert wire.closed == 1
+
+
 def test_an_incomplete_response_names_its_own_cause():
     """`max_output_tokens` and `content_filter` are different failures with different
     cures, and the engine acts on the difference (it re-runs one and never the other), so
