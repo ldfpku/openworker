@@ -479,6 +479,89 @@ def test_normal_stream_never_claims_it_was_cut_off():
     assert chunks[-1].turn.finish_reason == "stop"
 
 
+# -- explicit close of the wire stream (fake object) -----------------------------------
+
+
+class _CountingEvents:
+    """A fake wire stream with the shape `close_stream` cares about: iterable, with a
+    `.close()` that counts calls — and, optionally, one that raises mid-iteration."""
+
+    def __init__(self, events, raise_at=None, exc=None):
+        self._events = list(events)
+        self.raise_at = raise_at
+        self.exc = exc
+        self.closed = 0
+
+    def __iter__(self):
+        index = 0
+        for event in self._events:
+            if self.raise_at is not None and index == self.raise_at:
+                raise self.exc
+            yield event
+            index += 1
+        if self.raise_at is not None and self.raise_at == index:
+            raise self.exc
+
+    def close(self):
+        self.closed += 1
+
+
+class _CountingEventsClient:
+    """`messages.create`/`beta.messages.create` hand back `wire` itself, the object
+    `close_stream(events)` is meant to close — not an `iter()`-wrapped copy of it."""
+
+    def __init__(self, wire):
+        self.messages = SimpleNamespace(create=lambda **kw: wire)
+        self.beta = SimpleNamespace(messages=SimpleNamespace(create=lambda **kw: wire))
+
+
+def test_stream_closes_the_wire_when_the_consumer_leaves_early():
+    wire = _CountingEvents(
+        [_delta(0, type="text_delta", text="a"), _delta(0, type="text_delta", text="b")]
+    )
+    gen = AnthropicProvider(client=_CountingEventsClient(wire)).stream(
+        model="m", messages=[{"role": "user", "content": "x"}]
+    )
+    first = next(gen)
+    assert first.text_delta == "a"
+    assert wire.closed == 0
+    gen.close()  # what engine._astream's producer triggers on a Stop
+    assert wire.closed == 1
+
+
+def test_stream_closes_the_wire_on_a_normal_finish():
+    wire = _CountingEvents(
+        [
+            _delta(0, type="text_delta", text="a"),
+            SimpleNamespace(
+                type="message_delta", delta=SimpleNamespace(stop_reason="end_turn")
+            ),
+        ]
+    )
+    chunks = list(
+        AnthropicProvider(client=_CountingEventsClient(wire)).stream(
+            model="m", messages=[{"role": "user", "content": "x"}]
+        )
+    )
+    assert chunks[-1].turn.text == "a"
+    assert wire.closed == 1
+
+
+def test_stream_closes_the_wire_and_still_raises_the_real_error_mid_stream():
+    """The wire raising mid-iteration must reach the caller exactly as-is — closing it in
+    `finally` must never swallow or replace that exception."""
+    boom = RuntimeError("boom")
+    wire = _CountingEvents([_delta(0, type="text_delta", text="a")], raise_at=1, exc=boom)
+    gen = AnthropicProvider(client=_CountingEventsClient(wire)).stream(
+        model="m", messages=[{"role": "user", "content": "x"}]
+    )
+    assert next(gen).text_delta == "a"
+    with pytest.raises(RuntimeError) as err:
+        next(gen)
+    assert err.value is boom
+    assert wire.closed == 1
+
+
 # -- registry / capabilities ----------------------------------------------------------
 
 
