@@ -28,6 +28,7 @@ import asyncio
 import logging
 
 from coworker.server.manager import SessionManager
+from coworker.testing.autotitle import autotitle_reply, is_autotitle_call
 from test_durable_resume import _run_until_pending, _text, _tool
 from test_durable_resume_busy_session import (
     _ChatOnlyScript,
@@ -395,11 +396,13 @@ async def test_stale_answer_notice_lands_after_the_later_prompt_is_done(
 
 class _FailingScript(_ChatOnlyScript):
     """`_ChatOnlyScript` whose scripted turn may be an exception: that chat call raises it
-    (a non-transient provider error, so the engine ends the turn on an `error` notice)."""
+    (a non-transient provider error, so the engine ends the turn on an `error` notice).
+    The auto-title call is diverted here, before the exception check, so it can never
+    pop a scripted exception meant for a chat call."""
 
     def complete(self, *, model, messages, tools=None, **settings):
-        if messages and "title chat sessions" in str(messages[0].get("content", "")):
-            return _text("Approved File Write")
+        if is_autotitle_call(messages):
+            return autotitle_reply("Approved File Write")
         upcoming = self._turns[0] if self._turns else None
         if isinstance(upcoming, Exception):
             self._turns.pop(0)

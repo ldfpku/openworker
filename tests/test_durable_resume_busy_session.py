@@ -31,6 +31,7 @@ from types import SimpleNamespace
 
 from coworker.server.manager import SessionManager
 from coworker.sessions import SessionRecord
+from coworker.testing.autotitle import autotitle_reply, is_autotitle_call
 from test_durable_resume import (
     ScriptedProvider,
     _final_assistant_texts,
@@ -67,11 +68,14 @@ async def _settle(mgr: SessionManager, *, timeout: float = 10.0) -> None:
 
 class _ChatOnlyScript(ScriptedProvider):
     """`ScriptedProvider`, except the post-turn auto-title call (every `mark_idle` can
-    fire one) is answered on the side instead of consuming the next scripted chat turn."""
+    fire one) is answered on the side instead of consuming the next scripted chat turn.
+    Since the shared recognizer (coworker/testing/autotitle.py) landed, `ScriptedProvider`
+    diverts that call itself, with the "small-talk" reply; this override keeps the reply
+    these tests were written and run against, a real title."""
 
     def complete(self, *, model, messages, tools=None, **settings):
-        if messages and "title chat sessions" in str(messages[0].get("content", "")):
-            return _text("Approved File Write")
+        if is_autotitle_call(messages):
+            return autotitle_reply("Approved File Write")
         return super().complete(model=model, messages=messages, tools=tools, **settings)
 
 
