@@ -8542,14 +8542,23 @@ def _run_outcome_from_transcript(
     notice at all when an exception escapes it
     (`test_manual_run_unhandled_crash_before_reply_is_error_not_ok` pins that shape).
 
-    A `user` tail by itself proves nothing: steering (`TurnEngine.queue_steering`, what
-    the user types while a turn runs) is appended as a `user` message after a reply or a
-    tool round, and when the iteration gate trips right after that the turn ends
-    normally (TURN_END `max_iterations_exceeded`) on `[user, assistant, tool, user]` —
-    that is a completed turn. Looking for ANY assistant message is enough because the
-    transcript passed in is a run's own session, created for that run, holding its
-    first turn: `finalize_manual_run` runs at that turn's `turn_done`, and
-    `_run_scheduled_task` judges its fresh engine right after its one turn.
+    A `user` tail by itself proves nothing: steering (`TurnEngine.queue_steering`) is
+    appended as a `user` message after a reply or a tool round, and when the iteration
+    gate trips right after that the turn ends normally (TURN_END
+    `max_iterations_exceeded`) on `[user, assistant, tool, user]` — that is a completed
+    turn. Steering is NOT what the user types in the app while a turn runs: the session
+    WS answers that with `input_rejected` and appends nothing
+    (`test_ws_allows_only_one_inflight_turn_per_session`, tests/test_server.py). Its one
+    caller is `deliver_to_session`, which steers when the session is already running: a
+    self-wake (`_resume_wake`), a connector delivery (`_dispatch_inbound`,
+    `_route_mention`), or a team path such as `steer_worker`. The case closest to "the
+    user typing mid-turn" is a message the user sends from a connected channel (a DM, a
+    tag) while the session is busy (read from those callers, not driven).
+
+    Looking for ANY assistant message is enough because the transcript passed in is a
+    run's own session, created for that run, holding its first turn:
+    `finalize_manual_run` runs at that turn's `turn_done`, and `_run_scheduled_task`
+    judges its fresh engine right after its one turn.
     """
     messages = messages or []
     for message in reversed(messages):

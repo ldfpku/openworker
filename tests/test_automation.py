@@ -998,8 +998,10 @@ async def test_manual_run_unhandled_crash_before_reply_is_error_not_ok(
 async def test_manual_run_steered_turn_ending_on_iteration_gate_is_ok(
     tmp_path, monkeypatch
 ):
-    """Steering the user types mid-turn (`engine.queue_steering`) is appended as a
-    `user` message after the tool round. When `max_iterations` runs out right then, the
+    """Steering (`engine.queue_steering` — what `deliver_to_session` does with a
+    self-wake, a channel message or a team steer that reaches a busy session; a message
+    typed in the app mid-turn is rejected by the WS instead) is appended as a `user`
+    message after the tool round. When `max_iterations` runs out right then, the
     turn still ends NORMALLY (TURN_END `max_iterations_exceeded`) — on
     `[user, assistant, tool, user]`. The no-reply fallback used to key on the `user`
     tail alone and recorded this as an error "without any response"."""
