@@ -2011,12 +2011,25 @@ class TurnEngine:
         The done-callback must NOT touch conversation state. By the time it runs the turn
         has ended, `_abandoned_tool` has already written this call's tool result, and a
         late `_record_result` would append a SECOND result for the same tool_call_id (and
-        record artifacts for a call the user stopped). It also has to survive its loop
-        being gone: `explore` closes its child loop without waiting for the thread
-        (tools/subagent.py). That case needs no code here — a closed loop simply never
-        runs the callback (`asyncio.futures._call_set_state` drops the completion) — which
-        is why the counter below can undercount on that path and the whole body is
-        wrapped anyway.
+        record artifacts for a call the user stopped).
+
+        It also fires in a shape where the thread is NOT over, so nothing below may assume
+        it is. A loop shutting down with this task still pending CANCELS it first:
+        `explore`'s runner cancels every leftover task and gathers them on the still-live
+        loop before closing it (`_cancel_leftover_tasks`, tools/subagent.py). Measured
+        2026-09-22 on this branch (scratchpad probe, since deleted; pinned by
+        `test_a_torn_down_abandoned_tool_is_not_logged_as_finished`): the callback ran
+        during that teardown with `fut.cancelled()` true, and the tool body went on for
+        another second. Corrected here, because the branch's first version of this
+        docstring said a closed loop covered that case — it does not, cancellation gets
+        there first. Three consequences, accepted rather than fixed: the live counter is
+        given back early, the elapsed time stops at the cancellation instead of at the
+        thread's end, and `_tool_started_at` may be popped before the thread stamps it.
+
+        A loop that is already CLOSED is the third shape and runs no callback at all
+        (`asyncio.futures._call_set_state` returns early on `dest_loop.is_closed()` — read
+        in this venv's CPython 3.13); there the counter is never given back. Between them
+        that is why the whole body is wrapped and why the counter is only an indication.
         """
         session = self.audit_context.get("session_id") or "-"
         started = self._tool_started_at.get(tool_call.id)
@@ -2043,23 +2056,40 @@ class TurnEngine:
                     _abandoned_live -= 1
                 detail = _abandoned_outcome(fut)
                 elapsed = (time.time() - started) if started is not None else None
-                logger.warning(
-                    "session %s: abandoned tool %s finished after %s with nobody "
-                    "waiting; its result (%s) was discarded",
-                    session,
-                    tool_call.name,
-                    f"{elapsed:.1f}s" if elapsed is not None else "an unknown time",
-                    detail,
-                )
+                age = f"{elapsed:.1f}s" if elapsed is not None else "an unknown time"
+                if fut.cancelled():
+                    # The loop is being torn down under a thread that is still running.
+                    # Saying "finished" here would be false, and `age` measures only up to
+                    # the cancellation.
+                    logger.warning(
+                        "session %s: abandoned tool %s was let go %s in, with its thread "
+                        "still running; whatever it returns is discarded unread",
+                        session,
+                        tool_call.name,
+                        age,
+                    )
+                    reason = "let go while still running; its loop was shutting down"
+                else:
+                    logger.warning(
+                        "session %s: abandoned tool %s finished after %s with nobody "
+                        "waiting; its result (%s) was discarded",
+                        session,
+                        tool_call.name,
+                        age,
+                        detail,
+                    )
+                    reason = f"finished after the turn stopped waiting; {detail}"
                 self._audit(
                     tool_call,
                     stage="abandoned_exit",
                     status="abandoned",
-                    reason=f"finished after the turn stopped waiting; {detail}",
+                    reason=reason,
                 )
                 # `_execute_sync` stamps `_tool_started_at` from inside the thread, so the
-                # stamp can land AFTER `_abandoned_tool` popped it. The body has finished
-                # by here, so this is the pop that is guaranteed to find it.
+                # stamp can land AFTER `_abandoned_tool` popped it. Where the tool really
+                # finished, this is the pop guaranteed to find it; on the cancelled path
+                # the thread may stamp it after this runs, and that one entry is left
+                # behind on an engine that is being torn down with its loop anyway.
                 self._tool_started_at.pop(tool_call.id, None)
             except Exception:  # pragma: no cover - a callback must never raise on the loop
                 pass

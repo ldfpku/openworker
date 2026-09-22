@@ -27,6 +27,7 @@ from coworker.providers import (
 )
 from coworker.risk import RiskClass, classify
 from coworker.tools import ToolRegistry
+from coworker.tools.subagent import _run_without_joining_executor
 
 
 class EndlessStreamProvider(ProviderClient):
@@ -1084,3 +1085,54 @@ def test_explore_is_stopped_for_real_rather_than_abandoned(tmp_path):
     call = ToolCall(id="c0", name="explore", arguments={"task": "x"})
     assert classify(call.name, registry.get("explore").metadata) is RiskClass.READ
     assert engine._abandonable(call) is False
+
+
+def test_a_torn_down_abandoned_tool_is_not_logged_as_finished(tmp_path, caplog):
+    """The done-callback's second shape, and the reason it may not assume the thread is
+    over. `explore` runs its child turn on a loop of its own and tears it down the way
+    `asyncio.run` does — cancel the leftover tasks, then gather them, both while the loop
+    is still ALIVE (`_cancel_leftover_tasks`, tools/subagent.py). So the callback of an
+    abandoned tool fires there with the thread still running, and the line it logs must
+    not say the tool finished.
+
+    This is the case the first version of this branch got wrong twice over: it said a
+    CLOSED loop would swallow the callback (cancellation reaches it first) and it printed
+    "finished after 0.0s" about a thread that ran on for another second.
+    """
+    registry = ToolRegistry()
+    started, release, body_done = (
+        threading.Event(),
+        threading.Event(),
+        threading.Event(),
+    )
+
+    def slow_read():
+        """Still running when Stop lands, and still running when the loop goes away."""
+        started.set()
+        release.wait(10)
+        body_done.set()
+        return {"rows": 1}
+
+    registry.register(slow_read)
+    engine = _run_tool_engine(tmp_path, registry, [("slow_read", {})])
+
+    async def turn():
+        _stop_once_started(engine, started)
+        async for _ in engine.run("go"):
+            pass
+
+    try:
+        with caplog.at_level(logging.WARNING, logger="coworker.engine"):
+            _run_without_joining_executor(turn())
+            outlived = not body_done.is_set()
+    finally:
+        release.set()  # never leave the pinned worker thread behind
+    assert body_done.wait(10)
+
+    assert outlived, "this test only means anything if the thread outlives the loop"
+    lines = [
+        r.getMessage() for r in caplog.records if "abandoned tool slow_read" in r.getMessage()
+    ]
+    assert len(lines) == 1, lines
+    assert "still running" in lines[0], lines[0]
+    assert "finished" not in lines[0], lines[0]
