@@ -32,6 +32,7 @@ from .base import (
     StreamChunk,
     TokenUsage,
     ToolCall,
+    close_stream,
 )
 from .capabilities import capabilities_for
 
@@ -630,47 +631,57 @@ class GeminiProvider(ProviderClient):
             model=model, messages=messages, tools=tools, settings=settings
         )
         client = self._ensure_client()
+        # Named so `close_stream` has something to call: the SDK method itself returns a
+        # bare generator (no local name to close), unlike the openai/anthropic SDKs' Stream
+        # objects — here `.close()` is just the generator's own, not a real teardown gap
+        # (a plain generator's refcount hits zero, and it closes, as soon as this frame
+        # drops it — no reference cycle keeps it alive the way Stream's does). This is
+        # contract consistency across providers, not a fix for an observed leak here.
+        events = client.models.generate_content_stream(**kwargs)
 
-        text_parts: list[str] = []
-        thought_parts: list[str] = []
-        calls: list[ToolCall] = []
-        finish = None
-        text_sig: Optional[str] = None
-        call_sigs: list[Optional[str]] = []
-        usage: Optional[TokenUsage] = None
+        try:
+            text_parts: list[str] = []
+            thought_parts: list[str] = []
+            calls: list[ToolCall] = []
+            finish = None
+            text_sig: Optional[str] = None
+            call_sigs: list[Optional[str]] = []
+            usage: Optional[TokenUsage] = None
 
-        # Unlike Anthropic, function_call parts arrive whole (args are a complete dict per
-        # part), so there is no JSON accumulation — just collect parts across chunks.
-        for chunk in client.models.generate_content_stream(**kwargs):
-            # Counts are cumulative per chunk; the last one seen is the final total.
-            chunk_usage = _usage_from(getattr(chunk, "usage_metadata", None))
-            if chunk_usage is not None:
-                usage = chunk_usage
-            parsed = _parse_candidate(chunk)
-            for thought in parsed.thoughts:
-                thought_parts.append(thought)
-                yield StreamChunk(reasoning_delta=thought)
-            for text in parsed.texts:
-                text_parts.append(text)
-                yield StreamChunk(text_delta=text)
-            calls.extend(parsed.calls)
-            call_sigs.extend(parsed.call_sigs)
-            if parsed.text_sig:
-                text_sig = parsed.text_sig
-            if parsed.finish:
-                finish = parsed.finish
+            # Unlike Anthropic, function_call parts arrive whole (args are a complete dict
+            # per part), so there is no JSON accumulation — just collect parts across chunks.
+            for chunk in events:
+                # Counts are cumulative per chunk; the last one seen is the final total.
+                chunk_usage = _usage_from(getattr(chunk, "usage_metadata", None))
+                if chunk_usage is not None:
+                    usage = chunk_usage
+                parsed = _parse_candidate(chunk)
+                for thought in parsed.thoughts:
+                    thought_parts.append(thought)
+                    yield StreamChunk(reasoning_delta=thought)
+                for text in parsed.texts:
+                    text_parts.append(text)
+                    yield StreamChunk(text_delta=text)
+                calls.extend(parsed.calls)
+                call_sigs.extend(parsed.call_sigs)
+                if parsed.text_sig:
+                    text_sig = parsed.text_sig
+                if parsed.finish:
+                    finish = parsed.finish
 
-        tool_calls = [
-            ToolCall(id=f"call_{i}", name=c.name, arguments=c.arguments)
-            for i, c in enumerate(calls)
-        ]
-        yield StreamChunk(
-            turn=AssistantTurn(
-                text="".join(text_parts) or None,
-                tool_calls=tool_calls,
-                finish_reason=_map_finish(finish, bool(tool_calls)),
-                reasoning="".join(thought_parts) or None,
-                extras=_signature_extras(text_sig, call_sigs),
-                usage=usage,
+            tool_calls = [
+                ToolCall(id=f"call_{i}", name=c.name, arguments=c.arguments)
+                for i, c in enumerate(calls)
+            ]
+            yield StreamChunk(
+                turn=AssistantTurn(
+                    text="".join(text_parts) or None,
+                    tool_calls=tool_calls,
+                    finish_reason=_map_finish(finish, bool(tool_calls)),
+                    reasoning="".join(thought_parts) or None,
+                    extras=_signature_extras(text_sig, call_sigs),
+                    usage=usage,
+                )
             )
-        )
+        finally:
+            close_stream(events)
