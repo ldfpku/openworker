@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from coworker.providers import GeminiProvider, capabilities_for
@@ -409,7 +410,12 @@ def test_ensure_client_bounds_the_http_timeout():
     """google-genai 2.19.0 leaves the underlying httpx client at Timeout(timeout=None) —
     unbounded — unless HttpOptions.client_args/async_client_args sets one; a stalled relay
     or upstream connection would otherwise hang the request forever (verified directly
-    against the installed SDK during recon, both with and without this override)."""
+    against the installed SDK during recon, both with and without this override).
+
+    This is the client-level DEFAULT only. It is not, by itself, what bounds a real
+    request — see `test_ensure_client_bounds_the_effective_stream_request_timeout`
+    below, which exercises the actual wire request and is what proves a Gemini call
+    cannot hang forever."""
     # An explicit (non-relay) base_url sidesteps the relay-login check above, which is
     # irrelevant to what this test verifies.
     client = GeminiProvider(
@@ -421,6 +427,60 @@ def test_ensure_client_bounds_the_http_timeout():
     async_timeout = client._api_client._async_httpx_client.timeout
     assert async_timeout.read == 600.0
     assert async_timeout.connect == 10.0
+
+
+def test_ensure_client_bounds_the_effective_stream_request_timeout():
+    """The client-level default asserted above is NOT what bounds a real request.
+
+    google-genai 2.19.0's `_api_client._request_once` always passes an explicit
+    `timeout=` to httpx's `Client.build_request` (`http_request.timeout`, derived from
+    `HttpOptions.timeout`, which is `None` unless set) — and httpx 0.28's
+    `build_request` treats an explicit `timeout=None` as `Timeout(None)`, which
+    OVERRIDES the client's own configured default for that request. So
+    `client_args`/`async_client_args` alone (the previous test) leaves every real
+    request unbounded; only `HttpOptions.timeout` (a single scalar, in milliseconds)
+    reaches the wire.
+
+    This drives `models.generate_content_stream` — the same call `stream()` makes —
+    through a real `genai.Client` built by `_ensure_client()`, with only the outgoing
+    transport swapped for a `MockTransport` that records `request.extensions['timeout']`
+    (the dict httpx actually times the socket read against), and asserts that dict
+    directly instead of any client attribute. `_transport_for_url` is overridden rather
+    than `_transport` because httpx may route through proxy `_mounts` set from
+    `HTTPS_PROXY`/`NO_PROXY` env vars (`trust_env`); overriding the dispatch point
+    keeps this test independent of the running machine's proxy configuration.
+
+    Because `HttpOptions.timeout` is one scalar for the whole `httpx.Timeout`, connect
+    shares the 600s bound with read/write/pool on this path — there is no separate
+    short connect timeout here, unlike the client-level default in the previous test.
+    """
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["timeout"] = request.extensions.get("timeout")
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=(
+                b'data: {"candidates": [{"content": {"parts": [{"text": "hi"}], '
+                b'"role": "model"}, "finishReason": "STOP"}]}\n\n'
+            ),
+        )
+
+    transport = httpx.MockTransport(handler)
+    client = GeminiProvider(
+        api_key="AIza-x", base_url="https://generativelanguage.googleapis.com"
+    )._ensure_client()
+    client._api_client._httpx_client._transport_for_url = lambda url: transport
+
+    list(client.models.generate_content_stream(model="gemini-2.0-flash", contents="hi"))
+
+    assert captured["timeout"] == {
+        "connect": 600.0,
+        "read": 600.0,
+        "write": 600.0,
+        "pool": 600.0,
+    }
 
 
 # -- stream() ------------------------------------------------------------------------

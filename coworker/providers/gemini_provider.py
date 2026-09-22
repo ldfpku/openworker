@@ -558,23 +558,46 @@ class GeminiProvider(ProviderClient):
             # args: args['timeout'] = None`) — a stalled relay/upstream connection would
             # hang forever instead of erroring. This is a resource-exhaustion backstop,
             # not a user-facing turn time limit: 600s aligns with the analogous
-            # non-streaming guard in anthropic_provider._nonstreaming_timeout, and connect
-            # stays short so a dead network still fails fast.
+            # non-streaming guard in anthropic_provider._nonstreaming_timeout.
+            #
+            # Setting `client_args["timeout"]` alone does NOT bound requests, even though
+            # it looks like it should: every call `_api_client._request_once` makes goes
+            # through `self._httpx_client.build_request(..., timeout=http_request.timeout)`
+            # with an explicit (non-default) `timeout=` argument — `None` unless
+            # `HttpOptions.timeout` is set. httpx 0.28's `build_request` treats an explicit
+            # `timeout=None` as `Timeout(None)` and that OVERRIDES the client's own default
+            # timeout for that request. So the client-level default set via `client_args`
+            # is reachable only by code that calls the httpx client directly, never by
+            # `models.generate_content`/`generate_content_stream`, which are the only
+            # calls this provider makes. Verified end to end against the installed SDK
+            # (google-genai 2.19.0, httpx 0.28.1) with a `MockTransport` recording the
+            # outgoing request: with `client_args` alone the captured request extensions
+            # were `{'connect': None, 'read': None, 'write': None, 'pool': None}` —
+            # unbounded — on both `generate_content` and `generate_content_stream`.
+            #
+            # `HttpOptions.timeout` (milliseconds, a single scalar) is what actually ends
+            # up on `http_request.timeout` and therefore on the outgoing request; setting
+            # it made the same probe capture `{'connect': 600.0, 'read': 600.0, 'write':
+            # 600.0, 'pool': 600.0}`. Because it is one scalar for the whole `httpx.Timeout`,
+            # there is no way through this field to keep a short connect timeout — connect
+            # shares the 600s bound with read/write/pool. `client_args`/`async_client_args`
+            # are kept anyway as the client-level default, in case some future call path
+            # goes through the httpx client without an explicit per-request timeout.
             #
             # This client is also what stream() uses (see _ensure_client's call site
-            # below), so it doubles as the only per-provider read bound on the STREAM
-            # path anywhere in this tree. engine.py's commit d57a665 said, correctly at
-            # the time, that no such bound existed here; this is that bound. It does not
-            # make the bridge-level FirstChunkTimeout (engine.py) redundant — that one
-            # frees the *engine* on a stall via the bounded retry, while this is the
-            # backstop that eventually frees the *socket and thread* a wedged Gemini read
-            # is still holding, worst case 600s after FirstChunkTimeout gives up on it.
+            # below), so `HttpOptions.timeout` doubles as the only per-provider read bound
+            # on the STREAM path anywhere in this tree. It does not make the bridge-level
+            # FirstChunkTimeout (engine.py) redundant — that one frees the *engine* on a
+            # stall via the bounded retry, while this is the backstop that eventually frees
+            # the *socket and thread* a wedged Gemini read is still holding, worst case
+            # 600s after FirstChunkTimeout gives up on it.
             request_timeout = httpx.Timeout(600.0, connect=10.0)
             self._client = genai.Client(
                 api_key=key,
                 http_options=types.HttpOptions(
                     base_url=base_url,
                     headers=headers or None,
+                    timeout=600_000,
                     client_args={"timeout": request_timeout},
                     async_client_args={"timeout": request_timeout},
                 ),
