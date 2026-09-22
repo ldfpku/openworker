@@ -13,6 +13,8 @@ import time
 from types import SimpleNamespace
 
 import aisuite as ai
+from coworker.agent import build_engine
+from coworker.agents import cowork_agent
 from coworker.engine import ApprovalOutcome, TurnEngine
 from coworker.events import EventType
 from coworker.mcp import build_callables
@@ -1085,6 +1087,47 @@ def test_explore_is_stopped_for_real_rather_than_abandoned(tmp_path):
     call = ToolCall(id="c0", name="explore", arguments={"task": "x"})
     assert classify(call.name, registry.get("explore").metadata) is RiskClass.READ
     assert engine._abandonable(call) is False
+
+
+def test_read_classified_tools_that_mutate_are_waited_out(tmp_path):
+    """`RiskClass.READ` is risk.py's FALLBACK for a tool it does not know that declares no
+    approval — not a promise that the tool is pure. Four of the real ones mutate:
+
+    * `load_skill` mounts the skill's folder on the session's SHARED roots list
+      (skills/base.py `_mount`), widening what the session may read — after the stop, and
+      invisibly, since the model never sees the result. It is also the only one that can
+      be slow enough to be abandoned for real (a catalog miss walks the disk).
+    * `shell_task_output` is a destructive read: `read_new` advances a cursor, so an
+      abandoned call eats that slice of the background task's output for good.
+    * `todo_write` rewrites the session's todo list; `shell_task_kill` kills a task.
+
+    So does every on-demand loader: `_load` calls `registry.register_all`, mutating the
+    dict the loop iterates unlocked in `schemas()` every round trip. Nothing could outlive
+    a turn before this branch, which is exactly the guarantee abandoning removes.
+
+    Built from the real registry, not from hand-made metadata, so a tool that is renamed
+    or re-categorised is caught here.
+    """
+    engine = build_engine(agent=cowork_agent(), workspace=tmp_path, roots=[])
+    registry = engine.registry
+    for name in list(getattr(registry, "_deferred", {})):
+        registry.get(name)  # materialise the deferred sets so they can be classified
+
+    def abandonable(name):
+        return engine._abandonable(ToolCall(id="c0", name=name, arguments={}))
+
+    mutating_reads = ["load_skill", "shell_task_output", "todo_write", "shell_task_kill"]
+    loaders = [n for n in registry._tools if n.startswith("load_") and n.endswith("_tools")]
+    assert loaders, "expected the on-demand loaders to be registered"
+    for name in mutating_reads + loaders:
+        spec = registry.get(name)
+        # Each really does arrive here classified READ — that is the whole problem.
+        assert classify(name, spec.metadata) is RiskClass.READ, name
+        assert abandonable(name) is False, name
+
+    # …and the exclusions are surgical: ordinary reads are still abandoned.
+    for name in ("read_file", "grep", "list_files", "web_fetch"):
+        assert abandonable(name) is True, name
 
 
 def test_a_torn_down_abandoned_tool_is_not_logged_as_finished(tmp_path, caplog):

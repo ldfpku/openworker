@@ -226,6 +226,36 @@ _ABANDONABLE_EGRESS_TOOLS = frozenset({"web_fetch", "web_search"})
 # `run_shell` belongs to the same family (agent.py's standing `executor.interrupt_now`
 # hook) but needs no entry here: it classifies EXEC and never reaches this set.
 _SELF_INTERRUPTING_TOOLS = frozenset({"explore"})
+# READ-classified tools that nevertheless change state outliving the turn. `RiskClass.READ`
+# is a FALLBACK in risk.py — not in the by-name table and no `requires_approval` means READ
+# — so it is not a proof of purity and the abandon set cannot be left to it alone. These
+# were found by classifying every tool the `cowork` persona registers, deferred sets
+# materialised (2026-09-22, scratchpad probe, since deleted):
+#   load_skill       mounts the skill's own folder as a read-only root on the session's
+#                    SHARED roots list (skills/base.py `_mount`), widening what the session
+#                    may read — and unlike the other two it can genuinely be slow enough to
+#                    be abandoned, because a catalog miss walks the disk
+#                    (`loader.rescan(force=True)` plus `_bundled_files`).
+#   shell_task_output  a DESTRUCTIVE read: `_BackgroundTask.read_new` returns the lines
+#                    since the last call and advances the cursor past them
+#                    (tools/shell.py), so abandoning does not merely discard the result —
+#                    that slice of the background task's output is gone for good and no
+#                    later call can fetch it. The one member for which discarding the
+#                    result is demonstrably NOT the whole loss.
+#   todo_write       rewrites the session's todo list.
+#   shell_task_kill  kills a background shell task.
+# Each is microseconds-to-milliseconds except `load_skill` on a cold catalog, so waiting
+# them out costs Stop essentially nothing — which is the trade this set makes.
+_SIDE_EFFECTING_READS = frozenset(
+    {"load_skill", "shell_task_output", "todo_write", "shell_task_kill"}
+)
+# The on-demand tool loaders (`load_github_tools`, …) are the same case, excluded by
+# CATEGORY because their names vary with which connectors are configured. Each mutates
+# `ToolRegistry._tools` (tools/deferred.py `_load` → `register_all`), which the loop reads
+# unlocked every round trip in `registry.schemas()`; before this change no tool thread
+# could outlive its turn, so the two could not overlap, and abandoning is precisely what
+# would remove that guarantee.
+_SIDE_EFFECTING_READ_CATEGORY = "meta"
 # Process-wide, because the thread pool they occupy is process-wide.
 _abandoned_lock = threading.Lock()
 _abandoned_live = 0
@@ -1925,19 +1955,26 @@ class TurnEngine:
         the two read-only network tools, which classify EGRESS because the model chooses
         their destination — the gate cares about the outbound query, this does not).
 
-        Two deliberate exclusions inside that set:
+        Three deliberate exclusions inside that set:
 
-        * MCP tools (`category == "mcp"`), because they can be genuinely cancelled — the
-          call's future is cancelled by an interrupt hook (coworker/mcp/tools.py) and the
-          call comes back as interrupted within the same stop. Abandoning the wait would
-          win that race and replace an accurate "interrupted by user" with "result
-          unavailable". `all` is the manual override that gives up that distinction.
-        * Nothing else is excluded by name, which means `todo_write` and `shell_task_kill`
-          are in: both classify READ today although each does change something (the
-          session's todo list, a background task). Neither effect is undone by discarding
-          the result, and both return promptly, so the abandon path should essentially
-          never fire for them — but this is a REAL widening of "no side effects", not a
-          proof of it. Flagged rather than silently relied on.
+        * Tools that stop THEMSELVES and come back with a truthful result when they do:
+          MCP calls, whose future is cancelled by an interrupt hook (coworker/mcp/tools.py)
+          and which come back as interrupted within the same stop, and the ones named in
+          `_SELF_INTERRUPTING_TOOLS`. Abandoning the wait would win that race and replace
+          an accurate "interrupted by user" with "result unavailable". `all` is the manual
+          override that gives that distinction up.
+        * Tools that classify READ but change state which outlives the turn:
+          `_SIDE_EFFECTING_READS` by name, and the on-demand loaders by category.
+          `classify` returns READ as a FALLBACK for anything it does not know that
+          declares no approval, so without these the invariant this path rests on —
+          discarding the result is the WHOLE loss — would simply be false for them. See
+          those constants for the enumeration and for how it was obtained; all of them are
+          fast, so the exclusion costs Stop next to nothing.
+
+        The set is therefore only as good as the enumeration: a NEW tool that classifies
+        READ and quietly mutates something joins it automatically. Making that structural
+        rather than vigilant would mean an explicit allowlist instead of a fallback
+        classification, which is a larger change than this one.
         """
         mode = _abandon_mode()
         if mode == "none":
@@ -1946,9 +1983,12 @@ class TurnEngine:
             return True
         spec = self.registry.get(tool_call.name)
         metadata = spec.metadata if spec else None
+        category = getattr(metadata, "category", "")
+        if category == "mcp" or tool_call.name in _SELF_INTERRUPTING_TOOLS:
+            return False
         if (
-            getattr(metadata, "category", "") == "mcp"
-            or tool_call.name in _SELF_INTERRUPTING_TOOLS
+            category == _SIDE_EFFECTING_READ_CATEGORY
+            or tool_call.name in _SIDE_EFFECTING_READS
         ):
             return False
         if tool_call.name in _ABANDONABLE_EGRESS_TOOLS:
