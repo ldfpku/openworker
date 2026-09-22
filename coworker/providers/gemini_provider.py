@@ -560,6 +560,15 @@ class GeminiProvider(ProviderClient):
             # not a user-facing turn time limit: 600s aligns with the analogous
             # non-streaming guard in anthropic_provider._nonstreaming_timeout, and connect
             # stays short so a dead network still fails fast.
+            #
+            # This client is also what stream() uses (see _ensure_client's call site
+            # below), so it doubles as the only per-provider read bound on the STREAM
+            # path anywhere in this tree. engine.py's commit d57a665 said, correctly at
+            # the time, that no such bound existed here; this is that bound. It does not
+            # make the bridge-level FirstChunkTimeout (engine.py) redundant — that one
+            # frees the *engine* on a stall via the bounded retry, while this is the
+            # backstop that eventually frees the *socket and thread* a wedged Gemini read
+            # is still holding, worst case 600s after FirstChunkTimeout gives up on it.
             request_timeout = httpx.Timeout(600.0, connect=10.0)
             self._client = genai.Client(
                 api_key=key,

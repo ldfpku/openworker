@@ -542,10 +542,16 @@ class FirstChunkTimeout(TimeoutError):
     inside the provider's read and the socket is still open; both are released only when
     that read returns on the HTTP layer's own schedule (see `_FIRST_CHUNK_TIMEOUT_ENV`).
     So an engine that gives up here and retries can be holding two sockets, and a turn
-    that fails here leaves one behind for as long as the vendor SDK takes. No provider's
-    STREAM path in this tree narrows that: the one per-request timeout any of them sets
+    that fails here leaves one behind for as long as the vendor SDK takes — or, for
+    `gemini_provider` only, up to the 600s read timeout its `_ensure_client` sets on the
+    underlying httpx client (`client_args={"timeout": httpx.Timeout(600.0, connect=10.0)}`,
+    covering `stream()` too since it reuses that same client). That bound is a
+    resource-exhaustion backstop, not a turn-time limit tuned to this timeout, so a
+    wedged Gemini stream still holds its socket and executor slot for up to 600s after
+    this timeout gives up on it. No other provider's STREAM path in this tree sets a read
+    timeout of its own: the one per-request timeout any of the rest set
     (`anthropic_provider._nonstreaming_timeout`) is applied to `complete` only and says so
-    itself; `gemini_provider` sets none anywhere.
+    itself.
 
     And it is not only a socket. A parked producer also holds one worker of the loop's
     DEFAULT executor, which is what `asyncio.to_thread` uses too — so the same pool
