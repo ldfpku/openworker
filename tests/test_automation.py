@@ -1310,6 +1310,147 @@ def test_manual_run_stop_then_mode_switch_is_still_canceled(tmp_path, monkeypatc
     assert manager.task_store.get(task.id).last_status == "canceled"
 
 
+def _stopping_provider():
+    """Presses Stop on `.engine` (set it before the run's first model call) during that
+    call; a title request just gets a title."""
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+
+    class StoppingProvider(ProviderClient):
+        engine = None
+
+        def complete(self, *, model, messages, tools=None, **settings):
+            if messages and "title chat sessions" in str(messages[0].get("content", "")):
+                return AssistantTurn(text="small-talk", finish_reason="stop")
+            self.engine.request_interrupt()
+            return AssistantTurn(text="ignored", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    return StoppingProvider()
+
+
+def test_manual_run_stop_then_granted_folder_notice_is_still_canceled(tmp_path, monkeypatch):
+    """`project_presence` lands after the turn ended too. Over the real WS the Stop ends
+    the manual run's turn; before the finalize call the user grants a folder whose
+    project already has memory (`add_root`, what `POST /v1/sessions/{id}/roots` calls).
+    The notice lands behind `interrupted`, and the run is still "canceled"."""
+    from coworker.memory.base import Scope
+    from coworker.server.manager import SessionManager
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    known = tmp_path / "known"
+    known.mkdir()
+    provider = _stopping_provider()
+    manager = SessionManager(data_dir=tmp_path / "data", provider=provider)
+    manager.memory_store.add("fact", scope=Scope.WORKSPACE, workspace=str(known.resolve()))
+    task = _task(workspace=str(ws), agent="cowork")
+    manager.task_store.save(task)
+    session: dict = {}
+
+    def capture(session_id):
+        session["id"] = session_id
+        provider.engine = manager._engines[session_id]
+
+    def grant_known_folder(sock):
+        granted = manager.add_root(session["id"], str(known))
+        assert granted["ok"] and granted["notice"], granted
+
+    prep, out = _drive_manual_run_over_ws(
+        manager, task, before_send=capture, after_turn=grant_known_folder
+    )
+
+    kinds = [m.get("kind") for m in manager.session_messages(prep["session_id"])[-2:]]
+    assert kinds == ["interrupted", "project_presence"], kinds
+    assert out["ok"] and out["run"]["status"] == "canceled"
+
+
+def test_manual_run_stop_then_mcp_error_on_reconnect_is_still_canceled(tmp_path, monkeypatch):
+    """`mcp_error` is appended at a WS connect that builds the session's engine, so it
+    can land after the turn ended as well. Over the real WS the Stop ends the manual
+    run's turn; the backend then restarts (a new `SessionManager` on the same data)
+    before the finalize call, the GUI reconnects, and an MCP server fails to start on
+    that rebuild. The notice lands behind `interrupted`, and the run is still
+    "canceled". The whole exchange runs on a daemon thread joined with a deadline."""
+    from types import SimpleNamespace
+    from urllib.parse import quote
+
+    from fastapi.testclient import TestClient
+
+    from coworker.server.app import create_app
+    from coworker.server.manager import SessionManager
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    servers: list = []  # no MCP server is configured while the run's turn runs
+    monkeypatch.setattr(
+        "coworker.server.manager.load_mcp_servers", lambda *a, **k: list(servers)
+    )
+    provider = _stopping_provider()
+    manager = SessionManager(data_dir=tmp_path / "data", provider=provider)
+    task = _task(workspace=str(ws), agent="cowork")
+    manager.task_store.save(task)
+    box: dict = {}
+
+    async def failing_ensure(server, **kwargs):
+        raise RuntimeError("spawn failed")
+
+    def drive():
+        try:
+            client = TestClient(create_app(manager))
+            prep = box["prep"] = client.post(f"/v1/automations/{task.id}/run").json()
+            url = (
+                f"/ws/session/{prep['session_id']}"
+                f"?workspace={quote(prep['workspace'])}&agent={prep['agent']}"
+            )
+            with client.websocket_connect(url) as sock:
+                assert sock.receive_json()["type"] == "ready"
+                provider.engine = manager._engines[prep["session_id"]]
+                sock.send_json({"type": "user_message", "text": prep["prompt"]})
+                while sock.receive_json()["type"] != "turn_done":
+                    pass
+            servers.append(
+                SimpleNamespace(
+                    name="flaky",
+                    transport="stdio",
+                    url=None,
+                    auth=None,
+                    enabled=True,
+                    include_tools=None,
+                    exclude_tools=None,
+                    requires_approval=True,
+                )
+            )
+            restarted = box["restarted"] = SessionManager(
+                data_dir=tmp_path / "data", provider=provider
+            )
+            restarted.mcp.ensure = failing_ensure
+            restarted.mcp.last_stderr = lambda name: None
+            client = TestClient(create_app(restarted))
+            with client.websocket_connect(url) as sock:
+                assert sock.receive_json()["type"] == "ready"
+            box["finalized"] = client.post(
+                f"/v1/automations/{task.id}/runs/{prep['run_id']}/finalize"
+            ).json()
+        except BaseException as exc:  # re-raised on the test thread below
+            box["error"] = exc
+
+    worker = threading.Thread(target=drive, daemon=True)
+    worker.start()
+    worker.join(timeout=30)
+    assert not worker.is_alive(), "manual run or reconnect over WS never finished"
+    if "error" in box:
+        raise box["error"]
+
+    messages = box["restarted"].session_messages(box["prep"]["session_id"])
+    kinds = [m.get("kind") for m in messages[-2:]]
+    assert kinds == ["interrupted", "mcp_error"], kinds
+    assert box["finalized"]["ok"] and box["finalized"]["run"]["status"] == "canceled"
+
+
 def _drive_manual_run_over_ws(manager, task, *, before_send=None, after_turn=None):
     """Run a manual run the way the GUI does — `POST .../run`, open the session WS, send
     the prompt, wait for `turn_done`, then `POST .../finalize` — and return

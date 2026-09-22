@@ -8490,12 +8490,20 @@ _RUN_FAILED_NOTICE_KINDS = frozenset({"error", "turn_aborted"})
 
 # Notices that record something about the session, not how the turn ended — every
 # `_append_notice` kind in coworker/ except the four the verdict is read from
-# ("interrupted", "error", "turn_aborted", "turn_truncated"). The first five can land
-# AFTER a turn has already ended, e.g. a mode change between the Stop and the finalize
-# call. The last three are appended from inside the turn loop (engine.py), and the turn
-# does not always go on past them: an answerless round's `turn_retry` can be the last
-# thing before the token gate ends the turn, leaving `[user, turn_retry]` — the walk
-# looks through it to what came before (see `_run_outcome_from_transcript`).
+# ("interrupted", "error", "turn_aborted", "turn_truncated"). The first five come from
+# the session's own handlers (connect, set_mode, set_model, add_root), not from the turn
+# loop, so they can land AFTER the run's turn has ended and before the run is judged.
+# Driven that way over the real WS — Stop, then the action, then the finalize call — in
+# tests/test_automation.py: `mode_switch` (set_mode to plan), `project_presence`
+# (add_root on a folder with project memory) and `mcp_error` (the reconnect after a
+# backend restart, with a server that fails to start). `model_switch` (set_model) and
+# `mode_notice` (set_mode to Auto-Approve, or a connect in that mode) are read from
+# app.py/engine.py, not driven here.
+#
+# The last three are appended from inside the turn loop (engine.py), and the turn does
+# not always go on past them: an answerless round's `turn_retry` can be the last thing
+# before the token gate ends the turn, leaving `[user, turn_retry]` — the walk looks
+# through it to what came before (see `_run_outcome_from_transcript`).
 # `test_every_notice_kind_is_classified` fails when a new kind is added without being
 # placed here or among the four.
 _BOOKKEEPING_NOTICE_KINDS = frozenset(
