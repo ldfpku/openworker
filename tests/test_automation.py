@@ -1191,10 +1191,9 @@ def test_every_notice_kind_is_classified():
 
 
 def test_manual_run_stop_then_mode_switch_is_still_canceled(tmp_path, monkeypatch):
-    """The reported sequence, over the real WS: the user stops the manual run, then
-    switches the session to plan mode before the GUI's finalize call lands. The
-    `mode_switch` notice that switch appends becomes the transcript tail and used to be
-    read as the verdict — "ok"."""
+    """Over the real WS, the user stops the manual run, then switches the session to
+    plan mode before the GUI's finalize call lands. The `mode_switch` notice that switch
+    appends becomes the transcript tail and used to be read as the verdict — "ok"."""
     from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
     from coworker.server.manager import SessionManager
 

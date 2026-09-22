@@ -7270,9 +7270,11 @@ class SessionManager:
         A manual run never goes through `_run_scheduled_task` — the GUI drives the turn
         directly over the session WS, which knows nothing about the automation `TaskRun`,
         so this REST call (fired once the GUI sees `turn_done`) is the only place a manual
-        run's status is ever set. Before this looked at the transcript, a run the user
-        stopped mid-flight — or one whose turn ended on the engine's own ERROR path — was
-        unconditionally recorded "ok", same as a real completion (owner-hit 2026-09-22).
+        run's status is ever set. Before this looked at the transcript, it wrote "ok"
+        unconditionally, so a run the user stopped mid-flight — or one whose turn ended on
+        the engine's own ERROR path — read like a real completion. A stopped run is now
+        "canceled", the rule already set for scheduled runs (owner ruling 2026-09-19: a
+        run the user stopped records "canceled", not "ok").
 
         The messages come from `session_messages`, the same source the GUI rebuilds the
         session from (`/v1/sessions/{id}/messages`): the cached engine's own list while it
