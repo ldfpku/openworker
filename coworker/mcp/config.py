@@ -119,6 +119,11 @@ def _load(path: Path) -> tuple[dict[str, Any], Optional[str]]:
         # holds the user's servers, fails to parse below, and is refused.
         return {}, None
     try:
+        # `text`, not the `.replace("\x00", "").strip()` copy built above: that copy is
+        # a throwaway, used only to answer "is this file empty?" (the carve-out just
+        # above). It is never what gets parsed. Real content trailed by NULs is not
+        # silently cleaned here — it still hits `json.loads` with the NULs in place and
+        # is refused below, per the case called out above.
         data = json.loads(text)
     except json.JSONDecodeError as exc:
         return {}, type(exc).__name__
