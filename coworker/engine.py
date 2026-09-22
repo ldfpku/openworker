@@ -1541,14 +1541,21 @@ class TurnEngine:
         serial = [tc for tc in cleared if tc not in concurrent]
 
         if concurrent:
-            for tool_call in concurrent:
-                yield Event(EventType.TOOL_STARTED, {"name": tool_call.name})
-                self._audit(tool_call, stage="started")
-            outcomes = await asyncio.gather(
-                *[asyncio.to_thread(self._execute_sync, tc) for tc in concurrent]
-            )
-            for tool_call, (result, status) in zip(concurrent, outcomes):
-                yield self._record_result(tool_call, result, status)
+            if self._cancel.is_set():
+                # Stopped before this batch was dispatched: give every call in it the
+                # same stop-path answer the serial loop below gives its own calls —
+                # don't gather the batch.
+                for tool_call in concurrent:
+                    yield self._interrupted_tool(tool_call)
+            else:
+                for tool_call in concurrent:
+                    yield Event(EventType.TOOL_STARTED, {"name": tool_call.name})
+                    self._audit(tool_call, stage="started")
+                outcomes = await asyncio.gather(
+                    *[asyncio.to_thread(self._execute_sync, tc) for tc in concurrent]
+                )
+                for tool_call, (result, status) in zip(concurrent, outcomes):
+                    yield self._record_result(tool_call, result, status)
 
         for tool_call in serial:
             if self._cancel.is_set():

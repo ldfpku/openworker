@@ -266,6 +266,62 @@ def test_stop_skips_remaining_tool_calls(tmp_path):
     assert "interrupted by user" in results[1]["content"]
 
 
+def test_stop_before_parallel_batch_dispatch_skips_whole_batch(tmp_path):
+    """The serial loop below already checks `self._cancel` per call before running it
+    (`test_stop_skips_remaining_tool_calls`). The parallel-safe batch above it used to
+    have no such check: once a turn's remaining calls were all low-risk and parallel-safe,
+    Stop being set before `asyncio.gather` dispatched them made no difference — the whole
+    batch still ran. Stop pressed while the two calls are still being proposed (before the
+    batch is split off and dispatched) must now skip the entire batch, with every call
+    getting the same stop-path answer the serial loop gives its own skipped calls."""
+    registry = ToolRegistry()
+
+    def read_a():  # pragma: no cover — must never run, batch is skipped
+        raise AssertionError("read_a executed after stop")
+
+    def read_b():  # pragma: no cover — must never run, batch is skipped
+        raise AssertionError("read_b executed after stop")
+
+    read_a.__aisuite_tool_metadata__ = ai.ToolMetadata(
+        name="read_a", category="test", risk_level="low", requires_approval=False,
+    )
+    read_b.__aisuite_tool_metadata__ = ai.ToolMetadata(
+        name="read_b", category="test", risk_level="low", requires_approval=False,
+    )
+    registry.register(read_a)
+    registry.register(read_b)
+
+    engine = TurnEngine(
+        provider=OneTurnProvider(_tool_turn([("read_a", {}), ("read_b", {})])),
+        registry=registry,
+        permissions=PermissionEngine(workspace_root=tmp_path),
+        model="gpt-5.5",
+    )
+
+    async def run():
+        events = []
+        async for ev in engine.run("go"):
+            events.append(ev)
+            # Both calls are read-only (no approval card), so the only hook available
+            # before dispatch is their TOOL_PROPOSED events — Stop lands after the
+            # second is proposed, still before the batch is split off and gathered.
+            if ev.type == EventType.TOOL_PROPOSED and ev.data["name"] == "read_b":
+                engine.request_interrupt()
+        return events
+
+    events = asyncio.run(run())
+    assert events[-1].type == EventType.INTERRUPTED
+    results = _tool_results(engine)
+    assert len(results) == 2  # both calls answered — no orphans
+    assert all("interrupted by user" in r["content"] for r in results)
+    # Same stop-path shape the serial loop's own skipped calls get.
+    finished = [ev for ev in events if ev.type == EventType.TOOL_FINISHED]
+    assert all(
+        ev.data == {"name": ev.data["name"], "status": "interrupted", "reason": "stopped"}
+        for ev in finished
+    )
+
+
 def _engine(tmp_path, provider):
     return TurnEngine(
         provider=provider,
