@@ -1162,6 +1162,78 @@ def test_retry_notice_before_a_gate_does_not_read_as_a_reply():
     )
 
 
+def _answerless_over_budget_provider():
+    """Every round comes back empty (no text, no tool call) and bills 1000 prompt
+    tokens, twice the 500-token turn budget the test below sets."""
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+    from coworker.providers.base import TokenUsage
+
+    class AnswerlessProvider(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            return AssistantTurn(finish_reason="stop", usage=TokenUsage(input=1000))
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    return AnswerlessProvider()
+
+
+@pytest.mark.parametrize("path", ["scheduled", "manual"])
+async def test_retry_then_token_gate_reaches_the_no_reply_branch(tmp_path, monkeypatch, path):
+    """The shape above, left by the real engine: the empty answer is announced with
+    `turn_retry`, then the token gate ends the turn before the re-send (TURN_END
+    `max_tokens_exceeded`). The turn does NOT go on past that bookkeeping notice, the
+    transcript ends on `[user, turn_retry]`, and both run paths record "error"."""
+    from coworker.server.manager import SessionManager
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    manager = SessionManager(
+        data_dir=tmp_path / "data", provider=_answerless_over_budget_provider()
+    )
+    task = _task(workspace=str(ws), agent="cowork")
+    manager.task_store.save(task)
+
+    def configure(engine):
+        engine.max_turn_tokens = 500
+        engine.retry_sleep = _no_wait
+
+    if path == "scheduled":
+        original_build = SessionManager._build_task_engine
+
+        def _build(self, task, *, session_id):
+            engine = original_build(self, task, session_id=session_id)
+            configure(engine)
+            return engine
+
+        monkeypatch.setattr(SessionManager, "_build_task_engine", _build)
+        run = await asyncio.wait_for(manager._run_scheduled_task(task, trigger="schedule"), 10)
+        session_id, verdict = run.session_id, (run.status, run.error)
+    else:
+        prep = manager.prepare_manual_run(task.id)
+        engine = manager.get_engine(prep["session_id"], workspace=str(ws), agent="cowork")
+        configure(engine)
+
+        async def drain():
+            return [event async for event in engine.run(prep["prompt"])]
+
+        events = await asyncio.wait_for(drain(), timeout=10)
+        (turn_end,) = [e for e in events if e.type.value == "turn_end"]
+        assert turn_end.data["status"] == "max_tokens_exceeded"
+        manager.save(prep["session_id"], engine)
+        out = manager.finalize_manual_run(task.id, prep["run_id"])
+        session_id, verdict = prep["session_id"], (out["run"]["status"], out["run"]["error"])
+
+    shape = [
+        (m["role"], m.get("kind"))
+        for m in manager.session_messages(session_id)
+        if m["role"] != "system"
+    ]
+    assert shape == [("user", None), ("notice", "turn_retry")], shape
+    assert verdict == ("error", "the turn ended before any reply")
+
+
 def test_every_notice_kind_is_classified():
     """Every kind passed to `_append_notice` anywhere in coworker/ is either one the
     verdict is read from or a bookkeeping kind the walk looks through. A new kind that

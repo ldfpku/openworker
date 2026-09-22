@@ -8490,7 +8490,10 @@ _RUN_FAILED_NOTICE_KINDS = frozenset({"error", "turn_aborted"})
 # `_append_notice` kind in coworker/ except the four the verdict is read from
 # ("interrupted", "error", "turn_aborted", "turn_truncated"). The first five can land
 # AFTER a turn has already ended, e.g. a mode change between the Stop and the finalize
-# call; the last three are appended mid-turn and the turn carries on after them.
+# call. The last three are appended from inside the turn loop (engine.py), and the turn
+# does not always go on past them: an answerless round's `turn_retry` can be the last
+# thing before the token gate ends the turn, leaving `[user, turn_retry]` — the walk
+# looks through it to what came before (see `_run_outcome_from_transcript`).
 # `test_every_notice_kind_is_classified` fails when a new kind is added without being
 # placed here or among the four.
 _BOOKKEEPING_NOTICE_KINDS = frozenset(
@@ -8518,10 +8521,10 @@ def _run_outcome_from_transcript(
     Stop — must not turn `[..., interrupted, mode_switch]` into "ok". Decisive on the
     first other notice found: "interrupted" is "canceled", the failed kinds are "error",
     and `turn_truncated` (an answer arrived but may be cut short) or a kind this file
-    does not know is "ok". No notice at the tail at all is normally a real
-    assistant/tool message, i.e. the turn completed — EXCEPT when the tail is a `user`
-    message and the transcript holds no `assistant` message at all: the turn ended
-    without a single reply and without a notice saying how.
+    does not know is "ok". When no deciding notice is found, the walk stops at the last
+    real message, normally an assistant/tool one, i.e. the turn completed — EXCEPT when
+    it is a `user` message and the transcript holds no `assistant` message at all: the
+    turn ended without a single reply and without a notice saying how.
 
     An exception that escapes a WS turn does not leave that shape any more:
     `run_turn`'s outer `except Exception` (app.py) appends a `kind="error"` notice before
@@ -8529,9 +8532,15 @@ def _run_outcome_from_transcript(
     judged "error" here — both a crash before the first reply and one after a tool round
     (tail `[..., tool, error notice]`); `test_manual_run_crash_over_ws_is_error` drives
     both through the real WS and the finalize endpoint. The no-reply branch is what is
-    left for a turn that ended with no notice at all: `run_turn` contains a failure of
-    that `_append_notice` call and only logs it, and a caller driving `engine.run()`
-    directly (as the tests here do) gets no such notice.
+    left for a turn that ended with no DECIDING notice; bookkeeping ones may still trail
+    the prompt. Measured on both run paths: an answerless round is announced with
+    `turn_retry`, the token gate then ends the turn before the re-send (TURN_END
+    `max_tokens_exceeded`), and the transcript ends on `[user, turn_retry]`
+    (`test_retry_then_token_gate_reaches_the_no_reply_branch`). Two more ways in:
+    `run_turn` contains a failure of its `_append_notice` call and only logs it (read
+    from app.py, not driven), and a caller driving `engine.run()` directly gets no
+    notice at all when an exception escapes it
+    (`test_manual_run_unhandled_crash_before_reply_is_error_not_ok` pins that shape).
 
     A `user` tail by itself proves nothing: steering (`TurnEngine.queue_steering`, what
     the user types while a turn runs) is appended as a `user` message after a reply or a
