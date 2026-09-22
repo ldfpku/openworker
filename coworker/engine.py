@@ -154,12 +154,15 @@ _TURN_ABORTED_RETRIED = " Automatic retry didn't help ({n} retries)."
 #
 # A provider that ACCEPTS the request and then sends nothing is the one stall the bridge
 # had no answer for: the Stop race below covers the user changing their mind, but nothing
-# covered the user simply waiting. What the HTTP layer underneath would eventually do was
-# measured on this tree (2026-09-22, scripted stalls, not production incidents):
-# OpenAI/Anthropic ~1800s worst case (a 600s read timeout times the SDK's own
-# max_retries=2), Gemini unbounded, Bedrock ~60s times its retries. So "eventually" is
-# between ten minutes and never, and until then the turn shows a spinner and the server
-# log shows nothing at all.
+# covered the user simply waiting. The agent loop deliberately passes no `timeout`, so
+# each vendor SDK's own defaults are all that ever ends such a call (`base.bounded_client`
+# says as much: "the agent loop wants the SDK's own resilience"). Measured against
+# scripted stalls on this tree, 2026-09-22 — not production incidents, and the Gemini and
+# Bedrock figures are the scoping run's, not re-derived here: OpenAI/Anthropic ~1800s
+# worst case (a 600s read timeout times the SDK's own max_retries=2, the same multiplier
+# `bounded_client` exists to defeat), Gemini unbounded, Bedrock ~60s times its retries.
+# So "eventually" is between ten minutes and never, and until then the turn shows a
+# spinner and the server log shows nothing at all.
 #
 # This bounds the WAIT, not the resources. When it fires the producer thread is still
 # parked in the provider's read and the socket is still open; both are let go only when
@@ -334,10 +337,11 @@ class StreamBridgeError(RuntimeError):
 class FirstChunkTimeout(TimeoutError):
     """The provider accepted the request and then sent nothing for `first_chunk_timeout`.
 
-    Raised by `_astream` only while the stream is still empty — the deadline is armed when
-    the producer thread reports that it has entered `provider.stream()`, and disarmed by
-    the first chunk of any kind, thinking text included. Nothing bounds the gaps BETWEEN
-    chunks; a stream that has started and then stalls still hangs exactly as before.
+    Raised by `_astream` only while the stream is still empty. The clock starts when the
+    producer thread gets its slot in the executor (not when `_astream` does, which would
+    time the pool's own backlog) and stops at the first chunk of any kind, thinking text
+    included. Nothing bounds the gaps BETWEEN chunks; a stream that has started and then
+    stalls still hangs exactly as before.
 
     It subclasses `TimeoutError` on purpose, and that is the whole integration: the
     isinstance arm of `providers/errors.is_transient_model_error` matches `TimeoutError`,
@@ -351,6 +355,12 @@ class FirstChunkTimeout(TimeoutError):
     that read returns on the HTTP layer's own schedule (see `_FIRST_CHUNK_TIMEOUT_ENV`).
     So an engine that gives up here and retries can be holding two sockets, and a turn
     that fails here leaves one behind for as long as the vendor SDK takes.
+
+    One inherited behaviour, unchanged and worth knowing: `explore` builds a subagent
+    TurnEngine of its own (tools/subagent.py), which picks this up along with its own
+    `model_retries`. A wedged subagent call is therefore retried inside that engine first,
+    and the parent turn waits for the whole of it. That is what every other transient
+    failure already does there; this adds a new way in, not a new rule.
     """
 
 
