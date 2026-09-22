@@ -6,6 +6,7 @@ import asyncio
 
 from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
 from coworker.server.manager import SessionManager
+from coworker.testing.autotitle import autotitle_reply, is_autotitle_call
 
 
 class ScriptedProvider(ProviderClient):
@@ -13,6 +14,12 @@ class ScriptedProvider(ProviderClient):
         self._turns = list(turns)
 
     def complete(self, *, model, messages, tools=None, **settings):
+        # `deliver_to_session`'s `mark_idle` (manager.py) fires `_maybe_autotitle` on the
+        # same engine/provider used for the background turn above — guard so a title
+        # call reaching this provider can never pop a turn one of this file's scripts
+        # still needs.
+        if is_autotitle_call(messages):
+            return autotitle_reply()
         return self._turns.pop(0)
 
     def capabilities(self, model):
