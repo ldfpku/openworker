@@ -31,6 +31,7 @@ from .base import (
     StreamChunk,
     TokenUsage,
     ToolCall,
+    close_stream,
 )
 from .capabilities import capabilities_for
 
@@ -696,99 +697,102 @@ class AnthropicProvider(ProviderClient):
         else:
             events = client.messages.create(**kwargs)
 
-        text_parts: list[str] = []
-        tool_accum: dict[int, dict[str, str]] = {}
-        # Thinking blocks accumulate per stream index and must be replayed verbatim later,
-        # so both the text and the signature_delta tail are collected (in block order).
-        thinking_accum: dict[int, dict[str, Any]] = {}
-        stop_reason = None
-        usage: Optional[TokenUsage] = None
+        try:
+            text_parts: list[str] = []
+            tool_accum: dict[int, dict[str, str]] = {}
+            # Thinking blocks accumulate per stream index and must be replayed verbatim later,
+            # so both the text and the signature_delta tail are collected (in block order).
+            thinking_accum: dict[int, dict[str, Any]] = {}
+            stop_reason = None
+            usage: Optional[TokenUsage] = None
 
-        last_message_delta: Any = None
-        for event in events:
-            kind = getattr(event, "type", None)
-            if kind == "message_start":
-                # Prompt-side counts (input + cache split) ride the opening event.
-                usage = (
-                    _usage_from(getattr(getattr(event, "message", None), "usage", None))
-                    or usage
-                )
-            elif kind == "content_block_start":
-                block = getattr(event, "content_block", None)
-                block_kind = getattr(block, "type", None)
-                if block_kind == "tool_use":
-                    tool_accum[getattr(event, "index", 0)] = {
-                        "id": getattr(block, "id", "") or "",
-                        "name": getattr(block, "name", "") or "",
-                        "json": "",
-                    }
-                elif block_kind == "thinking":
-                    thinking_accum[getattr(event, "index", 0)] = {
-                        "type": "thinking",
-                        "thinking": getattr(block, "thinking", "") or "",
-                        "signature": getattr(block, "signature", "") or "",
-                    }
-                elif block_kind == "redacted_thinking":
-                    # Arrives whole — opaque data, no deltas.
-                    thinking_accum[getattr(event, "index", 0)] = {
-                        "type": "redacted_thinking",
-                        "data": getattr(block, "data", "") or "",
-                    }
-            elif kind == "content_block_delta":
-                delta = getattr(event, "delta", None)
-                delta_kind = getattr(delta, "type", None)
-                if delta_kind == "text_delta":
-                    text = getattr(delta, "text", "") or ""
-                    if text:
-                        text_parts.append(text)
-                        yield StreamChunk(text_delta=text)
-                elif delta_kind == "input_json_delta":
-                    acc = tool_accum.get(getattr(event, "index", 0))
-                    if acc is not None:
-                        acc["json"] += getattr(delta, "partial_json", "") or ""
-                elif delta_kind == "thinking_delta":
-                    acc = thinking_accum.get(getattr(event, "index", 0))
-                    thought = getattr(delta, "thinking", "") or ""
-                    if acc is not None and thought:
-                        acc["thinking"] += thought
-                        yield StreamChunk(reasoning_delta=thought)
-                elif delta_kind == "signature_delta":
-                    acc = thinking_accum.get(getattr(event, "index", 0))
-                    if acc is not None:
-                        acc["signature"] = (acc.get("signature") or "") + (
-                            getattr(delta, "signature", "") or ""
-                        )
-            elif kind == "message_delta":
-                last_message_delta = getattr(event, "delta", None)
-                reason = getattr(last_message_delta, "stop_reason", None)
-                if reason:
-                    stop_reason = reason
-                # Final (cumulative) output-token count rides message_delta.usage.
-                out = int(
-                    getattr(getattr(event, "usage", None), "output_tokens", 0) or 0
-                )
-                if out:
-                    usage = usage or TokenUsage()
-                    usage.output = out
+            last_message_delta: Any = None
+            for event in events:
+                kind = getattr(event, "type", None)
+                if kind == "message_start":
+                    # Prompt-side counts (input + cache split) ride the opening event.
+                    usage = (
+                        _usage_from(getattr(getattr(event, "message", None), "usage", None))
+                        or usage
+                    )
+                elif kind == "content_block_start":
+                    block = getattr(event, "content_block", None)
+                    block_kind = getattr(block, "type", None)
+                    if block_kind == "tool_use":
+                        tool_accum[getattr(event, "index", 0)] = {
+                            "id": getattr(block, "id", "") or "",
+                            "name": getattr(block, "name", "") or "",
+                            "json": "",
+                        }
+                    elif block_kind == "thinking":
+                        thinking_accum[getattr(event, "index", 0)] = {
+                            "type": "thinking",
+                            "thinking": getattr(block, "thinking", "") or "",
+                            "signature": getattr(block, "signature", "") or "",
+                        }
+                    elif block_kind == "redacted_thinking":
+                        # Arrives whole — opaque data, no deltas.
+                        thinking_accum[getattr(event, "index", 0)] = {
+                            "type": "redacted_thinking",
+                            "data": getattr(block, "data", "") or "",
+                        }
+                elif kind == "content_block_delta":
+                    delta = getattr(event, "delta", None)
+                    delta_kind = getattr(delta, "type", None)
+                    if delta_kind == "text_delta":
+                        text = getattr(delta, "text", "") or ""
+                        if text:
+                            text_parts.append(text)
+                            yield StreamChunk(text_delta=text)
+                    elif delta_kind == "input_json_delta":
+                        acc = tool_accum.get(getattr(event, "index", 0))
+                        if acc is not None:
+                            acc["json"] += getattr(delta, "partial_json", "") or ""
+                    elif delta_kind == "thinking_delta":
+                        acc = thinking_accum.get(getattr(event, "index", 0))
+                        thought = getattr(delta, "thinking", "") or ""
+                        if acc is not None and thought:
+                            acc["thinking"] += thought
+                            yield StreamChunk(reasoning_delta=thought)
+                    elif delta_kind == "signature_delta":
+                        acc = thinking_accum.get(getattr(event, "index", 0))
+                        if acc is not None:
+                            acc["signature"] = (acc.get("signature") or "") + (
+                                getattr(delta, "signature", "") or ""
+                            )
+                elif kind == "message_delta":
+                    last_message_delta = getattr(event, "delta", None)
+                    reason = getattr(last_message_delta, "stop_reason", None)
+                    if reason:
+                        stop_reason = reason
+                    # Final (cumulative) output-token count rides message_delta.usage.
+                    out = int(
+                        getattr(getattr(event, "usage", None), "output_tokens", 0) or 0
+                    )
+                    if out:
+                        usage = usage or TokenUsage()
+                        usage.output = out
 
-        _raise_on_refusal(stop_reason, last_message_delta)
-        tool_calls = []
-        for index in sorted(tool_accum):
-            acc = tool_accum[index]
-            tool_calls.append(
-                ToolCall(
-                    id=acc["id"], name=acc["name"], arguments=_parse_args(acc["json"])
+            _raise_on_refusal(stop_reason, last_message_delta)
+            tool_calls = []
+            for index in sorted(tool_accum):
+                acc = tool_accum[index]
+                tool_calls.append(
+                    ToolCall(
+                        id=acc["id"], name=acc["name"], arguments=_parse_args(acc["json"])
+                    )
+                )
+            thinking_blocks = [thinking_accum[i] for i in sorted(thinking_accum)]
+
+            yield StreamChunk(
+                turn=AssistantTurn(
+                    text="".join(text_parts) or None,
+                    tool_calls=tool_calls,
+                    finish_reason=_STOP_REASON_MAP.get(stop_reason, stop_reason),
+                    reasoning=_reasoning_text(thinking_blocks),
+                    extras=_thinking_extras(thinking_blocks),
+                    usage=usage,
                 )
             )
-        thinking_blocks = [thinking_accum[i] for i in sorted(thinking_accum)]
-
-        yield StreamChunk(
-            turn=AssistantTurn(
-                text="".join(text_parts) or None,
-                tool_calls=tool_calls,
-                finish_reason=_STOP_REASON_MAP.get(stop_reason, stop_reason),
-                reasoning=_reasoning_text(thinking_blocks),
-                extras=_thinking_extras(thinking_blocks),
-                usage=usage,
-            )
-        )
+        finally:
+            close_stream(events)
