@@ -22,7 +22,7 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from .. import procutil
 from ..taskutil import spawn_retained
@@ -2201,6 +2201,9 @@ class SessionManager:
                 conn.tools,
                 lambda tool, args, name=server.name: self.mcp.call(name, tool, args),
                 loop,
+                register_stop_hook=lambda hook, sid=session_id: (
+                    self._register_engine_stop_hook(sid, hook)
+                ),
             )
             if backed:
                 # Per-tool approval from the pinned read/write classification
@@ -2212,6 +2215,23 @@ class SessionManager:
                     )
             out.extend(callables)
         return out
+
+    def _register_engine_stop_hook(
+        self, session_id: str, hook: Callable[[], None]
+    ) -> Callable[[], None]:
+        """Attach `hook` to this session's engine for as long as the returned detach is
+        left uncalled; a no-op detach when there is no engine.
+
+        Late-bound on purpose. MCP callables are built by `prepare_mcp_tools`, which runs
+        BEFORE `get_engine` — there is no engine to close over yet. By the time a tool
+        actually runs there always is one (a tool only runs inside a turn), so the lookup
+        degrades to today's behaviour instead of failing the call. Same shape as the
+        `explore` Stop relay's `_engine_box` in agent.py.
+        """
+        engine = self._engines.get(session_id)
+        if engine is None:
+            return lambda: None
+        return engine.add_interrupt_hook(hook)
 
     def _should_notify_mcp_failure(self, name: str, error: str) -> bool:
         """True once per failure episode: the first session after `name` starts

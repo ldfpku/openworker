@@ -6,11 +6,17 @@ hosted chat templates reject orphans and durable-resume re-prompts them."""
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
+import threading
 import time
+from types import SimpleNamespace
 
 import aisuite as ai
 from coworker.engine import ApprovalOutcome, TurnEngine
 from coworker.events import EventType
+from coworker.mcp import build_callables
+from coworker.mcp.config import MCPServerDef
 from coworker.permissions import PermissionEngine
 from coworker.providers import (
     AssistantTurn,
@@ -19,6 +25,7 @@ from coworker.providers import (
     StreamChunk,
     ToolCall,
 )
+from coworker.risk import RiskClass, classify
 from coworker.tools import ToolRegistry
 
 
@@ -627,3 +634,376 @@ def test_retry_looks_through_answer_superseded_notices_only(tmp_path):
     superseded()
     assert engine._tail_is_retriable_error() is False
     assert asyncio.run(_drain_retry(engine)) == []
+
+
+# -- Stop that does not wait for the tool (2026-09-22) --------------------------------
+#
+# Two mechanisms, deliberately separate. MCP calls are genuinely CANCELLED (the future the
+# worker thread is blocked on is cancelled from an interrupt hook), so their result is
+# accurate. Everything else the classification calls side-effect-free is merely ABANDONED:
+# the thread runs on and its result is discarded, which is why it may only ever apply
+# where discarding the result is the whole loss.
+
+
+def _run_tool_engine(tmp_path, registry, calls, **kwargs):
+    return TurnEngine(
+        provider=OneTurnProvider(_tool_turn(calls)),
+        registry=registry,
+        permissions=PermissionEngine(workspace_root=tmp_path),
+        model="gpt-5.5",
+        **kwargs,
+    )
+
+
+def _stop_once_started(engine, started):
+    """Press Stop from outside, as the user does: once the tool is really running."""
+
+    def press():
+        started.wait(10)
+        engine.request_interrupt()
+
+    thread = threading.Thread(target=press, daemon=True)
+    thread.start()
+    return thread
+
+
+def _finished_events(events):
+    return [ev for ev in events if ev.type == EventType.TOOL_FINISHED]
+
+
+def test_stop_abandons_the_wait_for_a_read_tool(tmp_path):
+    """The shape this exists for: a read that is still running when the user stops. The
+    turn must not sit through the rest of it. The gate is released in `finally`, so the
+    pinned worker thread is never left behind whatever the assertions do."""
+    registry = ToolRegistry()
+    started, release = threading.Event(), threading.Event()
+
+    def slow_read():
+        """A read that is still running when Stop lands."""
+        started.set()
+        release.wait(10)  # the tool's own runtime, as far as the turn is concerned
+        return {"rows": 3}
+
+    registry.register(slow_read)
+    engine = _run_tool_engine(tmp_path, registry, [("slow_read", {})])
+
+    async def scenario():
+        _stop_once_started(engine, started)
+        clock = time.monotonic()
+        events = [ev async for ev in engine.run("go")]
+        elapsed = time.monotonic() - clock
+        # Let the abandoned thread finish while the loop is still alive, so its
+        # done-callback really runs (a closed loop simply never runs it).
+        release.set()
+        await asyncio.sleep(0.3)
+        return events, elapsed
+
+    try:
+        events, elapsed = asyncio.run(scenario())
+    finally:
+        release.set()
+
+    assert elapsed < 10 / 3, f"the turn waited {elapsed:.2f}s for an abandoned tool"
+    finished = _finished_events(events)
+    assert [ev.data["status"] for ev in finished] == ["abandoned"]
+    # No orphan: the call has exactly one tool result, and it tells the model the tool
+    # DID run — otherwise the next turn re-runs a call that already happened.
+    results = _tool_results(engine)
+    assert len(results) == 1
+    answer = json.loads(results[0]["content"])
+    assert answer == {
+        "error": "tool result unavailable",
+        "reason": (
+            "stopped waiting for the tool; it may have completed after the stop"
+        ),
+        "executed": True,
+    }
+    # The real result never arrives late, and the per-call side tables are clear.
+    assert len(_tool_results(engine)) == 1
+    assert engine._tool_started_at == {}
+    assert engine._approval_origins == {}
+    assert engine._standing_notes == {}
+
+
+def test_an_abandoned_tool_that_blows_up_is_logged_and_changes_nothing(tmp_path, caplog):
+    """An exception raised after the turn stopped waiting is swallowed — but not
+    silently. The history it can no longer touch must be exactly what the abandon
+    wrote."""
+    registry = ToolRegistry()
+    started, release = threading.Event(), threading.Event()
+
+    def slow_read():
+        """Raises, but only after the user has already stopped."""
+        started.set()
+        release.wait(10)
+        raise RuntimeError("blew up after the stop")
+
+    registry.register(slow_read)
+    engine = _run_tool_engine(tmp_path, registry, [("slow_read", {})])
+
+    async def scenario():
+        _stop_once_started(engine, started)
+        events = [ev async for ev in engine.run("go")]
+        release.set()
+        await asyncio.sleep(0.3)
+        return events
+
+    with caplog.at_level(logging.WARNING, logger="coworker.engine"):
+        try:
+            asyncio.run(scenario())
+        finally:
+            release.set()
+
+    assert len(_tool_results(engine)) == 1
+    assert "tool result unavailable" in _tool_results(engine)[0]["content"]
+    # `_execute_sync` catches the exception before the thread ever raises, so the line
+    # names the error status it turned into — including the exception type.
+    logged = [r.getMessage() for r in caplog.records]
+    assert any(
+        "abandoned tool slow_read finished" in m
+        and "status=error" in m
+        and "RuntimeError" in m
+        for m in logged
+    ), logged
+
+
+def test_an_abandoned_tool_result_is_never_recorded_as_a_product(tmp_path):
+    """The done-callback's hard limit: it logs and audits, and touches nothing else. A
+    late `_record_result` would append a second result for the same tool_call_id and file
+    the call in the Artifacts panel for a turn the user stopped."""
+    registry = ToolRegistry()
+    started, release = threading.Event(), threading.Event()
+    recorded = []
+
+    def slow_read():
+        """Comes back with a perfectly good result, far too late to use."""
+        started.set()
+        release.wait(10)
+        return {"rows": 3}
+
+    registry.register(slow_read)
+    engine = _run_tool_engine(tmp_path, registry, [("slow_read", {})])
+    engine._agent_files.record = lambda *a, **k: recorded.append(a)
+
+    async def scenario():
+        _stop_once_started(engine, started)
+        async for _ in engine.run("go"):
+            pass
+        before = list(engine.messages)
+        release.set()
+        await asyncio.sleep(0.3)
+        return before
+
+    try:
+        before = asyncio.run(scenario())
+    finally:
+        release.set()
+
+    assert recorded == []
+    assert engine.messages == before
+
+
+def test_a_write_tool_is_still_waited_out(tmp_path):
+    """Unchanged behaviour for anything that is not classified side-effect-free: the turn
+    waits for it, because its result is the only record of what it did."""
+    registry = ToolRegistry()
+    started, release = threading.Event(), threading.Event()
+
+    def write_file(path: str, content: str):
+        """Named for the classification: `risk.WRITE_TOOLS` pins this one by name."""
+        started.set()
+        release.wait(10)
+        return {"written": path, "bytes": len(content)}
+
+    registry.register(write_file)
+
+    async def approve(_req):
+        return ApprovalOutcome.ONCE
+
+    target = str(tmp_path / "out.txt")
+    engine = _run_tool_engine(
+        tmp_path,
+        registry,
+        [("write_file", {"path": target, "content": "hi"})],
+        approver=approve,
+    )
+
+    async def scenario():
+        _stop_once_started(engine, started)
+        releaser = threading.Timer(0.4, release.set)
+        releaser.start()
+        try:
+            return [ev async for ev in engine.run("go")]
+        finally:
+            releaser.cancel()
+
+    try:
+        events = asyncio.run(scenario())
+    finally:
+        release.set()
+
+    finished = _finished_events(events)
+    assert [ev.data["status"] for ev in finished] == ["ok"]
+    assert "written" in _tool_results(engine)[0]["content"]
+
+
+def test_a_read_tool_nobody_stopped_is_unaffected(tmp_path):
+    registry = ToolRegistry()
+
+    def quick_read():
+        """The ordinary path: no Stop anywhere near it."""
+        return {"rows": 1}
+
+    registry.register(quick_read)
+    engine = _run_tool_engine(tmp_path, registry, [("quick_read", {})])
+
+    # `OneTurnProvider` re-issues the same call every round, so the turn runs it until
+    # the iteration cap; the first one is the one under test.
+    events = asyncio.run(_drain(engine))
+    assert _finished_events(events)[0].data["status"] == "ok"
+    assert json.loads(_tool_results(engine)[0]["content"]) == {"rows": 1}
+    assert engine._tool_started_at == {}
+
+
+async def _drain(engine):
+    return [ev async for ev in engine.run("go")]
+
+
+def _abandon_case(tmp_path, tool_name, arguments=None, approver=None):
+    """Run one tool that is still going when Stop lands; return its finished status."""
+    registry = ToolRegistry()
+    started, release = threading.Event(), threading.Event()
+
+    def body(path: str = "", content: str = ""):
+        started.set()
+        release.wait(10)
+        return {"ok": True}
+
+    body.__name__ = tool_name
+    body.__doc__ = "Still running when the user stops."
+    registry.register(body)
+    engine = _run_tool_engine(
+        tmp_path,
+        registry,
+        [(tool_name, arguments or {})],
+        **({"approver": approver} if approver else {}),
+    )
+
+    async def scenario():
+        _stop_once_started(engine, started)
+        releaser = threading.Timer(1.0, release.set)  # so `none`/write cases terminate
+        releaser.start()
+        try:
+            events = [ev async for ev in engine.run("go")]
+        finally:
+            releaser.cancel()
+        release.set()
+        await asyncio.sleep(0.3)
+        return events
+
+    try:
+        events = asyncio.run(scenario())
+    finally:
+        release.set()
+    return [ev.data["status"] for ev in _finished_events(events)]
+
+
+def test_abandon_switch_auto_all_none(tmp_path, monkeypatch):
+    """`OPENWORKER_STOP_ABANDONS_TOOLS`: `auto` (default) goes by the classification,
+    `all` abandons regardless of it, `none` restores waiting for everything."""
+
+    async def approve(_req):
+        return ApprovalOutcome.ONCE
+
+    write_args = {"path": str(tmp_path / "o.txt"), "content": "x"}
+
+    monkeypatch.delenv("OPENWORKER_STOP_ABANDONS_TOOLS", raising=False)
+    assert _abandon_case(tmp_path, "read_thing") == ["abandoned"]
+    assert _abandon_case(tmp_path, "write_file", write_args, approve) == ["ok"]
+
+    monkeypatch.setenv("OPENWORKER_STOP_ABANDONS_TOOLS", "none")
+    assert _abandon_case(tmp_path, "read_thing") == ["ok"]
+
+    monkeypatch.setenv("OPENWORKER_STOP_ABANDONS_TOOLS", "all")
+    assert _abandon_case(tmp_path, "write_file", write_args, approve) == ["abandoned"]
+
+    monkeypatch.setenv("OPENWORKER_STOP_ABANDONS_TOOLS", "nonsense")
+    assert _abandon_case(tmp_path, "read_thing") == ["abandoned"]
+
+
+def _fake_mcp_tool(name):
+    return SimpleNamespace(
+        name=name,
+        description=f"{name} tool",
+        inputSchema={"type": "object", "properties": {}},
+    )
+
+
+def test_stop_cancels_an_in_flight_mcp_call(tmp_path):
+    """MCP is the one batch that can be stopped for real: the future the worker thread is
+    blocked on is cancelled from an interrupt hook, so the request is dropped instead of
+    merely un-awaited, and the recorded result is the accurate one — `run_shell`'s shape
+    when `interrupt_now` cuts it short."""
+    started = threading.Event()
+    entered = []
+
+    async def call_async(tool, args):
+        entered.append(tool)
+        started.set()
+        await asyncio.sleep(30)  # a server that never answers
+        raise AssertionError("the MCP call was not cancelled")
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        registry = ToolRegistry()
+        engine = _run_tool_engine(
+            tmp_path, registry, [("mcp__srv__hang", {})]
+        )
+        registry.register_all(
+            build_callables(
+                MCPServerDef(name="srv", transport="stdio", requires_approval=False),
+                [_fake_mcp_tool("hang")],
+                call_async,
+                loop,
+                register_stop_hook=engine.add_interrupt_hook,
+            )
+        )
+        _stop_once_started(engine, started)
+        clock = time.monotonic()
+        events = [ev async for ev in engine.run("go")]
+        return engine, events, time.monotonic() - clock
+
+    engine, events, elapsed = asyncio.run(scenario())
+
+    assert entered == ["hang"]
+    assert elapsed < 1.0, f"the stopped turn took {elapsed:.2f}s to end"
+    # Not "abandoned": a cancelled MCP call has a real answer, so it is recorded as one.
+    assert [ev.data["status"] for ev in _finished_events(events)] == ["ok"]
+    assert json.loads(_tool_results(engine)[0]["content"]) == {
+        "error": "interrupted by user"
+    }
+    # And the hook is detached again, so the future cannot outlive the call.
+    assert engine._interrupt_hooks == []
+
+
+def test_mcp_tools_are_cancelled_rather_than_abandoned(tmp_path):
+    """The exclusion that keeps the two mechanisms from fighting. An MCP tool classifies
+    READ whenever its server does not require approval, so without this it would be
+    abandoned — and the abandon would win the race against its own cancellation, turning
+    an accurate "interrupted by user" into "result unavailable"."""
+    registry = ToolRegistry()
+    registry.register_all(
+        build_callables(
+            # A connector-backed server pins approval per tool, so its READ tools really
+            # do arrive here with `requires_approval=False` (manager `prepare_mcp_tools`).
+            MCPServerDef(name="srv", transport="stdio", requires_approval=False),
+            [_fake_mcp_tool("hang")],
+            lambda tool, args: None,
+            asyncio.new_event_loop(),
+        )
+    )
+    engine = _run_tool_engine(tmp_path, registry, [("mcp__srv__hang", {})])
+    call = ToolCall(id="c0", name="mcp__srv__hang", arguments={})
+    spec = registry.get("mcp__srv__hang")
+    assert classify(call.name, spec.metadata) is RiskClass.READ  # …and yet:
+    assert engine._abandonable(call) is False

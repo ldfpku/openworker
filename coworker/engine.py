@@ -47,6 +47,7 @@ from .providers.errors import (
     retry_after_seconds,
 )
 from .providers.openai_provider import looks_like_unparsed_tool_call
+from .risk import RiskClass, classify
 from .taskutil import spawn_retained
 from .tools import ToolRegistry
 
@@ -195,6 +196,67 @@ _FIRST_CHUNK_TIMEOUT_OFF = frozenset({"off", "none", "never"})
 # Logged when a first chunk DID arrive, but took more than this share of the deadline.
 # Data for a later decision about a between-chunks deadline; it changes no behaviour.
 _SLOW_FIRST_CHUNK_FRACTION = 0.5
+
+
+# -- Stop that does not wait for the tool --------------------------------------------
+#
+# Stop cannot reach into a running tool thread: `asyncio.to_thread` has no cancellation
+# and `task.cancel()` only frees the awaiter. Measured on this repo 2026-09-22 (scratchpad
+# probes, since deleted) with a tool that sleeps 3s: pressing Stop ended the turn 2.695s
+# later on the serial path and 2.693s later on the parallel path — i.e. after exactly the
+# tool's remaining runtime. Where the discarded result is the entire loss (see
+# `TurnEngine._abandonable`) the turn stops WAITING instead, and the thread finishes into
+# a log line.
+#
+# `auto` (the default) abandons the classified-safe set, `all` abandons every tool, `none`
+# restores the pre-2026-09-22 behaviour of always waiting. Anything else reads as `auto`.
+_ABANDON_ENV = "OPENWORKER_STOP_ABANDONS_TOOLS"
+_ABANDON_MODES = frozenset({"auto", "all", "none"})
+_ABANDON_DEFAULT = "auto"
+# Read-only network tools. They classify EGRESS because the MODEL picks the destination
+# and the URL/query can carry data off-machine — that is the permission gate's concern,
+# not this one. Neither changes anything at the far end, so discarding the response loses
+# the response and nothing else.
+_ABANDONABLE_EGRESS_TOOLS = frozenset({"web_fetch", "web_search"})
+# Process-wide, because the thread pool they occupy is process-wide.
+_abandoned_lock = threading.Lock()
+_abandoned_live = 0
+_abandoned_warned = False
+
+
+def _abandon_mode() -> str:
+    raw = (os.environ.get(_ABANDON_ENV) or "").strip().lower()
+    return raw if raw in _ABANDON_MODES else _ABANDON_DEFAULT
+
+
+def _abandoned_outcome(fut: "asyncio.Future") -> str:
+    """One short phrase saying how an abandoned tool thread ended, for the log line and
+    the audit record — never its result, which is thrown away unread.
+
+    A tool that blows up after the stop does NOT surface here as an exception:
+    `_execute_sync` catches every `Exception` and turns it into an `(error dict, "error")`
+    outcome, so the phrase names the status and the `error_type` it carried. The raised
+    branch is for what `_execute_sync` does not catch (a `BaseException` out of the
+    thread) and for the task being cancelled out from under the callback.
+    """
+    if fut.cancelled():
+        return "cancelled"
+    exc = fut.exception()
+    if exc is not None:
+        return f"raised {type(exc).__name__}: {exc}"
+    try:
+        result, status = fut.result()
+    except Exception as unpack:  # pragma: no cover - `_execute_sync` always returns a pair
+        return f"unreadable outcome: {type(unpack).__name__}"
+    kind = result.get("error_type") if isinstance(result, dict) else None
+    return f"status={status}" + (f", {kind}" if kind else "")
+
+
+def _default_thread_pool_size() -> int:
+    """How many threads `asyncio.to_thread` can use at once — CPython's default
+    `ThreadPoolExecutor` sizing, which the loop's default executor takes. Only used to
+    size the "too many abandoned threads" warning, so an inexact answer is harmless."""
+    return min(32, (os.cpu_count() or 1) + 4)
 
 
 def _model_retries() -> int:
@@ -1813,10 +1875,13 @@ class TurnEngine:
                     yield Event(EventType.TOOL_STARTED, {"name": tool_call.name})
                     self._audit(tool_call, stage="started")
                 outcomes = await asyncio.gather(
-                    *[asyncio.to_thread(self._execute_sync, tc) for tc in concurrent]
+                    *[self._run_tool(tc) for tc in concurrent]
                 )
-                for tool_call, (result, status) in zip(concurrent, outcomes):
-                    yield self._record_result(tool_call, result, status)
+                for tool_call, outcome in zip(concurrent, outcomes):
+                    if outcome is None:
+                        yield self._abandoned_tool(tool_call)
+                    else:
+                        yield self._record_result(tool_call, *outcome)
 
         for tool_call in serial:
             if self._cancel.is_set():
@@ -1824,8 +1889,207 @@ class TurnEngine:
                 continue
             yield Event(EventType.TOOL_STARTED, {"name": tool_call.name})
             self._audit(tool_call, stage="started")
-            result, status = await asyncio.to_thread(self._execute_sync, tool_call)
-            yield self._record_result(tool_call, result, status)
+            outcome = await self._run_tool(tool_call)
+            if outcome is None:
+                yield self._abandoned_tool(tool_call)
+            else:
+                yield self._record_result(tool_call, *outcome)
+
+    # -- running one authorized call, and not waiting forever for it -------------------
+
+    async def _run_tool(self, tool_call: ToolCall) -> Optional[tuple[Any, str]]:
+        """Execute one authorized call and return its `(result, status)`, or None when
+        the turn was stopped and this call's tool is one we stop WAITING for.
+
+        Tools that are not abandonable keep exactly the old behaviour: the turn waits for
+        the thread, however long it takes.
+        """
+        if not self._abandonable(tool_call):
+            return await asyncio.to_thread(self._execute_sync, tool_call)
+        return await self._run_tool_interruptibly(tool_call)
+
+    def _abandonable(self, tool_call: ToolCall) -> bool:
+        """Whether Stop may stop WAITING for this tool instead of waiting it out.
+
+        Abandoning a wait does not stop the tool — the thread runs to completion and its
+        result is thrown away — so it is only ever safe where the discarded result is the
+        whole loss. That is what the classification is asked for: `RiskClass.READ` (plus
+        the two read-only network tools, which classify EGRESS because the model chooses
+        their destination — the gate cares about the outbound query, this does not).
+
+        Two deliberate exclusions inside that set:
+
+        * MCP tools (`category == "mcp"`), because they can be genuinely cancelled — the
+          call's future is cancelled by an interrupt hook (coworker/mcp/tools.py) and the
+          call comes back as interrupted within the same stop. Abandoning the wait would
+          win that race and replace an accurate "interrupted by user" with "result
+          unavailable". `all` is the manual override that gives up that distinction.
+        * Nothing else is excluded by name, which means `todo_write` and `shell_task_kill`
+          are in: both classify READ today although each does change something (the
+          session's todo list, a background task). Neither effect is undone by discarding
+          the result, and both return promptly, so the abandon path should essentially
+          never fire for them — but this is a REAL widening of "no side effects", not a
+          proof of it. Flagged rather than silently relied on.
+        """
+        mode = _abandon_mode()
+        if mode == "none":
+            return False
+        if mode == "all":
+            return True
+        spec = self.registry.get(tool_call.name)
+        metadata = spec.metadata if spec else None
+        if getattr(metadata, "category", "") == "mcp":
+            return False
+        if tool_call.name in _ABANDONABLE_EGRESS_TOOLS:
+            return True
+        return (
+            classify(tool_call.name, metadata, self.permissions.risk_overrides)
+            is RiskClass.READ
+        )
+
+    async def _run_tool_interruptibly(
+        self, tool_call: ToolCall
+    ) -> Optional[tuple[Any, str]]:
+        """`_execute_sync` in a worker thread, racing the turn's Stop flag. Returns the
+        tool's `(result, status)` when the tool wins, None when Stop does.
+
+        Deliberately NOT `_interruptible`, and deliberately not cancelling the task:
+        `task.cancel()` does nothing to a thread. Measured 2026-09-22 (scratchpad probe
+        `itc_probe3.py`, since deleted): the awaiter got `CancelledError` immediately while
+        the thread body ran to the end, and an exception the body raised after that was
+        swallowed with no "never retrieved" warning at all. So the task is kept and given a
+        done-callback instead — that callback is the only thing that ever hears from an
+        abandoned tool again.
+        """
+        task = asyncio.ensure_future(asyncio.to_thread(self._execute_sync, tool_call))
+        cancel_wait = asyncio.ensure_future(self._cancel.wait())
+        try:
+            done, _ = await asyncio.wait(
+                {task, cancel_wait}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if cancel_wait in done and not cancel_wait.cancelled():
+                failure = cancel_wait.exception()
+                if failure is not None:
+                    # The Stop wait FAILING is not the user pressing Stop (the 2026-09-18
+                    # defence in `_interruptible`). Read as one, it would throw away the
+                    # result of a tool nobody stopped. Fall back to the behaviour that
+                    # needs no stop signal at all: wait the tool out, as before this
+                    # change.
+                    logger.warning(
+                        "session %s: the stop signal failed while %s was running (%s: %s);"
+                        " waiting for the tool instead of abandoning it",
+                        self.audit_context.get("session_id") or "-",
+                        tool_call.name,
+                        type(failure).__name__,
+                        failure,
+                    )
+                    return await task
+            # The tool winning outranks Stop landing in the same pass: a finished call has
+            # a real result and there is nothing to gain from discarding it.
+            if task in done:
+                return task.result()
+            self._abandon_tool_wait(tool_call, task)
+            return None
+        finally:
+            cancel_wait.cancel()
+
+    def _abandon_tool_wait(self, tool_call: ToolCall, task: "asyncio.Future") -> None:
+        """Let go of `task`: nothing will read its result, and the only trace the thread
+        leaves when it finally finishes is a log line plus an audit record.
+
+        The done-callback must NOT touch conversation state. By the time it runs the turn
+        has ended, `_abandoned_tool` has already written this call's tool result, and a
+        late `_record_result` would append a SECOND result for the same tool_call_id (and
+        record artifacts for a call the user stopped). It also has to survive its loop
+        being gone: `explore` closes its child loop without waiting for the thread
+        (tools/subagent.py). That case needs no code here — a closed loop simply never
+        runs the callback (`asyncio.futures._call_set_state` drops the completion) — which
+        is why the counter below can undercount on that path and the whole body is
+        wrapped anyway.
+        """
+        session = self.audit_context.get("session_id") or "-"
+        started = self._tool_started_at.get(tool_call.id)
+        global _abandoned_live, _abandoned_warned
+        pool = _default_thread_pool_size()
+        with _abandoned_lock:
+            _abandoned_live += 1
+            live = _abandoned_live
+            warn_pressure = not _abandoned_warned and live > pool // 2
+            if warn_pressure:
+                _abandoned_warned = True
+        if warn_pressure:
+            logger.warning(
+                "%d tool threads are running with nobody waiting for them; the default "
+                "thread pool holds %d, so further work may queue behind them",
+                live,
+                pool,
+            )
+
+        def _finished(fut: "asyncio.Future") -> None:
+            try:
+                global _abandoned_live
+                with _abandoned_lock:
+                    _abandoned_live -= 1
+                detail = _abandoned_outcome(fut)
+                elapsed = (time.time() - started) if started is not None else None
+                logger.warning(
+                    "session %s: abandoned tool %s finished after %s with nobody "
+                    "waiting; its result (%s) was discarded",
+                    session,
+                    tool_call.name,
+                    f"{elapsed:.1f}s" if elapsed is not None else "an unknown time",
+                    detail,
+                )
+                self._audit(
+                    tool_call,
+                    stage="abandoned_exit",
+                    status="abandoned",
+                    reason=f"finished after the turn stopped waiting; {detail}",
+                )
+                # `_execute_sync` stamps `_tool_started_at` from inside the thread, so the
+                # stamp can land AFTER `_abandoned_tool` popped it. The body has finished
+                # by here, so this is the pop that is guaranteed to find it.
+                self._tool_started_at.pop(tool_call.id, None)
+            except Exception:  # pragma: no cover - a callback must never raise on the loop
+                pass
+
+        task.add_done_callback(_finished)
+
+    def _abandoned_tool(self, tool_call: ToolCall) -> Event:
+        """The stop-path answer for a call whose thread we stopped waiting for.
+
+        `executed: true` is the load-bearing field. The tool very likely DID run (and may
+        still be running); a plain "not executed" here would invite the model to re-run a
+        call that already happened the moment the conversation continues.
+        """
+        result = {
+            "error": "tool result unavailable",
+            "reason": (
+                "stopped waiting for the tool; it may have completed after the stop"
+            ),
+            "executed": True,
+        }
+        self.messages.append(_tool_result_message(tool_call, result))
+        # Same side tables `_record_result` clears, cleared here for the same reason: they
+        # are keyed by tool_call.id and nothing else will ever come back for this one.
+        self._approval_origins.pop(tool_call.id, None)
+        self._standing_notes.pop(tool_call.id, None)
+        self._tool_started_at.pop(tool_call.id, None)
+        self._audit(
+            tool_call,
+            stage="finished",
+            status="abandoned",
+            reason="stopped waiting for the tool",
+        )
+        return Event(
+            EventType.TOOL_FINISHED,
+            {
+                "name": tool_call.name,
+                "status": "abandoned",
+                "reason": "stopped waiting",
+                "result_preview": _preview(result),
+            },
+        )
 
     def _mangled_tool(self, tool_call: ToolCall) -> Event:
         """Answer a tool call whose arguments never parsed, with the real diagnosis.
