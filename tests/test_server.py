@@ -1369,7 +1369,12 @@ def test_ws_first_message_binds_then_midsession_switch_persists_notice(tmp_path)
     reconnects — found 2026-07-04). Mid-session rebinds are ALLOWED (roadmap item 3,
     2026-07-22, supersedes the 07-04 lock): the switch lands as a persisted model_switch
     notice and a model_changed broadcast, and the next turn runs on the new model."""
-    # 4 turns: 3 user turns + the autotitle's fire-and-forget complete() after turn 1.
+    # 4 scripted turns, but only 3 are ever consumed: ScriptedProvider's
+    # is_autotitle_call guard (see the class above) now intercepts every autotitle
+    # fire-and-forget call before it can pop one, so nothing here is reserved for
+    # titling anymore. The 3 user turns below pop these in order — "Session title" is
+    # just the second turn's reply text (never asserted) — and "still ok" is unused
+    # padding.
     client = _client(
         tmp_path, [_text("ok"), _text("Session title"), _text("ok again"), _text("still ok")]
     )
