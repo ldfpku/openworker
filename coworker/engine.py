@@ -156,43 +156,59 @@ _TURN_ABORTED_RETRIED = " Automatic retry didn't help ({n} retries)."
 # A provider that ACCEPTS the request and then sends nothing is the one stall the bridge
 # had no answer for: the Stop race below covers the user changing their mind, but nothing
 # covered the user simply waiting. The agent loop deliberately passes no `timeout`, so
-# each vendor SDK's own defaults are all that ever ends such a call (`base.bounded_client`
-# says as much: "the agent loop wants the SDK's own resilience"). What those defaults are
+# each vendor SDK's own defaults are what ends such a call (`base.bounded_client` says as
+# much: "the agent loop wants the SDK's own resilience"). What those defaults are
 # was READ OFF THE SDKs installed in this repo's venv on 2026-09-22 — no live provider was
 # stalled, and none of this comes from a production incident:
 #
 #   * OpenAI and Anthropic: `openai._constants.DEFAULT_TIMEOUT` and the anthropic
 #     equivalent are both `Timeout(connect=5.0, read=600, write=600, pool=600)`, with
-#     `DEFAULT_MAX_RETRIES = 2` and a timed-out request counted as retryable. ~1800s worst
-#     case, by the same multiplier `bounded_client` exists to defeat. (openai 3.3.1,
-#     anthropic 1.2.0.)
+#     `DEFAULT_MAX_RETRIES = 2` and a timed-out request counted as retryable — by
+#     different routes: openai's `_base_client._request` catches `timeout_exceptions()`
+#     and retries while retries remain, anthropic's raises `APITimeoutError` and its
+#     `_should_retry_exception` names that type as retryable. ~1800s worst case, by the
+#     same multiplier `bounded_client` exists to defeat. (openai 3.3.1, anthropic 1.2.0.)
 #   * Bedrock: `bedrock_provider._ensure_client` builds the boto3 client with no
 #     `botocore.config.Config`, so botocore's default `read_timeout` — 60s, read off
-#     `botocore.config.Config().read_timeout` — is what applies. How many attempts
-#     botocore stacks on top of that was NOT derived here.
+#     `botocore.config.Config().read_timeout` — bounds each socket READ. That is not the
+#     bound on the whole call, and the two halves of a `converse_stream` differ:
+#     until the response comes back, the request sits in botocore's retry loop
+#     (`endpoint.Endpoint._send_request`) and a read timeout there is retried — default
+#     `retry_mode` is `legacy` (`args.ClientArgsCreator._compute_retry_mode`),
+#     `_retry.json`'s `__default__.max_attempts` is 5, and `retryhandler.EXCEPTION_MAP`'s
+#     `GENERAL_CONNECTION_ERROR` lists `ReadTimeoutError` — so up to ~5 × 60s, plus
+#     backoff. Once it HAS come back, iterating `response["stream"]`
+#     (`bedrock_provider.stream`, ~line 427) is outside that loop: for an event-stream
+#     output botocore hands back the raw HTTP response and reads it lazily
+#     (`endpoint.convert_to_response_dict`), so there 60s is the whole bound.
+#     (botocore 1.43.75.)
 #   * Gemini: `gemini_provider._ensure_client` sets `HttpOptions.timeout=600_000` (ms) on
 #     the client it builds for its own API-key path, and `vertex_provider._family_client`
-#     sets the same 600s/10s (`httpx.Timeout(600.0, connect=10.0)`) bound on the client it
-#     injects for `vertex:gemini/*` models — see the long comment at
-#     `gemini_provider._ensure_client` for why `HttpOptions.timeout`, not
-#     `client_args["timeout"]`, is what actually reaches the wire. NOTE: this is a
+#     sets the same on the client it injects for `vertex:gemini/*` models. What reaches
+#     the wire on both routes is one 600s scalar covering connect as well as
+#     read/write/pool: `HttpOptions.timeout` becomes the per-request `timeout=`
+#     (google-genai 2.19.0 `_api_client.py:1438`, `:1450`, `:1499`), while the
+#     `httpx.Timeout(600.0, connect=10.0)` those two call sites also pass via
+#     `client_args` is a client-level default these calls never consult — see the long
+#     comment at `gemini_provider._ensure_client`. NOTE: this is a
 #     resource-exhaustion backstop on the SOCKET, not a bound on this deadline or on the
 #     turn — see `FirstChunkTimeout`'s docstring below for what it does and does not free.
 #     (Corrects a claim this comment made before this branch, inherited from d57a665/
 #     1234196, that Gemini's stream path had no read timeout anywhere in this tree.)
 #
-# So "eventually" ranges from Bedrock's ~60s-per-attempt to OpenAI/Anthropic's ~1800s
+# So "eventually" ranges from Bedrock's 60s per socket read to OpenAI/Anthropic's ~1800s
 # worst case to Gemini's 600s socket backstop — and until whichever of those fires, the
 # turn shows a spinner and the server log shows nothing at all.
 #
 # This bounds the WAIT, not the resources. When it fires the producer thread is still
 # parked in the provider's read and the socket is still open; both are let go only when
 # that read finally returns on the numbers above (Gemini's 600s bound included — it frees
-# the *socket*, not this deadline: at the `_FIRST_CHUNK_TIMEOUT_DEFAULT` of 120s this
-# deadline still fires first for a wedged Gemini call, same as for OpenAI/Anthropic
-# (SDK read=600s) — but not for Bedrock, whose botocore `read_timeout` of 60s is BELOW
-# 120s and so fires first there instead) — and NOTHING IN THIS TREE SHORTENS A SOCKET'S
-# OWN WAIT BELOW THOSE NUMBERS.
+# the *socket*, not this deadline). Of the paths listed above, at the
+# `_FIRST_CHUNK_TIMEOUT_DEFAULT` of 120s this deadline gets there first everywhere except
+# one: a Bedrock call already stalled INSIDE its event stream, where the un-retried 60s
+# read timeout is below 120s. Nothing in `coworker/providers/` shortens a stream's socket
+# wait below these numbers — the only per-request timeout any provider sets is
+# `anthropic_provider._nonstreaming_timeout`, and it is applied to `complete` only.
 # The gain this deadline provides is exactly one thing: the user (and the automatic
 # retry) stops waiting on a wedged call, instead of waiting out whichever of the
 # per-provider figures above the SDK actually enforces.
@@ -569,11 +585,12 @@ class FirstChunkTimeout(TimeoutError):
     the client-level default `client_args` sets (which a real request never uses).
     Gemini is not the only provider whose STREAM path has a read bound — openai and
     anthropic's SDKs default to `Timeout(read=600, …)` and bedrock's botocore client
-    defaults to a 60s `read_timeout` (see the bullet list at `_FIRST_CHUNK_TIMEOUT_ENV`
-    above, ~line 163, which this docstring does not re-derive) — Gemini is the one
-    provider where this repo sets the bound in its OWN code, because google-genai's
-    default for an unconfigured client is unbounded (`timeout=None`) rather than a
-    built-in figure like those three SDKs ship. The one per-request timeout any
+    defaults to a 60s `read_timeout` per read (see the bullet list at
+    `_FIRST_CHUNK_TIMEOUT_ENV` above, ~line 163, which this docstring does not re-derive)
+    — of those four, Gemini is the only one where this repo sets the bound in its OWN
+    code, because google-genai's default for an unconfigured client is unbounded
+    (`timeout=None`) rather than a built-in figure like those three SDKs ship. The one
+    per-request timeout any
     provider's code sets outside of this (`anthropic_provider._nonstreaming_timeout`) is
     applied to `complete` only and says so itself.
 
