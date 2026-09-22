@@ -466,6 +466,93 @@ def test_stream_handles_enum_like_finish_reason():
     assert final.finish_reason == "length"
 
 
+# -- explicit close of the wire stream --------------------------------------------------
+
+
+class _CountingChunks:
+    """A fake wire stream with the shape `close_stream` cares about: iterable, with a
+    `.close()` that counts calls — and, optionally, one that raises mid-iteration.
+
+    Stands in for what `client.models.generate_content_stream(**kwargs)` returns: unlike
+    the openai/anthropic SDKs, google-genai's own return value is a bare generator with no
+    reference cycle (see gemini_provider.stream()'s comment) — this fake still gets a
+    `.close()` because `stream()` now calls `close_stream` on it unconditionally, and a
+    fake without one would only prove the "no .close method" guard, not this path.
+    """
+
+    def __init__(self, chunks, raise_at=None, exc=None):
+        self._chunks = list(chunks)
+        self.raise_at = raise_at
+        self.exc = exc
+        self.closed = 0
+
+    def __iter__(self):
+        index = 0
+        for chunk in self._chunks:
+            if self.raise_at is not None and index == self.raise_at:
+                raise self.exc
+            yield chunk
+            index += 1
+        if self.raise_at is not None and self.raise_at == index:
+            raise self.exc
+
+    def close(self):
+        self.closed += 1
+
+
+class _CountingStreamClient:
+    """`generate_content_stream(**kwargs)` hands back `wire` itself — the object
+    `close_stream(events)` in `stream()` is meant to close — not `iter(wire)`."""
+
+    def __init__(self, wire):
+        self.models = SimpleNamespace(generate_content_stream=lambda **kw: wire)
+
+
+def test_stream_closes_the_wire_when_the_consumer_leaves_early():
+    wire = _CountingChunks(
+        [
+            _response([_text_part("a")], finish_reason=None),
+            _response([_text_part("b")], finish_reason=None),
+        ]
+    )
+    gen = GeminiProvider(client=_CountingStreamClient(wire)).stream(
+        model="m", messages=[{"role": "user", "content": "x"}]
+    )
+    first = next(gen)
+    assert first.text_delta == "a"
+    assert wire.closed == 0
+    gen.close()  # what engine._astream's producer triggers on a Stop
+    assert wire.closed == 1
+
+
+def test_stream_closes_the_wire_on_a_normal_finish():
+    wire = _CountingChunks([_response([_text_part("a")], finish_reason="STOP")])
+    chunks = list(
+        GeminiProvider(client=_CountingStreamClient(wire)).stream(
+            model="m", messages=[{"role": "user", "content": "x"}]
+        )
+    )
+    assert chunks[-1].turn.text == "a"
+    assert wire.closed == 1
+
+
+def test_stream_closes_the_wire_and_still_raises_the_real_error_mid_stream():
+    """The wire raising mid-iteration must reach the caller exactly as-is — closing it in
+    `finally` must never swallow or replace that exception."""
+    boom = RuntimeError("boom")
+    wire = _CountingChunks(
+        [_response([_text_part("a")], finish_reason=None)], raise_at=1, exc=boom
+    )
+    gen = GeminiProvider(client=_CountingStreamClient(wire)).stream(
+        model="m", messages=[{"role": "user", "content": "x"}]
+    )
+    assert next(gen).text_delta == "a"
+    with pytest.raises(RuntimeError) as err:
+        next(gen)
+    assert err.value is boom
+    assert wire.closed == 1
+
+
 # -- registry / capabilities ----------------------------------------------------------
 
 
