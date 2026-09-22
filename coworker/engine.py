@@ -170,24 +170,30 @@ _TURN_ABORTED_RETRIED = " Automatic retry didn't help ({n} retries)."
 #     `botocore.config.Config`, so botocore's default `read_timeout` — 60s, read off
 #     `botocore.config.Config().read_timeout` — is what applies. How many attempts
 #     botocore stacks on top of that was NOT derived here.
-#   * Gemini: `gemini_provider` passes `types.HttpOptions(base_url=…, headers=…)` and no
-#     `timeout` at all, so whatever google-genai defaults to is the only bound. The
-#     scoping run for this change called that unbounded; this comment does not re-derive
-#     it, so treat "unbounded" as that run's figure, not as measured here.
+#   * Gemini: `gemini_provider._ensure_client` sets `HttpOptions.timeout=600_000` (ms) on
+#     the client it builds for its own API-key path, and `vertex_provider._family_client`
+#     sets the same 600s/10s (`httpx.Timeout(600.0, connect=10.0)`) bound on the client it
+#     injects for `vertex:gemini/*` models — see the long comment at
+#     `gemini_provider._ensure_client` for why `HttpOptions.timeout`, not
+#     `client_args["timeout"]`, is what actually reaches the wire. NOTE: this is a
+#     resource-exhaustion backstop on the SOCKET, not a bound on this deadline or on the
+#     turn — see `FirstChunkTimeout`'s docstring below for what it does and does not free.
+#     (Corrects a claim this comment made before this branch, inherited from d57a665/
+#     1234196, that Gemini's stream path had no read timeout anywhere in this tree.)
 #
-# So "eventually" is between ten minutes and never, and until then the turn shows a
-# spinner and the server log shows nothing at all.
+# So "eventually" ranges from Bedrock's ~60s-per-attempt to OpenAI/Anthropic's ~1800s
+# worst case to Gemini's 600s socket backstop — and until whichever of those fires, the
+# turn shows a spinner and the server log shows nothing at all.
 #
 # This bounds the WAIT, not the resources. When it fires the producer thread is still
 # parked in the provider's read and the socket is still open; both are let go only when
-# that read finally returns on the numbers above — and NOTHING IN THIS TREE SHORTENS THAT.
-# The commit that introduced this deadline claimed Gemini's unbounded read was covered by
-# a 600s backstop "on another branch"; that branch is not in this repository (checked
-# 2026-09-22: `git ls-remote --heads origin` lists only `refs/heads/main`, and grepping
-# `coworker/providers/gemini_provider.py` for `timeout` returns nothing), so a wedged
-# Gemini call parks its producer thread for as long as the SDK lets it, exactly as before.
-# The gain claimed here is therefore exactly one thing: the user (and the automatic retry)
-# stops waiting on a wedged call.
+# that read finally returns on the numbers above (Gemini's 600s bound included — it frees
+# the *socket*, not this deadline: at the `_FIRST_CHUNK_TIMEOUT_DEFAULT` of 120s this
+# deadline still fires first for a wedged Gemini call, same as for the unbounded
+# providers) — and NOTHING IN THIS TREE SHORTENS A SOCKET'S OWN WAIT BELOW THOSE NUMBERS.
+# The gain this deadline provides is exactly one thing: the user (and the automatic
+# retry) stops waiting on a wedged call, instead of waiting out whichever of the
+# per-provider figures above the SDK actually enforces.
 _FIRST_CHUNK_TIMEOUT_ENV = "OPENWORKER_FIRST_CHUNK_TIMEOUT"
 _FIRST_CHUNK_TIMEOUT_DEFAULT = 120.0
 # Spellings that mean "no deadline at all" — for a self-hosted endpoint whose queue really
