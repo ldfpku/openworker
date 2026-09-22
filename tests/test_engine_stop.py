@@ -17,7 +17,7 @@ from coworker.engine import ApprovalOutcome, TurnEngine
 from coworker.events import EventType
 from coworker.mcp import build_callables
 from coworker.mcp.config import MCPServerDef
-from coworker.permissions import PermissionEngine
+from coworker.permissions import Mode, PermissionEngine
 from coworker.providers import (
     AssistantTurn,
     ModelCapabilities,
@@ -646,10 +646,10 @@ def test_retry_looks_through_answer_superseded_notices_only(tmp_path):
 
 
 def _run_tool_engine(tmp_path, registry, calls, **kwargs):
+    kwargs.setdefault("permissions", PermissionEngine(workspace_root=tmp_path))
     return TurnEngine(
         provider=OneTurnProvider(_tool_turn(calls)),
         registry=registry,
-        permissions=PermissionEngine(workspace_root=tmp_path),
         model="gpt-5.5",
         **kwargs,
     )
@@ -692,14 +692,21 @@ def test_stop_abandons_the_wait_for_a_read_tool(tmp_path):
         clock = time.monotonic()
         events = [ev async for ev in engine.run("go")]
         elapsed = time.monotonic() - clock
+        # Read the side table BEFORE the thread finishes: the done-callback pops it too,
+        # so checking afterwards would pass even if the abandon leaked it.
+        tables = (
+            dict(engine._tool_started_at),
+            dict(engine._approval_origins),
+            dict(engine._standing_notes),
+        )
         # Let the abandoned thread finish while the loop is still alive, so its
         # done-callback really runs (a closed loop simply never runs it).
         release.set()
         await asyncio.sleep(0.3)
-        return events, elapsed
+        return events, elapsed, tables
 
     try:
-        events, elapsed = asyncio.run(scenario())
+        events, elapsed, tables = asyncio.run(scenario())
     finally:
         release.set()
 
@@ -720,9 +727,50 @@ def test_stop_abandons_the_wait_for_a_read_tool(tmp_path):
     }
     # The real result never arrives late, and the per-call side tables are clear.
     assert len(_tool_results(engine)) == 1
+    assert tables == ({}, {}, {})
     assert engine._tool_started_at == {}
-    assert engine._approval_origins == {}
-    assert engine._standing_notes == {}
+
+
+def test_abandoning_clears_the_approval_origin_table(tmp_path):
+    """`_approval_origins` only fills where a call was allowed without a card — here
+    bypass-approvals mode. Abandoning must clear it: nothing will ever come back for this
+    tool_call.id, and `_record_result` (which normally pops it) never runs."""
+    registry = ToolRegistry()
+    started, release = threading.Event(), threading.Event()
+
+    def web_fetch(url: str):
+        """Read-only network, and consequential enough to be annotated in bypass mode."""
+        started.set()
+        release.wait(10)
+        return {"body": "..."}
+
+    registry.register(web_fetch)
+    engine = _run_tool_engine(
+        tmp_path,
+        registry,
+        [("web_fetch", {"url": "https://example.invalid/x"})],
+        permissions=PermissionEngine(
+            workspace_root=tmp_path, mode=Mode.BYPASS_APPROVALS
+        ),
+    )
+
+    async def scenario():
+        _stop_once_started(engine, started)
+        events = [ev async for ev in engine.run("go")]
+        tables = dict(engine._approval_origins), dict(engine._tool_started_at)
+        # Release inside the loop: `asyncio.run` waits for its default executor on the way
+        # out, so a still-blocked worker thread would hold the test for the gate's timeout.
+        release.set()
+        await asyncio.sleep(0.05)
+        return (events, *tables)
+
+    try:
+        events, origins, started_at = asyncio.run(scenario())
+    finally:
+        release.set()
+
+    assert [ev.data["status"] for ev in _finished_events(events)] == ["abandoned"]
+    assert origins == {} and started_at == {}
 
 
 def test_an_abandoned_tool_that_blows_up_is_logged_and_changes_nothing(tmp_path, caplog):
@@ -1006,4 +1054,33 @@ def test_mcp_tools_are_cancelled_rather_than_abandoned(tmp_path):
     call = ToolCall(id="c0", name="mcp__srv__hang", arguments={})
     spec = registry.get("mcp__srv__hang")
     assert classify(call.name, spec.metadata) is RiskClass.READ  # …and yet:
+    assert engine._abandonable(call) is False
+
+
+def test_explore_is_stopped_for_real_rather_than_abandoned(tmp_path):
+    """Same exclusion, same reason, different mechanism: `explore` relays the parent's
+    Stop into its child engine and comes back with the partial report (tools/subagent.py,
+    landed 2026-09-19). It classifies READ — low risk, no approval — so without the
+    exclusion the parent would stop waiting and throw that report away. The behaviour this
+    protects is pinned end-to-end by tests/test_subagent.py's stop tests."""
+    registry = ToolRegistry()
+
+    def explore(task: str):
+        """Stands in for tools/subagent.py's tool: same name, same classification."""
+        return {"report": "…"}
+
+    registry.register(
+        ai.tool(
+            explore,
+            metadata=ai.ToolMetadata(
+                category="search",
+                risk_level="low",
+                capabilities=["search"],
+                requires_approval=False,
+            ),
+        )
+    )
+    engine = _run_tool_engine(tmp_path, registry, [("explore", {"task": "x"})])
+    call = ToolCall(id="c0", name="explore", arguments={"task": "x"})
+    assert classify(call.name, registry.get("explore").metadata) is RiskClass.READ
     assert engine._abandonable(call) is False

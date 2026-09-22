@@ -218,6 +218,14 @@ _ABANDON_DEFAULT = "auto"
 # not this one. Neither changes anything at the far end, so discarding the response loses
 # the response and nothing else.
 _ABANDONABLE_EGRESS_TOOLS = frozenset({"web_fetch", "web_search"})
+# Tools that already stop themselves, and come back with a truthful result when they do.
+# Abandoning one would win the race against its own stop path and replace that result with
+# "unavailable". `explore` relays the parent's Stop into its child engine (tools/subagent.py
+# + agent.py, landed 2026-09-19) and returns its partial report; MCP calls are cancelled by
+# the hook in coworker/mcp/tools.py — those are matched by category, not by name.
+# `run_shell` belongs to the same family (agent.py's standing `executor.interrupt_now`
+# hook) but needs no entry here: it classifies EXEC and never reaches this set.
+_SELF_INTERRUPTING_TOOLS = frozenset({"explore"})
 # Process-wide, because the thread pool they occupy is process-wide.
 _abandoned_lock = threading.Lock()
 _abandoned_live = 0
@@ -1938,7 +1946,10 @@ class TurnEngine:
             return True
         spec = self.registry.get(tool_call.name)
         metadata = spec.metadata if spec else None
-        if getattr(metadata, "category", "") == "mcp":
+        if (
+            getattr(metadata, "category", "") == "mcp"
+            or tool_call.name in _SELF_INTERRUPTING_TOOLS
+        ):
             return False
         if tool_call.name in _ABANDONABLE_EGRESS_TOOLS:
             return True
