@@ -405,6 +405,24 @@ def test_ensure_client_without_key_raises(monkeypatch):
         GeminiProvider()._ensure_client()
 
 
+def test_ensure_client_bounds_the_http_timeout():
+    """google-genai 2.19.0 leaves the underlying httpx client at Timeout(timeout=None) —
+    unbounded — unless HttpOptions.client_args/async_client_args sets one; a stalled relay
+    or upstream connection would otherwise hang the request forever (verified directly
+    against the installed SDK during recon, both with and without this override)."""
+    # An explicit (non-relay) base_url sidesteps the relay-login check above, which is
+    # irrelevant to what this test verifies.
+    client = GeminiProvider(
+        api_key="AIza-x", base_url="https://generativelanguage.googleapis.com"
+    )._ensure_client()
+    request_timeout = client._api_client._httpx_client.timeout
+    assert request_timeout.read == 600.0
+    assert request_timeout.connect == 10.0
+    async_timeout = client._api_client._async_httpx_client.timeout
+    assert async_timeout.read == 600.0
+    assert async_timeout.connect == 10.0
+
+
 # -- stream() ------------------------------------------------------------------------
 
 
