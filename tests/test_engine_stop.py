@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import aisuite as ai
 from coworker.agent import build_engine
 from coworker.agents import cowork_agent
-from coworker.engine import ApprovalOutcome, TurnEngine
+from coworker.engine import ApprovalOutcome, TurnEngine, _StopSignal
 from coworker.events import EventType
 from coworker.mcp import build_callables
 from coworker.mcp.config import MCPServerDef
@@ -1246,6 +1246,101 @@ def test_read_classified_tools_that_mutate_are_waited_out(tmp_path):
     # …and the exclusions are surgical: ordinary reads are still abandoned.
     for name in ("read_file", "grep", "list_files", "web_fetch"):
         assert abandonable(name) is True, name
+
+
+def test_a_failing_stop_signal_waits_the_tool_out_and_is_not_read_as_a_stop(
+    tmp_path, caplog
+):
+    """The stop signal FAILING is not the user pressing Stop — the 2026-09-18 defence
+    (`_astream`'s dropped frames came from exactly this misreading: a wait that failed
+    was taken for a stop and the turn returned empty).
+
+    `_run_tool_interruptibly` races the tool against `self._cancel.wait()`. If that wait
+    comes back with an exception, the only safe reading is "no stop signal here": fall
+    back to the behaviour that needs none — wait the tool out, as before this branch —
+    and record its real result. Anything else would discard the result of a tool nobody
+    stopped. The resolution deliberately differs from `_interruptible`'s, which cancels
+    and re-raises: re-raising here would leave this call announced with no tool result,
+    the orphaned tool_call the whole file exists to prevent.
+
+    Until now that branch had no test at all.
+    """
+    registry = ToolRegistry()
+    started, release = threading.Event(), threading.Event()
+
+    def read_thing():
+        """A read the turn must sit through, because nothing stopped it."""
+        started.set()
+        release.wait(10)
+        return {"rows": 7}
+
+    registry.register(read_thing)
+
+    class _CallThenAnswer(OneTurnProvider):
+        """One tool call, then a plain answer — `OneTurnProvider` alone would re-issue
+        the same call every round trip and run the turn to its iteration cap."""
+
+        def complete(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return self._turn
+            return AssistantTurn(text="done", finish_reason="stop")
+
+    engine = TurnEngine(
+        provider=_CallThenAnswer(_tool_turn([("read_thing", {})])),
+        registry=registry,
+        permissions=PermissionEngine(workspace_root=tmp_path),
+        model="gpt-5.5",
+    )
+    assert engine._abandonable(ToolCall(id="c0", name="read_thing", arguments={})) is True
+
+    class _BrokenStopSignal(_StopSignal):
+        """Everything real except the await, which is the part under test."""
+
+        async def wait(self):
+            raise RuntimeError("no loop to register a waiter on")
+
+    # Swapped in for the tool call only. `_astream` waits on the same signal between
+    # chunks and RE-RAISES a failure there (that is its own defence, tested elsewhere),
+    # so a signal broken for the whole turn would never reach the tool at all. The swap
+    # is deterministic rather than timed: `_handle_tool_calls` yields TOOL_STARTED and
+    # stays suspended at that yield until this consumer asks for the next event.
+    working, broken = engine._cancel, _BrokenStopSignal()
+    releaser = threading.Timer(0.5, release.set)
+    releaser.start()
+
+    async def scenario():
+        clock = time.monotonic()
+        events = []
+        async for ev in engine.run("go"):
+            if ev.type == EventType.TOOL_STARTED:
+                engine._cancel = broken
+            elif ev.type == EventType.TOOL_FINISHED:
+                engine._cancel = working
+            events.append(ev)
+        return events, time.monotonic() - clock
+
+    try:
+        with caplog.at_level(logging.WARNING, logger="coworker.engine"):
+            events, elapsed = asyncio.run(scenario())
+    finally:
+        releaser.cancel()
+        release.set()
+
+    statuses = [ev.data["status"] for ev in _finished_events(events)]
+    assert statuses == ["ok"], statuses
+    assert "abandoned" not in statuses and "interrupted" not in statuses
+    assert not [ev for ev in events if ev.type == EventType.INTERRUPTED]
+    assert json.loads(_tool_results(engine)[0]["content"]) == {"rows": 7}
+    assert elapsed >= 0.4, f"the turn let go of a tool nobody stopped after {elapsed:.2f}s"
+    warnings = [
+        r.getMessage()
+        for r in caplog.records
+        if "the stop signal failed" in r.getMessage()
+    ]
+    assert len(warnings) == 1, warnings
+    assert "read_thing" in warnings[0] and "RuntimeError" in warnings[0]
+    assert "waiting for the tool instead of abandoning it" in warnings[0]
 
 
 def test_the_auto_abandon_set_is_exactly_the_tools_that_were_audited(tmp_path):
