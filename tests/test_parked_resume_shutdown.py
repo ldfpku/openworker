@@ -449,3 +449,78 @@ def test_asyncio_run_teardown_does_not_run_a_parked_resume(tmp_path, caplog):
 
     assert not target.exists(), "the approved tool ran during asyncio.run's teardown"
     assert _skip_logged(caplog, parked[sid][0])
+
+
+async def test_turn_ending_after_aclose_spawns_no_runner_that_teardown_could_drop(
+    tmp_path, monkeypatch, caplog
+):
+    """`_parked_resume_blocker`'s own `_closing` check, not just the runner's. Without it
+    a turn ending after `aclose` still hands the items to a new runner task, taking them
+    out of `_deferred_resumes` — and `asyncio.run`'s teardown cancels every pending task.
+    A task cancelled before its first step never runs its body, so the runner's own
+    cancellation handler never puts the items back: they vanish without a log line."""
+    mgr = SessionManager(data_dir=tmp_path / "data", workspace=str(tmp_path))
+    sid = "closing-no-runner"
+    caplog.set_level(logging.INFO, logger=MANAGER_LOGGER)
+    engine = await _park_two(mgr, sid, monkeypatch, tmp_path)
+    await asyncio.wait_for(mgr.aclose(), timeout=10)
+
+    before = set(mgr._bg_tasks)
+    mgr.mark_idle(sid)  # the holding turn ends normally, after aclose
+    spawned = [t for t in mgr._bg_tasks if t not in before]
+    # What the teardown does to them, before any of them gets to run.
+    for task in spawned:
+        task.cancel()
+    if spawned:
+        await asyncio.wait(spawned, timeout=10)
+    try:
+        await _settle(mgr)
+    finally:
+        engine.gate.set()
+
+    assert engine.calls == 0
+    assert (
+        spawned,
+        set(mgr._deferred_resumes.get(sid, {})),
+        _skip_logged(caplog, "i1"),
+        _skip_logged(caplog, "i2"),
+    ) == ([], {"i1", "i2"}, True, True), "(no runner, both parked, both logged)"
+
+
+async def test_turn_ending_while_the_scheduler_is_stopping_does_not_start_the_resume(
+    tmp_path, monkeypatch, caplog
+):
+    """`aclose` sets `_closing` before `Scheduler.stop`, not after: that stop awaits the
+    runs it cancels, and any turn on the loop can end normally in the meantime. That turn's
+    `finally: mark_idle` runs in an uncancelled task, so `Task.cancelling()` does not
+    stop it — only `_closing` does."""
+    mgr = SessionManager(data_dir=tmp_path / "data", workspace=str(tmp_path))
+    sid = "ends-during-scheduler-stop"
+    caplog.set_level(logging.INFO, logger=MANAGER_LOGGER)
+    engine = await _park_two(mgr, sid, monkeypatch, tmp_path)
+
+    real_stop = mgr.scheduler.stop
+
+    async def stop_while_a_turn_ends() -> None:
+        before = set(mgr._bg_tasks)
+        mgr.mark_idle(sid)  # the holding turn ends normally while the scheduler stops
+        spawned = [t for t in mgr._bg_tasks if t not in before]
+        if spawned:
+            # A runner got started: let it reach the engine (or finish) before the stop
+            # goes on, as a slow cancelled run would.
+            await _eventually(
+                lambda: engine.calls >= 1 or all(t.done() for t in spawned),
+                what="the started runner to reach the engine",
+            )
+        await real_stop()
+
+    monkeypatch.setattr(mgr.scheduler, "stop", stop_while_a_turn_ends)
+    try:
+        await asyncio.wait_for(mgr.aclose(), timeout=10)
+    finally:
+        engine.gate.set()
+    await _settle(mgr)
+
+    assert engine.calls == 0, "a parked resume was started while aclose was running"
+    assert set(mgr._deferred_resumes.get(sid, {})) == {"i1", "i2"}
+    assert _skip_logged(caplog, "i1") and _skip_logged(caplog, "i2")
