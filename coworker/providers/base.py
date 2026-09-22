@@ -8,9 +8,12 @@ Anthropic/Gemini/Bedrock/Vertex providers, all selected by the registry/router.
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 # Opening tag of the ephemeral per-turn context block the engine appends as its own
 # trailing user message (engine._outbound_messages). Shared here so providers can
@@ -44,6 +47,33 @@ def bounded_client(client: Any, timeout: Any) -> Any:
         return with_options(max_retries=0)
     except Exception:  # noqa: BLE001 - a clone we can't make is no reason to fail the call
         return client
+
+
+def close_stream(stream: Any) -> None:
+    """Best-effort explicit close of an SDK stream object, from the `finally` of a
+    provider's `stream()` generator.
+
+    Several provider SDKs (openai, anthropic) build the streaming iterator with a
+    reference cycle back to the client/stream object (`self._iterator = self.__stream__()`),
+    so their `__del__`/`close`-on-GC path only runs once the cycle is collected, not the
+    moment the last reference drops — a consumer that stops iterating (a chat turn the
+    user cancels) leaves the underlying HTTP connection open until GC happens to run.
+    Calling `stream.close()` here severs that instead of waiting on GC.
+
+    `stream` may be anything: a bare generator, a test double, or an object with no
+    `close` at all — those are silently skipped, since the whole codebase's fake/streaming
+    stand-ins are never required to implement it. And whatever `close()` itself raises is
+    only ever logged at debug level, never re-raised: this always runs from a `finally`,
+    frequently while a real exception (or GeneratorExit) is already propagating out of the
+    generator, and a close failure must never clobber that in-flight error.
+    """
+    close = getattr(stream, "close", None)
+    if not callable(close):
+        return
+    try:
+        close()
+    except Exception:  # noqa: BLE001 - never let a close failure mask the real error
+        logger.debug("close_stream: stream.close() raised", exc_info=True)
 
 
 @dataclass
