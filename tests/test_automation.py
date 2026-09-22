@@ -1131,6 +1131,7 @@ _BOOKKEEPING_KINDS = [
     "compacted",
     "turn_retry",
     "reviewer_paused",
+    "answer_superseded",
 ]
 
 

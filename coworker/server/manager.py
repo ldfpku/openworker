@@ -8877,10 +8877,26 @@ _RUN_FAILED_NOTICE_KINDS = frozenset({"error", "turn_aborted"})
 # Auto-Approve, or a connect in that mode) are read from app.py/engine.py, not driven
 # here.
 #
-# The last three are appended from inside the turn loop (engine.py), and the turn does
-# not always go on past them: an answerless round's `turn_retry` can be the last thing
-# before the token gate ends the turn, leaving `[user, turn_retry]` — the walk looks
-# through it to what came before (see `_run_outcome_from_transcript`).
+# The next three (`compacted`, `turn_retry`, `reviewer_paused`) are appended from inside
+# the turn loop (engine.py), and the turn does not always go on past them: an
+# answerless round's `turn_retry` can be the last thing before the token gate ends the
+# turn, leaving `[user, turn_retry]` — the walk looks through it to what came before
+# (see `_run_outcome_from_transcript`).
+#
+# `answer_superseded` comes from neither: `_note_superseded_answer` appends it from a
+# durable resume (`_durable_resume_turn`), after `engine.resume()` has returned, to say an
+# Inbox answer arrived once the conversation had moved past its prompt and was not
+# applied. It says what became of an answer, not how a turn ended, and being written last
+# it can land right after an `error` notice (the reason the retry guard looks through it,
+# engine `_RETRY_TRANSPARENT_NOTICE_KINDS`). Measured: on the `[..., error,
+# answer_superseded]` transcripts the two retry tests in
+# tests/test_resume_answer_superseded.py build, this walk returned ("ok", None) before the
+# kind was listed here — the unknown-kind default — instead of the error. Whether it can
+# reach a run's own transcript before the run is judged is inferred from the code, not
+# driven: a resume parks while its session is busy (`try_mark_running`), and the
+# scheduled path holds `mark_running` from before its turn until after the verdict is
+# saved, so only a manual run is open to it, in the gap between its turn's `mark_idle`
+# (which starts parked resumes) and the GUI's finalize call.
 # `test_every_notice_kind_is_classified` fails when a new kind is added without being
 # placed here or among the four.
 _BOOKKEEPING_NOTICE_KINDS = frozenset(
@@ -8893,6 +8909,7 @@ _BOOKKEEPING_NOTICE_KINDS = frozenset(
         "compacted",  # TurnEngine._loop: history compacted mid-turn
         "turn_retry",  # TurnEngine._announce_retry: a re-send is due (a gate may end it)
         "reviewer_paused",  # TurnEngine tool handling: auto-approve paused this turn
+        "answer_superseded",  # durable resume: an Inbox answer came too late to apply
     }
 )
 
