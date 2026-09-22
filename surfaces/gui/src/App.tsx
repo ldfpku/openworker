@@ -1272,7 +1272,10 @@ export function App() {
           // Catch-all artifact refresh: files created via shell or on a brand-new session (whose
           // record only exists after the first save) appear once the turn completes.
           setBrowserRefreshKey((k) => k + 1);
-          // Finalize a manual run after its first turn completes (mark it ok in history).
+          // Finalize a manual run after its first turn completes. The backend judges the
+          // result from the session's own transcript, not just "ok": a run the user
+          // stopped is recorded "canceled" (owner ruling 2026-09-19), and a crashed one
+          // "error" (SessionManager.finalize_manual_run / _run_outcome_from_transcript).
           {
             const ar = activeRunRef.current;
             if (ar && ar.sessionId === sessionId) {
