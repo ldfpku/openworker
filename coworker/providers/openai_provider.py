@@ -24,6 +24,7 @@ from .base import (
     TokenUsage,
     ToolCall,
     bounded_client,
+    close_stream,
 )
 from .capabilities import capabilities_for
 
@@ -388,77 +389,80 @@ class OpenAIProvider(ProviderClient):
                 kwargs = _param_fix_retry(kwargs, exc)
         else:
             chunks = client.chat.completions.create(**kwargs)
-        for chunk in chunks:
-            chunk_usage = _usage_from(getattr(chunk, "usage", None))
-            if chunk_usage is not None:
-                usage = chunk_usage
-            choices = getattr(chunk, "choices", None)
-            if not choices:
-                continue
-            choice = choices[0]
-            delta = getattr(choice, "delta", None)
-            if delta is not None:
-                reasoning = _delta_reasoning(delta)
-                if reasoning:
-                    reasoning_parts.append(reasoning)
-                    yield StreamChunk(reasoning_delta=reasoning)
-                content = getattr(delta, "content", None)
-                if content:
-                    text_parts.append(content)
-                    yield StreamChunk(text_delta=content)
-                for tc in getattr(delta, "tool_calls", None) or []:
-                    acc = tool_accum.setdefault(
-                        getattr(tc, "index", 0), {"id": "", "name": "", "args": ""}
-                    )
-                    if getattr(tc, "id", None):
-                        acc["id"] = tc.id
-                    fn = getattr(tc, "function", None)
-                    if fn is not None:
-                        if getattr(fn, "name", None):
-                            acc["name"] = fn.name
-                        if getattr(fn, "arguments", None):
-                            acc["args"] += fn.arguments
-            chunk_finish = getattr(choice, "finish_reason", None)
-            if chunk_finish is not None:
-                # `is not None`, not truthiness: an endpoint that sends `finish_reason: ""`
-                # HAS reported one, and reading that as "never reported" is what made a
-                # perfectly ordinary reply look like a severed stream.
-                finish_reason = chunk_finish
+        try:
+            for chunk in chunks:
+                chunk_usage = _usage_from(getattr(chunk, "usage", None))
+                if chunk_usage is not None:
+                    usage = chunk_usage
+                choices = getattr(chunk, "choices", None)
+                if not choices:
+                    continue
+                choice = choices[0]
+                delta = getattr(choice, "delta", None)
+                if delta is not None:
+                    reasoning = _delta_reasoning(delta)
+                    if reasoning:
+                        reasoning_parts.append(reasoning)
+                        yield StreamChunk(reasoning_delta=reasoning)
+                    content = getattr(delta, "content", None)
+                    if content:
+                        text_parts.append(content)
+                        yield StreamChunk(text_delta=content)
+                    for tc in getattr(delta, "tool_calls", None) or []:
+                        acc = tool_accum.setdefault(
+                            getattr(tc, "index", 0), {"id": "", "name": "", "args": ""}
+                        )
+                        if getattr(tc, "id", None):
+                            acc["id"] = tc.id
+                        fn = getattr(tc, "function", None)
+                        if fn is not None:
+                            if getattr(fn, "name", None):
+                                acc["name"] = fn.name
+                            if getattr(fn, "arguments", None):
+                                acc["args"] += fn.arguments
+                chunk_finish = getattr(choice, "finish_reason", None)
+                if chunk_finish is not None:
+                    # `is not None`, not truthiness: an endpoint that sends `finish_reason: ""`
+                    # HAS reported one, and reading that as "never reported" is what made a
+                    # perfectly ordinary reply look like a severed stream.
+                    finish_reason = chunk_finish
 
-        tool_calls = []
-        for index in sorted(tool_accum):
-            acc = tool_accum[index]
-            try:
-                arguments = json.loads(acc["args"]) if acc["args"] else {}
-            except (TypeError, json.JSONDecodeError):
-                arguments = {"_raw": acc["args"]}
-            tool_calls.append(
-                ToolCall(id=acc["id"], name=acc["name"], arguments=arguments)
-            )
+            tool_calls = []
+            for index in sorted(tool_accum):
+                acc = tool_accum[index]
+                try:
+                    arguments = json.loads(acc["args"]) if acc["args"] else {}
+                except (TypeError, json.JSONDecodeError):
+                    arguments = {"_raw": acc["args"]}
+                tool_calls.append(
+                    ToolCall(id=acc["id"], name=acc["name"], arguments=arguments)
+                )
 
-        text, tool_calls = _maybe_salvage_tool_calls(
-            "".join(text_parts) or None, tool_calls, tools=tools
-        )
-        yield StreamChunk(
-            turn=AssistantTurn(
-                text=text,
-                tool_calls=tool_calls,
-                finish_reason=finish_reason,
-                reasoning="".join(reasoning_parts) or None,
-                usage=usage,
-                # A clean Chat Completions stream ALWAYS ends with a choice chunk carrying
-                # `finish_reason`; reaching here without one means the connection was cut
-                # mid-response (relay/gateway hang-up, upstream timeout). The engine needs
-                # that distinction to tell "the model said nothing" from "the model never
-                # got to finish" — an empty turn ended as `completed` reads to the user as
-                # a silent success (owner-hit 2026-09-18: 3.3k of thinking, no answer, no
-                # error). Missing usage is NOT usable as the signal: compat endpoints that
-                # ignore `include_usage` would trip it on every good turn. The engine
-                # still gates on having SEEN this model report one, so a backend that
-                # never sends the field can't be accused of cutting every reply short.
-                truncated=finish_reason is None,
+            text, tool_calls = _maybe_salvage_tool_calls(
+                "".join(text_parts) or None, tool_calls, tools=tools
             )
-        )
+            yield StreamChunk(
+                turn=AssistantTurn(
+                    text=text,
+                    tool_calls=tool_calls,
+                    finish_reason=finish_reason,
+                    reasoning="".join(reasoning_parts) or None,
+                    usage=usage,
+                    # A clean Chat Completions stream ALWAYS ends with a choice chunk carrying
+                    # `finish_reason`; reaching here without one means the connection was cut
+                    # mid-response (relay/gateway hang-up, upstream timeout). The engine needs
+                    # that distinction to tell "the model said nothing" from "the model never
+                    # got to finish" — an empty turn ended as `completed` reads to the user as
+                    # a silent success (owner-hit 2026-09-18: 3.3k of thinking, no answer, no
+                    # error). Missing usage is NOT usable as the signal: compat endpoints that
+                    # ignore `include_usage` would trip it on every good turn. The engine
+                    # still gates on having SEEN this model report one, so a backend that
+                    # never sends the field can't be accused of cutting every reply short.
+                    truncated=finish_reason is None,
+                )
+            )
+        finally:
+            close_stream(chunks)
 
 
 def _parse_tool_calls(raw_tool_calls: Any) -> list[ToolCall]:
