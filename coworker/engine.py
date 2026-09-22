@@ -274,8 +274,13 @@ def _abandoned_outcome(fut: "asyncio.Future") -> str:
     A tool that blows up after the stop does NOT surface here as an exception:
     `_execute_sync` catches every `Exception` and turns it into an `(error dict, "error")`
     outcome, so the phrase names the status and the `error_type` it carried. The raised
-    branch is for what `_execute_sync` does not catch (a `BaseException` out of the
-    thread) and for the task being cancelled out from under the callback.
+    branch is for what `_execute_sync` does not catch — a `BaseException` out of the
+    thread.
+
+    "cancelled" is the one answer that does not describe the thread at all: it means the
+    loop was torn down under a task that was still pending, so the thread is very likely
+    still running. `_abandon_tool_wait` therefore does not put this phrase in its log line
+    on that path — it says so outright instead.
     """
     if fut.cancelled():
         return "cancelled"
