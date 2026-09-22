@@ -13,6 +13,7 @@ from coworker.subscriptions import (
 )
 from coworker.providers import ModelCapabilities, ProviderClient
 from coworker.server.manager import SessionManager
+from coworker.testing.autotitle import autotitle_reply, is_autotitle_call
 
 
 class ScriptedProvider(ProviderClient):
@@ -20,6 +21,11 @@ class ScriptedProvider(ProviderClient):
         self._turns = list(turns)
 
     def complete(self, *, model, messages, tools=None, **settings):
+        # This file's tests monkeypatch `deliver_to_session` away, so `mark_idle`'s
+        # auto-title call cannot structurally reach this provider today — guard anyway
+        # in case a future test here drops that monkeypatch.
+        if is_autotitle_call(messages):
+            return autotitle_reply()
         return self._turns.pop(0)
 
     def capabilities(self, model):

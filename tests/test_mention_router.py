@@ -16,6 +16,7 @@ from coworker.conversations import ConversationStore
 from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
 from coworker.server.manager import SessionManager
 from coworker.sessions import SessionRecord
+from coworker.testing.autotitle import autotitle_reply, is_autotitle_call
 
 
 class CapturingProvider(ProviderClient):
@@ -24,6 +25,11 @@ class CapturingProvider(ProviderClient):
         self.calls: list[list[dict]] = []
 
     def complete(self, *, model, messages, tools=None, **settings):
+        # This file's tests monkeypatch `deliver_to_session` away, so `mark_idle`'s
+        # auto-title call cannot structurally reach this provider today — guard anyway
+        # in case a future test here drops that monkeypatch.
+        if is_autotitle_call(messages):
+            return autotitle_reply()
         self.calls.append([dict(m) for m in messages])
         return (
             self._turns.pop(0)
