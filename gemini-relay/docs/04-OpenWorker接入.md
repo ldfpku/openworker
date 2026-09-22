@@ -171,7 +171,7 @@ descriptor 加一个 `base_url` 的 `ProviderField`；③ `_build_gemini`（`reg
 
 | 误区 / 场景 | 事实 |
 |---|---|
-| 把 `GOOGLE_GEMINI_BASE_URL=...` 写进 `state_dir/.env` | 无效。`coworker/secrets.py:46-56` 的 `_load_dotenv()` 只把这个文件读成一个 dict，喂给 `SecretStore.resolve()`（`secrets.py:122-140`）解析存量 profile 里的 `${VAR}` 占位符——从不调用 `os.environ` 写入。必须用 `set-relay-env.ps1`（User 级）或 `start-openworker-cn.ps1`（会话级），不是任何 `.env` 文件。 |
+| 把 `GOOGLE_GEMINI_BASE_URL=...` 写进 `state_dir/.env` | 无效。`coworker/secrets.py:82-106` 的 `_load_dotenv()` 只把这个文件读成一个 dict，喂给 `SecretStore.resolve()`（`secrets.py:255-285`）解析存量 profile 里的 `${VAR}` 占位符——从不调用 `os.environ` 写入。必须用 `set-relay-env.ps1`（User 级）或 `start-openworker-cn.ps1`（会话级），不是任何 `.env` 文件。 |
 | 和 proxy-guard / `HTTPS_PROXY` 共存 | httpx（google-genai 的传输层）默认 `trust_env=True`，会自动读 `HTTP_PROXY`/`HTTPS_PROXY`。如果本机同时装了 proxy-guard，发往 `gemini.smjtools.com` 的流量也会被拽进本地正向代理——`set-relay-env.ps1`/`start-openworker-cn.ps1` 都会自动把中转域名的 apex（`smjtools.com`）加进 `NO_PROXY`，就是为了排除这种情况；验证方法见 [05-验证与排错.md](./05-验证与排错.md)。 |
 | `GEMINI_API_KEY` 要不要改 | 不用。key 解析（`gemini_provider.py:104-115` 的 `resolve_api_key()`：env `GEMINI_API_KEY` → `GOOGLE_API_KEY` → SecretStore）和 base_url 是两条独立逻辑，中转只接管请求目标，不接管认证来源。 |
 | Vertex 家族会不会也走中转 | 不会，也不需要。`vertex_provider.py:160-174` 里 Vertex 的 `gemini/` 家族自己构造 `genai.Client(vertexai=True, ...)`（:166-173），再把这个现成的 `sdk` 以 `client=sdk` 传给 `GeminiProvider`（:174），完全绕过 `_ensure_client()`——本方案唯一的接管点。这条路径读的是 `GOOGLE_VERTEX_BASE_URL`，不是 `GOOGLE_GEMINI_BASE_URL`，本方案不覆盖它。 |
