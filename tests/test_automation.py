@@ -1172,7 +1172,7 @@ def test_every_notice_kind_is_classified():
     import coworker
     from coworker.server.manager import (
         _BOOKKEEPING_NOTICE_KINDS,
-        _MANUAL_RUN_FAILED_NOTICE_KINDS,
+        _RUN_FAILED_NOTICE_KINDS,
     )
 
     root = Path(coworker.__file__).parent
@@ -1184,7 +1184,7 @@ def test_every_notice_kind_is_classified():
     }
     # Sanity: the scan does see kinds from all three files that append notices.
     assert {"interrupted", "mode_switch", "project_presence"} <= found, found
-    verdict_kinds = {"interrupted", "turn_truncated"} | _MANUAL_RUN_FAILED_NOTICE_KINDS
+    verdict_kinds = {"interrupted", "turn_truncated"} | _RUN_FAILED_NOTICE_KINDS
     assert not (verdict_kinds & _BOOKKEEPING_NOTICE_KINDS)
     assert set(_BOOKKEEPING_KINDS) == _BOOKKEEPING_NOTICE_KINDS
     assert found - verdict_kinds - _BOOKKEEPING_NOTICE_KINDS == set()
@@ -1384,6 +1384,176 @@ def test_manual_run_finalize_reads_the_live_engine_when_saves_fail(tmp_path, mon
     assert live[-1]["role"] == "notice" and live[-1]["kind"] == "error", live[-2:]
     assert out["ok"] and out["run"]["status"] == "error"
     assert out["run"]["error"] == live[-1]["text"]
+
+
+# -- scheduled and manual runs judge a turn the same way ---------------------------
+def _scenario_provider(scenario):
+    """A provider whose one job is to end the run's turn a given way. "stop" needs the
+    run's engine: set `.engine` before the first call."""
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+
+    class ScenarioProvider(ProviderClient):
+        engine = None
+
+        def complete(self, *, model, messages, tools=None, **settings):
+            if messages and "title chat sessions" in str(messages[0].get("content", "")):
+                return AssistantTurn(text="small-talk", finish_reason="stop")
+            if scenario == "provider_error":
+                # Not transient (no status, no transient marker): no automatic retry.
+                raise ValueError("the endpoint rejected the request")
+            if scenario == "empty_answer":
+                return AssistantTurn(finish_reason="stop")  # no text, no tool call
+            if scenario == "stop":
+                self.engine.request_interrupt()
+                return AssistantTurn(text="ignored", finish_reason="stop")
+            return AssistantTurn(text="Daily brief: all quiet.", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    return ScenarioProvider()
+
+
+async def _no_wait(delay):
+    return True  # stands in for the engine's retry backoff: re-send at once
+
+
+_OUTCOME_SCENARIOS = [
+    pytest.param("completed", "ok", None, id="completed"),
+    pytest.param(
+        "provider_error", "error", "the endpoint rejected the request", id="provider_error"
+    ),
+    pytest.param("empty_answer", "error", "turn_aborted", id="empty_answer"),
+    pytest.param("stop", "canceled", None, id="stop"),
+]
+
+
+@pytest.mark.parametrize("scenario, status, error", _OUTCOME_SCENARIOS)
+async def test_scheduled_run_status_follows_how_the_turn_ended(
+    tmp_path, monkeypatch, scenario, status, error
+):
+    """`_run_scheduled_task` used to look only at the INTERRUPTED event and at an
+    exception out of `engine.run()`. A provider failure or an answerless turn ends
+    `engine.run()` normally — the engine appends an `error` / `turn_aborted` notice and
+    returns — so those runs were recorded "ok". It now reads the run's transcript with
+    the same `_run_outcome_from_transcript` the manual path uses."""
+    from coworker.server.manager import SessionManager
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    provider = _scenario_provider(scenario)
+    manager = SessionManager(data_dir=tmp_path / "data", provider=provider)
+    task = _task(workspace=str(ws), agent="cowork")
+    manager.task_store.save(task)
+
+    original_build = SessionManager._build_task_engine
+
+    def _capture(self, task, *, session_id):
+        engine = original_build(self, task, session_id=session_id)
+        engine.retry_sleep = _no_wait
+        provider.engine = engine
+        return engine
+
+    monkeypatch.setattr(SessionManager, "_build_task_engine", _capture)
+
+    run = await asyncio.wait_for(manager._run_scheduled_task(task, trigger="schedule"), 10)
+
+    assert run.status == status
+    persisted = manager.task_store.runs(task.id)
+    assert len(persisted) == 1 and persisted[0].status == status
+    tail = manager.session_store.load(run.session_id).messages[-1]
+    if error == "turn_aborted":
+        assert tail["kind"] == "turn_aborted" and run.error == tail["text"]
+    else:
+        assert run.error == error
+
+
+@pytest.mark.parametrize("scenario, status, error", _OUTCOME_SCENARIOS)
+async def test_manual_run_status_matches_the_scheduled_path(
+    tmp_path, monkeypatch, scenario, status, error
+):
+    """The same four endings through the manual path (`engine.run()` on the session's
+    engine, then `finalize_manual_run`) give the same status as the scheduled test
+    above: one failure, one verdict, whichever way the run was started."""
+    from coworker.server.manager import SessionManager
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    provider = _scenario_provider(scenario)
+    manager = SessionManager(data_dir=tmp_path / "data", provider=provider)
+    task = _task(workspace=str(ws), agent="cowork")
+    manager.task_store.save(task)
+
+    prep = manager.prepare_manual_run(task.id)
+    engine = manager.get_engine(prep["session_id"], workspace=str(ws), agent="cowork")
+    engine.retry_sleep = _no_wait
+    provider.engine = engine
+
+    async def drain():
+        async for _ in engine.run(prep["prompt"]):
+            pass
+
+    await asyncio.wait_for(drain(), timeout=10)
+    manager.save(prep["session_id"], engine)
+
+    out = manager.finalize_manual_run(task.id, prep["run_id"])
+    assert out["ok"] and out["run"]["status"] == status
+
+
+async def test_scheduled_run_error_notification_is_not_marked_done(tmp_path, monkeypatch):
+    """A failed scheduled run now reaches `_notify_task_done` with status "error" (it
+    only ever saw "ok" or "canceled" before). The notify_target message must not carry
+    the "✓" a finished run gets, nor say it completed."""
+    from coworker.connectors import senders as senders_mod
+    from coworker.connectors.base import SendResult
+    from coworker.server.manager import SessionManager
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    manager = SessionManager(
+        data_dir=tmp_path / "data", provider=_scenario_provider("provider_error")
+    )
+    task = _task(workspace=str(ws), agent="cowork", notify_target="telegram:12345")
+    manager.task_store.save(task)
+    manager.secrets.put("telegram:default", {"bot_token": "test-token"})
+
+    sent: list[str] = []
+
+    def fake_sender(token, chat_id, text, thread_id=None):
+        sent.append(text)
+        return SendResult(ok=True, message_id="1")
+
+    monkeypatch.setitem(senders_mod.DEFAULT_SENDERS, "telegram", fake_sender)
+
+    run = await asyncio.wait_for(manager._run_scheduled_task(task, trigger="schedule"), 10)
+
+    assert run.status == "error"
+    assert len(sent) == 1
+    text = sent[0]
+    assert not text.startswith("✓"), f"a failed run must not get the 'done' mark: {text!r}"
+    assert "完成" not in text
+    assert text.startswith(f"✗ {task.title}")
+
+
+def test_every_interrupted_event_follows_an_interrupted_notice():
+    """`_run_scheduled_task` takes its verdict from the transcript and keeps the
+    INTERRUPTED event only as a second witness. That is sound because the engine appends
+    an "interrupted" notice right before every INTERRUPTED event it yields, so a stopped
+    turn is "canceled" in the transcript too. Pin that pairing: an INTERRUPTED yield
+    without the notice would leave a manual run (which never sees the event) misjudged."""
+    from pathlib import Path
+
+    import coworker.engine as engine_mod
+
+    lines = Path(engine_mod.__file__).read_text(encoding="utf-8").splitlines()
+    sites = [i for i, line in enumerate(lines) if "Event(EventType.INTERRUPTED" in line]
+    assert sites
+    for index in sites:
+        previous = next(line.strip() for line in reversed(lines[:index]) if line.strip())
+        assert previous == 'self._append_notice("interrupted")', (index + 1, previous)
 
 
 # -- REST ----------------------------------------------------------------------

@@ -7028,10 +7028,17 @@ class SessionManager:
                         interrupted = True
                 run.result_text = _last_assistant_text(engine.messages)
                 run.artifacts = _recent_files(task.workspace, since=run.started_at)
-                # A run the user stopped mid-flight produced nothing on purpose — recording
-                # it as "ok" (and telling notify_target "✓ done") would misreport a stop as
-                # a success. `_notify_task_done` itself picks the right wording per status.
-                run.status = "canceled" if interrupted else "ok"
+                # `engine.run()` also returns normally when the turn FAILED: a provider
+                # error or an answerless turn leaves an `error` / `turn_aborted` notice
+                # and ends the turn. So the verdict is read from the transcript, with the
+                # same `_run_outcome_from_transcript` a manual run is finalized with —
+                # one failure, one status, however the run was started. The INTERRUPTED
+                # event stays as a second witness; the worse of the two wins (error >
+                # canceled > ok). `_notify_task_done` picks the wording per status, so a
+                # stop or a failure is never announced as "✓ done".
+                run.status, run.error = _run_outcome_from_transcript(engine.messages)
+                if interrupted and run.status == "ok":
+                    run.status = "canceled"
                 if task.notify_on_completion:
                     await self._notify_task_done(task, run)
             except Exception as exc:
@@ -7064,10 +7071,14 @@ class SessionManager:
 
     async def _notify_task_done(self, task, run: TaskRun) -> None:
         """Tell the app + `notify_target` a run settled. `run.status` picks the wording:
-        a run the user stopped mid-flight (`"canceled"`) produced nothing on purpose, so
-        it must not read like the "✓ done" a real completion gets."""
+        a run the user stopped mid-flight (`"canceled"`) produced nothing on purpose, and
+        a failed one (`"error"`) did not finish, so neither may read like the "✓ done" a
+        real completion gets. The failure message points at the run's record in the app
+        instead of carrying `run.error`: that text can be a raw provider error, and this
+        one leaves the machine for a chat service."""
         summary = (run.result_text or "").strip()[:280]
         canceled = run.status == "canceled"
+        failed = run.status == "error"
         # Notify any socket viewing this scheduled run's session (it's a durable session of its own).
         await self.broadcast_session(
             run.session_id,
@@ -7093,6 +7104,8 @@ class SessionManager:
                 if sender and creds.get("bot_token"):
                     if canceled:
                         text = f"⏹ {task.title}\n\n运行被手动停止，未产生结果。"
+                    elif failed:
+                        text = f"✗ {task.title}\n\n运行失败，详情见应用里这次运行的记录。"
                     else:
                         text = f"✓ {task.title}\n\n{summary}"
                     await asyncio.to_thread(
@@ -8460,8 +8473,9 @@ def _last_assistant_text(messages: list[dict[str, Any]]) -> Optional[str]:
 # `role == "notice"` messages, the same persisted contract the GUI renders a session from
 # (itemsFromMessages.ts). The turn's live events are gone by the time a manual run is
 # finalized (they went to the WS, which never touches the automation TaskRun), so the
-# messages are what is left to read. Never the engine's private `_cancel` flag.
-_MANUAL_RUN_FAILED_NOTICE_KINDS = frozenset({"error", "turn_aborted"})
+# messages are what is left to read; a scheduled run sees its events but reads the same
+# messages, so both paths judge a turn alike. Never the engine's private `_cancel` flag.
+_RUN_FAILED_NOTICE_KINDS = frozenset({"error", "turn_aborted"})
 
 # Notices that record something about the session, not how the turn ended — every
 # `_append_notice` kind in coworker/ except the four the verdict is read from
@@ -8516,7 +8530,8 @@ def _run_outcome_from_transcript(
     normally (TURN_END `max_iterations_exceeded`) on `[user, assistant, tool, user]` —
     that is a completed turn. Looking for ANY assistant message is enough because the
     transcript passed in is a run's own session, created for that run, holding its
-    first turn (`finalize_manual_run` runs at that turn's `turn_done`).
+    first turn: `finalize_manual_run` runs at that turn's `turn_done`, and
+    `_run_scheduled_task` judges its fresh engine right after its one turn.
     """
     messages = messages or []
     for message in reversed(messages):
@@ -8530,7 +8545,7 @@ def _run_outcome_from_transcript(
             continue
         if kind == "interrupted":
             return "canceled", None
-        if kind in _MANUAL_RUN_FAILED_NOTICE_KINDS:
+        if kind in _RUN_FAILED_NOTICE_KINDS:
             return "error", message.get("text") or None
         return "ok", None
     return "ok", None
