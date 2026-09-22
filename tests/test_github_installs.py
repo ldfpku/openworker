@@ -529,6 +529,7 @@ def _git(args, cwd):
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
 
 
