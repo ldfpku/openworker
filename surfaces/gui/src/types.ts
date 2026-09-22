@@ -36,6 +36,9 @@ export type EventType =
   // another surface — today the WeChat mirror of the same Inbox item. The agent is already
   // released server-side; this only tells an open view to stop asking.
   | "prompt_resolved"
+  // An Inbox answer came in after the conversation had moved past its prompt, so the durable
+  // resume ran nothing for it (manager `_note_superseded_answer`). Persisted as a notice too.
+  | "answer_superseded"
   | "memory_saved"
   | "compacting"
   | "compacted"

@@ -218,6 +218,8 @@
     "resolved_timed_out": "No answer in time — declined.",
     "resolved_outcome_allow": "approved",
     "resolved_outcome_deny": "declined",
+    "answer_superseded": "An answer ({{outcome}}) came in after the conversation had moved on, so it was not applied.",
+    "answer_superseded_tool": "Your answer to {{tool}} ({{outcome}}) came in after the conversation had moved on, so it was not applied — {{tool}} did not run.",
     "plan_approved": "Plan approved",
     "plan_proposed": "proposed plan",
     "plan_rejected": "Sent back with feedback",

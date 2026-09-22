@@ -66,3 +66,25 @@ export function promptResolvedNotice(
     }),
   };
 }
+
+/** The transcript line for an answer that came in after the conversation had already moved
+ *  past its prompt — the server's `answer_superseded` (manager `_note_superseded_answer`): a
+ *  durable resume found the answered call no longer at the end of the transcript, so nothing
+ *  ran for it, while the Inbox shows the prompt resolved. Persisted server-side, so the live
+ *  event and a reload both come through here. `warn`, not `info`: it reports something the
+ *  user asked for that did not happen — and so, like the server's own retry guard, it is not
+ *  looked through when `retryAnchor` searches for a Retry button behind it. */
+export function answerSupersededNotice(
+  prompt: string,
+  resolution: string,
+  tool?: string,
+): Item {
+  const outcome = promptOutcome(prompt, resolution);
+  return {
+    kind: "notice",
+    tone: "warn",
+    text: tool
+      ? i18n.t("transcript.answer_superseded_tool", { tool, outcome })
+      : i18n.t("transcript.answer_superseded", { outcome }),
+  };
+}

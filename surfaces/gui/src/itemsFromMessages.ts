@@ -18,6 +18,7 @@ import {
   turnRetryText,
   turnTruncatedText,
 } from "./modeNotice";
+import { answerSupersededNotice } from "./promptResolved";
 
 // i18n.t() returns undefined before init() (bare unit tests call this mapper without
 // initLocale(); the app always inits in main.tsx). Mirror react-i18next's graceful
@@ -159,12 +160,20 @@ export function itemsFromMessages(messages: ConversationMessage[]): Item[] {
                         ? { kind: "notice", tone: "info", text: modeOnText(m.text || ""), bookkeeping: true }
                         : CUT_OFF_NOTICE_KINDS.has(String(m.kind))
                           ? cutOffNoticeItem(m)
-                          : {
-                              kind: "notice",
-                              tone: "warn",
-                              text: t("Error: {{message}}", { message: m.text || t("unknown") }),
-                              retriable: true,
-                            },
+                          : m.kind === "answer_superseded"
+                            ? // An Inbox answer that came in after the conversation moved past its
+                              // prompt: nothing ran for it. Not an error, and not retriable.
+                              answerSupersededNotice(
+                                String(m.prompt || ""),
+                                String(m.resolution ?? ""),
+                                m.tool ? String(m.tool) : undefined,
+                              )
+                            : {
+                                kind: "notice",
+                                tone: "warn",
+                                text: t("Error: {{message}}", { message: m.text || t("unknown") }),
+                                retriable: true,
+                              },
       );
     }
     // system messages are omitted; tool-result messages are folded into the tool row above

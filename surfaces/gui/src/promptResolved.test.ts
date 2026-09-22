@@ -8,7 +8,7 @@
 // reason `interactions.outcome_text` reads the verdict field server-side.
 import { afterEach, describe, expect, it } from "vitest";
 import i18n from "./i18n";
-import { promptOutcome, promptResolvedNotice } from "./promptResolved";
+import { answerSupersededNotice, promptOutcome, promptResolvedNotice } from "./promptResolved";
 
 afterEach(async () => {
   await i18n.changeLanguage("en");
@@ -84,5 +84,43 @@ describe("promptResolvedNotice", () => {
     expect(promptResolvedNotice("approval", "app", "allow")).toBeNull();
     expect(promptResolvedNotice("approval", "", "allow")).toBeNull();
     expect(promptResolvedNotice("approval", "slack", "allow")).toBeNull();
+  });
+});
+
+// The server's `answer_superseded` (manager `_note_superseded_answer`): an Inbox answer that came
+// in after the conversation had moved past its prompt, so the durable resume ran nothing for it.
+// Before this line existed that was total silence — the Inbox said "approved" and nothing ran.
+describe("answerSupersededNotice", () => {
+  it("names the tool that did not run and the answer that was not applied", () => {
+    expect(answerSupersededNotice("approval", "allow", "write_file")).toEqual({
+      kind: "notice",
+      tone: "warn",
+      text:
+        "Your answer to write_file (approved) came in after the conversation had moved on, " +
+        "so it was not applied — write_file did not run.",
+    });
+  });
+
+  it("says it in Chinese", async () => {
+    await i18n.changeLanguage("zh");
+    expect(answerSupersededNotice("approval", "allow", "write_file")).toEqual({
+      kind: "notice",
+      tone: "warn",
+      text: "你对 write_file 的答复（同意）到达时，对话已经往下进行了，这条答复没有生效，write_file 没有运行。",
+    });
+    expect(answerSupersededNotice("question", "staging")).toEqual({
+      kind: "notice",
+      tone: "warn",
+      text: "有一条答复（staging）到达时，对话已经往下进行了，这条答复没有生效。",
+    });
+  });
+
+  it("falls back to the generic line without a tool name", () => {
+    const note = answerSupersededNotice("directory", JSON.stringify({ granted: true, path: "/tmp" }));
+    expect(note).toEqual({
+      kind: "notice",
+      tone: "warn",
+      text: "An answer (approved) came in after the conversation had moved on, so it was not applied.",
+    });
   });
 });

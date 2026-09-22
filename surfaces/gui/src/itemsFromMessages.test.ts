@@ -152,6 +152,46 @@ describe("itemsFromMessages mcp failure", () => {
   });
 });
 
+describe("itemsFromMessages answer_superseded", () => {
+  // Persisted by the server when a durable resume found the answered call overtaken by a later
+  // message (manager `_note_superseded_answer`). Without its own arm it fell into the catch-all
+  // and rendered as "Error: …" with a Retry button — which the server would ignore: engine
+  // `retry()` only acts on an error / turn_aborted tail.
+  const superseded = {
+    role: "notice",
+    kind: "answer_superseded",
+    text: "The answer to write_file (allow) came in after the conversation had moved on, so it was not applied: write_file did not run.",
+    prompt: "approval",
+    resolution: "allow",
+    tool: "write_file",
+  };
+
+  it("renders as a warning line that names the tool, not as an error", () => {
+    const items = itemsFromMessages([superseded] as any);
+    expect(items).toEqual([
+      {
+        kind: "notice",
+        tone: "warn",
+        text:
+          "Your answer to write_file (approved) came in after the conversation had moved on, " +
+          "so it was not applied — write_file did not run.",
+      },
+    ]);
+  });
+
+  it("offers no Retry, and does not let one through from an error before it", () => {
+    const items = itemsFromMessages([
+      { role: "user", content: "hi" },
+      { role: "notice", kind: "error", text: "boom" },
+      superseded,
+    ] as any);
+    expect(items[items.length - 1]).not.toHaveProperty("retriable");
+    // The server's retry guard (`_tail_is_retriable_error`) only looks through model_switch
+    // notices, so a Retry offered here would do nothing.
+    expect(retryAnchor(items)).toBe(-1);
+  });
+});
+
 describe("itemsFromMessages mode switch/notice localization", () => {
   // coworker/permissions.py persists these markers in English forever (old session rows
   // can't be rewritten); the GUI translates them at display time (modeNotice.ts) using the

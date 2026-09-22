@@ -30,6 +30,12 @@ from .sessions import SessionRecord
 _SAFE_SESSION_ID = re.compile(r"\A[A-Za-z0-9_-]{1,128}\Z")
 
 
+# The stand-in result `_repair_tool_pairing` writes for a call whose real result never
+# landed. Named so callers can tell it apart from a result the call actually produced
+# (`SessionManager._answer_superseded`).
+LOST_TOOL_RESULT = '{"error": "tool result was lost during an interrupted turn"}'
+
+
 def is_safe_session_id(sid: str) -> bool:
     return bool(isinstance(sid, str) and _SAFE_SESSION_ID.match(sid))
 
@@ -251,7 +257,7 @@ class ConversationStore:
                         repaired.append({
                             "role": "tool",
                             "tool_call_id": call_id,
-                            "content": '{"error": "tool result was lost during an interrupted turn"}',
+                            "content": LOST_TOOL_RESULT,
                         })
             elif i in consumed_result_indices:
                 continue  # already moved this tool result up

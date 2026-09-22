@@ -211,6 +211,8 @@
     "resolved_timed_out": "等待确认超时，已按拒绝处理。",
     "resolved_outcome_allow": "同意",
     "resolved_outcome_deny": "拒绝",
+    "answer_superseded": "有一条答复（{{outcome}}）到达时，对话已经往下进行了，这条答复没有生效。",
+    "answer_superseded_tool": "你对 {{tool}} 的答复（{{outcome}}）到达时，对话已经往下进行了，这条答复没有生效，{{tool}} 没有运行。",
     "plan_approved": "计划已允许",
     "plan_proposed": "提议的计划",
     "plan_rejected": "已附反馈退回",

@@ -52,7 +52,7 @@ from ..unrouted import UnroutedStore
 from ..unattended import UnattendedRegistry
 from ..audit import AuditStore
 from ..config import load_config, workspace_allowed_commands
-from ..conversations import ConversationStore, title_from
+from ..conversations import LOST_TOOL_RESULT, ConversationStore, title_from
 from ..engine import ApprovalOutcome, Approver, TurnEngine
 from ..roots import RootDir, user_roots
 from ..workspace_trust import WorkspaceTrustStore
@@ -1801,9 +1801,16 @@ class SessionManager:
             )
             return
         try:
+            superseded = None
+            if self._answer_superseded(engine, item.tool_call_id):
+                superseded = self._note_superseded_answer(engine, item)
             async for _event in engine.resume():
                 pass
             self.save(session_id, engine)
+            if superseded is not None:
+                await self.broadcast_session(
+                    session_id, {"type": "answer_superseded", "data": superseded}
+                )
         finally:
             # Post-turn bookkeeping must not turn a resume that ran and was saved into a
             # reported failure (same reasoning as `deliver_to_session`).
@@ -1812,12 +1819,87 @@ class SessionManager:
             except Exception:
                 logger.exception("post-resume bookkeeping failed for %s", session_id)
 
+    @staticmethod
+    def _answer_superseded(engine, call_id: str) -> bool:
+        """Whether the answered call `call_id` never ran and `resume()` will not run it
+        either.
+
+        `resume()` only continues the unanswered calls at the END of the transcript. Once
+        another turn has appended a user message after the suspended call (the user's next
+        message over the socket, a delivery, a team message), the call is no longer
+        trailing and the resume returns without running it — the answer that just came in
+        is simply not applied, while the Inbox shows the prompt as resolved. A call that
+        has its real result already (an earlier resume used the answer) is not that case,
+        and neither is one this transcript does not contain. The stand-in result
+        `ConversationStore` writes on load for a call the thread moved past
+        (`LOST_TOOL_RESULT`) does not count as a real one."""
+        messages = getattr(engine, "messages", None) or []
+        if not any(
+            (call or {}).get("id") == call_id
+            for m in messages
+            if m.get("role") == "assistant"
+            for call in m.get("tool_calls") or []
+        ):
+            return False
+        if any(
+            m.get("role") == "tool"
+            and m.get("tool_call_id") == call_id
+            and m.get("content") != LOST_TOOL_RESULT
+            for m in messages
+        ):
+            return False
+        pending = getattr(engine, "_unanswered_trailing_tool_calls", None)
+        if pending is None:
+            return False
+        return all(call.id != call_id for call in pending())
+
+    def _note_superseded_answer(self, engine, item) -> dict[str, Any]:
+        """Say that `item`'s answer was not applied (see `_answer_superseded`): a log line,
+        and an `answer_superseded` notice in the transcript — persisted by the save that
+        follows, so it is there on reload. Returns the payload for the live event. The
+        text is server-authored English; `prompt`/`resolution`/`tool` travel beside it so
+        the GUI can word it in the user's language (promptResolved.ts)."""
+        session_id = item.session_id
+        kind = str(getattr(item, "kind", "") or "")
+        resolution = str(getattr(item, "resolution", "") or "")
+        tool = None
+        if kind == "approval":
+            tool = str((getattr(item, "data", None) or {}).get("tool") or "") or None
+        if tool:
+            text = (
+                f"The answer to {tool} ({resolution}) came in after the conversation had "
+                f"moved on, so it was not applied: {tool} did not run."
+            )
+        else:
+            text = (
+                "An answer came in after the conversation had moved on, so it was not "
+                "applied."
+            )
+        logger.info(
+            "durable resume of %s on %s: the conversation has moved past call %s, so the "
+            "answer %r is not applied",
+            item.id,
+            session_id,
+            item.tool_call_id,
+            resolution,
+        )
+        engine._append_notice(
+            "answer_superseded",
+            text,
+            prompt=kind or None,
+            resolution=resolution,
+            tool=tool,
+        )
+        return {"text": text, "prompt": kind, "resolution": resolution, "tool": tool}
+
     def _kick_deferred_resumes(self, session_id: str) -> None:
         """Start the durable resumes `_durable_resume_turn` parked while `session_id` was
         busy. One task runs them in order, each claiming the session afresh — one that
         finds it busy again (yet another turn got there first) simply parks itself again,
-        so nothing overlaps and nothing is dropped. A resume with nothing left to do (the
-        turn that held the session already answered those calls) returns at once.
+        so nothing overlaps and nothing is dropped. A resume whose call is no longer
+        pending runs nothing: an earlier resume already used the answer, or the turn that
+        held the session moved the conversation past the call — the case
+        `_answer_superseded` reports.
 
         Not while the process is going away (`_parked_resume_blocker`): then they stay
         parked, and the log names each one."""

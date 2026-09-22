@@ -63,7 +63,7 @@ import {
   turnRetryText,
   turnTruncatedText,
 } from "./modeNotice";
-import { promptResolvedNotice } from "./promptResolved";
+import { answerSupersededNotice, promptResolvedNotice } from "./promptResolved";
 import { itemsFromMessages } from "./itemsFromMessages";
 import { hasConversation } from "./draft";
 import { normalizeMode } from "./modes";
@@ -1084,6 +1084,19 @@ export function App() {
           });
           break;
         }
+        case "answer_superseded":
+          // An Inbox answer that came in after the conversation had moved past its prompt
+          // (manager `_note_superseded_answer`): the durable resume ran nothing for it. The
+          // server persisted the same line, so a reload shows it too (itemsFromMessages).
+          setItems((p) => [
+            ...p,
+            answerSupersededNotice(
+              String(d.prompt || ""),
+              String(d.resolution ?? ""),
+              d.tool ? String(d.tool) : undefined,
+            ),
+          ]);
+          break;
         case "tool_finished":
           setItems((p) =>
             updateLastTool(
