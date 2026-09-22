@@ -179,8 +179,14 @@ _TURN_ABORTED_RETRIED = " Automatic retry didn't help ({n} retries)."
 #
 # This bounds the WAIT, not the resources. When it fires the producer thread is still
 # parked in the provider's read and the socket is still open; both are let go only when
-# that read finally returns on the numbers above. The gain claimed here is therefore
-# exactly one thing: the user (and the automatic retry) stops waiting on a wedged call.
+# that read finally returns on the numbers above — and NOTHING IN THIS TREE SHORTENS THAT.
+# The commit that introduced this deadline claimed Gemini's unbounded read was covered by
+# a 600s backstop "on another branch"; that branch is not in this repository (checked
+# 2026-09-22: `git ls-remote --heads origin` lists only `refs/heads/main`, and grepping
+# `coworker/providers/gemini_provider.py` for `timeout` returns nothing), so a wedged
+# Gemini call parks its producer thread for as long as the SDK lets it, exactly as before.
+# The gain claimed here is therefore exactly one thing: the user (and the automatic retry)
+# stops waiting on a wedged call.
 _FIRST_CHUNK_TIMEOUT_ENV = "OPENWORKER_FIRST_CHUNK_TIMEOUT"
 _FIRST_CHUNK_TIMEOUT_DEFAULT = 120.0
 # Spellings that mean "no deadline at all" — for a self-hosted endpoint whose queue really
@@ -367,7 +373,10 @@ class FirstChunkTimeout(TimeoutError):
     inside the provider's read and the socket is still open; both are released only when
     that read returns on the HTTP layer's own schedule (see `_FIRST_CHUNK_TIMEOUT_ENV`).
     So an engine that gives up here and retries can be holding two sockets, and a turn
-    that fails here leaves one behind for as long as the vendor SDK takes.
+    that fails here leaves one behind for as long as the vendor SDK takes. No provider's
+    STREAM path in this tree narrows that: the one per-request timeout any of them sets
+    (`anthropic_provider._nonstreaming_timeout`) is applied to `complete` only and says so
+    itself; `gemini_provider` sets none anywhere.
 
     One inherited behaviour, unchanged and worth knowing: `explore` builds a subagent
     TurnEngine of its own (tools/subagent.py), which picks this up along with its own
