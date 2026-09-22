@@ -378,6 +378,15 @@ class FirstChunkTimeout(TimeoutError):
     (`anthropic_provider._nonstreaming_timeout`) is applied to `complete` only and says so
     itself; `gemini_provider` sets none anywhere.
 
+    And it is not only a socket. A parked producer also holds one worker of the loop's
+    DEFAULT executor, which is what `asyncio.to_thread` uses too — so the same pool
+    `_handle_tool_calls` and every `to_thread` under `server/` draw from, sized
+    `min(32, cpu_count + 4)` (read off CPython 3.13's `ThreadPoolExecutor.__init__`,
+    `BaseEventLoop.run_in_executor` and `asyncio.to_thread`). The automatic retry doubles
+    that hold per wedged turn. Enough wedged turns at once would therefore starve thread
+    work elsewhere in the process, not just this engine — that consequence is INFERRED
+    from those three sources, not measured.
+
     One inherited behaviour, unchanged and worth knowing: `explore` builds a subagent
     TurnEngine of its own (tools/subagent.py), which picks this up along with its own
     `model_retries`. A wedged subagent call is therefore retried inside that engine first,
@@ -1672,6 +1681,19 @@ class TurnEngine:
                         get_task.cancel()
                         get_task = None
                         armed = deadline if began is None else max(deadline - waited, 0.0)
+                        if began is None:
+                            # The one arm of the five that neither raises, returns nor
+                            # yields, and the only one with no bound: while the shared
+                            # pool stays full this re-arms forever, which is once again a
+                            # spinner with an empty server log — the exact failure this
+                            # whole block was added to end. One line at INFO keeps it
+                            # findable, and it can repeat at most once per deadline.
+                            logger.info(
+                                "first_chunk_deadline_waiting_on_executor: "
+                                "session=%s model=%s",
+                                self.audit_context.get("session_id") or "-",
+                                self.model,
+                            )
                         continue
                     get_task.cancel()
                     logger.info(

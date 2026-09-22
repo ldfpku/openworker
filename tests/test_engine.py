@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -2208,7 +2209,7 @@ def test_an_ordinary_stream_is_untouched_by_the_deadline(tmp_path):
     assert len(calls) == 1  # no retry papered over anything
 
 
-def test_a_producer_still_queued_in_the_thread_pool_is_not_timed(tmp_path):
+def test_a_producer_still_queued_in_the_thread_pool_is_not_timed(tmp_path, caplog):
     """The deadline is armed by the PRODUCER, not by `_astream` starting.
 
     `loop.run_in_executor(None, …)` uses the default pool, shared with
@@ -2219,7 +2220,12 @@ def test_a_producer_still_queued_in_the_thread_pool_is_not_timed(tmp_path):
     only starts once the producer says it has entered `provider.stream()`.
 
     One worker, deliberately occupied, is that state made deterministic.
+
+    It is also the only arm of the five that neither raises, returns nor yields, so it is
+    the one place a turn can keep waiting with nothing said anywhere. The INFO line
+    asserted at the end is what makes that state findable in a server log.
     """
+    caplog.set_level(logging.INFO, logger="coworker.engine")
     script = _SilentStream(
         rest=[_sse_chunk(content="eventually"), _sse_chunk(finish="stop")]
     )
@@ -2257,6 +2263,10 @@ def test_a_producer_still_queued_in_the_thread_pool_is_not_timed(tmp_path):
 
     assert still_waiting, "a producer that had not started yet was timed as if it had"
     assert chunks[-1].turn is not None and chunks[-1].turn.text == "eventually"
+    assert any(
+        "first_chunk_deadline_waiting_on_executor" in record.getMessage()
+        for record in caplog.records
+    ), "the one unbounded arm re-armed without saying so anywhere"
 
 
 def _release_silent_scripts_as_the_turn_reports(engine, user_input, scripts):
