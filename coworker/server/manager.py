@@ -1907,10 +1907,9 @@ class SessionManager:
         """Start the durable resumes `_durable_resume_turn` parked while `session_id` was
         busy. One task runs them in order, each claiming the session afresh — one that
         finds it busy again (yet another turn got there first) simply parks itself again,
-        so nothing overlaps. A resume whose call is no longer
-        pending runs nothing: an earlier resume already used the answer, or the turn that
-        held the session moved the conversation past the call — the case
-        `_answer_superseded` reports.
+        so nothing overlaps. A resume whose call is no longer pending runs nothing: an
+        earlier resume already used the answer, or the turn that held the session moved
+        the conversation past the call — the case `_answer_superseded` reports.
 
         Not while the process is going away (`_parked_resume_blocker`): then they stay
         parked, and the log names each one."""
@@ -1930,14 +1929,17 @@ class SessionManager:
                 # `_deferred_resumes` when this runner was created — a delete since then
                 # never saw them. Resuming anyway rebuilt the dead id: `ensure_engine`
                 # makes a fresh engine holding nothing but its system prompt, and the save
-                # after the (empty) resume writes that back as a new session row.
-                if not await self._session_still_exists(session_id):
+                # after the (empty) resume writes that back as a new session row. Not read
+                # once shutdown has begun: the items go back to the park just below anyway.
+                if not self._closing and not await self._session_still_exists(session_id):
                     logger.info(
                         "session %s no longer exists; dropping its parked resume(s) %s",
                         session_id,
                         ", ".join(str(i.id) for i in items[n:]),
                     )
                     return
+                # Checked after that await, so nothing can start a resume once `aclose`
+                # has begun.
                 if self._closing:
                     self._repark(session_id, items[n:], "shutting down")
                     return

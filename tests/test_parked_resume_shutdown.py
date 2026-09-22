@@ -209,6 +209,15 @@ async def test_parked_runner_stops_before_its_next_item_once_shutdown_begins(
     caplog.set_level(logging.INFO, logger=MANAGER_LOGGER)
     engine = await _park_two(mgr, sid, monkeypatch, tmp_path)
 
+    real_exists = mgr._session_still_exists
+    reads_after_close: list[str] = []
+
+    async def exists_spy(session_id):
+        if mgr._closing:
+            reads_after_close.append(session_id)
+        return await real_exists(session_id)
+
+    monkeypatch.setattr(mgr, "_session_still_exists", exists_spy)
     mgr.mark_idle(sid)  # the holding turn ends: the runner starts on the first item
     try:
         await _eventually(lambda: engine.calls == 1, what="the first parked resume")
@@ -220,6 +229,9 @@ async def test_parked_runner_stops_before_its_next_item_once_shutdown_begins(
     assert engine.calls == 1, "the runner started another resume after aclose began"
     assert "i2" in mgr._deferred_resumes.get(sid, {})
     assert _skip_logged(caplog, "i2")
+    # The item goes back to the park either way; reading the store for it on the way out
+    # is wasted work on a shutting-down process.
+    assert reads_after_close == []
 
 
 async def test_cancelled_parked_runner_names_the_items_it_never_started(
