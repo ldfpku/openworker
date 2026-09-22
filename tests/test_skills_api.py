@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
 from coworker.providers.base import SYSTEM_CONTEXT_OPEN
 from coworker.server import SessionManager, create_app
+from coworker.testing.autotitle import autotitle_reply, is_autotitle_call
 
 
 class ScriptedProvider(ProviderClient):
@@ -27,7 +28,7 @@ class ScriptedProvider(ProviderClient):
     (app.py `run_turn`) and again from `mark_idle`, and runs on a worker thread, so it
     races the engine's call. Recorded in `seen`, it made "the last call" depend on thread
     timing; popping `_turns`, it could take the engine's scripted answer and end the turn
-    in an error. Title calls are recognized by the titling system prompt, as in
+    in an error. Title calls are recognized via coworker.testing.autotitle, as in
     tests/test_autotitle.py and tests/test_ui_refresh_e2e.py, and answered with the
     "small-talk" sentinel, which the manager drops without storing or broadcasting it.
     """
@@ -37,8 +38,8 @@ class ScriptedProvider(ProviderClient):
         self.seen: list[list[dict]] = []
 
     def complete(self, *, model, messages, tools=None, **settings):
-        if messages and "title chat sessions" in str(messages[0].get("content", "")):
-            return AssistantTurn(text="small-talk")
+        if is_autotitle_call(messages):
+            return autotitle_reply()
         self.seen.append(messages)
         return self._turns.pop(0)
 
