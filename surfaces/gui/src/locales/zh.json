@@ -254,6 +254,10 @@
       "months_ago": "{{count}} 个月前",
       "years_ago": "{{count}} 年前"
     },
+    "elapsed": {
+      "seconds": "{{count}} 秒",
+      "minutes_seconds": "{{m}} 分 {{s}} 秒"
+    },
     "compact": {
       "just_now": "刚刚",
       "minutes_ago": "{{count}}分钟前",
@@ -507,6 +511,7 @@
     },
     "jump_to_latest": "跳转到最新",
     "waiting_for_agent": "正在等待代理…",
+    "waiting_for_agent_elapsed": "正在等待代理… 已等待 {{duration}}",
     "compacting_context": "正在压缩上下文…",
     "allow_anyway_message": "我已审阅被拦截的 {{name}} 操作 —— 请按原样执行。",
     "temp_folder_failed": "无法创建临时文件夹。",

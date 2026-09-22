@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatRelative } from "./relTime";
+import { formatElapsed, formatRelative } from "./relTime";
 
 // A stub translator that echoes the key and count — the ladder and the style routing are
 // what's under test, not the catalogs (those are exercised by the component tests).
@@ -42,5 +42,29 @@ describe("formatRelative", () => {
     expect(formatRelative(0, t)).toBe("");
     expect(formatRelative("not a date", t)).toBe("");
     expect(formatRelative(NaN, t)).toBe("");
+  });
+});
+
+describe("formatElapsed", () => {
+  // Echoes every interpolation var (unlike the `count`-only stub above), since
+  // minutes_seconds interpolates {{m}} and {{s}}, not {{count}}.
+  const tAll = (key: string, opts?: Record<string, unknown>) =>
+    opts ? `${key}:${Object.values(opts).join(",")}` : key;
+
+  it("formats sub-minute durations as seconds only", () => {
+    expect(formatElapsed(0, tAll)).toBe("time.elapsed.seconds:0");
+    expect(formatElapsed(12_000, tAll)).toBe("time.elapsed.seconds:12");
+    expect(formatElapsed(59_000, tAll)).toBe("time.elapsed.seconds:59");
+  });
+
+  it("formats minute-plus durations as zero-padded minutes and seconds", () => {
+    expect(formatElapsed(60_000, tAll)).toBe("time.elapsed.minutes_seconds:1,00");
+    expect(formatElapsed(75_000, tAll)).toBe("time.elapsed.minutes_seconds:1,15");
+    expect(formatElapsed(65 * 60_000, tAll)).toBe("time.elapsed.minutes_seconds:65,00");
+  });
+
+  it("floors instead of rounding, and never goes negative", () => {
+    expect(formatElapsed(12_999, tAll)).toBe("time.elapsed.seconds:12");
+    expect(formatElapsed(-5_000, tAll)).toBe("time.elapsed.seconds:0");
   });
 });

@@ -267,6 +267,10 @@
       "months_ago": "{{count}}mo ago",
       "years_ago": "{{count}}y ago"
     },
+    "elapsed": {
+      "seconds": "{{count}}s",
+      "minutes_seconds": "{{m}}m {{s}}s"
+    },
     "compact": {
       "just_now": "now",
       "minutes_ago": "{{count}}m",
@@ -525,6 +529,7 @@
     },
     "jump_to_latest": "Jump to latest",
     "waiting_for_agent": "Waiting for agent...",
+    "waiting_for_agent_elapsed": "Waiting for the agent… {{duration}}",
     "compacting_context": "Compacting context…",
     "allow_anyway_message": "I reviewed the blocked {{name}} action — go ahead with it exactly as proposed.",
     "temp_folder_failed": "Could not create a temporary folder.",

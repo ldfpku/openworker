@@ -94,6 +94,7 @@ import { SessionSetupRow } from "./components/SessionSetupRow";
 import { SendFolderDialog } from "./components/SendFolderDialog";
 import { Onboarding } from "./components/Onboarding";
 import { UpdateBanner } from "./components/UpdateBanner";
+import { WaitingForAgent } from "./components/WaitingForAgent";
 import { ScheduledView } from "./components/ScheduledView";
 import { RightRail } from "./components/RightRail";
 import { IntegrationsView } from "./components/IntegrationsView";
@@ -2725,18 +2726,6 @@ function lastItemIsAssistant(items: Item[]): boolean {
     return item.kind === "assistant";
   }
   return false;
-}
-
-function WaitingForAgent({ label }: { label?: string }) {
-  const { t } = useTranslation();
-  return (
-    <div className="waiting-transcript">
-      <div className="waiting-row" aria-live="polite">
-        <span className="waiting-spinner" />
-        <span>{label || t("app.waiting_for_agent")}</span>
-      </div>
-    </div>
-  );
 }
 
 function updateLastTool(

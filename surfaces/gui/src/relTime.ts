@@ -34,3 +34,16 @@ export function formatRelative(
   if (days < 365) return say("months_ago", Math.min(11, Math.max(1, Math.round(days / 30.4))));
   return say("years_ago", Math.max(1, Math.round(days / 365)));
 }
+
+// A plain elapsed-duration formatter — "how long has this been running", not "how long ago
+// did this happen" (formatRelative above answers that, and collapses anything under 45s to
+// "just now", which is useless for a live counter ticking from zero). Seconds-only under a
+// minute, "Nm SSs" past it. No `just_now` collapse and no rounding-up-to-the-unit: a caller
+// showing this every second wants the raw count, not a ladder.
+export function formatElapsed(ms: number, t: Translate): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes <= 0) return t("time.elapsed.seconds", { count: seconds });
+  return t("time.elapsed.minutes_seconds", { m: minutes, s: String(seconds).padStart(2, "0") });
+}
