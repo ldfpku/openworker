@@ -931,6 +931,15 @@ def test_nonstreaming_timeout_tracks_the_sdk_estimate():
 # out regardless of what GC ever does. This pins that behavior end to end, against the
 # real `anthropic` SDK over a `MockTransport`, not the hand-rolled `_FakeClient` used
 # everywhere else in this file — same rationale as `_sdk_client` above.
+#
+# Of the two tests below, only the early-abandon one has teeth against the `finally`
+# this section is about: on a normal finish, `Stream.__stream__`'s own generator runs to
+# completion and closes the body itself before `close_stream` ever gets a chance to do
+# anything (confirmed by mutation: removing `close_stream(events)` from `stream()`'s
+# `finally` leaves the normal-finish test green and only fails the early-abandon one).
+# The normal-finish test is kept because it documents that the already-working case
+# still works with the explicit close layered on top, not because it exercises the new
+# code path.
 
 _SSE_STREAM_FRAMES = [
     b'event: message_start\n'

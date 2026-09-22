@@ -62,10 +62,14 @@ def close_stream(stream: Any) -> None:
 
     `stream` may be anything: a bare generator, a test double, or an object with no
     `close` at all — those are silently skipped, since the whole codebase's fake/streaming
-    stand-ins are never required to implement it. And whatever `close()` itself raises is
-    only ever logged at debug level, never re-raised: this always runs from a `finally`,
-    frequently while a real exception (or GeneratorExit) is already propagating out of the
-    generator, and a close failure must never clobber that in-flight error.
+    stand-ins are never required to implement it. And any `Exception` `close()` itself
+    raises is only ever logged at debug level, never re-raised: this always runs from a
+    `finally`, frequently while a real exception (or GeneratorExit) is already
+    propagating out of the generator, and a close failure must never clobber that
+    in-flight error. Only `Exception` is caught, not `BaseException` — a `close()` that
+    raises e.g. `KeyboardInterrupt` would still propagate and clobber it, but real SDK
+    `close` methods are plain synchronous calls with nothing that realistically raises
+    one, so this is a known, accepted gap rather than a guarantee this function makes.
     """
     close = getattr(stream, "close", None)
     if not callable(close):
