@@ -94,6 +94,18 @@ _TURN_TRUNCATED_TEXT = {
 # Notice kinds `retry()` will re-run. An aborted turn is exactly as retriable as a
 # provider failure — nothing was answered and nothing was done.
 _RETRIABLE_NOTICE_KINDS = frozenset({"error", "turn_aborted"})
+# Notice kinds the retry guard looks THROUGH when it searches for that tail: bookkeeping
+# written after a turn failed that says nothing about the failed turn itself.
+# - `model_switch`: switching models and THEN retrying is the intended recovery path.
+# - `answer_superseded` (manager `_note_superseded_answer`): an Inbox answer came in after
+#   the conversation had moved past its prompt, so nothing ran for it. It is appended
+#   whenever that answer arrives, which can be right after an error notice (the turn that
+#   moved past the prompt failed, or the resume's own continuation did); counted as a
+#   tail, it took the Retry away from that failure.
+# The GUI's `retryAnchor` (Transcript.tsx) must agree, or the Retry button and this guard
+# disagree about the same transcript: it looks through `retryTransparent` items, which
+# `answerSupersededNotice` sets, and through `info` notices, which model switches are.
+_RETRY_TRANSPARENT_NOTICE_KINDS = frozenset({"model_switch", "answer_superseded"})
 
 # -- automatic retry of a model call that delivered nothing --------------------------
 #
@@ -732,14 +744,15 @@ class TurnEngine:
         )
 
     def _tail_is_retriable_error(self) -> bool:
-        """True when the history tail is an error notice, looking through any model_switch
-        notices appended after it (a switch must not consume the retry). `turn_aborted`
-        counts: a turn the provider cut short answered nothing and did nothing, so it is
-        exactly as re-runnable as a provider failure."""
+        """True when the history tail is an error notice, looking through the bookkeeping
+        notices appended after it (`_RETRY_TRANSPARENT_NOTICE_KINDS`: a model switch, a
+        superseded Inbox answer — neither must consume the retry). `turn_aborted` counts:
+        a turn the provider cut short answered nothing and did nothing, so it is exactly
+        as re-runnable as a provider failure."""
         for message in reversed(self.messages):
             if message.get("role") != "notice":
                 return False
-            if message.get("kind") == "model_switch":
+            if message.get("kind") in _RETRY_TRANSPARENT_NOTICE_KINDS:
                 continue
             return message.get("kind") in _RETRIABLE_NOTICE_KINDS
         return False
@@ -864,7 +877,13 @@ class TurnEngine:
         turn's input is already the tail of history. Guarded on the tail being an error
         notice so a stray retry frame can't re-answer a completed turn. Trailing
         model_switch notices don't break the guard — switching models and THEN retrying
-        is the intended recovery path (owner-hit 2026-07-23)."""
+        is the intended recovery path (owner-hit 2026-07-23) — and neither do
+        answer_superseded ones (`_RETRY_TRANSPARENT_NOTICE_KINDS`).
+
+        Nothing is cut from history: the notices stay where they are, the re-run's output
+        is appended after them, and `_outbound_messages` drops every notice before a
+        provider sees the thread. So an answer_superseded notice between the error and the
+        re-run stays in the transcript, still saying what it said."""
         if not self._tail_is_retriable_error():
             return
         self._cancel.clear()

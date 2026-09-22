@@ -72,8 +72,11 @@ export function promptResolvedNotice(
  *  durable resume found the answered call no longer at the end of the transcript, so nothing
  *  ran for it, while the Inbox shows the prompt resolved. Persisted server-side, so the live
  *  event and a reload both come through here. `warn`, not `info`: it reports something the
- *  user asked for that did not happen — and so, like the server's own retry guard, it is not
- *  looked through when `retryAnchor` searches for a Retry button behind it. */
+ *  user asked for that did not happen. But it is bookkeeping, not a turn: it can land right
+ *  after an error notice (the turn that moved past the prompt failed, or the resume's own
+ *  continuation did), so it is `retryTransparent` — `retryAnchor` looks through it, the way
+ *  the server's retry guard (engine `_RETRY_TRANSPARENT_NOTICE_KINDS`) does, and that
+ *  failure keeps its Retry. */
 export function answerSupersededNotice(
   prompt: string,
   resolution: string,
@@ -83,6 +86,7 @@ export function answerSupersededNotice(
   return {
     kind: "notice",
     tone: "warn",
+    retryTransparent: true,
     text: tool
       ? i18n.t("transcript.answer_superseded_tool", { tool, outcome })
       : i18n.t("transcript.answer_superseded", { outcome }),

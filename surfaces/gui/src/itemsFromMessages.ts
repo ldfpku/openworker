@@ -162,7 +162,9 @@ export function itemsFromMessages(messages: ConversationMessage[]): Item[] {
                           ? cutOffNoticeItem(m)
                           : m.kind === "answer_superseded"
                             ? // An Inbox answer that came in after the conversation moved past its
-                              // prompt: nothing ran for it. Not an error, and not retriable.
+                              // prompt: nothing ran for it. Not an error, and not retriable
+                              // itself; `retryAnchor` looks through it to an error before it
+                              // (`retryTransparent`).
                               answerSupersededNotice(
                                 String(m.prompt || ""),
                                 String(m.resolution ?? ""),

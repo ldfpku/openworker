@@ -477,12 +477,17 @@ interface Props {
 
 // The transcript index whose notice gets the Retry button: the tail error notice, looking
 // through info notices after it (model switches must not consume the retry — switching
-// models and THEN retrying is the intended recovery path). -1 when the tail is anything else.
+// models and THEN retrying is the intended recovery path) and through `retryTransparent`
+// warnings (a superseded Inbox answer, which can land right after the error). The server's
+// retry guard (engine `_tail_is_retriable_error`) looks through the same answer_superseded
+// notices, so the button it offers is one the server acts on. -1 when the tail is anything
+// else.
 export function retryAnchor(items: Item[]): number {
   for (let i = items.length - 1; i >= 0; i--) {
     const it = items[i];
     if (it.kind !== "notice") return -1;
     if (it.retriable) return i;
+    if (it.retryTransparent) continue;
     if (it.tone !== "info") return -1;
   }
   return -1;

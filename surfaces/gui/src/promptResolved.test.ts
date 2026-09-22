@@ -7,8 +7,10 @@
 // can type its own folder path, and "Approve and run" sends mode="bypass-approvals". Same
 // reason `interactions.outcome_text` reads the verdict field server-side.
 import { afterEach, describe, expect, it } from "vitest";
+import { retryAnchor } from "./components/Transcript";
 import i18n from "./i18n";
 import { answerSupersededNotice, promptOutcome, promptResolvedNotice } from "./promptResolved";
+import type { Item } from "./types";
 
 afterEach(async () => {
   await i18n.changeLanguage("en");
@@ -95,6 +97,7 @@ describe("answerSupersededNotice", () => {
     expect(answerSupersededNotice("approval", "allow", "write_file")).toEqual({
       kind: "notice",
       tone: "warn",
+      retryTransparent: true,
       text:
         "Your answer to write_file (approved) came in after the conversation had moved on, " +
         "so it was not applied — write_file did not run.",
@@ -106,11 +109,13 @@ describe("answerSupersededNotice", () => {
     expect(answerSupersededNotice("approval", "allow", "write_file")).toEqual({
       kind: "notice",
       tone: "warn",
+      retryTransparent: true,
       text: "你对 write_file 的答复（同意）到达时，对话已经往下进行了，这条答复没有生效，write_file 没有运行。",
     });
     expect(answerSupersededNotice("question", "staging")).toEqual({
       kind: "notice",
       tone: "warn",
+      retryTransparent: true,
       text: "有一条答复（staging）到达时，对话已经往下进行了，这条答复没有生效。",
     });
   });
@@ -120,7 +125,19 @@ describe("answerSupersededNotice", () => {
     expect(note).toEqual({
       kind: "notice",
       tone: "warn",
+      retryTransparent: true,
       text: "An answer (approved) came in after the conversation had moved on, so it was not applied.",
     });
+  });
+
+  it("keeps the Retry of a live error it lands after", () => {
+    // The live view (App.tsx): the resumed turn's `error` event, then the server's
+    // `answer_superseded` event, which it sends only after that resume is done.
+    const items: Item[] = [
+      { kind: "user", text: "never mind, do something else" },
+      { kind: "notice", tone: "warn", text: "Error: boom", retriable: true },
+      answerSupersededNotice("approval", "allow", "write_file"),
+    ];
+    expect(retryAnchor(items)).toBe(1);
   });
 });

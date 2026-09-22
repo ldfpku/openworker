@@ -238,6 +238,10 @@ export type Item =
       tone: "info" | "warn";
       text: string;
       retriable?: boolean;
+      // A warning that `retryAnchor` still looks through: bookkeeping written after a
+      // failure that says nothing about the failed turn (the server's `answer_superseded`).
+      // Must match the server's retry guard (engine `_RETRY_TRANSPARENT_NOTICE_KINDS`).
+      retryTransparent?: boolean;
       // `title` switches the one-line status notice to a block: a heading plus
       // blank-line-separated paragraphs, left-aligned. Used for the Auto-Approve
       // banner, which is prose rather than a status line.

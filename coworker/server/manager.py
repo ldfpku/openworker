@@ -1823,6 +1823,11 @@ class SessionManager:
             # reported here as superseded instead of running it. The price of waiting: if
             # the process goes away while `resume()` waits on such a prompt, the notice is
             # never written, and the log line below is all that is left of it.
+            # Written last, the notice can land after an `error` notice: the continuation
+            # of that later call failed, or (with nothing trailing) the turn that moved
+            # past this call had failed before the answer came in. The retry guard looks
+            # through it (engine `_RETRY_TRANSPARENT_NOTICE_KINDS`, and the GUI's
+            # `retryAnchor` alike), so that failure keeps its Retry.
             superseded = self._answer_superseded(engine, item.tool_call_id)
             if superseded:
                 self._log_superseded_answer(item)
@@ -1891,8 +1896,9 @@ class SessionManager:
     def _note_superseded_answer(engine, item) -> dict[str, Any]:
         """Say in the transcript that `item`'s answer was not applied (see
         `_answer_superseded`): an `answer_superseded` notice, persisted by the save that
-        follows, so it is there on reload. Returns the payload for the live event. The
-        text is server-authored English; `prompt`/`resolution`/`tool` travel beside it so
+        follows, so it is there on reload. Bookkeeping, not a turn: the retry guard looks
+        through it. Returns the payload for the live event. The text is server-authored
+        English; `prompt`/`resolution`/`tool` travel beside it so
         the GUI can word it in the user's language (promptResolved.ts)."""
         kind = str(getattr(item, "kind", "") or "")
         resolution = str(getattr(item, "resolution", "") or "")

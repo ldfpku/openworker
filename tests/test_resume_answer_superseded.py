@@ -15,7 +15,11 @@ tool call behind the user's back would be worse), but it logs the fact and leave
 `answer_superseded` notice in the transcript, also pushed to whoever is viewing the session.
 A call that already has its real result — an earlier resume used the answer — gets no such
 notice. The notice is written once the resume is done, never while a later prompt of the
-session is still pending (the last two tests).
+session is still pending (the two tests after the four above).
+
+Written last, the notice can follow an `error` notice. It is bookkeeping, not a turn, so it
+must not take that failure's Retry away: the engine's retry guard looks through it, and a
+retry re-runs the failed turn with the notice left where it was (the last two tests).
 """
 
 from __future__ import annotations
@@ -381,3 +385,157 @@ async def test_stale_answer_notice_lands_after_the_later_prompt_is_done(
     assert [r for r in _persisted_results_for(mgr, sid, "call_y") if "Wrote" in r], (
         "expected Y's real result in the saved thread"
     )
+
+
+# Retry across the notice. The engine's retry guard (`_tail_is_retriable_error`) and the
+# GUI's `retryAnchor` look for an error notice at the tail; an answer_superseded notice
+# written after one must be looked through, or a failed turn loses its Retry the moment a
+# stale answer comes in.
+
+
+class _FailingScript(_ChatOnlyScript):
+    """`_ChatOnlyScript` whose scripted turn may be an exception: that chat call raises it
+    (a non-transient provider error, so the engine ends the turn on an `error` notice)."""
+
+    def complete(self, *, model, messages, tools=None, **settings):
+        if messages and "title chat sessions" in str(messages[0].get("content", "")):
+            return _text("Approved File Write")
+        upcoming = self._turns[0] if self._turns else None
+        if isinstance(upcoming, Exception):
+            self._turns.pop(0)
+            raise upcoming
+        return super().complete(model=model, messages=messages, tools=tools, **settings)
+
+
+def _notice_kinds_at_the_tail(messages: list[dict]) -> list[str]:
+    tail: list[str] = []
+    for m in reversed(messages):
+        if m.get("role") != "notice":
+            break
+        tail.insert(0, str(m.get("kind")))
+    return tail
+
+
+async def _retry_and_check(mgr: SessionManager, sid: str) -> list:
+    """Retry the failed turn the way app.py does (claim, `engine.retry()`, save, idle) and
+    check what it leaves: the re-run's answer after the notice, the notice still there."""
+    engine = await mgr.ensure_engine(sid)
+    assert engine._tail_is_retriable_error() is True, "the stale answer took the Retry away"
+    assert mgr.try_mark_running(sid)
+    try:
+        events = [event async for event in engine.retry()]
+    finally:
+        mgr.mark_idle(sid)
+        mgr.save(sid, engine)
+    await _settle(mgr)
+    assert events, "retry() refused to re-run the failed turn"
+    assert events[-1].type.value == "turn_end", [e.type.value for e in events]
+
+    rec = mgr.session_store.load(sid)
+    assert rec.messages[-1].get("role") == "assistant"
+    assert rec.messages[-1].get("content") == "Recovered after retry."
+    kinds = [m.get("kind") for m in rec.messages if m.get("role") == "notice"]
+    # Nothing was cut: the failure and the notice both stay in the transcript, in order,
+    # ahead of the re-run's answer.
+    assert kinds[-2:] == ["error", "answer_superseded"], kinds
+    # ...and no provider ever sees either of them.
+    assert all(m.get("role") != "notice" for m in engine._outbound_messages())
+    # A turn that has since completed is retry-proof again.
+    assert engine._tail_is_retriable_error() is False
+    assert [e async for e in engine.retry()] == []
+    return events
+
+
+async def test_retry_survives_a_superseded_notice_after_the_continuation_failed(
+    tmp_path, monkeypatch, caplog
+):
+    """fbbd0cb's ordering: X is stale, the later prompt Y is answered inside X's resume, Y
+    runs, and the model call after Y fails. The notice about X is written after that
+    continuation — so after its error notice."""
+    sid = "stale-x-y-then-error"
+    caplog.set_level(logging.INFO, logger=MANAGER_LOGGER)
+    x_target, y_target = tmp_path / "x.txt", tmp_path / "y.txt"
+    mgr = SessionManager(
+        workspace=tmp_path,
+        provider=_FailingScript(
+            [
+                _tool("write_file", {"path": str(x_target), "content": "x"}, "call_x"),
+                _tool("write_file", {"path": str(y_target), "content": "y"}, "call_y"),
+                ValueError("provider rejected the request"),
+                _text("Recovered after retry."),
+            ]
+        ),
+    )
+    engine = mgr.get_engine(sid, agent="cowork", workspace=str(tmp_path))
+    item_x = await _run_until_pending(mgr, sid, engine)
+    live = await mgr.ensure_engine(sid)
+    item_y = await _run_until_prompt(mgr, sid, live, "never mind, do something else", "call_y")
+
+    blocked_on_y = asyncio.Event()
+    real_wait = mgr.inbox.wait
+
+    async def wait_spy(item_id: str) -> str:
+        if item_id == item_y.id:
+            blocked_on_y.set()
+        return await real_wait(item_id)
+
+    monkeypatch.setattr(mgr.inbox, "wait", wait_spy)
+    resume_x = asyncio.ensure_future(mgr.resolve_inbox(item_x.id, "allow"))
+    await asyncio.wait_for(blocked_on_y.wait(), timeout=10)
+    assert await asyncio.wait_for(mgr.resolve_inbox(item_y.id, "allow"), timeout=10)
+    assert await asyncio.wait_for(resume_x, timeout=10)
+    await _settle(mgr)
+
+    assert y_target.read_text() == "y"
+    assert not x_target.exists()
+    assert _logged(caplog, item_x.id)
+    rec = mgr.session_store.load(sid)
+    assert _notice_kinds_at_the_tail(rec.messages) == ["error", "answer_superseded"]
+
+    await _retry_and_check(mgr, sid)
+    assert not x_target.exists(), "the retry must not replay the overtaken call"
+
+
+async def test_retry_survives_a_superseded_notice_after_the_turn_that_moved_on_failed(
+    tmp_path, monkeypatch, caplog
+):
+    """e050f1a's common case: X is left pending across a restart, the user's next message
+    fails with a provider error, and only then does the user answer X from the Inbox.
+    Nothing is trailing, so the resume runs nothing and the notice lands after that error."""
+    sid = "moved-on-then-error"
+    caplog.set_level(logging.INFO, logger=MANAGER_LOGGER)
+    target = tmp_path / "x.txt"
+    mgr = SessionManager(
+        workspace=tmp_path,
+        provider=_FailingScript(
+            [
+                _tool("write_file", {"path": str(target), "content": "x"}, "call_x"),
+                ValueError("provider rejected the request"),
+                _text("Recovered after retry."),
+            ]
+        ),
+    )
+    engine = mgr.get_engine(sid, agent="cowork", workspace=str(tmp_path))
+    item = await _run_until_pending(mgr, sid, engine)
+    live = await mgr.ensure_engine(sid)
+    assert mgr.try_mark_running(sid)
+    try:
+        async for _ in live.run("never mind, do something else"):
+            pass
+    finally:
+        mgr.mark_idle(sid)
+    mgr.save(sid, live)
+    await _settle(mgr)
+    assert live._tail_is_retriable_error() is True  # the failed turn, Retry on offer
+
+    sent = _record_broadcasts(mgr, monkeypatch)
+    assert await asyncio.wait_for(mgr.resolve_inbox(item.id, "allow"), timeout=10)
+    await _settle(mgr)
+
+    assert not target.exists()
+    _assert_reported(mgr, sent, caplog, sid, item)
+    rec = mgr.session_store.load(sid)
+    assert _notice_kinds_at_the_tail(rec.messages) == ["error", "answer_superseded"]
+
+    await _retry_and_check(mgr, sid)
+    assert not target.exists(), "the retry must not replay the overtaken call"

@@ -528,3 +528,46 @@ def test_retry_survives_model_switches(tmp_path):
 
 async def _drain_retry(engine):
     return [ev async for ev in engine.retry()]
+
+
+def test_retry_looks_through_answer_superseded_notices_only(tmp_path):
+    """An `answer_superseded` notice (manager `_note_superseded_answer`) is bookkeeping
+    written whenever a stale Inbox answer comes in — which can be right after a failure.
+    It must not consume the Retry, and the retry keeps it in place. Looking through it
+    does not make a completed turn retriable, and it is not a licence to look through
+    every notice: an `interrupted` one after the error still ends the Retry."""
+    provider = FlakyProvider(failures=1)
+    engine = TurnEngine(
+        provider=provider,
+        registry=ToolRegistry(),
+        permissions=PermissionEngine(workspace_root=tmp_path),
+        model="gpt-5.5",
+    )
+
+    def superseded() -> None:
+        engine._append_notice(
+            "answer_superseded", "not applied", prompt="approval", resolution="allow"
+        )
+
+    async def scenario():
+        first = [ev async for ev in engine.run("hello")]
+        superseded()
+        engine.switch_model("gpt-5.6-sol")  # ...and a model switch after it, too
+        superseded()
+        assert engine._tail_is_retriable_error() is True
+        engine._append_notice("interrupted")
+        assert engine._tail_is_retriable_error() is False
+        engine.messages.pop()  # back to [..., error, superseded, switch, superseded]
+        second = [ev async for ev in engine.retry()]
+        return first, second
+
+    first, second = asyncio.run(scenario())
+    assert first[-1].type == EventType.ERROR
+    assert second[-1].type == EventType.TURN_END
+    assert engine.messages[-1]["content"] == "recovered"
+    kinds = [m.get("kind") for m in engine.messages if m.get("role") == "notice"]
+    assert kinds == ["error", "answer_superseded", "model_switch", "answer_superseded"]
+    # Completed now: a superseded notice after an answer is no Retry.
+    superseded()
+    assert engine._tail_is_retriable_error() is False
+    assert asyncio.run(_drain_retry(engine)) == []

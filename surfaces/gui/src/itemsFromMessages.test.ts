@@ -172,6 +172,7 @@ describe("itemsFromMessages answer_superseded", () => {
       {
         kind: "notice",
         tone: "warn",
+        retryTransparent: true,
         text:
           "Your answer to write_file (approved) came in after the conversation had moved on, " +
           "so it was not applied — write_file did not run.",
@@ -179,15 +180,48 @@ describe("itemsFromMessages answer_superseded", () => {
     ]);
   });
 
-  it("offers no Retry, and does not let one through from an error before it", () => {
+  it("offers no Retry of its own, but keeps the Retry of an error before it", () => {
+    // The shape the server persists when the answer came in after the turn that moved past
+    // its prompt had failed (or after the resume's own continuation failed): the notice
+    // lands after the error. The server's retry guard (`_tail_is_retriable_error`) looks
+    // through it, so the button stays on the error and the server acts on it.
     const items = itemsFromMessages([
       { role: "user", content: "hi" },
       { role: "notice", kind: "error", text: "boom" },
       superseded,
     ] as any);
     expect(items[items.length - 1]).not.toHaveProperty("retriable");
-    // The server's retry guard (`_tail_is_retriable_error`) only looks through model_switch
-    // notices, so a Retry offered here would do nothing.
+    expect(retryAnchor(items)).toBe(items.length - 2);
+    expect((items[items.length - 2] as any).retriable).toBe(true);
+  });
+
+  it("looks through several of them, and through a model switch after them", () => {
+    const items = itemsFromMessages([
+      { role: "user", content: "hi" },
+      { role: "notice", kind: "error", text: "boom" },
+      superseded,
+      { ...superseded, tool: "edit_file" },
+      { role: "notice", kind: "model_switch", text: "Model switched to Kimi K2.6 · Moonshot" },
+    ] as any);
+    expect(retryAnchor(items)).toBe(1);
+  });
+
+  it("does not turn a finished turn into a retriable one", () => {
+    const items = itemsFromMessages([
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "done" },
+      superseded,
+    ] as any);
+    expect(retryAnchor(items)).toBe(-1);
+  });
+
+  it("looks through it only: another warning after the error still ends the Retry", () => {
+    const items = itemsFromMessages([
+      { role: "user", content: "hi" },
+      { role: "notice", kind: "error", text: "boom" },
+      superseded,
+      { role: "notice", kind: "interrupted" },
+    ] as any);
     expect(retryAnchor(items)).toBe(-1);
   });
 });
