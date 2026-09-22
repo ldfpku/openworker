@@ -21,6 +21,7 @@ from coworker.providers import (
     ToolCall,
 )
 from coworker.server import SessionManager, create_app
+from coworker.testing.autotitle import autotitle_reply, is_autotitle_call
 from coworker.tools import ToolRegistry
 
 
@@ -32,6 +33,13 @@ class CapturingProvider(ProviderClient):
         self.calls: list[list[dict]] = []
 
     def complete(self, *, model, messages, tools=None, **settings):
+        # test_messages_endpoint_returns_ts drives this provider through a real WS turn
+        # with exactly one scripted turn queued — the manager's fire-and-forget
+        # auto-title completion reaches this same provider (manager.py), and without
+        # this guard a title call arriving first pops that one queued turn, leaving the
+        # real chat call to IndexError on an empty `_turns`.
+        if is_autotitle_call(messages):
+            return autotitle_reply()
         self.calls.append([dict(m) for m in messages])
         return self._turns.pop(0)
 
