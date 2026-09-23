@@ -26,6 +26,11 @@ const MODEL_FAMILIES: Record<string, { value: string; label: string }[]> = {
 // curated list), the black "default" badge marks the model new sessions use, and hovering any
 // other row reveals "Make default". A free-type row below adds models by hand, so brand-new
 // releases work without an app update. Shared by Onboarding and Manage → Configure Models.
+//
+// Except the company gateway (`aigw`): its list is the guard's per-person answer (models this
+// user may actually call), so there is no free-type row at all — owner call 2026-09-23, a
+// hand-typed id there could only ever be a model the gateway refuses or doesn't carry.
+const NO_MANUAL_ADD = new Set(["aigw"]);
 export function ModelChecklist({
   provider,
   knownProviders,
@@ -82,6 +87,7 @@ export function ModelChecklist({
   // authoritative then — but never disappears: gateways and previews the catalog omits
   // still need a way in.
   const [showAdd, setShowAdd] = useState(false);
+  const manualAdd = !NO_MANUAL_ADD.has(provider);
 
   // Once the list comes live from the provider's real API, a text filter beats scrolling
   // through it — but only once it's long enough to need one.
@@ -221,7 +227,7 @@ export function ModelChecklist({
           </div>
         );
       })}
-      {catalogLive && !showAdd && (
+      {manualAdd && catalogLive && !showAdd && (
         <button
           className="text-[12px] text-muted hover:text-ink mt-1.5 underline underline-offset-2"
           onClick={() => setShowAdd(true)}
@@ -230,7 +236,7 @@ export function ModelChecklist({
           {t("models.add_manually")}
         </button>
       )}
-      {(!catalogLive || showAdd) && (
+      {manualAdd && (!catalogLive || showAdd) && (
         <div className="mlist-add">
           {families && (
             <select

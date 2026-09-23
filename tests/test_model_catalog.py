@@ -18,7 +18,9 @@ import pytest
 from coworker.providers.catalog import (
     CATALOG_PROVIDERS,
     CatalogModel,
+    aigw_model_label,
     is_chat_model_id,
+    parse_aigw,
     parse_anthropic,
     parse_catalog,
     parse_gemini,
@@ -60,6 +62,8 @@ def test_catalog_providers_membership():
         "xai",
         "mistral",
         "meta",
+        # The company gateway: its list is the guard's per-person /gate/models answer.
+        "aigw",
     ):
         assert supports_catalog(name), name
         assert name in CATALOG_PROVIDERS
@@ -69,7 +73,6 @@ def test_catalog_providers_membership():
         "ark-agent-plan-cn",
         "bedrock",
         "vertex",
-        "aigw",
         "openai-codex",
     ):
         assert not supports_catalog(name), name
@@ -876,3 +879,156 @@ def test_verify_provider_failure_surfaces_the_catalog_error(tmp_path, monkeypatc
     )
     res = mgr.verify_provider("zai", {"api_key": "bad"})
     assert res == {"ok": False, "error": "Invalid API key."}
+
+
+# -- aigw: the company guard's per-person model list (GET /gate/models) -------------
+
+
+@pytest.mark.parametrize(
+    "model_id,expected",
+    [
+        ("anthropic/claude-opus-5-5", "Claude Opus 5.5 · via Cloudflare"),
+        ("anthropic/claude-haiku-4-5", "Claude Haiku 4.5 · via Cloudflare"),
+        ("anthropic/claude-3-7-sonnet-latest", "Claude 3.7 Sonnet Latest · via Cloudflare"),
+        ("openai/gpt-6-luna", "GPT-6 Luna · via Cloudflare"),
+        ("openai/gpt-5.6-terra-pro", "GPT-5.6 Terra Pro · via Cloudflare"),
+        ("openai/o4-mini", "o4 Mini · via Cloudflare"),
+        ("google-ai-studio/gemini-3.8-flash", "Gemini 3.8 Flash · via Cloudflare"),
+        ("workers-ai/@cf/zai-org/glm-5.3", "GLM 5.3 · via Cloudflare"),
+        ("workers-ai/@cf/qwen/qwen3.8-27b", "Qwen3.8 27b · via Cloudflare"),
+        ("openai/gpt-5-pro-2025-10-06", "GPT-5 Pro 2025 10 06 · via Cloudflare"),
+    ],
+)
+def test_aigw_model_label(model_id, expected):
+    assert aigw_model_label(model_id) == expected
+
+
+def test_parse_aigw_keeps_gateway_ids_and_culls_non_chat_rows():
+    payload = {
+        "models": [
+            {"id": "anthropic/claude-opus-5", "family": "anthropic/", "context": None},
+            {"id": "workers-ai/@cf/zai-org/glm-5.3", "context": 131072},
+            {"id": "openai/o3-deep-research"},  # not a chat model
+            {"id": "google-ai-studio/gemini-robotics-er-1.6-preview"},  # nor this
+            {"id": "anthropic/claude-opus-5"},  # duplicate
+            {"id": "no-vendor-prefix"},  # not a gateway id
+            {"id": ""},
+            "garbage",
+        ]
+    }
+    got = [m.to_dict() for m in parse_aigw(payload)]
+    assert got == [
+        {
+            "id": "anthropic/claude-opus-5",
+            "label": "Claude Opus 5 · via Cloudflare",
+            "context_window": None,
+        },
+        {
+            "id": "workers-ai/@cf/zai-org/glm-5.3",
+            "label": "GLM 5.3 · via Cloudflare",
+            "context_window": 131072,
+        },
+    ]
+    assert parse_catalog("aigw", payload) == parse_aigw(payload)
+    for bad in (None, [], {"models": "x"}, {"data": []}):
+        assert parse_aigw(bad) == []
+
+
+def test_list_provider_models_aigw_hits_gate_models_with_the_oauth_session(monkeypatch):
+    cap: dict = {}
+    _patch_get(
+        monkeypatch,
+        status=200,
+        json_body={"models": [{"id": "openai/gpt-5.6-terra"}]},
+        capture=cap,
+    )
+    res = list_provider_models("aigw", fields={"oauth_token": "tok-1"})
+    assert res == {
+        "ok": True,
+        "models": [
+            {
+                "id": "openai/gpt-5.6-terra",
+                "label": "GPT-5.6 Terra · via Cloudflare",
+                "context_window": None,
+            }
+        ],
+    }
+    assert cap["url"] == "https://gateway.smjtools.com/gate/models"
+    assert cap["headers"]["Authorization"] == "Bearer tok-1"
+
+
+def test_list_provider_models_aigw_signed_out_makes_no_call(monkeypatch):
+    def fail(*a, **k):
+        raise AssertionError("no network call while signed out")
+
+    monkeypatch.setattr("httpx.get", fail)
+    res = list_provider_models("aigw", fields={})
+    assert res == {"ok": False, "error": "Sign in to the gateway first."}
+
+
+def test_list_provider_models_aigw_error_mapping(monkeypatch):
+    # A stale Access session: same wording as the Test button's, never "Invalid API key."
+    _patch_get(monkeypatch, status=401, json_body={})
+    res = list_provider_models("aigw", fields={"oauth_token": "t"})
+    assert res["ok"] is False and "sign in again" in res["error"]
+    # The guard's own Chinese message (502 catalog_unavailable) passes through verbatim.
+    msg = "模型目录暂时取不到（网关目录返回 HTTP 500），请稍后重试。[gateway-guard]"
+    _patch_get(
+        monkeypatch,
+        status=502,
+        json_body={"error": {"code": "catalog_unavailable", "message": msg}},
+    )
+    assert list_provider_models("aigw", fields={"oauth_token": "t"}) == {
+        "ok": False,
+        "error": msg,
+    }
+
+
+def test_verify_aigw_probes_first_then_pulls_and_caches_the_list(tmp_path, monkeypatch):
+    """Test stays a real completion; the per-person list is pulled only after it passes."""
+    import coworker.server.manager as manager_mod
+
+    mgr = SessionManager(data_dir=tmp_path / "data")
+    order: list[str] = []
+    monkeypatch.setattr(
+        manager_mod,
+        "verify_provider_key",
+        lambda name, **k: order.append("probe") or {"ok": True},
+    )
+
+    def listed(name, **k):
+        order.append("list")
+        return {"ok": True, "models": [{"id": "anthropic/claude-opus-5", "label": "x", "context_window": None}]}
+
+    monkeypatch.setattr(manager_mod, "list_provider_models", listed)
+    assert mgr.verify_provider("aigw", {}) == {"ok": True}
+    assert order == ["probe", "list"]
+    assert [m["id"] for m in mgr._catalog_models("aigw")] == ["anthropic/claude-opus-5"]
+
+
+def test_verify_aigw_failed_probe_skips_the_list(tmp_path, monkeypatch):
+    import coworker.server.manager as manager_mod
+
+    mgr = SessionManager(data_dir=tmp_path / "data")
+    monkeypatch.setattr(
+        manager_mod, "verify_provider_key", lambda name, **k: {"ok": False, "error": "nope"}
+    )
+
+    def never(*a, **k):
+        raise AssertionError("no list pull after a failed Test")
+
+    monkeypatch.setattr(manager_mod, "list_provider_models", never)
+    assert mgr.verify_provider("aigw", {}) == {"ok": False, "error": "nope"}
+
+
+def test_verify_aigw_list_failure_still_passes_the_test(tmp_path, monkeypatch):
+    """The credentials are good — a list outage shows in the catalog status row instead."""
+    import coworker.server.manager as manager_mod
+
+    mgr = SessionManager(data_dir=tmp_path / "data")
+    monkeypatch.setattr(manager_mod, "verify_provider_key", lambda name, **k: {"ok": True})
+    monkeypatch.setattr(
+        manager_mod, "list_provider_models", lambda name, **k: {"ok": False, "error": "boom"}
+    )
+    assert mgr.verify_provider("aigw", {}) == {"ok": True}
+    assert mgr._catalog_status("aigw")["error"] == "boom"

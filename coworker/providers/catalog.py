@@ -15,10 +15,13 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 #: Providers whose model-list API we know how to call and parse. Everyone else (bedrock,
-#: vertex, aigw, ollama, ark, ark-agent-plan-cn, and the oauth providers) either has no
-#: such API, or one this module doesn't (yet) speak.
+#: vertex, ollama, ark, ark-agent-plan-cn, and the oauth providers) either has no
+#: such API, or one this module doesn't (yet) speak. `aigw` reads the company guard's
+#: `GET /gate/models` — the per-person list of models this user may actually call
+#: (owner call 2026-09-23: no hand-typed ids for the gateway, the list comes from it).
 CATALOG_PROVIDERS = frozenset(
     {
+        "aigw",
         "openai",
         "anthropic",
         "gemini",
@@ -110,6 +113,7 @@ LABEL_SUFFIX: dict[str, str] = {
     "together": "via Together",
     "fireworks": "via Fireworks",
     "openrouter": "via OpenRouter",
+    "aigw": "via Cloudflare",
 }
 
 
@@ -254,9 +258,80 @@ def parse_openai_compat(
     return out
 
 
+# Anthropic spells versions with dashes on the wire (`claude-opus-5-5`, `claude-3-7-sonnet`);
+# a single-digit major followed by a 1–2 digit minor reads back as "5.5" / "3.7" in a label.
+_DASHED_MINOR_RE = re.compile(r"^\d{1,2}$")
+_SINGLE_MAJOR_RE = re.compile(r"^\d(?:\.\d{1,2})?$")
+_O_SERIES_RE = re.compile(r"^o\d+$")
+
+
+def aigw_model_label(model_id: str) -> str:
+    """Display label for a gateway id the curated matrix doesn't name —
+    `anthropic/claude-opus-5-5` → `Claude Opus 5.5 · via Cloudflare`,
+    `openai/gpt-6-luna` → `GPT-6 Luna · via Cloudflare`,
+    `workers-ai/@cf/zai-org/glm-5.3` → `GLM 5.3 · via Cloudflare`. Matrix labels still win
+    on overlap (the manager merges them last)."""
+    tail = (model_id or "").rsplit("/", 1)[-1]
+    merged: list[str] = []
+    for tok in (t for t in tail.split("-") if t):
+        if merged and _DASHED_MINOR_RE.match(tok) and _SINGLE_MAJOR_RE.match(merged[-1]):
+            merged[-1] = f"{merged[-1]}.{tok}"
+        else:
+            merged.append(tok)
+    words = [
+        t.upper()
+        if t.lower() in _ABBREV_TOKENS
+        # digits and OpenAI's o-series (`o3`, `o4`) keep their own spelling
+        else (t if t[0].isdigit() or _O_SERIES_RE.match(t) else t[0].upper() + t[1:])
+        for t in merged
+    ]
+    if len(words) > 1 and words[0] == "GPT" and _VERSION_RE.match(words[1]):
+        words[0:2] = [f"GPT-{words[1]}"]
+    body = " ".join(words) or tail
+    return f"{body} · {LABEL_SUFFIX['aigw']}"
+
+
+def parse_aigw(payload: Any) -> list[CatalogModel]:
+    """gateway-guard `GET /gate/models`: `{"models": [{"id": "anthropic/claude-opus-5",
+    "family": "anthropic/", "context": null, "created": "2026-07-24"}, ...]}` — already
+    filtered per person on the server (open vendors only, restricted models dropped for
+    roles that can't use them, retired catalog rows dropped). Ids are the gateway form the
+    provider sends as-is. Non-chat rows (deep-research, computer-use, …) still get the same
+    client-side cull as every other catalog."""
+    out: list[CatalogModel] = []
+    seen: set[str] = set()
+    if not isinstance(payload, dict):
+        return out
+    entries = payload.get("models")
+    if not isinstance(entries, list):
+        return out
+    for entry in entries:
+        try:
+            if not isinstance(entry, dict):
+                continue
+            model_id = str(entry.get("id") or "").strip()
+            if not model_id or "/" not in model_id or model_id in seen:
+                continue
+            if not is_chat_model_id(model_id):
+                continue
+            context_window = entry.get("context")
+            context_window = (
+                context_window
+                if isinstance(context_window, int) and context_window > 0
+                else None
+            )
+            out.append(CatalogModel(model_id, aigw_model_label(model_id), context_window))
+            seen.add(model_id)
+        except Exception:
+            continue
+    return out
+
+
 def parse_catalog(name: str, payload: Any, provider_title: str = "") -> list[CatalogModel]:
     """Dispatch to the right parser for `name`. Never raises."""
     try:
+        if name == "aigw":
+            return parse_aigw(payload)
         if name == "gemini":
             return parse_gemini(payload)
         if name == "anthropic":

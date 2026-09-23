@@ -5037,6 +5037,28 @@ class SessionManager:
         api_key, merged, error = self._probe_credentials(name, fields)
         if error:
             return {"ok": False, "error": error}
+        if name == "aigw":
+            # The gateway's Test stays a real sub-cent completion (the only probe that
+            # exercises Access + the /compat prefix rule + Unified Billing at once); the
+            # per-person model list is pulled only AFTER it passes (owner call 2026-09-23:
+            # the list comes with a passing Test). A failed list pull does not fail the
+            # Test — the credentials are good — its error lands in the catalog status row,
+            # where Refresh retries it.
+            probe = verify_provider_key(
+                name, api_key=api_key, base_url=merged.get("base_url", ""), fields=merged
+            )
+            if not probe.get("ok"):
+                return probe
+            listed = list_provider_models(
+                name,
+                api_key=api_key,
+                base_url=merged.get("base_url", ""),
+                fields=merged,
+                timeout=self.MODEL_CATALOG_TIMEOUT,
+                provider_title=self._catalog_provider_title(d, merged),
+            )
+            self._store_model_catalog(name, listed)
+            return {"ok": True}
         if supports_catalog(name):
             listed = list_provider_models(
                 name,

@@ -271,4 +271,30 @@ describe("ModelChecklist — catalog hygiene", () => {
     addTyped("gemini-4-preview");
     expect(addModel).toHaveBeenCalledWith("gemini:gemini-4-preview");
   });
+
+  // Owner call 2026-09-23: the company gateway's models come only from its per-person
+  // list — no free-type row, live or not, and no "add manually" escape hatch either.
+  it.each([
+    ["live", { supported: true, live: true, fetched_at: "2026-09-23T05:00:00Z", error: null, count: 2 }],
+    ["failed", { supported: true, live: false, fetched_at: null, error: "timeout", count: 0 }],
+  ] as const)("never offers hand-typed ids for the gateway (%s catalog)", (_label, catalog) => {
+    render(
+      <ModelChecklist
+        provider="aigw"
+        knownProviders={[...KNOWN, "aigw"]}
+        suggested={["anthropic/claude-opus-5", "workers-ai/@cf/zai-org/glm-5.3"]}
+        curated={["aigw:anthropic/claude-opus-5"]}
+        defaultModel="aigw:anthropic/claude-opus-5"
+        catalog={catalog as ProviderCatalog}
+        onRefresh={async () => {}}
+        onChanged={() => {}}
+      />,
+    );
+    expect(screen.queryByPlaceholderText("Add another model…")).toBeNull();
+    expect(screen.queryByTestId("mlist-add-manually")).toBeNull();
+    // Ticking and defaulting still work on what the gateway listed.
+    expect(screen.getByTitle("aigw:workers-ai/@cf/zai-org/glm-5.3")).toBeTruthy();
+    // …and the status row (Refresh / Retry) is the way to re-pull the list.
+    expect(screen.getByTestId("mlist-catalog-status")).toBeTruthy();
+  });
 });

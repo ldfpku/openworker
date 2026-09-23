@@ -80,6 +80,25 @@ describe("GatewaySignIn", () => {
     await waitFor(() => expect(screen.getByTestId("t-aigw-test-ok")).toBeTruthy());
   });
 
+  it("re-reads the providers after a passing Test, which also pulled the model list", async () => {
+    getGatewayStatus.mockResolvedValue(status({ signed_in: true }));
+    verifyProvider.mockResolvedValue({ ok: true });
+    const onChanged = vi.fn();
+    render(<GatewaySignIn tp="t" onChanged={onChanged} />);
+    fireEvent.click(await screen.findByTestId("t-aigw-test"));
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+  });
+
+  it("leaves the list alone when Test fails", async () => {
+    getGatewayStatus.mockResolvedValue(status({ signed_in: true }));
+    verifyProvider.mockResolvedValue({ ok: false, error: "nope" });
+    const onChanged = vi.fn();
+    render(<GatewaySignIn tp="t" onChanged={onChanged} />);
+    fireEvent.click(await screen.findByTestId("t-aigw-test"));
+    await waitFor(() => expect(screen.getByTestId("t-aigw-test-error")).toBeTruthy());
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+
   it("shows the gateway's own words when Test fails", async () => {
     getGatewayStatus.mockResolvedValue(status({ signed_in: true }));
     verifyProvider.mockResolvedValue({ ok: false, error: "quota gone" });

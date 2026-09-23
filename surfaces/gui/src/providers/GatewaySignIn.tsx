@@ -116,8 +116,12 @@ export function GatewaySignIn({
       ok: false,
       error: t("unreachable"),
     }));
-    if (res.ok) setTest({ state: "ok" });
-    else setTest({ state: "error", msg: res.error || t("couldn't verify") });
+    if (res.ok) {
+      setTest({ state: "ok" });
+      // A passing Test also pulled this person's model list from the gateway — re-read the
+      // providers so the checklist below swaps to it.
+      onChanged?.();
+    } else setTest({ state: "error", msg: res.error || t("couldn't verify") });
   };
 
   if (status === undefined) {

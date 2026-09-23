@@ -30,6 +30,7 @@ from .aigateway_provider import (
     PROBE_MODEL,
     access_headers,
     bearer_headers,
+    normalise_base,
     resolve_settings,
     wire_url,
 )
@@ -1287,6 +1288,24 @@ def _catalog_request(
         elif name == "ollama":
             base = _normalize_ollama_url(base_url)
             resp = httpx.get(base.rstrip("/") + "/models", timeout=timeout)
+        elif name == "aigw":
+            # The company guard answers with THIS person's usable models (open vendors,
+            # restricted ones dropped unless their role may use them) — not the gateway's
+            # raw pricing catalog, which lists long-retired models too. Same credential
+            # choice as `_verify_aigw`: the signed-in OAuth session beats a pasted one.
+            gw_base, access_token = resolve_settings(fields or {})
+            oauth_token = str((fields or {}).get("oauth_token") or "").strip()
+            if not oauth_token and not access_token:
+                return None, "Sign in to the gateway first."
+            resp = httpx.get(
+                normalise_base(gw_base) + "/gate/models",
+                headers=(
+                    bearer_headers(oauth_token)
+                    if oauth_token
+                    else access_headers(access_token)
+                ),
+                timeout=timeout,
+            )
         else:  # openai + any OpenAI-compatible endpoint (Azure, OpenRouter, vendors, vLLM…)
             default_base = next(
                 (f.default for f in d.fields if f.key == "base_url" and f.default), ""
@@ -1320,6 +1339,24 @@ def _map_probe_failure(name: str, d: ProviderDescriptor, resp: Any) -> dict[str,
             return {"ok": False, "error": _UNUSABLE_KEY_HINT}
         if detail:
             return {"ok": False, "error": detail}
+    if name == "aigw":
+        # Same reading as `_verify_aigw`: Access answers a stale session with a redirect or
+        # its own login page. Anything else from the guard carries a Chinese `message`
+        # written for this pane (e.g. 502 catalog_unavailable) — pass it through.
+        body = (getattr(resp, "text", "") or "").lower()
+        if resp.status_code in (301, 302, 401, 403) or "cloudflare access" in body:
+            return {
+                "ok": False,
+                "error": "Your Access session isn't valid — sign in again to refresh it. "
+                "(Sessions expire; this is the usual cause.)",
+            }
+        try:
+            err = (resp.json() or {}).get("error") or {}
+            message = str(err.get("message") or "").strip() if isinstance(err, dict) else ""
+        except Exception:  # noqa: BLE001 - non-JSON body, fall through to the status line
+            message = ""
+        if message:
+            return {"ok": False, "error": message}
     if resp.status_code in (401, 403):
         if name == "ollama":
             return {"ok": False, "error": "Server rejected the request."}
