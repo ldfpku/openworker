@@ -2,6 +2,7 @@ import { isComposing } from "../ime";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { addModel, getSettings, removeModel, setDefaultModel, type ProviderCatalog } from "../api";
+import { sortModelIds } from "../modelOrder";
 import { isFreeModel } from "../providers/logos";
 import { formatRelative } from "../relTime";
 import { BTN_ACCENT_SM, BTN_BORDERED_SM } from "./buttons";
@@ -72,13 +73,13 @@ export function ModelChecklist({
   const bare = (id: string) => (id.startsWith(`${provider}:`) ? id.slice(provider.length + 1) : id);
 
   const suggestedIds = suggested.map(suggestedId);
-  const rows = [
-    ...suggestedIds,
-    ...curated.filter((id) => provOf(id) === provider),
-  ].filter((id, i, a) => a.indexOf(id) === i);
-  // The default leads the list — it used to trail every catalog row, which for a
-  // catalog of a few hundred models put "which one do new sessions use" off-screen.
-  if (rows.includes(defaultModel)) rows.splice(0, 0, ...rows.splice(rows.indexOf(defaultModel), 1));
+  // Strictly by model id, newest first (modelOrder.ts, owner call 2026-09-23) — the
+  // default is NOT pinned to the top any more; its black badge marks it wherever it sorts.
+  const rows = sortModelIds(
+    [...suggestedIds, ...curated.filter((id) => provOf(id) === provider)].filter(
+      (id, i, a) => a.indexOf(id) === i,
+    ),
+  );
   // With a live catalog, a ticked/default id the provider's list doesn't carry (a model
   // the vendor retired, or one typed by hand) gets a badge instead of vanishing silently.
   const catalogLive = !!catalog?.live;

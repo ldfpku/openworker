@@ -8,6 +8,7 @@ import { enhancePrompt, getSettings, inspectPdf, sessionSkills, type SessionSkil
 import { formatTokens, totalTokens } from "../usage";
 import { Dropdown, type Option } from "./Dropdown";
 import { isFreeModel } from "../providers/logos";
+import { sortModelIds } from "../modelOrder";
 import { Icon } from "./Icon";
 import { IconButton } from "./IconButton";
 import { Toggle } from "./Toggle";
@@ -794,8 +795,9 @@ export function Composer(props: Props) {
   useEffect(() => {
     if (modelsLoaded && openOnLoad) setOpenOnLoad(false);
   }, [modelsLoaded, openOnLoad]);
-  const modelOptions: Option[] = Array.from(
-    new Set([props.model, ...(props.models || [])]),
+  // Same order as every other model list: by id, newest first (modelOrder.ts).
+  const modelOptions: Option[] = sortModelIds(
+    Array.from(new Set([props.model, ...(props.models || [])])),
   ).map((m) => {
     // An Option carries ONE badge slot, and two facts compete for it: "free" and "has a
     // same-tier stand-in when the shared gateway pool is busy". Free wins the slot —

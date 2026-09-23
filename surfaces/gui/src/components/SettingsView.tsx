@@ -48,6 +48,7 @@ import { Icon } from "./Icon";
 import { PanelHead } from "./IntegrationsView";
 import { ModelsTab } from "./ManageTabs";
 import { MemorySection } from "./MemorySection";
+import { sortModelIds } from "../modelOrder";
 import { PersonasTab } from "./PersonasTab";
 import { SkillsTab } from "./SkillsTab";
 import { showPersonas } from "../flags";
@@ -995,7 +996,7 @@ function CompactionCard() {
           onChange={(e) => save({ compaction_model: e.target.value })}
         >
           <option value="">{t("Session’s own model (default)")}</option>
-          {models.map((m) => (
+          {sortModelIds(models).map((m) => (
             <option key={m} value={m}>
               {modelLabel(m)}
             </option>

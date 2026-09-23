@@ -244,12 +244,15 @@ describe("ModelChecklist — catalog hygiene", () => {
         onChanged={() => {}}
       />,
     );
-    const boxes = screen.getAllByRole("checkbox");
-    fireEvent.click(boxes[0]);
+    const box = screen
+      .getByTitle("ollama:mistral:latest")
+      .closest("label")!
+      .querySelector("input") as HTMLInputElement;
+    fireEvent.click(box);
     expect(addModel).toHaveBeenCalledWith("ollama:mistral:latest");
   });
 
-  it("lists the default first and badges ids the live catalog doesn't carry; add stays reachable", () => {
+  it("sorts rows by id, newest first, and badges ids the live catalog doesn't carry; add stays reachable", () => {
     render(
       <ModelChecklist
         provider="gemini"
@@ -262,7 +265,11 @@ describe("ModelChecklist — catalog hygiene", () => {
       />,
     );
     const names = screen.getAllByTitle(/^gemini:/).map((el) => el.getAttribute("title"));
-    expect(names[0]).toBe("gemini:gemini-3.8-flash");
+    expect(names).toEqual([
+      "gemini:gemini-3.8-flash",
+      "gemini:gemini-3.7-flash",
+      "gemini:gemini-3.5-flash",
+    ]);
     expect(screen.getByTestId("mlist-off-catalog-gemini:gemini-3.8-flash")).toBeTruthy();
     expect(screen.queryByTestId("mlist-off-catalog-gemini:gemini-3.5-flash")).toBeNull();
     // Live catalog: the free-type row is folded behind a link, not gone.
@@ -270,6 +277,25 @@ describe("ModelChecklist — catalog hygiene", () => {
     fireEvent.click(screen.getByTestId("mlist-add-manually"));
     addTyped("gemini-4-preview");
     expect(addModel).toHaveBeenCalledWith("gemini:gemini-4-preview");
+  });
+
+  it("does not pin the default to the top — strict id order (owner call 2026-09-23)", () => {
+    render(
+      <ModelChecklist
+        provider="aigw"
+        knownProviders={[...KNOWN, "aigw"]}
+        suggested={["anthropic/claude-sonnet-5", "openai/gpt-6-luna", "openai/gpt-5.6-terra"]}
+        curated={["aigw:anthropic/claude-sonnet-5"]}
+        defaultModel="aigw:anthropic/claude-sonnet-5"
+        onChanged={() => {}}
+      />,
+    );
+    const names = screen.getAllByTitle(/^aigw:/).map((el) => el.getAttribute("title"));
+    expect(names).toEqual([
+      "aigw:openai/gpt-6-luna",
+      "aigw:openai/gpt-5.6-terra",
+      "aigw:anthropic/claude-sonnet-5",
+    ]);
   });
 
   // Owner call 2026-09-23: the company gateway's models come only from its per-person

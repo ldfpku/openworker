@@ -29,6 +29,7 @@ import { BTN_ACCENT, BTN_BORDERED } from "./buttons";
 import { CloudSignInInline, CloudStatusPending } from "./connectors/CloudSignIn";
 import { IconButton } from "./IconButton";
 import { ModelChecklist } from "./ModelChecklist";
+import { sortModelIds } from "../modelOrder";
 import { ProviderCards, ProviderForm, useProviderSetup } from "../providers/ProviderSetup";
 import { formatRelative } from "../relTime";
 
@@ -188,7 +189,7 @@ export function ModelsTab() {
               {t("manage.included_models_help")}
             </p>
             <div className="space-y-1">
-              {(info?.suggested_models || []).map((m) => {
+              {sortModelIds(info?.suggested_models || []).map((m) => {
                 const full = ps.sel === "openai" ? m : `${ps.sel}:${m}`;
                 return (
                   <div
@@ -237,7 +238,7 @@ function ComposerPickerCard({
         {t("manage.composer_picker_help")}
       </p>
       <div className="mlist">
-        {settings.models.map((id) => {
+        {sortModelIds(settings.models).map((id) => {
           const isDefault = id === settings.model;
           return (
             <div className="mlist-row" key={id}>
