@@ -4197,10 +4197,7 @@ class SessionManager:
                 return target, None
             found_missing = True
         if found_missing:
-            return None, (
-                "This isn't in the conversation's folder anymore — it may have been "
-                "moved or deleted."
-            )
+            return None, "在会话可访问的文件夹里找不到这个文件，可能已被移动或删除。"
         return None, "path escapes workspace"
 
     def read_artifact(self, session_id: str, path: str) -> dict[str, Any]:

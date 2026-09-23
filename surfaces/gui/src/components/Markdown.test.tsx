@@ -36,6 +36,33 @@ describe("Markdown artifact links", () => {
     expect(screen.getByTestId("artifact-chip").textContent).toContain("report.pdf");
   });
 
+  // 2026-09-23 screenshots: a Chinese filename reached the server as `%E6%96…` ("moved or
+  // deleted"), and a bare `示例表格.xlsx` link rendered as a dead web link.
+  it.each([
+    ["[表](artifact:斯米伽_销售表.xlsx)", "斯米伽_销售表.xlsx"],
+    ["[表](示例表格.xlsx)", "示例表格.xlsx"],
+    ["[表](out/%E6%8A%A5%E5%91%8A.md)", "out/报告.md"],
+    ["[表](file:///C:/Users/me/OpenWorker/abc/a.xlsx)", "C:/Users/me/OpenWorker/abc/a.xlsx"],
+    ["[表](<C:\\Users\\me\\OpenWorker\\abc\\a.xlsx>)", "C:/Users/me/OpenWorker/abc/a.xlsx"],
+    ["[表](artifact:100%25.csv)", "100%.csv"],
+  ])("local-file link %s opens the viewer with the decoded path", (text, expected) => {
+    const seen: string[] = [];
+    const listener = (e: Event) => seen.push((e as CustomEvent).detail.path);
+    window.addEventListener(OPEN_ARTIFACT_EVENT, listener);
+    render(<Markdown text={text} />);
+    fireEvent.click(screen.getByTestId("artifact-chip"));
+    expect(seen).toEqual([expected]);
+    window.removeEventListener(OPEN_ARTIFACT_EVENT, listener);
+  });
+
+  it.each(["[x](mailto:a@b.c)", "[x](#section)", "[x](see-below)", "[x](//cdn.example.com/a.js)"])(
+    "%s is not treated as a local file",
+    (text) => {
+      render(<Markdown text={text} />);
+      expect(screen.queryByTestId("artifact-chip")).toBeNull();
+    },
+  );
+
   // Seventeenth pass: the lead's one-time board mention — [Board · 5 items](board:)
   // renders as an inline pill that opens the drawer on its Board section.
   it("renders a board: link as a pill and dispatches the open-board event", () => {

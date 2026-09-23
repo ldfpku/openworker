@@ -447,7 +447,17 @@ export function RightRail({
               onToggle={() => setOpen({ ...open, files: !open.files })}
             >
               <div className="artifact-list" data-testid="files-roots">
-                {rootDirs.map((r) => (
+                {rootDirs.map((r) => {
+                  // "scratch"/"workspace" are internal root labels, not names a user knows:
+                  // the conversation folder gets its product name, the picked folder its own.
+                  const baseName = r.path.split(/[\\/]/).filter(Boolean).pop() || r.path;
+                  const name =
+                    r.label === "scratch"
+                      ? t("root.temporary_space")
+                      : r.label && r.label !== "workspace"
+                        ? r.label
+                        : baseName;
+                  return (
                   <button
                     className="artifact-row"
                     key={r.path}
@@ -456,7 +466,7 @@ export function RightRail({
                       setSelected({
                         path: r.path,
                         abs_path: r.path,
-                        name: r.label || r.path.split("/").pop() || r.path,
+                        name,
                         kind: "folder",
                         size: 0,
                         modified_at: 0,
@@ -469,15 +479,17 @@ export function RightRail({
                       <Icon name="folder" size={17} />
                     </span>
                     <span className="artifact-name">
-                      {r.label || r.path.split("/").pop() || r.path}
+                      {name}
                       <span className="artifact-row-meta">
                         {r.writable ? t("rail.root_read_write") : t("rail.root_read_only")}
                         {!r.exists ? ` · ${t("root.missing")}` : ""}
+                        {` · ${r.path}`}
                       </span>
                     </span>
                     <span className="artifact-open">{t("rail.browse")}</span>
                   </button>
-                ))}
+                  );
+                })}
               </div>
             </RailSection>
           )}

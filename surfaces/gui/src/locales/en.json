@@ -812,7 +812,7 @@
     "connectors_load_failed": "Could not load connector status."
   },
   "root": {
-    "temporary_space": "Temporary folder",
+    "temporary_space": "Conversation folder",
     "main": "main",
     "missing": "missing",
     "read_write": "Read-write",
@@ -933,7 +933,7 @@
     "decline": "Decline",
     "grant_access": "Grant access",
     "requesting_workspace": "The agent asks to make a folder this session's workspace",
-    "primary_note": "Granting makes this folder the session's primary working directory (read-write); the scratch directory stays available for temporary files and artifacts.",
+    "primary_note": "Granting makes this folder the session's primary working directory (read-write); deliverables are saved here by default, and the conversation folder keeps intermediate files.",
     "make_workspace": "Make workspace"
   },
   "todo": {
@@ -1441,7 +1441,7 @@
     "advanced": "Advanced",
     "tool_calls": "Tool calls",
     "workspace_picked": "picked folder",
-    "workspace_scratch": "scratch",
+    "workspace_scratch": "conversation folder",
     "show_in_picker": "Show in picker",
     "default_for_new": "Default for new sessions",
     "make_default": "Make default",

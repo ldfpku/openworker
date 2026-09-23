@@ -234,7 +234,7 @@ def test_artifact_read_folder_returns_listing(tmp_path):
         "/v1/sessions/unknown/artifacts/read", params={"path": "nope.md"}
     ).json()
     assert missing["ok"] is False
-    assert "moved or deleted" in missing["error"]
+    assert "可能已被移动或删除" in missing["error"]
 
 
 def test_artifact_read_rejects_path_escape(tmp_path):

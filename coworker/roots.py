@@ -129,15 +129,17 @@ def render_context(roots: list[RootDir]) -> str:
         elif i == 0:
             tag = " — the session's workspace (relative paths resolve here)"
         elif r.label == "scratch":
-            tag = (
-                " — your scratch directory: temporary files, and artifacts you don't "
-                "want to leave inside the workspace"
-            )
+            tag = " — your scratch directory: intermediate and temporary files"
         else:
             tag = ""
         lines.append(f"- {r.path} [{access}]{tag}")
     if has_side_scratch:
-        # Where files go is unchanged; what this block CLAIMS is not. It used to say
+        # Placement (fork decision, 2026-09-23, replacing upstream's "deliverables in
+        # scratch"): a user who picked a folder looks for the result THERE — scratch sat
+        # under ~/OpenWorker/<id>, a place they never chose and could not find. So finished
+        # deliverables go to the workspace; scratch keeps intermediate files, plus reports
+        # ABOUT a code repo (the review personas already say "never into the repo").
+        # Separately, this block once claimed
         # deliverables in scratch "appear in the user's Artifacts panel" while relative
         # paths quietly resolved to the workspace — so a model that wrote `report.csv`
         # left it in the workspace and then announced it had reached a panel that was, in
@@ -151,8 +153,8 @@ def render_context(roots: list[RootDir]) -> str:
             "absolute paths elsewhere, scratch included. Writes need read-write access."
         )
         lines.append(
-            "Put reports, analyses and other non-repo deliverables in scratch; use the "
-            "workspace only for changes that belong in it."
+            "Save deliverables in the workspace (scratch if it's read-only, or for code-review "
+            "reports); scratch holds intermediates."
         )
         lines.append(
             # "not code or JSON": outside scratch the panel keeps to documents and media —

@@ -789,7 +789,7 @@
     "connectors_load_failed": "连接器状态加载失败。"
   },
   "root": {
-    "temporary_space": "临时文件夹",
+    "temporary_space": "会话文件夹",
     "main": "主",
     "missing": "缺失",
     "read_write": "可读写",
@@ -910,7 +910,7 @@
     "decline": "拒绝",
     "grant_access": "授予访问权限",
     "requesting_workspace": "协作代理请求把某个文件夹设为本次会话的工作目录",
-    "primary_note": "授予后，这个文件夹会成为本次会话的主工作目录（可读写）；临时目录仍然可用于临时文件和产物。",
+    "primary_note": "授予后，这个文件夹会成为本次会话的主工作目录（可读写）；产物默认保存在这个文件夹，会话文件夹仍用于中间文件。",
     "make_workspace": "设为工作目录"
   },
   "todo": {
@@ -1413,7 +1413,7 @@
     "advanced": "高级",
     "tool_calls": "工具调用",
     "workspace_picked": "已选文件夹",
-    "workspace_scratch": "临时目录",
+    "workspace_scratch": "会话文件夹",
     "show_in_picker": "在选择器中显示",
     "default_for_new": "新会话默认",
     "make_default": "设为默认",

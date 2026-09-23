@@ -684,7 +684,7 @@ body {
 .artifact-row:hover { border-color: var(--line); background: var(--panel); }
 .artifact-ico { display: inline-flex; align-items: center; justify-content: center; color: var(--muted); }
 .artifact-name { display: flex; flex-direction: column; gap: 1px; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.artifact-row-meta { font-size: 11px; color: var(--faint); font-weight: 400; }
+.artifact-row-meta { font-size: 11px; color: var(--faint); font-weight: 400; overflow: hidden; text-overflow: ellipsis; }
 .artifact-open { font-size: 12px; color: var(--faint); }
 .artifact-viewer { display: flex; flex-direction: column; min-height: 0; height: 100%; }
 .artifact-head {

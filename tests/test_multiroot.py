@@ -330,9 +330,12 @@ def test_render_context_dual_root_tells_the_truth_about_where_files_land(tmp_pat
     assert "Relative paths resolve against the workspace and the shell starts there" in text
     assert "use absolute paths elsewhere, scratch included" in text
     assert "Writes need read-write access" in text
-    # (ii) the placement policy is upstream's, unchanged — only the false claim is gone
-    assert "Put reports, analyses and other non-repo deliverables in scratch" in text
-    assert "use the workspace only for changes that belong in it" in text
+    # (ii) placement (fork decision 2026-09-23): deliverables land in the folder the user
+    # picked; scratch only for intermediates, read-only workspaces and repo-review reports
+    assert "Save deliverables in the workspace (scratch if it's read-only" in text
+    assert "or for code-review reports" in text
+    assert "scratch holds intermediates" in text
+    assert "non-repo deliverables in scratch" not in text
     # (iii) the panel reads BOTH dirs, documents only, and no sync step exists.
     # "not code or JSON", not "not source": `.json` is excluded outside scratch too.
     assert "Artifacts panel lists documents (not code or JSON) you make this session" in text

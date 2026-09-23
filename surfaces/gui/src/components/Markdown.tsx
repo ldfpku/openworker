@@ -12,6 +12,40 @@ import { CopyButton } from "./CopyButton";
 // the session's artifact list, App un-hides the rail.
 export const OPEN_ARTIFACT_EVENT = "ocw-open-artifact";
 
+function decodePath(raw: string): string {
+  // micromark percent-encodes non-ASCII in link destinations, so `artifact:报告.xlsx`
+  // arrives as `artifact:%E6%8A%A5...` — undecoded, the server looks for a file literally
+  // named with the escapes and reports it missing.
+  let out = raw;
+  try {
+    out = decodeURIComponent(raw);
+  } catch {
+    // a stray `%` in a real filename — keep it as written
+  }
+  return out.replace(/\\/g, "/");
+}
+
+// The local file a link points at, or null for a web link. `artifact:` is what the prompt
+// asks for, but models also write bare relative paths, `C:\...` and `file:///...` — all of
+// which otherwise render as dead web links (a relative href) or get stripped by the
+// sanitizer (`C:` / `file:` are not allowed protocols). The server resolves relative and
+// absolute paths alike against the session's folders, so every form can become a chip.
+export function localFilePath(href: string | undefined | null): string | null {
+  if (!href) return null;
+  if (href.startsWith("artifact:")) return decodePath(href.slice("artifact:".length)) || null;
+  if (/^file:/i.test(href)) {
+    const path = decodePath(href.replace(/^file:(\/\/)?/i, ""));
+    return (/^\/[A-Za-z]:\//.test(path) ? path.slice(1) : path) || null;
+  }
+  // Backslashes arrive percent-encoded too (`C:%5CUsers…`), hence the decode first.
+  if (/^[A-Za-z]:\//.test(decodePath(href))) return decodePath(href);
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(href) || /^(#|\?|\/\/)/.test(href)) return null;
+  // Scheme-less: only a path naming a file (has an extension) — `#anchor`-free prose links
+  // like `(see below)` are not paths.
+  const path = decodePath(href.split(/[?#]/)[0]);
+  return /\.[A-Za-z0-9]{1,8}$/.test(path) ? path : null;
+}
+
 // Seventeenth pass: the lead mentions the board ONCE — [Board · 5 items](board:) — and the
 // chip opens the drawer on its Board section. Same event plumbing as artifact chips: App
 // un-hides the rail and bumps the key that expands the section.
@@ -108,8 +142,8 @@ function CodeBlock({ node: _n, children, ...props }: any) {
 }
 
 // Assistant messages rendered as GitHub-flavored markdown (headings, lists, tables, code,
-// links). Links open externally — never navigate the app shell — except artifact: links,
-// which open the session's artifact viewer.
+// links). Links open externally — never navigate the app shell — except local-file links
+// (artifact:, file:, drive or relative paths), which open the session's artifact viewer.
 export function Markdown({ text }: { text: string }) {
   return (
     <div className="md">
@@ -118,16 +152,17 @@ export function Markdown({ text }: { text: string }) {
         // artifact:/board:/app: are ours — keep them through the sanitizer (everything else gets
         // the default http/https/mailto policy).
         urlTransform={(url) =>
-          url.startsWith("artifact:") || url.startsWith("board:") || url.startsWith("app:")
+          url.startsWith("board:") || url.startsWith("app:") || localFilePath(url) !== null
             ? url
             : defaultUrlTransform(url)
         }
         components={{
           pre: CodeBlock,
           a: ({ node: _n, href, children, ...props }) => {
-            if (href?.startsWith("artifact:")) {
+            const filePath = localFilePath(href);
+            if (filePath) {
               const title = Array.isArray(children) ? children.join("") : String(children ?? "");
-              return <ArtifactChip path={href.slice("artifact:".length)} title={title} />;
+              return <ArtifactChip path={filePath} title={title} />;
             }
             if (href?.startsWith("board:")) {
               const label = Array.isArray(children) ? children.join("") : String(children ?? "");
