@@ -18,8 +18,12 @@ import pytest
 from coworker.providers.aigateway_provider import (
     DEFAULT_BASE_URL,
     blocked_model_ids,
+    family_form,
     fetch_gate_policy,
+    gate_families,
     is_blocked_model,
+    is_gated_model,
+    is_out_of_scope,
 )
 from coworker.server.manager import SessionManager as Manager
 
@@ -241,4 +245,118 @@ def test_suggested_models_hide_blocked_variants_for_aigw():
     sugg = Manager._suggested_models(m, "aigw")
     assert "openai/gpt-5.6-sol-20260709" not in sugg
     assert "openai/gpt-5.6-sol:batch" not in sugg
+    assert "openai/gpt-5.6-terra" in sugg
+
+
+# -- open-vendor scope (`families`, guard 2026-09-23) -------------------------------------
+# The guard's second layer: a model under none of the open vendor prefixes gets the same
+# 403 as a restricted one unless the caller's role is allowed. `/gate/policy` reports the
+# prefixes as `families` (null for allowed roles). These cases are the guard's own smoke
+# examples (smj-help-website test/gateway-guard.smoke.mjs §13), so the two sides can't drift.
+_FAMILIES = (
+    "openai/", "anthropic/", "google-ai-studio/",
+    "workers-ai/@cf/zai-org/", "workers-ai/@cf/qwen/", "workers-ai/@cf/deepseek-ai/",
+)
+
+
+def test_gate_families_parses_like_the_guard():
+    assert gate_families(None) is None
+    assert gate_families({"blocked": []}) is None  # older guard: key missing → no scope filter
+    assert gate_families({"blocked": [], "families": None}) is None  # allowed role
+    assert gate_families({"families": "openai/"}) is None  # malformed → no filter
+    assert gate_families(
+        {"families": [" OpenAI/ ", "anthropic", "/", 7, "workers-ai/@cf/qwen/"]}
+    ) == ("openai/", "workers-ai/@cf/qwen/")
+    assert gate_families({"families": []}) == ()  # explicit [] = nothing open
+
+
+def test_family_form_prefixes_bare_cf_ids_only():
+    assert family_form(" @CF/qwen/QwQ-32b ") == "workers-ai/@cf/qwen/qwq-32b"
+    assert family_form("workers-ai/@cf/qwen/qwq-32b") == "workers-ai/@cf/qwen/qwq-32b"
+    assert family_form("openai/gpt-5.6-sol") == "openai/gpt-5.6-sol"
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        "openai/gpt-5.6-sol",
+        "aigw:anthropic/claude-haiku-4-5",  # probe model: always in scope
+        "google-ai-studio/gemini-3.8-flash",
+        "workers-ai/@cf/zai-org/glm-5.3",
+        "@cf/qwen/qwq-32b",  # bare @cf gains workers-ai/ first
+        "workers-ai/@cf/deepseek-ai/deepseek-v4-flash-0731",
+        "dynamic/ow-anthropic-claude-sonnet-5",  # route names are judged by expansion
+        " Anthropic/Claude-Sonnet-5 ",
+    ],
+)
+def test_in_scope_models(model_id):
+    assert is_out_of_scope(model_id, _FAMILIES) is False
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        "grok/grok-4.7",
+        "aigw:grok/grok-4.7",
+        "workers-ai/@cf/moonshotai/kimi-k2.6",
+        "@cf/meta/llama-3.2-1b-instruct",
+        "gpt-4o-mini",  # no vendor prefix at all
+        "openai/",  # a bare prefix with nothing after it
+        "openrouter/anthropic/claude-fable-5",
+        "openai-evil/gpt-5",
+    ],
+)
+def test_out_of_scope_models(model_id):
+    assert is_out_of_scope(model_id, _FAMILIES) is True
+
+
+def test_no_families_means_no_scope_filter_and_empty_means_nothing_open():
+    assert is_out_of_scope("grok/grok-4.7", None) is False
+    assert is_out_of_scope("openai/gpt-5.6-terra", ()) is True
+
+
+def test_is_gated_model_is_either_layer():
+    blocked = frozenset({"openai/gpt-5.6-sol"})
+    assert is_gated_model("aigw:openai/gpt-5.6-sol-20260709", blocked, _FAMILIES) is True
+    assert is_gated_model("aigw:grok/grok-4.7", blocked, _FAMILIES) is True
+    assert is_gated_model("aigw:openai/gpt-5.6-terra", blocked, _FAMILIES) is False
+    assert is_gated_model("aigw:grok/grok-4.7", blocked, None) is False
+
+
+def _scoped_manager(families, blocked=()):
+    m = _bare_manager(set(blocked))
+    m._aigw_gate_cache = (time.monotonic(), frozenset(blocked), families)
+    return m
+
+
+def test_curated_models_hide_out_of_scope_aigw_models_only():
+    m = _scoped_manager(_FAMILIES)
+    m._prefs = {"models": ["aigw:grok/grok-4.7", "aigw:workers-ai/@cf/meta/llama-4-scout", "grok-4.7",
+                           "aigw:workers-ai/@cf/qwen/qwq-32b"]}
+    models = Manager._curated_models(m)
+    assert "aigw:grok/grok-4.7" not in models
+    assert "aigw:workers-ai/@cf/meta/llama-4-scout" not in models
+    assert "aigw:workers-ai/@cf/qwen/qwq-32b" in models
+    # direct-provider ids have no gateway vendor prefix to test and are none of its business
+    assert "grok-4.7" in models
+    # every curated-matrix aigw model sits inside the six open vendors
+    assert "aigw:anthropic/claude-sonnet-5" in models
+    assert "aigw:openai/gpt-5.6-terra" in models
+
+
+def test_allowed_role_or_old_cache_shape_filters_nothing_by_scope():
+    m = _scoped_manager(None)
+    m._prefs = {"models": ["aigw:grok/grok-4.7"]}
+    assert "aigw:grok/grok-4.7" in Manager._curated_models(m)
+    m = _bare_manager(set())  # pre-families 2-tuple cache
+    m._prefs = {"models": ["aigw:grok/grok-4.7"]}
+    assert "aigw:grok/grok-4.7" in Manager._curated_models(m)
+
+
+def test_suggested_models_hide_out_of_scope_for_aigw():
+    m = _scoped_manager(_FAMILIES)
+    m.COMPAT_MODELS = {"aigw": ["grok/grok-4.7", "openai/gpt-5.6-terra", "@cf/meta/llama-3.2-1b-instruct"]}
+    sugg = Manager._suggested_models(m, "aigw")
+    assert "grok/grok-4.7" not in sugg
+    assert "@cf/meta/llama-3.2-1b-instruct" not in sugg
     assert "openai/gpt-5.6-terra" in sugg

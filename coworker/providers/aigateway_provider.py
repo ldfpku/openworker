@@ -419,6 +419,64 @@ def is_blocked_model(model_id: str, blocked: Iterable[str]) -> bool:
     return False
 
 
+def gate_families(policy: Optional[dict[str, Any]]) -> Optional[tuple[str, ...]]:
+    """`fetch_gate_policy` result → the open vendor prefixes for this user, or None.
+
+    Since 2026-09-23 the guard also enforces an "open vendors" scope (`models.families`
+    in smj-help-website): a model outside every listed prefix gets the same 403 as a
+    restricted one unless the caller's role is allowed. `/gate/policy` reports it as
+    `families`: a list of lowercase prefixes ending in "/" for a scoped user, `null` for
+    an allowed role. None here means "don't filter by scope" — key missing (older guard),
+    null, or malformed. Entries are normalised exactly as the guard's parseGateConfig
+    does (trim + lowercase, keep only length > 1 and ending in "/"); an explicit `[]`
+    stays an empty tuple = nothing is open.
+    """
+    if not policy:
+        return None
+    fams = policy.get("families")
+    if not isinstance(fams, list):
+        return None
+    out = []
+    for f in fams:
+        if not isinstance(f, str):
+            continue
+        f = f.strip().lower()
+        if len(f) > 1 and f.endswith("/"):
+            out.append(f)
+    return tuple(out)
+
+
+def family_form(model_id: str) -> str:
+    """Bare "@cf/…" → "workers-ai/@cf/…" (the guard's `familyForm`); else unchanged."""
+    m = str(model_id or "").strip().lower()
+    return "workers-ai/" + m if m.startswith("@cf/") else m
+
+
+def is_out_of_scope(model_id: str, families: Optional[Iterable[str]]) -> bool:
+    """True when `model_id` (bare or "aigw:"-prefixed) sits under none of `families`.
+    Mirrors gateway-guard's `outOfScope` for a single id: bare `@cf/` gains the
+    `workers-ai/` prefix first, `dynamic/<route>` names are skipped (the guard judges the
+    route's expanded models instead), and a prefix only counts when something follows
+    it. `families is None` → never out of scope (no filtering). Cosmetic like the rest of
+    the gate: enforcement stays server-side."""
+    if families is None:
+        return False
+    m = str(model_id or "").strip().lower()
+    if m.startswith("aigw:"):
+        m = m[len("aigw:") :]
+    m = family_form(m)
+    if not m or m.startswith("dynamic/"):
+        return False
+    return not any(m.startswith(f) and len(m) > len(f) for f in families)
+
+
+def is_gated_model(
+    model_id: str, blocked: Iterable[str], families: Optional[Iterable[str]]
+) -> bool:
+    """Either gate layer would 403 this model for the current user."""
+    return is_blocked_model(model_id, blocked) or is_out_of_scope(model_id, families)
+
+
 class AIGatewayProvider(ProviderClient):
     """Routes each model to the sub-client whose wire the gateway expects for it."""
 

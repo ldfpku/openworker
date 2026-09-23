@@ -4802,11 +4802,13 @@ class SessionManager:
         if name == "aigw":
             # Mirror the picker filter (`_curated_models`): a gate-blocked model must
             # not resurface as an "add model" suggestion either. Same variant-aware
-            # match as the guard's own 403 check, not bare equality.
-            from ..providers.aigateway_provider import is_blocked_model
+            # match as the guard's own 403 check, not bare equality — plus the guard's
+            # open-vendor scope (`families`; every suggestion here is an aigw id).
+            from ..providers.aigateway_provider import is_gated_model
 
             blocked = self._aigw_blocked()
-            out = [m for m in out if not is_blocked_model(m, blocked)]
+            families = self._aigw_families()
+            out = [m for m in out if not is_gated_model(m, blocked, families)]
         return out
 
     def set_provider(
@@ -5151,6 +5153,16 @@ class SessionManager:
             self._refresh_aigw_gate()
         return cached[1] if cached else frozenset()
 
+    def _aigw_families(self) -> Optional[tuple[str, ...]]:
+        """Open vendor prefixes the gateway scopes this user to (`/gate/policy`
+        `families`), or None = no scope filtering (allowed role, older guard, signed out,
+        fetch failed). Same cache and refresh as `_aigw_blocked`; a cache written before
+        this field existed is a 2-tuple and reads as None."""
+        cached = getattr(self, "_aigw_gate_cache", None)
+        if cached is None or time.monotonic() - cached[0] >= self._AIGW_GATE_TTL:
+            self._refresh_aigw_gate()
+        return cached[2] if cached and len(cached) > 2 else None
+
     def _refresh_aigw_gate(self) -> None:
         """Start one daemon-thread fetch of /gate/policy; concurrent calls no-op."""
         import threading
@@ -5160,7 +5172,7 @@ class SessionManager:
         if not self._provider_configured("aigw"):
             # Signed out: aigw models are culled by `_selectable` anyway; cache the
             # empty set so we don't re-check the profile on every settings fetch.
-            self._aigw_gate_cache = (time.monotonic(), frozenset())
+            self._aigw_gate_cache = (time.monotonic(), frozenset(), None)
             return
         self._aigw_gate_refreshing = True
 
@@ -5170,19 +5182,22 @@ class SessionManager:
                 from ..providers.aigateway_provider import (
                     blocked_model_ids,
                     fetch_gate_policy,
+                    gate_families,
                 )
 
                 fields = dict(self.secrets.get("provider:aigw") or {})
                 # Same injection as verify_provider: real calls use the OAuth session
                 # when one exists, so the gate lookup must too.
                 fields["oauth_token"] = aigw_auth.access_token(self.secrets) or ""
-                blocked = blocked_model_ids(fetch_gate_policy(fields))
-                self._aigw_gate_cache = (time.monotonic(), blocked)
+                policy = fetch_gate_policy(fields)
+                blocked = blocked_model_ids(policy)
+                families = gate_families(policy)
+                self._aigw_gate_cache = (time.monotonic(), blocked, families)
                 if blocked:
                     logger.debug("aigw gate: %d model(s) blocked for this user", len(blocked))
             except Exception:  # noqa: BLE001 - cosmetic feature, never surface
                 logger.debug("aigw gate refresh failed", exc_info=True)
-                self._aigw_gate_cache = (time.monotonic(), frozenset())
+                self._aigw_gate_cache = (time.monotonic(), frozenset(), None)
             finally:
                 self._aigw_gate_refreshing = False
 
@@ -5274,13 +5289,18 @@ class SessionManager:
         # "anthropic:claude-fable-5") never has that prefix to strip and so never
         # matches. The active default stays selectable below, matching the
         # hidden_models behaviour.
-        from ..providers.aigateway_provider import is_blocked_model
+        # The open-vendor scope (`families`, 2026-09-23) applies to aigw ids only: a
+        # bare "gpt-5.6-sol" is a direct-provider model and has no vendor prefix to test.
+        from ..providers.aigateway_provider import is_blocked_model, is_out_of_scope
 
         blocked = self._aigw_blocked()
+        families = self._aigw_families()
         models = [
             m
             for m in [*effective, *user]
-            if m not in hidden and not is_blocked_model(m, blocked)
+            if m not in hidden
+            and not is_blocked_model(m, blocked)
+            and not (m.startswith("aigw:") and is_out_of_scope(m, families))
         ]
         return list(dict.fromkeys([self.model, *models]))
 
