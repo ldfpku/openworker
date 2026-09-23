@@ -91,6 +91,49 @@ def test_gateway_guard_restriction_surfaces_its_own_message():
     assert friendly_model_error("m", exc) == "模型受限。[gateway-guard]"
 
 
+_GUARD_QUOTA_429 = (
+    "Error code: 429 - {'error': {'code': 'quota_exceeded', 'type': 'quota_exceeded', "
+    "'status': 429, 'scope': 'rpd', 'limit': 1200, 'used': 1200, 'retry_after': 3600, "
+    "'message': '你今天的网关请求次数已达上限（每天 1200 次，北京时间零点重置），约 1 小时后恢复。"
+    "如需提高上限请联系管理员。[gateway-guard]'}}"
+)
+
+
+def test_gateway_guard_quota_surfaces_its_own_message():
+    # gateway-guard's per-person usage ceiling (429 quota_exceeded): its Chinese message
+    # already says which ceiling and when it resets — shown verbatim, no SDK shell.
+    exc = _status_error(429, _GUARD_QUOTA_429.split(" - ", 1)[1])
+    msg = friendly_model_error("aigw:anthropic/claude-sonnet-5", exc)
+    assert msg and msg.endswith("[gateway-guard]")
+    assert "北京时间零点重置" in msg
+    assert "Error code" not in msg
+
+
+def test_gateway_guard_quota_is_permanent_and_never_the_busy_pool():
+    exc = _status_error(429, _GUARD_QUOTA_429.split(" - ", 1)[1])
+    # a 429 would normally earn the engine's automatic retry — not this one
+    assert not is_transient_model_error(exc)
+    # and it must never trigger the dynamic-route re-send (same person, same meter)
+    assert not is_gateway_busy(exc)
+    # …even if a future wording happened to contain the busy pool's marker phrase
+    worded = _status_error(429, "{'code': 'quota_exceeded', 'message': 'rate limited [gateway-guard]'}")
+    assert not is_gateway_busy(worded)
+    assert not is_transient_model_error(worded)
+
+
+def test_gateway_guard_quota_without_extractable_message_gets_a_fallback():
+    msg = friendly_model_error("aigw:openai/gpt-5.6-terra", RuntimeError("429 quota_exceeded [gateway-guard]"))
+    assert msg and "personal usage limit" in msg
+
+
+def test_other_quota_exceeded_429s_keep_their_old_handling():
+    # Without the guard's tag it is somebody else's limiter: Google's own wording, say.
+    # That one is still transient and still passes through raw, exactly as before.
+    google = _status_error(429, "Quota exceeded for metric: generate_content_requests quota_exceeded")
+    assert is_transient_model_error(google)
+    assert friendly_model_error("gemini-3.8-flash", google) is None
+
+
 def test_model_restricted_without_extractable_message_gets_a_fallback():
     msg = friendly_model_error(
         "aigw:openai/gpt-5.6-sol", RuntimeError("403 model_restricted")

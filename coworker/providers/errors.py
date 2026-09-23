@@ -77,6 +77,8 @@ def is_gateway_busy(exc: Exception) -> bool:
     stand-in would only buy a second failure.
     """
     text = str(exc).lower()
+    if _QUOTA_EXCEEDED in text and _GUARD_TAG in text:
+        return False  # a personal ceiling, not the shared pool (see is_gateway_quota_exceeded)
     if any(marker in text for marker in _GATEWAY_BUSY):
         return True
     if _RATE_LIMITED not in text:
@@ -91,6 +93,31 @@ def is_gateway_busy(exc: Exception) -> bool:
 # it in the "Error code: 403 - {...}" shell. The code was chosen on the guard side to miss
 # every marker above (a message matching `permission_error` etc. would get swallowed here).
 _RESTRICTED = "model_restricted"
+
+# The same guard's per-person usage ceiling (smj-help-website T30, 2026-09-23) answers
+# **429** with {"error": {"code": "quota_exceeded", "scope": "rpm"|"rpd"|"tpd"|"suspended",
+# "retry_after": N, "message": "<Chinese sentence ending in [gateway-guard]>"}} plus a
+# Retry-After header. Its message already names the ceiling and when it resets (the daily
+# ones at Beijing midnight), so it is shown verbatim, like model_restricted.
+#
+# Both halves of the marker are required: `quota_exceeded` alone is loose enough that some
+# vendor could spell its own limiter that way, and only the guard's refusal carries the
+# `[gateway-guard]` tag. Two things it must never be mistaken for:
+#   * transient — a 429 normally earns the engine's automatic retry, but a daily ceiling
+#     does not lift in six seconds (and even the per-minute one can take a full minute), so
+#     three backoffs would only buy three identical refusals behind a spinner;
+#   * "the shared pool is busy" — that re-sends the turn on the model's dynamic route, i.e.
+#     straight back into the same person's meter. The guard's wording deliberately avoids
+#     "rate limited" / "wholesale" so the text test below would not fire anyway; the explicit
+#     check makes that a guarantee rather than a coincidence of phrasing.
+_QUOTA_EXCEEDED = "quota_exceeded"
+_GUARD_TAG = "gateway-guard"
+
+
+def is_gateway_quota_exceeded(exc: BaseException) -> bool:
+    """True when the company gateway refused the call for this person's usage ceiling."""
+    text = str(exc).lower()
+    return _QUOTA_EXCEEDED in text and _GUARD_TAG in text
 
 # The message value in either JSON (`"message": "..."`) or the SDKs' dict-repr
 # (`'message': '...'`) shape. The guard's text contains no quotes, so the character
@@ -198,7 +225,7 @@ def is_transient_model_error(exc: BaseException) -> bool:
     # credit and entitlement failures arrive on transient-LOOKING statuses — OpenAI bills
     # an exhausted quota as 429, the gateway's "needs BYOK" as 402 — but nothing about the
     # account changes in six seconds, so they are permanent for our purposes.
-    if _RESTRICTED in text:
+    if _RESTRICTED in text or is_gateway_quota_exceeded(exc):
         return False
     if any(marker in text for marker in _NO_QUOTA + _NEEDS_BYOK + _NO_ACCESS):
         return False
@@ -284,6 +311,14 @@ def friendly_model_error(model: str, exc: Exception) -> Optional[str]:
         return (
             f"{model} is restricted by your administrator — pick a different model, "
             "or ask the administrator to open it up."
+        )
+    if is_gateway_quota_exceeded(exc):
+        m = _MESSAGE_RE.search(raw)
+        if m:
+            return m.group(1)
+        return (
+            "You've reached your personal usage limit on the company gateway — try again "
+            "later, or ask the administrator to raise it."
         )
     no_access = (
         f"Your account doesn't have access to {model} — new models can roll out "
