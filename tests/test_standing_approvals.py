@@ -391,6 +391,159 @@ def test_create_automation_grants_and_revoke(tmp_path, monkeypatch):
     assert manager.task_store.get(res["task"]["id"]).always_allowed_tools == []
 
 
+def test_update_automation_grant_appends_and_dedupes(tmp_path, monkeypatch):
+    """PATCH `grant` is symmetric with `revoke`: validated through the same `grant_entries`
+    creation uses, appended (not replaced), and de-duplicated. Accepts one grant object or
+    a list of them."""
+    from coworker.server.manager import SessionManager
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    manager = SessionManager(data_dir=tmp_path / "data", provider=_provider())
+    res = manager.create_automation(
+        {"title": "Weekly digest", "instructions": "post it", "cron": "0 9 * * 1"}
+    )
+    task_id = res["task"]["id"]
+    assert res["task"]["always_allowed"] == []
+
+    out = manager.update_automation(
+        task_id,
+        {"grant": {"tool": "send_message", "target": "slack:T1/C1", "access": "write"}},
+    )
+    assert out["ok"]
+    assert manager.task_store.get(task_id).always_allowed_tools == [
+        "send_message slack:T1/C1"
+    ]
+
+    # A list, one duplicate + one new grant: the dup is a no-op, the new one appends.
+    out = manager.update_automation(
+        task_id,
+        {
+            "grant": [
+                {"tool": "send_message", "target": "slack:T1/C1", "access": "write"},
+                {"tool": "send_message", "target": "slack:T1/C2", "access": "write"},
+            ]
+        },
+    )
+    assert out["ok"]
+    assert manager.task_store.get(task_id).always_allowed_tools == [
+        "send_message slack:T1/C1",
+        "send_message slack:T1/C2",
+    ]
+    assert set(e["entry"] for e in out["task"]["always_allowed"]) == {
+        "send_message slack:T1/C1",
+        "send_message slack:T1/C2",
+    }
+
+
+def test_update_automation_grant_rejects_invalid(tmp_path, monkeypatch):
+    """The same fail-closed rules as creation: no target, read-only access, and a tool with
+    no declared target argument (exec/destructive tools by construction) are all dropped
+    silently rather than minted as standing rules."""
+    from coworker.server.manager import SessionManager
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    manager = SessionManager(data_dir=tmp_path / "data", provider=_provider())
+    res = manager.create_automation(
+        {"title": "Weekly digest", "instructions": "post it", "cron": "0 9 * * 1"}
+    )
+    task_id = res["task"]["id"]
+
+    out = manager.update_automation(
+        task_id,
+        {
+            "grant": [
+                {"tool": "send_message", "target": "", "access": "write"},  # empty target
+                {"tool": "github_list_commits", "target": "r/x", "access": "read"},  # read-only
+                {"tool": "run_shell", "target": "rm -rf /", "access": "write"},  # no target arg
+            ]
+        },
+    )
+    assert out["ok"]
+    assert manager.task_store.get(task_id).always_allowed_tools == []
+
+
+async def test_update_automation_grant_reseeds_a_live_run_engine(tmp_path, monkeypatch):
+    """Symmetric with the existing revoke-reseed behavior: a live engine for an in-flight
+    run of this task must pick up a grant minted from the task detail page without a
+    restart, the same way it already picks up a revoke."""
+    from coworker.server.manager import SessionManager
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    manager = SessionManager(data_dir=tmp_path / "data", provider=_provider())
+    task = _task(workspace=str(ws), agent="cowork")
+    manager.task_store.save(task)
+    run = TaskRun(task_id=task.id)
+    manager.task_store.add_run(run)
+    engine = manager._build_task_engine(task, session_id=run.session_id)
+    manager._engines[run.session_id] = engine
+    assert engine.permissions.task_rules == {}
+
+    out = manager.update_automation(
+        task.id,
+        {"grant": {"tool": "send_message", "target": "slack:T1/C1", "access": "write"}},
+    )
+    assert out["ok"]
+    assert engine.permissions.task_rules == {"send_message": {"slack:T1/C1"}}
+
+    # ...and revoking it again reaches the SAME live engine.
+    out = manager.update_automation(task.id, {"revoke": "send_message slack:T1/C1"})
+    assert out["ok"]
+    assert engine.permissions.task_rules == {}
+
+
+# -- REST surface: `workspace` on create/update, `workspace_private` in every payload ----
+
+
+def test_update_automation_workspace_swap_and_back_to_private(tmp_path, monkeypatch):
+    from coworker.server.manager import SessionManager
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    manager = SessionManager(data_dir=tmp_path / "data", provider=_provider())
+    res = manager.create_automation(
+        {"title": "Weekly digest", "instructions": "post it", "cron": "0 9 * * 1"}
+    )
+    task_id = res["task"]["id"]
+    private_path = manager.task_store.get(task_id).workspace
+    assert res["task"]["workspace_private"] is True
+
+    folder_a = tmp_path / "folder-a"
+    folder_a.mkdir()
+    out = manager.update_automation(task_id, {"workspace": str(folder_a)})
+    assert out["ok"] and out["task"]["workspace"] == str(folder_a.resolve())
+    assert out["task"]["workspace_private"] is False
+
+    folder_b = tmp_path / "folder-b"
+    folder_b.mkdir()
+    out = manager.update_automation(task_id, {"workspace": str(folder_b)})
+    assert out["ok"] and out["task"]["workspace"] == str(folder_b.resolve())
+
+    # "" → back to the private folder, the SAME deterministic path it started with.
+    out = manager.update_automation(task_id, {"workspace": ""})
+    assert out["ok"]
+    assert out["task"]["workspace"] == private_path
+    assert out["task"]["workspace_private"] is True
+
+
+def test_update_automation_workspace_validates(tmp_path, monkeypatch):
+    from coworker.server.manager import SessionManager
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    manager = SessionManager(data_dir=tmp_path / "data", provider=_provider())
+    res = manager.create_automation(
+        {"title": "Weekly digest", "instructions": "post it", "cron": "0 9 * * 1"}
+    )
+    task_id = res["task"]["id"]
+    before = manager.task_store.get(task_id).workspace
+
+    out = manager.update_automation(task_id, {"workspace": "relative/path"})
+    assert out["ok"] is False and "absolute" in out["error"]
+    out = manager.update_automation(task_id, {"workspace": str(tmp_path / "nope")})
+    assert out["ok"] is False and "does not exist" in out["error"]
+    assert manager.task_store.get(task_id).workspace == before  # untouched
+
+
 # -- scheduler: a suspended run must not stall the loop ---------------------------
 
 

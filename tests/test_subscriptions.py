@@ -239,6 +239,72 @@ def test_subscribe_unsubscribe_and_recent_endpoints(tmp_path):
     assert mgr.subscriptions.for_session("sZ") == []
 
 
+def test_channels_recent_includes_weixin_dm_contacts(tmp_path, monkeypatch):
+    """Bug: a person who DMed the bot never showed up as a recipient suggestion.
+    `_dispatch_inbound`'s weixin DM branch only ever wrote into `mention_sessions` (the
+    reply-grant map — see `known_dm_contacts`), never into `channel_buffer` (channel/group
+    traffic only). `/v1/channels/recent` must also surface those DM contacts: filtered live
+    against the current allow-list, surviving a restart, and gone once removed from it."""
+    from fastapi.testclient import TestClient
+    from coworker.connectors.base import MessageEvent, SessionSource
+    from coworker.server import create_app
+    from coworker.server.manager import SessionManager
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    data_dir = tmp_path / "data"
+    mgr = SessionManager(data_dir=data_dir, provider=ScriptedProvider([]))
+    mgr.secrets.put(
+        "weixin:default",
+        {
+            "bot_token": "tok",
+            "account_id": "bot@im.bot",
+            "enabled": True,
+            "allowed_users": ["wxid_peer"],
+        },
+    )
+    mgr.set_dm_session("sDM")
+
+    async def fake_deliver(session_id, message, *, source=None):
+        pass
+
+    monkeypatch.setattr(mgr, "deliver_to_session", fake_deliver)
+
+    wx = MessageEvent(
+        text="hi",
+        source=SessionSource(
+            platform="weixin",
+            chat_id="wxid_peer",
+            user_id="wxid_peer",
+            user_name="张三",
+            chat_type="dm",
+        ),
+    )
+    asyncio.run(mgr._dispatch_inbound(wx))
+
+    client = TestClient(create_app(mgr))
+    by_chan = {
+        c["channel"]: c
+        for c in client.get("/v1/channels/recent").json()["channels"]
+    }
+    assert "weixin:wxid_peer" in by_chan
+    assert by_chan["weixin:wxid_peer"]["name"] == "张三"
+    assert by_chan["weixin:wxid_peer"]["last_from"] == "张三"
+
+    # Survives a restart: a fresh manager over the same data dir sees it too (the
+    # mention-thread map + people directory are both persisted JSON).
+    restarted = SessionManager(data_dir=data_dir)
+    client2 = TestClient(create_app(restarted))
+    channels2 = {c["channel"] for c in client2.get("/v1/channels/recent").json()["channels"]}
+    assert "weixin:wxid_peer" in channels2
+
+    # Removed from the allow-list → disappears immediately, no restart needed.
+    profile = dict(restarted.secrets.get("weixin:default"))
+    profile["allowed_users"] = []
+    restarted.secrets.put("weixin:default", profile)
+    channels3 = {c["channel"] for c in client2.get("/v1/channels/recent").json()["channels"]}
+    assert "weixin:wxid_peer" not in channels3
+
+
 def test_unauthorized_messages_park_and_resolve(tmp_path, monkeypatch):
     """§19: an allow-list drop PARKS the message; resolving it can dismiss, allow the sender,
     or allow AND deliver the original message through the normal inbound path (no re-send).

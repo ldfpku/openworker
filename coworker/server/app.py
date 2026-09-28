@@ -431,8 +431,15 @@ def create_app(manager: SessionManager) -> FastAPI:
 
     @app.get("/v1/channels/recent")
     def recent_channels() -> dict[str, Any]:
-        # The picker's "recently-seen" source: channels the bot has received messages from.
-        return {"channels": manager.channel_buffer.channels()}
+        # The picker's "recently-seen" source: channels the bot has received messages from,
+        # plus weixin DM contacts (never buffered as a "channel" — see known_dm_contacts).
+        channels = manager.channel_buffer.channels()
+        seen = {c["channel"] for c in channels}
+        for contact in manager.known_dm_contacts("weixin"):
+            if contact["channel"] not in seen:
+                channels.append(contact)
+                seen.add(contact["channel"])
+        return {"channels": channels}
 
     @app.get("/v1/unrouted")
     def unrouted() -> dict[str, Any]:

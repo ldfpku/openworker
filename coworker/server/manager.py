@@ -6199,6 +6199,45 @@ class SessionManager:
             except OSError:
                 pass
 
+    def known_dm_contacts(self, platform: str) -> list[dict[str, Any]]:
+        """People who have DMed the bot on `platform` — the `/v1/channels/recent` picker's
+        second source, alongside `channel_buffer` (which only records inbound CHANNEL/group
+        traffic; a DM never gets buffered there — see `_dispatch_inbound`).
+
+        A weixin DM writes its peer into `mention_sessions` on every inbound message
+        (`self.mention_sessions.set(src.target, dm, channel=channel)`), so that durable map
+        is the source of contacts; display names come from the people directory `_note_person`
+        fills. Filtered against the CURRENT allow-list via the same `is_authorized` predicate
+        the gateway itself evaluates inbound messages with (env overrides + `allow_all`
+        included), so someone removed from it disappears immediately, without a restart.
+        """
+        from ..connectors.base import SessionSource
+        from ..connectors.config import is_authorized, load_settings
+
+        settings = load_settings(self.secrets).get(platform)
+        if settings is None:
+            return []
+        seen: set[str] = set()
+        out: list[dict[str, Any]] = []
+        for thread in self.mention_sessions.all():
+            plat, _, chat_id = thread.channel.partition(":")
+            if plat != platform or not chat_id or chat_id in seen:
+                continue
+            probe = SessionSource(platform=platform, chat_id=chat_id, user_id=chat_id)
+            if not is_authorized(settings, probe):
+                continue
+            seen.add(chat_id)
+            name = self._people.get(f"{platform}:{chat_id}")
+            out.append(
+                {
+                    "channel": thread.channel,
+                    "name": name,
+                    "last_from": name,
+                    "last_text": None,
+                }
+            )
+        return out
+
     async def _park_unauthorized(self, event) -> None:
         """Gateway callback: keep what an unallowed sender said (names already resolved by the
         adapter, best-effort) so the owner can allow-and-deliver without a re-send."""
@@ -6509,7 +6548,11 @@ class SessionManager:
 
     def _build_task_engine(self, task, *, session_id: str) -> TurnEngine:
         ag = get_agent(task.agent)
-        Path(task.workspace).mkdir(parents=True, exist_ok=True)
+        if self.is_temp_workspace(task.workspace):
+            # Only the task's own scratch folder is auto-created — a real folder the user
+            # pointed the automation at is never conjured back into existence here (see
+            # `_automation_workspace_error`, checked by callers before this ever runs).
+            Path(task.workspace).mkdir(parents=True, exist_ok=True)
         engine = build_engine(
             agent=ag,
             workspace=task.workspace,
@@ -7392,6 +7435,16 @@ class SessionManager:
         run = TaskRun(
             task_id=task.id, trigger=trigger
         )  # __post_init__ sets run.session_id
+        workspace_error = self._automation_workspace_error(task)
+        if workspace_error is not None:
+            # The folder this automation runs against is gone (deleted, unmounted,
+            # renamed) — record the failure and stop here, before anything marks the
+            # session busy or `_build_task_engine` gets a chance to `mkdir` a fresh empty
+            # folder back into existence in its place.
+            run.status, run.error = "error", workspace_error
+            run.finished_at = _epoch()
+            self.task_store.add_run(run)
+            return run
         # Mark busy BEFORE run.session_id is ever exposed outside this function (the
         # broadcast right below reaches every open GUI window). Without this, a WS
         # client could claim_turn() on this same session while this function is still
@@ -7542,6 +7595,50 @@ class SessionManager:
                 pass
 
     # -- automation REST --------------------------------------------------------
+    def _task_public(self, task) -> dict[str, Any]:
+        """`task.public()` plus `workspace_private` — whether `task.workspace` is the task's
+        own scratch folder (`_provision_scratch`) rather than a real folder the user pointed
+        it at. `public()` itself lives in models.py, which has no notion of the scratch base,
+        so every automation payload the GUI receives is built through here instead of a bare
+        `task.public()` call."""
+        return {**task.public(), "workspace_private": self.is_temp_workspace(task.workspace)}
+
+    def _resolve_automation_workspace(self, raw: str) -> tuple[Optional[str], Optional[str]]:
+        """Validate a GUI-proposed automation `workspace`: must be an absolute path to an
+        existing directory. Returns `(resolved_path, None)` on success — recorded into recent
+        workspaces, same as `open_workspace` — or `(None, error)`. English messages: the rest
+        of `create_automation`/`update_automation` already use English for validation errors."""
+        p = Path(raw)
+        if not p.is_absolute():
+            return None, f"workspace must be an absolute path: {raw}"
+        if not p.is_dir():
+            return None, f"workspace does not exist or is not a directory: {raw}"
+        resolved = str(p.resolve())
+        self.session_store.touch_workspace(resolved)
+        return resolved, None
+
+    def _reseed_live_task_rules(self, task) -> None:
+        """A live run engine may still hold a task's OLD standing rules — reseed every
+        engine belonging to a run of this task from the just-saved record. Shared by
+        grant and revoke (both mutate `always_allowed_tools`)."""
+        for sid, engine in self._engines.items():
+            owner = self.task_store.task_for_run_session(sid)
+            if owner is not None and owner.id == task.id:
+                engine.permissions.task_rules = task.standing_rules()
+
+    def _automation_workspace_error(self, task) -> Optional[str]:
+        """None when `task.workspace` is fine to run against — the task's own scratch
+        folder (always provisioned on demand) or an existing directory. Else the Chinese
+        message a run/manual-run bails out with. A non-private workspace is never
+        auto-created here: only `_provision_scratch`'s own path may be (a real folder the
+        user pointed the automation at — deleted, unmounted, renamed — must fail the run,
+        not silently recreate an empty folder in its place)."""
+        if self.is_temp_workspace(task.workspace):
+            return None
+        if Path(task.workspace).is_dir():
+            return None
+        return f"工作文件夹不存在：{task.workspace}"
+
     def list_automations(self) -> dict[str, Any]:
         # Unseen = runs started after the task's seen mark (UX-023 sidebar badges).
         # `unseen_failed` tints the badge when the NEWEST unseen run errored.
@@ -7552,7 +7649,7 @@ class SessionManager:
             ]
             tasks.append(
                 {
-                    **t.public(),
+                    **self._task_public(t),
                     "unseen_runs": len(unseen),
                     "unseen_failed": bool(unseen) and unseen[0].status == "error",
                 }
@@ -7572,14 +7669,16 @@ class SessionManager:
         if task is None:
             return {"error": "not found"}
         return {
-            "task": task.public(),
+            "task": self._task_public(task),
             "runs": [r.to_dict() for r in self.task_store.runs(task_id)],
         }
 
     def create_automation(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Create an automation directly from the GUI (the "New automation" / template flow).
-        Mirrors the agent-facing `create_scheduled_task` validation, but binds the task to a
-        fresh per-task scratch workspace instead of an origin conversation's folder."""
+        Mirrors the agent-facing `create_scheduled_task` validation. `workspace` (optional):
+        a real, existing absolute path the automation should run against; omitted or "" binds
+        the task to a fresh per-task scratch workspace instead of an origin conversation's
+        folder, same as before this field existed."""
         from croniter import croniter
 
         title = (payload.get("title") or "").strip()
@@ -7587,6 +7686,7 @@ class SessionManager:
         cron = (payload.get("cron") or "").strip() or None
         fire_at = (payload.get("fire_at") or "").strip() or None
         timezone = (payload.get("timezone") or "").strip() or "local"
+        workspace_raw = str(payload.get("workspace") or "").strip()
 
         if not title:
             return {"ok": False, "error": "title is required"}
@@ -7599,6 +7699,11 @@ class SessionManager:
             }
         if cron and not croniter.is_valid(cron):
             return {"ok": False, "error": f"invalid cron expression: {cron}"}
+        resolved_workspace: Optional[str] = None
+        if workspace_raw:
+            resolved_workspace, err = self._resolve_automation_workspace(workspace_raw)
+            if err:
+                return {"ok": False, "error": err}
 
         schedule = Schedule(
             kind="once" if (fire_at and not cron) else "cron",
@@ -7620,9 +7725,9 @@ class SessionManager:
             # agent tool — only target-bound write grants survive.
             always_allowed_tools=grant_entries(payload.get("permissions")),
         )
-        task.workspace = self._provision_scratch(task.task_session_id)
+        task.workspace = resolved_workspace or self._provision_scratch(task.task_session_id)
         self.task_store.save(task)
-        return {"ok": True, "task": task.public()}
+        return {"ok": True, "task": self._task_public(task)}
 
     def update_automation(
         self, task_id: str, changes: dict[str, Any]
@@ -7642,18 +7747,36 @@ class SessionManager:
             if not croniter.is_valid(changes["cron"]):
                 return {"ok": False, "error": "invalid cron"}
             task.schedule.cron, task.schedule.kind = changes["cron"], "cron"
+        if "workspace" in changes:
+            raw = str(changes["workspace"] or "").strip()
+            if raw:
+                resolved, err = self._resolve_automation_workspace(raw)
+                if err:
+                    return {"ok": False, "error": err}
+                task.workspace = resolved
+            else:
+                # "" → back to the task's own scratch folder — the same deterministic
+                # path `create_automation` would have provisioned in the first place.
+                task.workspace = self._provision_scratch(task.task_session_id)
         if changes.get("revoke"):
             # Revocation from the task detail page ("Allowed without asking … · Revoke").
             # Human-only, like minting; the agent-facing update tool has no such field.
             task.revoke_rule(str(changes["revoke"]))
+        if changes.get("grant"):
+            # Minting from the task detail page — symmetric with `revoke` above. Accepts
+            # one grant object or a list; validated + de-duplicated the same way creation's
+            # `permissions` field is.
+            from ..automation.models import grant_entries
+
+            raw_grants = changes["grant"]
+            items = raw_grants if isinstance(raw_grants, list) else [raw_grants]
+            for entry in grant_entries(items):
+                if entry not in task.always_allowed_tools:
+                    task.always_allowed_tools.append(entry)
         self.task_store.save(task)
-        if changes.get("revoke"):
-            # A live run engine may still hold the revoked rule — reseed from the record.
-            for sid, engine in self._engines.items():
-                owner = self.task_store.task_for_run_session(sid)
-                if owner is not None and owner.id == task.id:
-                    engine.permissions.task_rules = task.standing_rules()
-        return {"ok": True, "task": task.public()}
+        if changes.get("revoke") or changes.get("grant"):
+            self._reseed_live_task_rules(task)
+        return {"ok": True, "task": self._task_public(task)}
 
     def delete_automation(self, task_id: str) -> dict[str, Any]:
         return {"ok": self.task_store.delete(task_id), "id": task_id}
@@ -7665,7 +7788,13 @@ class SessionManager:
         task = self.task_store.get(task_id)
         if task is None:
             return {"ok": False, "error": "not found"}
-        Path(task.workspace).mkdir(parents=True, exist_ok=True)
+        workspace_error = self._automation_workspace_error(task)
+        if workspace_error is not None:
+            return {"ok": False, "error": workspace_error}
+        if self.is_temp_workspace(task.workspace):
+            # Only the task's own scratch folder is auto-created — see
+            # `_automation_workspace_error`.
+            Path(task.workspace).mkdir(parents=True, exist_ok=True)
         run = TaskRun(
             task_id=task.id, trigger="manual"
         )  # status "running", session_id auto

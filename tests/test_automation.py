@@ -11,6 +11,7 @@ import asyncio
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -355,6 +356,69 @@ async def test_scheduled_run_persists_continuable_session(tmp_path, monkeypatch)
     async for _ in engine.run("tell me more"):
         pass
     assert _last_assistant_text(engine.messages) == "Sure — here is more detail."
+
+
+# -- workspace: a SCHEDULED run must see the user's real folder, not a private scratch --
+async def test_scheduled_run_reads_files_in_a_real_workspace(tmp_path, monkeypatch):
+    """The bug this fixes: an automation created from the GUI page/templates used to be
+    bound to a fresh, empty, per-task scratch folder no matter what — a template like '查看
+    工作文件夹中的点检表' could never see the user's real ledger at the scheduled time
+    (`read_file` refuses paths outside the workspace root). With `workspace` set to a real
+    folder at creation, a SCHEDULED (not manual) run's `read_file` reaches it — proven by the
+    actual tool result content, not just that the task record carries the right path."""
+    from coworker.providers import (
+        AssistantTurn,
+        ModelCapabilities,
+        ProviderClient,
+        ToolCall,
+    )
+    from coworker.server.manager import SessionManager
+
+    class ScriptedProvider(ProviderClient):
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, *, model, messages, tools=None, **settings):
+            self.calls += 1
+            if self.calls == 1:
+                call = ToolCall(
+                    id="c1", name="read_file", arguments={"path": "点检表.csv"}
+                )
+                return AssistantTurn(tool_calls=[call])
+            return AssistantTurn(text="已读取点检表", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ledger_dir = tmp_path / "真实台账文件夹"
+    ledger_dir.mkdir()
+    (ledger_dir / "点检表.csv").write_text(
+        "日期,数值\n2026-09-01,100\n", encoding="utf-8"
+    )
+
+    manager = SessionManager(data_dir=tmp_path / "data", provider=ScriptedProvider())
+    created = manager.create_automation(
+        {
+            "title": "查看台账",
+            "instructions": "查看工作文件夹中的点检表并汇报最新数值",
+            "cron": "0 8 * * *",
+            "workspace": str(ledger_dir),
+        }
+    )
+    assert created["ok"]
+    task = manager.task_store.get(created["task"]["id"])
+    assert task.workspace == str(ledger_dir.resolve())
+
+    run = await manager._run_scheduled_task(task, trigger="manual")
+
+    assert run.status == "ok"
+    tool_result = next(
+        m
+        for m in manager.session_messages(run.session_id)
+        if m.get("role") == "tool"
+    )
+    assert "2026-09-01,100" in tool_result["content"]
 
 
 # -- a genuine failure after engine.run() still records "error" (anti-regression) --
@@ -850,6 +914,110 @@ async def test_manual_run_prepare_and_finalize(tmp_path, monkeypatch):
     assert out["ok"] and out["run"]["status"] == "ok"
     assert out["run"]["result_text"] == "Done — briefing ready."
     assert manager.task_store.get(task.id).run_count == 1
+
+
+# -- workspace gone: a real folder deleted/unmounted must fail the run, not recreate it --
+async def test_scheduled_run_with_deleted_workspace_is_error(tmp_path, monkeypatch):
+    """A2b: `_build_task_engine`'s `mkdir(parents=True, exist_ok=True)` used to apply to
+    ANY workspace — so a real folder the automation was pointed at, once deleted, silently
+    came back as an empty directory and the run proceeded against it. A non-private
+    workspace that is no longer a directory must fail the run cleanly instead."""
+    from coworker.providers import ModelCapabilities, ProviderClient
+    from coworker.server.manager import SessionManager
+
+    class ScriptedProvider(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            raise AssertionError("no turn should run — the workspace check must bail first")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    manager = SessionManager(data_dir=tmp_path / "data", provider=ScriptedProvider())
+    real_folder = tmp_path / "real-folder"
+    real_folder.mkdir()
+    created = manager.create_automation(
+        {
+            "title": "Ledger check",
+            "instructions": "check it",
+            "cron": "0 8 * * *",
+            "workspace": str(real_folder),
+        }
+    )
+    assert created["ok"]
+    task = manager.task_store.get(created["task"]["id"])
+    real_folder.rmdir()  # simulate deletion/unmount between creation and the fire
+
+    run = await manager._run_scheduled_task(task, trigger="schedule")
+
+    assert run.status == "error"
+    assert "工作文件夹不存在" in run.error
+    assert str(real_folder) in run.error
+    assert not real_folder.exists(), "a deleted workspace must not be silently recreated"
+    persisted = manager.task_store.runs(task.id)
+    assert len(persisted) == 1 and persisted[0].status == "error"
+    assert manager.is_running(run.session_id) is False
+
+
+async def test_manual_run_with_deleted_workspace_returns_error_without_creating_dir(
+    tmp_path, monkeypatch
+):
+    """Same bug, manual "run now" path: `prepare_manual_run` must fail cleanly (the GUI's
+    error to show) rather than mkdir-ing the folder back and starting a run against it."""
+    from coworker.providers import ModelCapabilities, ProviderClient
+    from coworker.server.manager import SessionManager
+
+    class ScriptedProvider(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            raise AssertionError("no turn should run")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    manager = SessionManager(data_dir=tmp_path / "data", provider=ScriptedProvider())
+    real_folder = tmp_path / "real-folder-2"
+    real_folder.mkdir()
+    created = manager.create_automation(
+        {
+            "title": "Ledger check",
+            "instructions": "check it",
+            "cron": "0 8 * * *",
+            "workspace": str(real_folder),
+        }
+    )
+    assert created["ok"]
+    task_id = created["task"]["id"]
+    real_folder.rmdir()
+
+    out = manager.prepare_manual_run(task_id)
+
+    assert out["ok"] is False
+    assert "工作文件夹不存在" in out["error"]
+    assert not real_folder.exists()
+    assert manager.task_store.runs(task_id) == []  # nothing was ever started
+
+
+def test_private_workspace_is_still_auto_created(tmp_path, monkeypatch):
+    """Control for the two tests above: the task's OWN scratch folder is still created on
+    demand exactly as before — only a real, user-chosen workspace is now protected."""
+    from coworker.server.manager import SessionManager
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    manager = SessionManager(data_dir=tmp_path / "data")
+    created = manager.create_automation(
+        {"title": "Private", "instructions": "do something", "cron": "0 8 * * *"}
+    )
+    assert created["ok"]
+    task = manager.task_store.get(created["task"]["id"])
+    assert manager.is_temp_workspace(task.workspace)
+    import shutil
+
+    shutil.rmtree(task.workspace)  # scratch dirs come and go across restarts too
+    assert manager._automation_workspace_error(task) is None
+    prep = manager.prepare_manual_run(task.id)
+    assert prep["ok"] is True
+    assert Path(task.workspace).is_dir()
 
 
 async def test_manual_run_interrupted_is_canceled_not_ok(tmp_path, monkeypatch):
