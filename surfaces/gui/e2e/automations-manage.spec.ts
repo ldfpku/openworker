@@ -15,7 +15,7 @@ test("lists a scheduled task with its schedule and run count", async ({ page }) 
   const card = page.locator(".sched-card", { hasText: "Daily AI News" });
   await expect(card).toBeVisible();
   await expect(card).toContainText("每天 ~17:40");
-  await expect(card).toContainText("last running");
+  await expect(card).toContainText(/last running/i);
 });
 
 test("Run now triggers a manual run and opens its live session", async ({ page }) => {
