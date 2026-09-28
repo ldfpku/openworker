@@ -30,7 +30,7 @@ import aisuite as ai
 from coworker.roots import RootDir, normalize_roots
 from coworker.tools import office as office_module
 from coworker.tools.document import _SCHEMA as _DOC_SCHEMA
-from coworker.tools.office import _SCHEMA, office_tools
+from coworker.tools.office import _READ_SCHEMA, _SCHEMA, office_tools, spreadsheet_read_tools
 
 
 def _tool(workspace, roots=None):
@@ -1030,3 +1030,222 @@ def test_importing_the_module_does_not_import_openpyxl():
     )
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "False True"
+
+
+# -- read_spreadsheet ---------------------------------------------------------------------
+#
+# `write_spreadsheet` writes a real .xlsx; `read_spreadsheet` is the other half — without
+# it the agent's only way to see what it (or the user) had written was `run_shell` +
+# Python/PowerShell, which needs approval and, in an unattended scheduled run, parks in the
+# Inbox and stalls the automation. These cover: the workbook overview, numbered rows,
+# sheet selection, windowing, value formatting (dates/numbers/formulas), and the same
+# error shapes `read_file` already has (bad suffix, path escape, size cap).
+
+
+def _read_tool(workspace, roots=None):
+    tools = spreadsheet_read_tools(str(workspace), roots=roots)
+    assert [getattr(t, "__name__", "") for t in tools] == ["read_spreadsheet"]
+    return tools[0]
+
+
+def _fixture_workbook(path: Path) -> None:
+    """A workbook with the shapes a real one has: two sheets, a header row, dates, a plain
+    number, a large integer (float precision would mangle it), an empty row in the middle,
+    and a formula cell — left WITHOUT a cached value, since this file is saved by openpyxl,
+    not Excel/WPS, which is exactly the "no cached value" case. The formula sits in a
+    column that is NOT the row's last (G2 follows it with real text), so "empty trailing
+    cells trimmed" cannot swallow it before the no-cache check ever sees it.
+    """
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    ws = workbook.active
+    ws.title = "汇总"
+    ws.append(["姓名", "入职日期", "入账时间", "金额", "备注", "双倍金额", "复核人"])
+    ws.append(
+        ["张三", datetime(2026, 1, 5).date(), datetime(2026, 1, 6, 9, 30), 1200, "", "", "李经理"]
+    )
+    ws.append(["", "", "", "", "", "", ""])  # a genuinely empty row
+    ws.append(["李四", datetime(2026, 2, 1).date(), None, 2500.5, "VIP"])
+    ws["F2"] = "=D2*2"  # a formula, never opened in Excel — no cached value
+    ws["A6"] = 123456789012345  # 15 significant digits — must stay an int, not 1.2e14
+    workbook.create_sheet("空表")
+    workbook.save(str(path))
+
+
+def test_the_tool_reads_its_own_schema_and_metadata(tmp_path):
+    tool = _read_tool(tmp_path)
+    assert tool.__coworker_schema__ is _READ_SCHEMA
+    meta = tool.__aisuite_tool_metadata__
+    assert meta.risk_level == "low" and meta.requires_approval is False
+    fn = _READ_SCHEMA["function"]
+    assert fn["parameters"]["required"] == ["path"]
+    assert len(json.dumps(fn)) < 1500  # this schema is NOT behind a loader on its own
+
+
+def test_overview_lists_every_sheet_with_its_dimensions(tmp_path):
+    p = tmp_path / "台账.xlsx"
+    _fixture_workbook(p)
+    out = _read_tool(tmp_path)(path="台账.xlsx")
+    assert "error" not in out
+    assert "Workbook: 2 sheet(s)" in out["content"]
+    assert "汇总 (active): 6 row(s) x 7 col(s)" in out["content"]
+    assert "空表:" in out["content"]
+
+
+def test_rows_are_numbered_tab_separated_and_include_the_header(tmp_path):
+    p = tmp_path / "台账.xlsx"
+    _fixture_workbook(p)
+    out = _read_tool(tmp_path)(path="台账.xlsx", sheet="汇总")
+    assert out["sheet"] == "汇总"
+    assert out["start_row"] == 1
+    assert out["total_rows"] == 6
+    lines = out["content"].splitlines()
+    header_line = next(line for line in lines if "姓名" in line)
+    assert header_line.startswith("     1\t")
+    assert "姓名\t入职日期\t入账时间\t金额\t备注" in header_line
+    # row 3 is the genuinely empty row: trailing empties trimmed to nothing after the number
+    empty_line = next(line for line in lines if line.startswith("     3\t"))
+    assert empty_line == "     3\t"
+
+
+def test_sheet_selection_exact_case_insensitive_and_unknown(tmp_path):
+    p = tmp_path / "台账.xlsx"
+    _fixture_workbook(p)
+    tool = _read_tool(tmp_path)
+
+    assert tool(path="台账.xlsx", sheet="空表")["sheet"] == "空表"
+    # case-insensitive fallback — ASCII sheet name so casefold has something to do
+    q = tmp_path / "en.xlsx"
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    wb.active.title = "Sheet1"
+    wb.save(str(q))
+    assert tool(path="en.xlsx", sheet="sheet1")["sheet"] == "Sheet1"
+
+    out = tool(path="台账.xlsx", sheet="没有这个表")
+    assert "error" in out and "没有这个表" in out["error"] and "汇总" in out["error"]
+
+
+def test_windowing_continues_from_the_note(tmp_path):
+    from openpyxl import Workbook
+
+    p = tmp_path / "长表.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    for i in range(1, 11):
+        ws.append([f"row{i}"])
+    wb.save(str(p))
+
+    tool = _read_tool(tmp_path)
+    first = tool(path="长表.xlsx", max_rows=4)
+    assert first["start_row"] == 1 and first["end_row"] == 4
+    assert "note" in first and "start_row=5" in first["note"]
+
+    second = tool(path="长表.xlsx", start_row=5, max_rows=4)
+    assert second["start_row"] == 5 and second["end_row"] == 8
+    assert "note" in second and "start_row=9" in second["note"]
+
+    last = tool(path="长表.xlsx", start_row=9, max_rows=4)
+    assert last["start_row"] == 9 and last["end_row"] == 10
+    assert "note" not in last  # nothing left to continue to
+
+
+def test_dates_numbers_and_a_large_integer_format_cleanly(tmp_path):
+    p = tmp_path / "台账.xlsx"
+    _fixture_workbook(p)
+    out = _read_tool(tmp_path)(path="台账.xlsx")
+    lines = out["content"].splitlines()
+    row2 = next(line for line in lines if line.startswith("     2\t"))
+    assert "2026-01-05" in row2  # date, no time part
+    assert "2026-01-06 09:30" in row2  # datetime with a non-zero time part
+    row4 = next(line for line in lines if line.startswith("     4\t"))
+    assert "2500.5" in row4  # float, no trailing zeros/noise
+    row6 = next(line for line in lines if line.startswith("     6\t"))
+    assert "123456789012345" in row6  # a 15-digit integer stays exact, not 1.2345e+14
+    assert "e+" not in row6.lower()
+
+
+def test_a_formula_with_no_cached_value_shows_empty_and_says_so(tmp_path):
+    """This workbook was saved by openpyxl, never opened in Excel/WPS, so F2's formula has
+    no cached value — `data_only=True` reads it back as None, indistinguishable from an
+    empty cell without the second look `read_spreadsheet` takes."""
+    p = tmp_path / "台账.xlsx"
+    _fixture_workbook(p)
+    out = _read_tool(tmp_path)(path="台账.xlsx")
+    row2 = next(
+        line for line in out["content"].splitlines() if line.startswith("     2\t")
+    )
+    cells = row2.split("\t")
+    assert cells[6] == ""  # column F, 1-indexed after the row number in cells[0]
+    assert "note" in out
+    assert "no cached value" in out["note"]
+
+
+def test_an_xls_gives_a_save_as_xlsx_message(tmp_path):
+    p = tmp_path / "旧表.xls"
+    p.write_bytes(b"not really an xls")  # never opened — the suffix check runs first
+    out = _read_tool(tmp_path)(path="旧表.xls")
+    assert "error" in out
+    assert "old binary Excel format" in out["error"]
+    assert ".xlsx" in out["error"]
+
+
+def test_a_bad_suffix_is_refused_before_touching_the_filesystem(tmp_path):
+    out = _read_tool(tmp_path)(path="not-a-spreadsheet.txt")
+    assert "error" in out and ".xlsx" in out["error"] and ".xlsm" in out["error"]
+
+
+def test_path_escaping_is_refused_the_same_way_read_file_is(tmp_path):
+    """`resolve_read_path` is the SAME function `read_file` calls — this pins that the
+    wording has not drifted between the two callers."""
+    outside = tmp_path.parent / "elsewhere.xlsx"
+    out = _read_tool(tmp_path)(path=str(outside))
+    assert out == {"error": "path escapes the session's directories"}
+
+
+def test_a_read_only_root_is_still_readable_unlike_the_write_side(tmp_path):
+    """The whole point of importing `resolve_read_path` instead of `office.py`'s own
+    `resolve_target`: a write refuses a read-only root, a read must not."""
+    ro = tmp_path / "ro"
+    ro.mkdir()
+    p = ro / "只读.xlsx"
+    _fixture_workbook(p)
+    out = spreadsheet_read_tools(
+        str(tmp_path), roots=[{"path": str(ro), "writable": False}]
+    )[0](path=str(p))
+    assert "error" not in out
+    assert out["sheet"] == "汇总"
+
+
+def test_a_file_over_the_size_cap_is_refused(tmp_path, monkeypatch):
+    p = tmp_path / "大表.xlsx"
+    _fixture_workbook(p)
+    assert p.stat().st_size > 200  # sanity: the fixture is not trivially small
+    monkeypatch.setattr(office_module, "_MAX_READ_BYTES", 200)
+    out = _read_tool(tmp_path)(path="大表.xlsx")
+    assert "error" in out and "200" in out["error"]
+
+
+def test_a_corrupt_file_gives_a_clear_error_never_a_traceback(tmp_path):
+    p = tmp_path / "坏文件.xlsx"
+    p.write_bytes(b"PK\x03\x04 this is not a real zip payload")
+    out = _read_tool(tmp_path)(path="坏文件.xlsx")
+    assert "error" in out
+    assert "password-protected or corrupted" in out["error"]
+
+
+def test_a_missing_file_reads_as_not_a_file(tmp_path):
+    out = _read_tool(tmp_path)(path="没有这个文件.xlsx")
+    assert out == {"error": "not a file: 没有这个文件.xlsx"}
+
+
+def test_read_spreadsheet_is_a_plain_read_in_fork():
+    """The read-side pin matching `test_write_spreadsheet_is_a_declared_write_tool_in_fork`:
+    no name-table entry is needed for a read — `classify()` falls through to the tool's own
+    metadata, which is `requires_approval=False`, and lands on RiskClass.READ."""
+    from coworker.risk import RiskClass, classify
+
+    meta = spreadsheet_read_tools("/tmp/cw-office-read")[0].__aisuite_tool_metadata__
+    assert classify("read_spreadsheet", meta) is RiskClass.READ
