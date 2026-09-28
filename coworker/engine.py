@@ -2102,6 +2102,15 @@ class TurnEngine:
         arrive: `_handle_tool_calls` intercepts both by name and `continue`s before a call
         can be cleared for execution, so `_run_tool` never sees them.
 
+        `read_spreadsheet`/`read_document` (tools/office.py, tools/document.py, added
+        2026-09-28) answer the same three questions the same way as `read_file`: no
+        lock/singleton, no shared-state write, and a runtime bounded by the SAME kind of
+        cap `read_file` itself relies on — a 50 MB file-size ceiling checked before either
+        library opens the file, plus a capped row/block window on the way out. That is at
+        least as bounded as `read_file`, which has no file-size cap at all and scans a
+        whole text file's line count on every call; if an unbounded scan of a local file is
+        acceptable for `read_file`, a size-capped one is too.
+
         The set is therefore only as good as the enumeration: a NEW tool that classifies
         READ and quietly mutates something joins it automatically unless it lands in one
         of the excluded categories. Making that structural rather than vigilant would mean

@@ -1254,6 +1254,12 @@ def test_read_classified_tools_that_mutate_are_waited_out(tmp_path):
     for name in ("read_file", "grep", "list_files", "web_fetch"):
         assert abandonable(name) is True, name
 
+    # `read_spreadsheet`/`read_document` (2026-09-28): audited the same way, same answer.
+    for name in ("read_spreadsheet", "read_document"):
+        spec = registry.get(name)  # deferred behind load_office_tools; materialise first
+        assert classify(name, spec.metadata) is RiskClass.READ, name
+        assert abandonable(name) is True, name
+
 
 def test_a_failing_stop_signal_waits_the_tool_out_and_is_not_read_as_a_stop(
     tmp_path, caplog
@@ -1364,6 +1370,13 @@ def test_the_auto_abandon_set_is_exactly_the_tools_that_were_audited(tmp_path):
     `propose_plan` and `request_directory` are in the set only because `_abandonable`
     would say yes if asked; `test_interactive_tools_never_reach_run_tool` below shows
     they are never asked.
+
+    `read_spreadsheet`/`read_document` (tools/office.py, tools/document.py) joined on
+    2026-09-28, audited against the same three questions (see the matching note on
+    `TurnEngine._abandonable`'s own docstring in engine.py): no lock/singleton, no shared
+    state written, and a runtime bounded by a 50 MB file-size cap plus a capped output
+    window — tighter than `read_file`'s own bound, which is a whole-file line scan with no
+    size cap at all. Nine now, not seven.
     """
     engine = build_engine(agent=cowork_agent(), workspace=tmp_path, roots=[])
     registry = engine.registry
@@ -1382,6 +1395,8 @@ def test_the_auto_abandon_set_is_exactly_the_tools_that_were_audited(tmp_path):
         "web_search",
         "propose_plan",
         "request_directory",
+        "read_spreadsheet",
+        "read_document",
     }
     # The connector reads left the set with this audit: each reaches its API through a
     # credential path that WRITES (`_account_profile` → `ensure_fresh_connector_token`,
