@@ -288,7 +288,19 @@ cloudflared access token -app=https://gateway.smjtools.com
 
 ## 5 · 不在列表里的模型
 
-选择器里没有的也可以手填（**添加自定义模型**），格式就是上表那种 `厂商/模型名`。
+这张卡**不能手填模型 id**。设置页里的清单由 gateway-guard 按人下发：登录后自动拉取，
+「测试」通过时也会更新一次；拉取失败时状态行写明原因，清单保留上次拉到的（从没拉到过就显示
+应用内置的那几个），点「重试」再拉。同事只能从清单里勾选、设默认。
+
+清单是这样算出来的（细节见 smj-help-website 仓库 `docs/12-gateway-guard.md` 第 10 节）：
+
+- **来源**：Cloudflare 自己的模型目录。第三方模型取网关计价目录里最近 365 天上架的，
+  Cloudflare 托管的取 Workers AI 目录。新型号进了目录，下次拉取时就会出现，不用发版。
+- **范围**：只列 help 后台设置项 `models.families` 里的厂商（目前六家）。
+- **按人剔除**：没有权限的人看不到受限模型（受限清单在 help /admin 里勾）。
+
+所以一个模型不在某人的清单里，通常是这三种原因之一：Cloudflare 目录里还没有它（或上架超过一年被筛掉了）、
+它的厂商不在 `models.families` 里、它受限而这个人没权限。要让它出现，改后两样；同事那边没有办法绕过。
 Cloudflare 的完整目录在 <https://developers.cloudflare.com/ai/models/>。
 
 但**目录里有不等于这条路上能用**。判断的唯一可靠办法是看网关日志里的 `wholesale` 字段：
