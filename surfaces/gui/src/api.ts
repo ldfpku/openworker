@@ -2226,6 +2226,10 @@ export interface Automation {
   schedule: string;
   schedule_raw?: { kind: string; cron?: string | null; fire_at?: string | null; timezone?: string };
   workspace: string;
+  // True when `workspace` is the automation's own private, empty folder (the default —
+  // no `workspace` given at creation). False once a real folder was picked, in which case
+  // `workspace` is that folder's absolute path.
+  workspace_private: boolean;
   agent: string;
   enabled: boolean;
   next_run: number | null;
@@ -2312,6 +2316,9 @@ export async function createAutomation(payload: {
   cron?: string;
   fire_at?: string;
   timezone?: string;
+  // Absolute folder path the automation reads/writes on schedule. Omitted or "" → its own
+  // private, empty folder (the historical default).
+  workspace?: string;
   // §25 standing grants (the creating surface rendered them; submit IS the consent).
   // Only target-bound write entries survive server-side validation.
   permissions?: { tool: string; target: string; access: "read" | "write" }[];
@@ -2329,6 +2336,10 @@ export async function getAutomation(id: string): Promise<{ task: Automation; run
   return res.json();
 }
 
+// `changes` is a loose PATCH bag: plain field overwrites (title, instructions, cron, enabled,
+// workspace — "" resets it to the automation's private folder) plus two commands the server
+// special-cases rather than assigning verbatim: `revoke` (a standing-rule entry string to drop)
+// and `grant` ({tool, target, access} — symmetric to revoke, mints a new standing rule).
 export async function updateAutomation(id: string, changes: Record<string, any>) {
   const res = await fetch(`${httpBase()}/v1/automations/${encodeURIComponent(id)}`, {
     method: "PATCH",
