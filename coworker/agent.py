@@ -45,7 +45,7 @@ from .tools import ToolRegistry
 from .tools.ask import ask_user_tool
 from .tools.deferred import make_deferred_toolset_loader
 from .tools.directories import request_directory_tool
-from .tools.office import office_tools
+from .tools.office import office_read_tools, office_tools
 from .tools.plan import propose_plan_tool
 from .tools.toolreq import request_tool_tool
 from .tools.subagent import explorer_tools
@@ -352,17 +352,20 @@ def build_engine(
     registry.register_all(agent.build_tools(context))
     # Real Office files (tools/office.py — `write_spreadsheet` writes a .xlsx and
     # `write_document` a .docx in this process, so an office PC with no Python still gets
-    # the file). Deferred like the connector sets and for the same arithmetic: the two
-    # schemas are ~3,300 chars together against a ~340-char loader, and most turns make
-    # neither — but unlike a connector this set has a second door, because `write_file`
-    # refusing a .xlsx or a .docx materialises the matching tool (see
-    # engine._execute_sync + tools/files.py), so the model finds it exactly when it needs
-    # it whether or not it thought to call the loader.
+    # the file; `read_spreadsheet`/`read_document` read one back, since `read_file`'s
+    # `errors="replace"` text read only ever comes back as zip garbage). Deferred like the
+    # connector sets and for the same arithmetic: the four schemas together run well past
+    # 3,300 chars against a ~350-char loader, and most turns make none of them — but unlike
+    # a connector this set has a second door on BOTH sides, because `write_file` refusing a
+    # .xlsx/.docx and `read_file` refusing to read one back each materialise the matching
+    # tool (see engine._execute_sync + tools/files.py), so the model finds it exactly when
+    # it needs it whether or not it thought to call the loader.
     #
-    # Registered ONLY where `write_file` is: the tool is the answer to that refusal, and a
-    # persona with no file tools (chat) has nothing to answer. Built from the SAME
-    # workspace and the SAME roots LIST the file tools got — by reference, not a copy — so
-    # a folder the user grants mid-session is writable in that very turn.
+    # Registered ONLY where `write_file` is: the tools are the answer to write_file's and
+    # read_file's refusals, and a persona with no file tools (chat) has neither to answer.
+    # Built from the SAME workspace and the SAME roots LIST the file tools got — by
+    # reference, not a copy — so a folder the user grants mid-session is usable in that
+    # very turn.
     if ws is not None and "write_file" in registry.names():
         registry.register(
             make_deferred_toolset_loader(
@@ -370,12 +373,15 @@ def build_engine(
                 label="office",
                 title="Office file",
                 tool_name="load_office_tools",
-                deferred_tools=office_tools(str(ws), roots=root_list or None),
+                deferred_tools=[
+                    *office_tools(str(ws), roots=root_list or None),
+                    *office_read_tools(str(ws), roots=root_list or None),
+                ],
                 description=(
-                    "Load tools that create real Office files without Python: "
-                    "write_spreadsheet (.xlsx with merged cells, borders, styles) and "
-                    "write_document (.docx from Markdown). "
-                    "Call before creating such a file."
+                    "Load tools that read and write real Office files without Python: "
+                    "read_spreadsheet/write_spreadsheet (.xlsx) and "
+                    "read_document/write_document (.docx). Call before reading or "
+                    "creating such a file."
                 ),
             )
         )

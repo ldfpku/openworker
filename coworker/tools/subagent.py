@@ -25,11 +25,13 @@ from ..permissions import Mode, PermissionEngine
 from ..tools import ToolRegistry
 from .files import file_tools
 from .git import git_tools
+from .office import office_read_tools
 from .search import search_tools
 
 EXPLORER_INSTRUCTIONS = """You are a read-only code explorer working inside the user's workspace. \
 Answer the research task you're given by searching and reading the code (`grep`, `read_file`, \
-`list_files`, `git_log`, `git_status`, `git_diff`). You cannot write files or run commands.
+`list_files`, `git_log`, `git_status`, `git_diff`). For an Excel workbook or Word document, use \
+`read_spreadsheet`/`read_document` instead of `read_file`. You cannot write files or run commands.
 
 Your final message is your report — it goes back to the agent that spawned you, not to the \
 user. Make it self-contained: answer the task directly, reference code as path:line, quote the \
@@ -131,6 +133,13 @@ def build_explorer_engine(
     registry.register_all(ai.toolkits.git(root=ws))  # git_status, git_diff
     registry.register_all(git_tools(ws))  # git_log
     registry.register_all(search_tools(ws))  # grep
+    # read_spreadsheet / read_document (tools/office.py): registered directly, not behind
+    # a `load_office_tools` loader like the main session — this child is short-lived and
+    # rebuilt fresh per `explore()` call, so there is no round-trip cost to amortize a
+    # deferral against, and `read_file`'s own redirect (tools/files.py) would materialise
+    # them here anyway the moment it hit an .xlsx/.docx. No writers: this registry is
+    # read-only by construction (see the module docstring), and there is nothing to write.
+    registry.register_all(office_read_tools(ws))
     permissions = PermissionEngine(workspace_root=Path(ws), mode=Mode.PLAN)
     return TurnEngine(
         provider=provider,

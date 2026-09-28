@@ -3652,8 +3652,13 @@ class TurnEngine:
 # byte-identical arguments, the second call can only be a newer copy of the first. `run_shell`
 # is deliberately absent — two identical commands can straddle a change the model is comparing
 # across, and the older output is the half of that comparison. (`list_files` is aisuite's
-# files toolkit; the other three are ours — see catalog.py.)
-_IDEMPOTENT_READS = frozenset({"read_file", "grep", "list_files", "git_log"})
+# files toolkit; `read_file`/`grep`/`git_log` are ours — see catalog.py. `read_spreadsheet`/
+# `read_document` (tools/office.py, tools/document.py) are ours too, same reasoning: a
+# window of a workbook/document re-read with the same path/sheet/start_row is the same
+# window, not new information.)
+_IDEMPOTENT_READS = frozenset(
+    {"read_file", "grep", "list_files", "git_log", "read_spreadsheet", "read_document"}
+)
 _SUPERSEDED_NOTE = (
     "[superseded — this exact read was repeated later in the conversation; "
     "see the newer result]"
