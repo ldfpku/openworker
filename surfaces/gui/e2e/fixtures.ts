@@ -311,6 +311,7 @@ const AUTOMATION = {
   schedule: "每天 ~17:40",
   schedule_raw: { kind: "cron", cron: "40 17 * * *", fire_at: null, timezone: "local" },
   workspace: "",
+  workspace_private: true,
   agent: "cowork",
   enabled: true,
   next_run: Math.floor(Date.now() / 1000) + 3600,
@@ -2102,6 +2103,9 @@ export async function mockApi(page: import("@playwright/test").Page) {
         channels: [
           { channel: "slack:C0AAA111", name: "ocw-test", last_from: "amy", last_text: "standup at 10" },
           { channel: "slack:C0BBB222", last_from: "bob", last_text: "deploy failed" },
+          // A WeChat DM contact (F4): recent/channels now also surfaces people who've
+          // messaged the bot, not just Slack channels.
+          { channel: "weixin:o9cq@im.wechat", name: "示例联系人", last_from: "示例联系人", last_text: null },
         ],
       });
 
@@ -2180,16 +2184,25 @@ export async function mockApi(page: import("@playwright/test").Page) {
     if (/\/v1\/automations\/[^/]+$/.test(p) && m === "PATCH") {
       const id = p.split("/").pop();
       const task = automations.find((t) => t.id === id);
-      const body = req.postDataJSON() ?? {};
-      if (task && body.revoke) {
-        // Standing-rule revocation (§25): remove the entry; `revoke` is a command,
-        // not a field to Object.assign onto the task.
-        task.always_allowed = (task.always_allowed || []).filter(
-          (r: any) => r.entry !== body.revoke,
-        );
-        return json({ ok: true, task });
+      // `revoke`/`grant`/`workspace` are commands the server special-cases rather than
+      // fields to Object.assign verbatim — pull them out first so a PATCH combining one
+      // of them with plain fields (F4's "revoke the grant AND strip the instructions
+      // sentence in one call") applies both instead of short-circuiting on the command.
+      const { revoke, grant, workspace, ...rest } = req.postDataJSON() ?? {};
+      if (task && revoke) {
+        task.always_allowed = (task.always_allowed || []).filter((r: any) => r.entry !== revoke);
       }
-      if (task) Object.assign(task, body);
+      if (task && grant) {
+        task.always_allowed = [
+          ...(task.always_allowed || []),
+          { entry: `${grant.tool} ${grant.target}`, tool: grant.tool, target: grant.target },
+        ];
+      }
+      if (task && workspace !== undefined) {
+        task.workspace = workspace;
+        task.workspace_private = !workspace;
+      }
+      if (task) Object.assign(task, rest);
       return json({ ok: true, task });
     }
     if (/\/v1\/automations\/[^/]+$/.test(p) && m === "DELETE") {
@@ -2213,6 +2226,8 @@ export async function mockApi(page: import("@playwright/test").Page) {
         title: body.title,
         instructions: body.instructions,
         schedule: body.cron || body.fire_at,
+        workspace: body.workspace || "",
+        workspace_private: !body.workspace,
         always_allowed: grants,
         run_count: 0,
       };
