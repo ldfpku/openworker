@@ -582,7 +582,7 @@
     "delete_title": "Delete automation",
     "deliver_app": "In the app",
     "deliver_to": "Deliver to",
-    "deliver_weixin": "WeChat DM (connect WeChat later)",
+    "deliver_weixin": "WeChat DM",
     "deliver_weixin_not_connected": "Connect WeChat under \"Connectors\" first.",
     "deliver_weixin_sentence": "When done, use send_message to send a short result to {{channel}} over WeChat.",
     "deliver_weixin_title": "Send to WeChat",

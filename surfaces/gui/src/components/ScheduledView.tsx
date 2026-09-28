@@ -342,10 +342,14 @@ function WeixinDeliverySection({
     if (!target || !consent) return;
     setSaving(true);
     try {
-      await updateAutomation(task.id, {
+      const res = await updateAutomation(task.id, {
         grant: { tool: "send_message", target, access: "write" },
         instructions: task.instructions + sentenceFor(target),
       });
+      if (res?.error) {
+        alert(res.error);
+        return;
+      }
       setEditing(false);
       setTarget("");
       setConsent(false);
@@ -365,7 +369,8 @@ function WeixinDeliverySection({
     if (task.instructions.includes(sentence)) {
       changes.instructions = task.instructions.replace(sentence, "");
     }
-    await updateAutomation(task.id, changes);
+    const res = await updateAutomation(task.id, changes);
+    if (res?.error) alert(res.error);
     onChanged();
   };
 
@@ -547,7 +552,7 @@ function TaskDetail({
   const saveEdit = async () => {
     setSaving(true);
     try {
-      await updateAutomation(id, {
+      const res = await updateAutomation(id, {
         title: title.trim(),
         instructions: instructions.trim(),
         ...(cronMatched || schedTouched ? { cron: toCron(time, freq) } : {}),
@@ -555,6 +560,12 @@ function TaskDetail({
         // title/instructions-only edit unchanged (same rule as the schedule above).
         ...(workspace !== origWorkspace() ? { workspace } : {}),
       });
+      // A folder that vanished between picking and saving is refused server-side — keep the
+      // form open with the user's edits instead of closing as if it had saved.
+      if (res?.error) {
+        alert(res.error);
+        return;
+      }
       await refresh();
       setEditing(false);
     } finally {

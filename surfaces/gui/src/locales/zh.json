@@ -564,7 +564,7 @@
     "delete_title": "删除自动化",
     "deliver_app": "应用内",
     "deliver_to": "发送至",
-    "deliver_weixin": "微信私信（稍后连接微信）",
+    "deliver_weixin": "微信私信",
     "deliver_weixin_not_connected": "先在「连接器」里连接微信。",
     "deliver_weixin_sentence": "完成后，使用 send_message 把简短的结果通过微信发送给 {{channel}}。",
     "deliver_weixin_title": "发送到微信",

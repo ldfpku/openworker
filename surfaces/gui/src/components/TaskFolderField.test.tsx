@@ -56,7 +56,17 @@ describe("TaskFolderField", () => {
     expect(onChange).toHaveBeenCalledWith("/b");
   });
 
-  it("the private-folder option always shows and picking it sends \"\"", async () => {
+  it("required: the private folder is neither offered nor shown as the current value", async () => {
+    render(<TaskFolderField value="" onChange={vi.fn()} required />);
+    const trigger = screen.getByTestId("task-folder-trigger");
+    expect(trigger.textContent).toContain("Choose a folder");
+    expect(trigger.textContent).not.toContain("Dedicated folder");
+    fireEvent.click(trigger);
+    expect(await screen.findByTestId("task-folder-browse")).toBeTruthy();
+    expect(screen.queryByTestId("task-folder-private-option")).toBeNull();
+  });
+
+  it("the private-folder option shows when not required, and picking it sends \"\"", async () => {
     const { onChange } = renderField("/some/path");
     fireEvent.click(screen.getByTestId("task-folder-trigger"));
     fireEvent.click(await screen.findByTestId("task-folder-private-option"));

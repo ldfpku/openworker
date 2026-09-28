@@ -41,7 +41,13 @@ export function TaskFolderField({ value, onChange, required }: Props) {
     if (picked) pick(picked);
   };
 
-  const currentLabel = value ? baseName(value) : t("automations.folder_private");
+  // `required` (the quickstart templates, which read files from this folder): the empty
+  // private folder is not a valid answer, so it is neither offered nor shown as the value.
+  const currentLabel = value
+    ? baseName(value)
+    : required
+      ? t("automations.folder_browse")
+      : t("automations.folder_private");
 
   return (
     <div className="mt-3" data-testid="task-folder-field">
@@ -67,16 +73,18 @@ export function TaskFolderField({ value, onChange, required }: Props) {
               className="absolute top-full mt-1 left-0 z-30 w-[300px] bg-panel border border-line rounded-xl2 shadow-xl p-1"
               data-testid="task-folder-menu"
             >
-              <button
-                className={
-                  "w-full text-left px-2.5 py-2 rounded-lg hover:bg-paper text-[13px] " +
-                  (!value ? "bg-accentSoft/50" : "")
-                }
-                onClick={() => pick("")}
-                data-testid="task-folder-private-option"
-              >
-                {t("automations.folder_option_private")}
-              </button>
+              {!required && (
+                <button
+                  className={
+                    "w-full text-left px-2.5 py-2 rounded-lg hover:bg-paper text-[13px] " +
+                    (!value ? "bg-accentSoft/50" : "")
+                  }
+                  onClick={() => pick("")}
+                  data-testid="task-folder-private-option"
+                >
+                  {t("automations.folder_option_private")}
+                </button>
+              )}
               {(recents || [])
                 .filter((w) => w.exists)
                 .slice(0, 5)
