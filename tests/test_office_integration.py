@@ -561,3 +561,263 @@ def test_an_ordinary_failure_materialises_nothing(tmp_path):
         assert "write_spreadsheet" not in _schema_names(engine)
     finally:
         engine.executor.close()
+
+
+# -- read_spreadsheet: same wiring questions, opposite answers -------------------------
+#
+# `write_spreadsheet` needed two name-table entries (`WRITE_TOOLS`, `_PATH_ARG`) to become
+# a scoped, credited write. `read_spreadsheet` needs NEITHER — its own metadata
+# (`requires_approval=False`) is enough for `classify()` to land it on `RiskClass.READ`,
+# and `PermissionEngine.evaluate()` allows a non-consequential call before it even looks at
+# mode, allowlists or the scheduled-task approver. These pin that absence of wiring is the
+# CORRECT state, not an oversight — and that the loader/redirect machinery `write_spreadsheet`
+# uses also carries `read_spreadsheet`/`read_document` along.
+
+
+def _read_meta():
+    from coworker.tools.office import spreadsheet_read_tools
+
+    return spreadsheet_read_tools("/tmp/cw-office-read")[0].__aisuite_tool_metadata__
+
+
+def test_read_spreadsheet_is_read_risk_with_no_write_side_entries():
+    assert "read_spreadsheet" not in WRITE_TOOLS
+    assert "read_spreadsheet" not in PATH_ARG
+    assert classify("read_spreadsheet", _read_meta()) is RiskClass.READ
+
+
+def test_read_spreadsheet_needs_no_approval_in_any_mode(tmp_path):
+    """Every mode this app has, including the two read-only ones and the unattended
+    scheduler's own `Mode.INTERACTIVE` — a non-consequential call clears `evaluate()`
+    before the read-only-mode denial, the allowlists, or bypass-approvals are even
+    consulted (see `Decision(True, "low risk")` ahead of every branch in permissions.py)."""
+    for mode in Mode:
+        decision = _engine(tmp_path, mode).evaluate(
+            "read_spreadsheet", {"path": "台账.xlsx"}, _read_meta()
+        )
+        assert decision.allowed and not decision.needs_user, mode
+
+
+async def test_a_scheduled_run_reads_a_spreadsheet_without_ever_reaching_the_approver(
+    tmp_path, monkeypatch
+):
+    """The unattended-run guarantee, driven through a REAL scheduled run
+    (`manager._run_scheduled_task`, the same entry point `test_automation.py` uses): the
+    model calls `read_spreadsheet` on a fixture workbook, and the run must complete without
+    ever parking an approval in the Inbox — the way a `run_shell` fallback to read the file
+    would have stalled every week. `_scheduled_approver` is wrapped so a call reaching it
+    at all fails the test outright, not just an empty-inbox assertion after the fact."""
+    from openpyxl import Workbook
+
+    from coworker.automation import Schedule, ScheduledTask
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient, ToolCall
+    from coworker.server.manager import SessionManager
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    wb = Workbook()
+    wb.active.append(["姓名", "金额"])
+    wb.active.append(["张三", 1200])
+    wb.save(str(ws / "台账.xlsx"))
+
+    class ScriptedProvider(ProviderClient):
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, *, model, messages, tools=None, **settings):
+            self.calls += 1
+            if self.calls == 1:
+                return AssistantTurn(
+                    tool_calls=[
+                        ToolCall(
+                            id="c1",
+                            name="read_spreadsheet",
+                            arguments={"path": "台账.xlsx"},
+                        )
+                    ],
+                    finish_reason="tool_calls",
+                )
+            return AssistantTurn(text="本周台账已读，共 1 条记录。", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    manager = SessionManager(data_dir=tmp_path / "data", provider=ScriptedProvider())
+    task = ScheduledTask(
+        title="周报",
+        instructions="读取台账并总结",
+        schedule=Schedule(kind="cron", cron="0 9 * * 1"),
+        workspace=str(ws),
+        agent="cowork",
+    )
+    manager.task_store.save(task)
+
+    real_approver_factory = manager._scheduled_approver
+
+    def _guarded_approver(task_arg, session_id):
+        async def _never(request):
+            raise AssertionError(
+                f"the scheduled approver must never be reached for a read; got "
+                f"{request.tool_name!r}"
+            )
+
+        return _never
+
+    monkeypatch.setattr(manager, "_scheduled_approver", _guarded_approver)
+    try:
+        run = await manager._run_scheduled_task(task, trigger="schedule")
+    finally:
+        monkeypatch.setattr(manager, "_scheduled_approver", real_approver_factory)
+
+    assert run.status == "ok", run.error
+    assert manager.inbox.pending(run.session_id) == []
+    record = manager.session_store.load(run.session_id)
+    tool_messages = [m for m in record.messages if m.get("role") == "tool"]
+    # `json.dumps` (default `ensure_ascii=True`) escapes 张三 to \uXXXX in the stored
+    # content, so assert on the ASCII amount instead of the Chinese name.
+    assert any("1200" in (m.get("content") or "") for m in tool_messages)
+
+
+def test_the_loader_now_also_advertises_and_loads_the_readers(tmp_path):
+    """`load_office_tools` is one defer group for all four tools (agent.py) — calling it
+    for a write must not leave the readers behind, and vice versa."""
+    from coworker.agents import cowork_agent
+
+    engine = _engine_for(cowork_agent(), tmp_path)
+    try:
+        names = _schema_names(engine)
+        assert "read_spreadsheet" not in names and "read_document" not in names
+        said = engine.registry.execute("load_office_tools", {})
+        assert "read_spreadsheet" in said and "read_document" in said
+        assert "read_spreadsheet" in _schema_names(engine)
+        assert "read_document" in _schema_names(engine)
+    finally:
+        engine.executor.close()
+
+
+def test_the_readers_are_reachable_by_name_without_the_loader(tmp_path):
+    from coworker.agents import cowork_agent
+
+    engine = _engine_for(cowork_agent(), tmp_path)
+    try:
+        spec = engine.registry.get("read_spreadsheet")
+        assert spec is not None and spec.metadata.requires_approval is False
+        assert "read_spreadsheet" in _schema_names(engine)
+    finally:
+        engine.executor.close()
+
+
+def test_the_explorer_subagent_carries_the_readers_directly_not_the_loader(tmp_path):
+    """Unlike the main session, `explore`'s child registry has no `load_office_tools` at
+    all (it has no writers to answer for) — `read_spreadsheet`/`read_document` are
+    registered straight into it (tools/subagent.py) since the child is rebuilt fresh per
+    call and there is no round trip to amortise a deferral against."""
+    from coworker.tools.subagent import build_explorer_engine
+
+    child = build_explorer_engine(workspace=tmp_path, provider=_StubProvider(), model="stub")
+    assert "load_office_tools" not in _schema_names(child)
+    assert "read_spreadsheet" in child.registry.names()
+    assert "read_document" in child.registry.names()
+    assert "read_spreadsheet" in _schema_names(child)
+
+
+def test_a_refused_xlsx_read_makes_read_spreadsheet_available(tmp_path):
+    """The real path, through the real `read_file`: the model tries to read a .xlsx as
+    text, is told no, and finds the right tool in its list on the next round trip."""
+    from coworker.agents import cowork_agent
+
+    engine = _engine_for(cowork_agent(), tmp_path)
+    try:
+        (tmp_path / "台账.xlsx").write_bytes(b"PK\x03\x04 not real xlsx bytes, never opened")
+        assert "read_spreadsheet" not in _schema_names(engine)
+
+        result, status = engine._execute_sync(_call("read_file", {"path": "台账.xlsx"}))
+        assert status == "error"
+        assert result["error_type"] == "ValueError"
+        assert "read_spreadsheet" in result["error"]
+        assert "read_spreadsheet" in _schema_names(engine)
+    finally:
+        engine.executor.close()
+
+
+def test_a_refused_xls_read_offers_xlsx_instead(tmp_path):
+    from coworker.agents import cowork_agent
+
+    engine = _engine_for(cowork_agent(), tmp_path)
+    try:
+        (tmp_path / "旧表.xls").write_bytes(b"not a real xls, never opened")
+        result, status = engine._execute_sync(_call("read_file", {"path": "旧表.xls"}))
+        assert status == "error" and result["error_type"] == "ValueError"
+        message = result["error"]
+        assert "old binary Excel format" in message
+        assert "read_spreadsheet" in message and ".xlsx" in message
+        # No tool answers for an .xls — nothing to materialise.
+        assert "read_spreadsheet" not in _schema_names(engine)
+    finally:
+        engine.executor.close()
+
+
+async def test_an_interactive_engine_runs_read_spreadsheet_without_asking(tmp_path):
+    """The permission story end to end, through a REAL `TurnEngine` turn: the model calls
+    `read_spreadsheet`, the approver is wired but must never be awaited, and no
+    `PERMISSION_REQUIRED` event is ever emitted — matching how `read_file` already behaves
+    (tests/test_engine.py::test_tool_turn_order_and_execution)."""
+    from coworker.engine import PermissionRequest, TurnEngine
+    from coworker.events import EventType
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient, ToolCall
+    from coworker.tools import ToolRegistry
+    from coworker.tools.office import spreadsheet_read_tools
+
+    _fixture_workbook = tmp_path / "台账.xlsx"
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    wb.active.append(["姓名", "金额"])
+    wb.active.append(["张三", 1200])
+    wb.save(str(_fixture_workbook))
+
+    class _ScriptedProvider(ProviderClient):
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, *, model, messages, tools=None, **settings):
+            self.calls += 1
+            if self.calls == 1:
+                return AssistantTurn(
+                    tool_calls=[
+                        ToolCall(id="c1", name="read_spreadsheet", arguments={"path": "台账.xlsx"})
+                    ],
+                    finish_reason="tool_calls",
+                )
+            return AssistantTurn(text="读完了", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    registry = ToolRegistry()
+    registry.register_all(spreadsheet_read_tools(str(tmp_path)))
+    permissions = PermissionEngine(workspace_root=tmp_path, mode=Mode.INTERACTIVE)
+
+    approver_calls: list[str] = []
+
+    async def _recording_approver(request: PermissionRequest):
+        approver_calls.append(request.tool_name)
+        raise AssertionError("approver must never be awaited for a read")
+
+    engine = TurnEngine(
+        provider=_ScriptedProvider(),
+        registry=registry,
+        permissions=permissions,
+        model="gpt-5.5",
+        approver=_recording_approver,
+    )
+    engine._finish_reason_seen.add(engine.model)
+
+    events = [ev async for ev in engine.run("读一下台账")]
+    types = [ev.type for ev in events]
+    assert EventType.PERMISSION_REQUIRED not in types
+    assert approver_calls == []
+    finished = [ev for ev in events if ev.type == EventType.TOOL_FINISHED]
+    assert len(finished) == 1 and finished[0].data["status"] == "ok"
+    assert events[-1].data["status"] == "completed"
