@@ -710,3 +710,161 @@ def test_python_docx_and_markdown_it_are_declared_and_importable_in_fork():
 
     import docx  # noqa: F401  - the dependency itself, not a stub
     import markdown_it  # noqa: F401
+
+
+# -- read_document: same wiring questions, opposite answers -----------------------------
+#
+# Sibling of the block at the end of `tests/test_office_integration.py` — see that file's
+# comment for why `read_document` needs NEITHER `WRITE_TOOLS` NOR `_PATH_ARG` to be a safe,
+# always-allowed read: its own metadata (`requires_approval=False`) is enough for
+# `classify()` to land it on `RiskClass.READ`, which clears `PermissionEngine.evaluate()`
+# before mode, allowlists or the scheduled-task approver are even consulted.
+
+
+def _read_meta():
+    from coworker.tools.document import document_read_tools
+
+    return document_read_tools("/tmp/cw-doc-read")[0].__aisuite_tool_metadata__
+
+
+def test_read_document_is_read_risk_with_no_write_side_entries():
+    assert "read_document" not in WRITE_TOOLS
+    assert "read_document" not in PATH_ARG
+    assert classify("read_document", _read_meta()) is RiskClass.READ
+
+
+def test_read_document_needs_no_approval_in_any_mode(tmp_path):
+    for mode in Mode:
+        decision = PermissionEngine(workspace_root=tmp_path, mode=mode).evaluate(
+            "read_document", {"path": "报告.docx"}, _read_meta()
+        )
+        assert decision.allowed and not decision.needs_user, mode
+
+
+def test_a_refused_docx_read_makes_read_document_available(tmp_path):
+    from coworker.agent import build_engine
+    from coworker.agents import cowork_agent
+    from coworker.providers import ToolCall
+
+    class _StubProvider:
+        def complete(self, **_kw):  # pragma: no cover - never invoked at build time
+            from coworker.providers import AssistantTurn
+
+            return AssistantTurn()
+
+        def capabilities(self, _model):  # pragma: no cover
+            from coworker.providers.base import ModelCapabilities
+
+            return ModelCapabilities()
+
+    engine = build_engine(agent=cowork_agent(), workspace=tmp_path, provider=_StubProvider())
+    try:
+        (tmp_path / "报告.docx").write_bytes(b"PK\x03\x04 not real docx bytes, never opened")
+        names = {s["function"]["name"] for s in engine.registry.schemas()}
+        assert "read_document" not in names
+
+        result, status = engine._execute_sync(
+            ToolCall(id="tc1", name="read_file", arguments={"path": "报告.docx"})
+        )
+        assert status == "error" and result["error_type"] == "ValueError"
+        assert "read_document" in result["error"]
+        names = {s["function"]["name"] for s in engine.registry.schemas()}
+        assert "read_document" in names
+    finally:
+        engine.executor.close()
+
+
+def test_a_refused_doc_read_offers_docx_instead(tmp_path):
+    from coworker.agent import build_engine
+    from coworker.agents import cowork_agent
+    from coworker.providers import ToolCall
+
+    class _StubProvider:
+        def complete(self, **_kw):  # pragma: no cover
+            from coworker.providers import AssistantTurn
+
+            return AssistantTurn()
+
+        def capabilities(self, _model):  # pragma: no cover
+            from coworker.providers.base import ModelCapabilities
+
+            return ModelCapabilities()
+
+    engine = build_engine(agent=cowork_agent(), workspace=tmp_path, provider=_StubProvider())
+    try:
+        (tmp_path / "旧文档.doc").write_bytes(b"not a real doc, never opened")
+        result, status = engine._execute_sync(
+            ToolCall(id="tc1", name="read_file", arguments={"path": "旧文档.doc"})
+        )
+        assert status == "error" and result["error_type"] == "ValueError"
+        message = result["error"]
+        assert "old binary Word format" in message
+        assert "read_document" in message and ".docx" in message
+        names = {s["function"]["name"] for s in engine.registry.schemas()}
+        assert "read_document" not in names  # nothing answers for a .doc
+    finally:
+        engine.executor.close()
+
+
+async def test_a_scheduled_run_reads_a_document_without_ever_reaching_the_approver(
+    tmp_path, monkeypatch
+):
+    """The .docx twin of the same test in `test_office_integration.py`: a scheduled run
+    that reads a Word document must never touch the approver or the Inbox."""
+    from docx import Document
+
+    from coworker.automation import Schedule, ScheduledTask
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient, ToolCall
+    from coworker.server.manager import SessionManager
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    doc = Document()
+    doc.add_paragraph("上周完成事项：签署了新合同。")
+    doc.save(str(ws / "纪要.docx"))
+
+    class ScriptedProvider(ProviderClient):
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, *, model, messages, tools=None, **settings):
+            self.calls += 1
+            if self.calls == 1:
+                return AssistantTurn(
+                    tool_calls=[
+                        ToolCall(
+                            id="c1", name="read_document", arguments={"path": "纪要.docx"}
+                        )
+                    ],
+                    finish_reason="tool_calls",
+                )
+            return AssistantTurn(text="纪要已读。", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    manager = SessionManager(data_dir=tmp_path / "data", provider=ScriptedProvider())
+    task = ScheduledTask(
+        title="周会纪要",
+        instructions="读取上周纪要",
+        schedule=Schedule(kind="cron", cron="0 9 * * 1"),
+        workspace=str(ws),
+        agent="cowork",
+    )
+    manager.task_store.save(task)
+
+    def _guarded_approver(task_arg, session_id):
+        async def _never(request):
+            raise AssertionError(
+                f"the scheduled approver must never be reached for a read; got "
+                f"{request.tool_name!r}"
+            )
+
+        return _never
+
+    monkeypatch.setattr(manager, "_scheduled_approver", _guarded_approver)
+    run = await manager._run_scheduled_task(task, trigger="schedule")
+
+    assert run.status == "ok", run.error
+    assert manager.inbox.pending(run.session_id) == []
