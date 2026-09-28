@@ -2147,3 +2147,65 @@ async def test_scheduled_run_broadcasts_run_started_event(tmp_path, monkeypatch)
     assert event["data"]["session_id"] == run.session_id
     assert event["data"]["trigger"] == "schedule"
     assert dead not in manager._event_clients  # dropped, not fatal
+
+
+# -- read_spreadsheet in an unattended run (added alongside coworker/tools/office.py's new
+# read_spreadsheet/read_document tools) — self-contained, appended at the end of the file
+# on purpose so it cannot collide with anything else touching this module. -------------
+@pytest.mark.asyncio
+async def test_scheduled_run_reads_a_spreadsheet_without_asking(tmp_path, monkeypatch):
+    """Before `read_spreadsheet` existed, the only way an unattended task could see a
+    workbook's contents was `run_shell` + Python, which needs approval and parks in the
+    Inbox — stalling a task like "every Monday read 台账.xlsx and write a summary" until a
+    human clicked it. `read_spreadsheet` classifies as a plain read
+    (`requires_approval=False` → `RiskClass.READ`), so `PermissionEngine.evaluate()` allows
+    it before mode, allowlists or `_scheduled_approver` are even consulted — this drives one
+    real scheduled run end to end and checks the run finished clean with nothing pending."""
+    from openpyxl import Workbook
+
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient, ToolCall
+    from coworker.server.manager import SessionManager
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    wb = Workbook()
+    wb.active.append(["item", "amount"])
+    wb.active.append(["rent", 4200])
+    wb.save(str(ws / "ledger.xlsx"))
+
+    class ScriptedProvider(ProviderClient):
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, *, model, messages, tools=None, **settings):
+            self.calls += 1
+            if self.calls == 1:
+                return AssistantTurn(
+                    tool_calls=[
+                        ToolCall(
+                            id="c1",
+                            name="read_spreadsheet",
+                            arguments={"path": "ledger.xlsx"},
+                        )
+                    ],
+                    finish_reason="tool_calls",
+                )
+            return AssistantTurn(text="ledger read.", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    manager = SessionManager(data_dir=tmp_path / "data", provider=ScriptedProvider())
+    task = _task(
+        title="Weekly ledger",
+        instructions="read ledger.xlsx and summarise it",
+        workspace=str(ws),
+        agent="cowork",
+    )
+    manager.task_store.save(task)
+
+    run = await manager._run_scheduled_task(task, trigger="schedule")
+
+    assert run.status == "ok", run.error
+    assert manager.inbox.pending(run.session_id) == []
