@@ -591,3 +591,72 @@ def test_scratch_entries_keep_their_relative_path_and_scratch_label(tmp_path):
     assert entry["root"] == "scratch"
     assert entry["path"] == str(os.path.join("分析", "结果.md"))
     assert mgr.read_artifact(sid, entry["path"])["ok"] is True
+
+
+# -- A5: _recent_files rebuilt on the budgeted sweep, off the event loop ---------------
+# A run's artifacts (automation TaskRun.artifacts) are whatever the run touched, not just
+# documents/media — unlike the artifacts panel's own `_sweep_for_windows` call, which keeps
+# its suffix filter. The old implementation was a plain, unbounded `Path.rglob("*")`.
+
+
+def test_recent_files_returns_non_document_suffixes_too(tmp_path):
+    from coworker.server.manager import _recent_files
+
+    ws = tmp_path / "run-ws"
+    ws.mkdir()
+    since = time.time()
+    (ws / "output.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+    (ws / "script.py").write_text("print('x')\n", encoding="utf-8")
+    (ws / "notes.md").write_text("# notes", encoding="utf-8")
+
+    names = set(_recent_files(str(ws), since=since))
+    assert {"output.csv", "script.py", "notes.md"} <= names
+
+
+def test_recent_files_respects_the_since_window(tmp_path):
+    from coworker.server.manager import _recent_files
+
+    ws = tmp_path / "run-ws2"
+    ws.mkdir()
+    stale = ws / "旧文件.txt"
+    stale.write_text("old", encoding="utf-8")
+    old_time = time.time() - 3600
+    os.utime(stale, (old_time, old_time))
+
+    since = time.time()
+    fresh = ws / "新文件.txt"
+    fresh.write_text("new", encoding="utf-8")
+
+    names = set(_recent_files(str(ws), since=since))
+    assert "新文件.txt" in names
+    assert "旧文件.txt" not in names
+
+
+def test_recent_files_stops_within_budget_on_a_wide_tree(tmp_path):
+    """Same recipe as `test_the_sweep_stops_at_its_budget_instead_of_walking_a_monorepo`:
+    patch the sweep's own budget constants small and confirm a deep file drops out of
+    reach — proof `_recent_files` really runs through the shared, budgeted walk and not a
+    plain unbounded `rglob` any more."""
+    import coworker.server.manager as manager_module
+    from coworker.server.manager import _recent_files
+
+    ws = tmp_path / "run-ws3"
+    deep = ws / "a" / "b" / "c"
+    deep.mkdir(parents=True)
+    since = time.time()
+    (deep / "深层产物.txt").write_text("x", encoding="utf-8")
+
+    assert "a/b/c/深层产物.txt" in [
+        p.replace(os.sep, "/") for p in _recent_files(str(ws), since=since)
+    ]
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(manager_module, "_SWEEP_MAX_DEPTH", 1)
+        names = _recent_files(str(ws), since=since)
+    assert "a/b/c/深层产物.txt" not in [p.replace(os.sep, "/") for p in names]
+
+
+def test_recent_files_missing_workspace_returns_empty(tmp_path):
+    from coworker.server.manager import _recent_files
+
+    assert _recent_files(str(tmp_path / "does-not-exist"), since=time.time()) == []

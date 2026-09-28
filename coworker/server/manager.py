@@ -7503,7 +7503,12 @@ class SessionManager:
                     if _event.type.value == "interrupted":
                         interrupted = True
                 run.result_text = _last_assistant_text(engine.messages)
-                run.artifacts = _recent_files(task.workspace, since=run.started_at)
+                # Off the event loop: `_recent_files` is now a budgeted but still
+                # synchronous directory walk (A5) — running it inline here would block
+                # every other session's turn for as long as the sweep takes.
+                run.artifacts = await asyncio.to_thread(
+                    _recent_files, task.workspace, since=run.started_at
+                )
                 # `engine.run()` also returns normally when the turn FAILED: a provider
                 # error or an answerless turn leaves an `error` / `turn_aborted` notice
                 # and ends the turn. So the verdict is read from the transcript, with the
@@ -7852,6 +7857,10 @@ class SessionManager:
         if run.status == "running":
             messages = self.session_messages(run.session_id)
             run.result_text = _last_assistant_text(messages)
+            # `finalize_manual_run` is a plain `def`, called from a sync FastAPI route
+            # (`automation_run_finalize`) that Starlette already runs in its threadpool —
+            # this call is off the event loop by construction, no `asyncio.to_thread`
+            # needed (nor possible: a plain `def` can't `await`).
             run.artifacts = _recent_files(task.workspace, since=run.started_at)
             run.status, run.error = _run_outcome_from_transcript(messages)
             run.finished_at = _epoch()
@@ -9175,21 +9184,34 @@ def _run_outcome_from_transcript(
 
 
 def _recent_files(workspace: str, *, since: float, limit: int = 20) -> list[str]:
-    """Files in the task workspace modified during the run — the run's artifacts."""
-    out: list[str] = []
+    """Files in the task workspace modified during the run — the run's artifacts.
+
+    Built on the artifacts panel's own budgeted BFS walk (`_sweep_for_windows`), with its
+    suffix filter turned off (`suffixes=None`): a run's artifacts are whatever it touched,
+    not just documents/media, so a `.csv` or a `.py` it wrote must still show up here. This
+    also means the walk now inherits that sweep's other behaviour — it skips
+    `node_modules`/OS data dirs, junctions and dot-named entries, and is bounded by
+    `_SWEEP_MAX_DEPTH` / `_SWEEP_MAX_ENTRIES` / `_SWEEP_TIME_BUDGET` — a deliberate,
+    provable change from the old unbounded `root.rglob("*")` walk this replaces, which ran
+    synchronously (no budget at all) inside the async scheduled/manual-run finalize paths.
+    """
     root = Path(workspace)
     if not root.is_dir():
-        return out
-    for path in root.rglob("*"):
-        if any(part.startswith(".") for part in path.relative_to(root).parts):
-            continue
+        return []
+    found = _sweep_for_windows([root], [(since - 1, time.time())], suffixes=None)
+    dated: list[tuple[float, Path]] = []
+    for path in found:
         try:
-            if path.is_file() and path.stat().st_mtime >= since - 1:
-                out.append(str(path.relative_to(root)))
+            dated.append((path.stat().st_mtime, path))
         except OSError:
             continue
-        if len(out) >= limit:
-            break
+    dated.sort(key=lambda pair: pair[0], reverse=True)  # newest first
+    out: list[str] = []
+    for _mtime, path in dated[:limit]:
+        try:
+            out.append(str(path.relative_to(root)))
+        except ValueError:
+            continue
     return out
 
 
@@ -9374,11 +9396,19 @@ def _is_reparse_dir(entry: os.DirEntry) -> bool:
 
 
 def _sweep_for_windows(
-    roots: list[Path], windows: list[tuple[float, float]]
+    roots: list[Path],
+    windows: list[tuple[float, float]],
+    *,
+    suffixes: Optional[set[str]] = _SESSION_ARTIFACT_SUFFIXES,
 ) -> set[Path]:
-    """Breadth-first, budgeted walk collecting documents whose mtime lands in a window.
+    """Breadth-first, budgeted walk collecting files whose mtime lands in a window.
     Breadth-first on purpose: a script's output usually sits at or near the top of the
-    workspace, so the shallow files are the ones found before a bound trips."""
+    workspace, so the shallow files are the ones found before a bound trips.
+
+    `suffixes` filters by extension (default: the artifacts-panel document/media set);
+    `None` disables the filter entirely — every file counts, matching what `os.walk` + a
+    manual extension check used to do before `_recent_files` was rewritten on top of this
+    walk. Existing callers that don't pass `suffixes` see no behaviour change."""
     from collections import deque
 
     skip = _artifact_skip_dirs()
@@ -9423,8 +9453,8 @@ def _sweep_for_windows(
                         if not entry.is_file(follow_symlinks=False):
                             continue
                         if (
-                            os.path.splitext(entry.name)[1].lower()
-                            not in _SESSION_ARTIFACT_SUFFIXES
+                            suffixes is not None
+                            and os.path.splitext(entry.name)[1].lower() not in suffixes
                         ):
                             continue
                         mtime = entry.stat().st_mtime
