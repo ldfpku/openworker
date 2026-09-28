@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>井下工具返厂检验记录</title>
+<style>
+  :root {
+    --ink: #1a2a6c;
+    --paper-w: 1300px;
+    --paper-h: 1840px;
+    --scene-w: 1500px;
+    --scene-h: 2000px;
+  }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #000;
+  }
+  * { box-sizing: border-box; }
+
+  /* 「整张照片」容器：深色桌面 + 纸张，供 Playwright 截图 */
+  #scene {
+    position: relative;
+    width: var(--scene-w);
+    height: var(--scene-h);
+    overflow: hidden;
+    background:
+      radial-gradient(ellipse at 30% 20%, #4a4438 0%, #33302a 38%, #201e1a 78%, #131210 100%);
+  }
+  /* 桌面一点木纹质感，纯 CSS 渐变条纹，透明度很低，不影响纸面可读性 */
+  #scene::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+      100deg,
+      rgba(255,255,255,0.015) 0px,
+      rgba(255,255,255,0.015) 2px,
+      rgba(0,0,0,0.02) 2px,
+      rgba(0,0,0,0.02) 5px
+    );
+    pointer-events: none;
+  }
+
+  #paper {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: var(--paper-w);
+    height: var(--paper-h);
+    margin-left: calc(var(--paper-w) / -2);
+    margin-top: calc(var(--paper-h) / -2);
+    background:
+      linear-gradient(135deg, rgba(0,0,0,0.05) 0%, rgba(0,0,0,0) 12%, rgba(0,0,0,0) 88%, rgba(0,0,0,0.06) 100%),
+      linear-gradient(#f7f3e9, #f7f3e9);
+    box-shadow: 0 22px 60px rgba(0,0,0,0.55), 0 4px 14px rgba(0,0,0,0.35);
+    border-radius: 2px;
+    padding: 74px 84px 74px 84px;
+    color: #111;
+  }
+
+  .printed {
+    font-family: "SimSun", "NSimSun", serif;
+    color: #111;
+  }
+  .printed-bold {
+    font-family: "SimHei", sans-serif;
+    color: #000;
+  }
+  .hand {
+    font-family: "KaiTi", "STKaiti", "楷体", serif;
+    color: var(--ink);
+    white-space: pre-wrap;
+    display: inline-block;
+    transform-origin: center;
+  }
+
+  /* ---------- 表头 ---------- */
+  .head-top {
+    position: relative;
+    height: 52px;
+  }
+  .brand {
+    position: absolute;
+    left: 0;
+    top: 0;
+    font-size: 26px;
+    font-family: "SimHei", sans-serif;
+    font-weight: bold;
+    letter-spacing: 1px;
+  }
+  .form-no {
+    position: absolute;
+    right: 0;
+    top: 6px;
+    font-size: 20px;
+    font-family: "SimSun", serif;
+  }
+  .title {
+    text-align: center;
+    font-size: 48px;
+    font-family: "SimHei", sans-serif;
+    font-weight: bold;
+    letter-spacing: 6px;
+    margin-top: 14px;
+  }
+  .subtitle {
+    text-align: center;
+    font-size: 19px;
+    font-family: "SimSun", serif;
+    color: #666;
+    margin-top: 14px;
+    letter-spacing: 2px;
+  }
+
+  .divider {
+    border: none;
+    border-top: 2px solid #222;
+    margin: 38px 0;
+  }
+  .divider.thin {
+    border-top: 1px solid #555;
+    margin: 30px 0 38px 0;
+  }
+
+  /* ---------- 字段行（单行栏目） ---------- */
+  .fields-row {
+    display: flex;
+    align-items: baseline;
+    margin-bottom: 42px;
+    gap: 34px;
+  }
+  .field {
+    display: inline-flex;
+    align-items: baseline;
+    white-space: nowrap;
+  }
+  .field .label {
+    font-size: 26px;
+    margin-right: 10px;
+  }
+  .field .blank {
+    display: inline-block;
+    border-bottom: 1.5px solid #333;
+    min-width: 160px;
+    padding: 0 6px 6px 6px;
+    text-align: center;
+    overflow: visible;
+  }
+  .field .blank .hand {
+    font-size: 32px;
+  }
+
+  /* ---------- 多行手写栏（外观检查 / 密封与液压油 / 处理意见） ---------- */
+  .textbox-row {
+    display: flex;
+    align-items: flex-start;
+    margin-bottom: 48px;
+  }
+  .textbox-row .label {
+    font-size: 26px;
+    width: 200px;
+    flex: 0 0 200px;
+    padding-top: 22px;
+  }
+  .textbox-row .box {
+    flex: 1 1 auto;
+    border: 1.5px solid #333;
+    border-radius: 2px;
+    min-height: 120px;
+    padding: 22px 26px;
+    overflow: visible;
+  }
+  .textbox-row .box .hand {
+    font-size: 32px;
+    line-height: 1.9;
+    width: 100%;
+  }
+
+  /* ---------- 震击测试行 ---------- */
+  .shock-row {
+    display: flex;
+    align-items: baseline;
+    margin-bottom: 48px;
+    flex-wrap: nowrap;
+    gap: 28px;
+  }
+  .shock-row .label {
+    font-size: 26px;
+    width: 200px;
+    flex: 0 0 200px;
+  }
+  .shock-row .printed {
+    font-size: 24px;
+  }
+  .shock-row .unit {
+    font-size: 22px;
+    margin-left: 4px;
+    margin-right: 2px;
+  }
+  .shock-row .blank {
+    display: inline-block;
+    border-bottom: 1.5px solid #333;
+    min-width: 100px;
+    padding: 0 6px 6px 6px;
+    text-align: center;
+    overflow: visible;
+  }
+  .shock-row .blank .hand { font-size: 32px; }
+  .shock-row .blank.judge { min-width: 120px; }
+
+  /* ---------- 结论（打勾） ---------- */
+  .conclusion-row {
+    display: flex;
+    align-items: center;
+    margin-bottom: 48px;
+    gap: 46px;
+  }
+  .conclusion-row .label {
+    font-size: 26px;
+    width: 200px;
+    flex: 0 0 200px;
+  }
+  .checkbox-item {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+  }
+  .checkbox-item .box {
+    width: 30px;
+    height: 30px;
+    border: 1.5px solid #222;
+    display: inline-block;
+    margin-right: 12px;
+    position: relative;
+  }
+  .checkbox-item .box .tick {
+    position: absolute;
+    left: -7px;
+    top: -16px;
+    font-size: 46px;
+    line-height: 1;
+    color: var(--ink);
+    transform-origin: center;
+  }
+  .checkbox-item .chk-label {
+    font-size: 26px;
+  }
+
+  /* ---------- 底部：检验员 / 检验日期 ---------- */
+  .footer-row {
+    display: flex;
+    align-items: baseline;
+    margin-top: 66px;
+    gap: 66px;
+  }
+  .footer-row .field .blank { min-width: 180px; }
+
+  /* ---------- 页脚：印刷的填写说明 ---------- */
+  .notes {
+    position: absolute;
+    left: 84px;
+    right: 84px;
+    bottom: 118px;
+    border-top: 1px solid #555;
+    padding-top: 22px;
+    font-size: 20px;
+    line-height: 1.9;
+    color: #333;
+  }
+  .page-foot {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 56px;
+    text-align: center;
+    font-size: 18px;
+    color: #555;
+  }
+
+</style>
+</head>
+<body>
+  <div id="scene">
+    <div id="paper">
+      <div class="head-top">
+        <div class="brand printed-bold">SMJ 斯米伽</div>
+        <div class="form-no printed">表单编号：QR-ZL-017</div>
+      </div>
+      <div class="title printed-bold">井下工具返厂检验记录</div>
+      <div class="subtitle printed">示例数据 · 培训用</div>
+
+      <hr class="divider thin" />
+
+      <div class="fields-row">
+        <span class="field"><span class="label printed">工具编号</span><span class="blank" id="f-tool-id"></span></span>
+        <span class="field"><span class="label printed">工具名称</span><span class="blank" id="f-tool-name"></span></span>
+        <span class="field"><span class="label printed">规格（OD，in）</span><span class="blank" id="f-spec"></span></span>
+      </div>
+      <div class="fields-row">
+        <span class="field"><span class="label printed">客户</span><span class="blank" id="f-customer"></span></span>
+        <span class="field"><span class="label printed">井号</span><span class="blank" id="f-well"></span></span>
+      </div>
+      <div class="fields-row">
+        <span class="field"><span class="label printed">入井日期</span><span class="blank" id="f-date-in"></span></span>
+        <span class="field"><span class="label printed">出井日期</span><span class="blank" id="f-date-out"></span></span>
+        <span class="field"><span class="label printed">累计入井时间（h）</span><span class="blank" id="f-hours"></span></span>
+      </div>
+
+      <hr class="divider" />
+
+      <div class="textbox-row">
+        <span class="label printed">外观检查</span>
+        <div class="box"><span class="hand" id="f-appearance"></span></div>
+      </div>
+      <div class="textbox-row">
+        <span class="label printed">密封与液压油</span>
+        <div class="box"><span class="hand" id="f-seal"></span></div>
+      </div>
+      <div class="shock-row">
+        <span class="label printed">震击测试</span>
+        <span class="printed">上击释放力</span>
+        <span class="blank" id="f-force-up"></span>
+        <span class="unit printed">kN</span>
+        <span class="printed">下击释放力</span>
+        <span class="blank" id="f-force-down"></span>
+        <span class="unit printed">kN</span>
+        <span class="printed">判定</span>
+        <span class="blank judge" id="f-judge"></span>
+      </div>
+
+      <hr class="divider" />
+
+      <div class="conclusion-row">
+        <span class="label printed">结论</span>
+        <span class="checkbox-item"><span class="box" id="cb-rent"></span><span class="chk-label printed">可再租</span></span>
+        <span class="checkbox-item"><span class="box" id="cb-repair"></span><span class="chk-label printed">需维修</span></span>
+        <span class="checkbox-item"><span class="box" id="cb-scrap"></span><span class="chk-label printed">报废</span></span>
+      </div>
+      <div class="textbox-row">
+        <span class="label printed">处理意见</span>
+        <div class="box"><span class="hand" id="f-disposition"></span></div>
+      </div>
+      <div class="footer-row">
+        <span class="field"><span class="label printed">检验员（工号）</span><span class="blank" id="f-inspector"></span></span>
+        <span class="field"><span class="label printed">检验日期</span><span class="blank" id="f-inspect-date"></span></span>
+      </div>
+
+      <div class="notes printed">
+        填写说明：<br />
+        1. 本记录在工具返厂检验完成后当场填写，一支工具一份，字迹须清楚。<br />
+        2. 震击测试在震击测试台上进行，释放力单位为 kN。<br />
+        3. 结论为「需维修」的，维修完成后重新检验，另填一份记录。
+      </div>
+      <div class="page-foot printed">第 1 页 共 1 页</div>
+    </div>
+  </div>
+
+<script>
+  // ---- 三条记录的数据（逐字照规格填写） ----
+  var RECORDS = {
+    "1": {
+      toolId: "YZJ-0417",
+      toolName: "液压震击器",
+      spec: "6-1/2",
+      customer: "客户A",
+      well: "A-101H",
+      dateIn: "2026-07-08",
+      dateOut: "2026-08-19",
+      hours: "312",
+      appearance: "外筒无明显磨损，上下接头螺纹完好，芯轴镀层无划伤。",
+      seal: "密封件完好，无渗漏。液压油清澈，已按规程更换。",
+      forceUp: "420",
+      forceDown: "215",
+      judge: "合格",
+      conclusion: "rent",
+      disposition: "清洗保养后入库待租。",
+      inspector: "Q-017",
+      inspectDate: "2026-08-25",
+      paperRotate: -1.2
+    },
+    "2": {
+      toolId: "YZJ-0432",
+      toolName: "液压震击器",
+      spec: "4-3/4",
+      customer: "客户D",
+      well: "D-5",
+      dateIn: "2026-06-20",
+      dateOut: "2026-08-02",
+      hours: "286",
+      appearance: "外筒有轻微磨痕，下接头螺纹有轻微粘扣，已修磨。",
+      seal: "上腔密封渗漏，液压油发黑有杂质。需更换全套密封件。",
+      forceUp: "",
+      forceDown: "",
+      judge: "",
+      conclusion: "repair",
+      disposition: "更换密封件和液压油后重新检验。",
+      inspector: "Q-012",
+      inspectDate: "2026-08-06",
+      paperRotate: 0.8
+    },
+    "3": {
+      toolId: "YZJ-0502",
+      toolName: "液压震击器",
+      spec: "8",
+      customer: "客户F",
+      well: "F-3H",
+      dateIn: "2026-05-11",
+      dateOut: "2026-08-27",
+      hours: "655",
+      appearance: "外筒偏磨严重，最薄处壁厚低于下限；芯轴镀层大面积剥落。",
+      seal: "密封件全部老化开裂，液压油乳化。",
+      forceUp: "310",
+      forceDown: "140",
+      judge: "不合格",
+      conclusion: "scrap",
+      disposition: "外筒壁厚超限，按报废流程处理。",
+      inspector: "Q-017",
+      inspectDate: "2026-09-01",
+      paperRotate: -0.5
+    }
+  };
+
+  // ---- 固定种子的确定性伪随机（同一 key 每次渲染结果一致） ----
+  function seedFromString(s) {
+    var h = 1779033703 ^ s.length;
+    for (var i = 0; i < s.length; i++) {
+      h = Math.imul(h ^ s.charCodeAt(i), 3432918353);
+      h = (h << 13) | (h >>> 19);
+    }
+    return (h ^ (h >>> 16)) >>> 0;
+  }
+  function mulberry32(seed) {
+    var a = seed;
+    return function () {
+      a |= 0;
+      a = (a + 0x6d2b79f5) | 0;
+      var t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function jitterFor(key) {
+    var rand = mulberry32(seedFromString(key));
+    var rot = (rand() * 2 - 1) * 1.0; // -1deg .. 1deg
+    var dx = (rand() * 2 - 1) * 1.8; // -1.8px .. 1.8px
+    var dy = (rand() * 2 - 1) * 1.8;
+    return "translate(" + dx.toFixed(2) + "px, " + dy.toFixed(2) + "px) rotate(" + rot.toFixed(2) + "deg)";
+  }
+
+  function setHand(id, recordId, text) {
+    var el = document.getElementById(id);
+    el.textContent = "";
+    if (!text) return;
+    // 填写位（.blank）本身是印刷的下划线，手写字放进它里面的 .hand 子元素；
+    // 多行栏的元素自己就带 .hand。
+    var target = el;
+    if (!el.classList.contains("hand")) {
+      target = document.createElement("span");
+      target.className = "hand";
+      el.appendChild(target);
+    }
+    target.textContent = text;
+    target.style.transform = jitterFor(recordId + ":" + id);
+  }
+
+  function render(recordId) {
+    var r = RECORDS[recordId] || RECORDS["1"];
+    document.getElementById("paper").style.transform = "rotate(" + r.paperRotate + "deg)";
+
+    setHand("f-tool-id", recordId, r.toolId);
+    setHand("f-tool-name", recordId, r.toolName);
+    setHand("f-spec", recordId, r.spec);
+    setHand("f-customer", recordId, r.customer);
+    setHand("f-well", recordId, r.well);
+    setHand("f-date-in", recordId, r.dateIn);
+    setHand("f-date-out", recordId, r.dateOut);
+    setHand("f-hours", recordId, r.hours);
+    setHand("f-appearance", recordId, r.appearance);
+    setHand("f-seal", recordId, r.seal);
+    setHand("f-force-up", recordId, r.forceUp);
+    setHand("f-force-down", recordId, r.forceDown);
+    setHand("f-judge", recordId, r.judge);
+    setHand("f-disposition", recordId, r.disposition);
+    setHand("f-inspector", recordId, r.inspector);
+    setHand("f-inspect-date", recordId, r.inspectDate);
+
+    var map = { rent: "cb-rent", repair: "cb-repair", scrap: "cb-scrap" };
+    var selectedBoxId = map[r.conclusion];
+    var tick = document.createElement("span");
+    tick.className = "hand tick";
+    tick.textContent = "✓"; // ✓
+    tick.style.transform = jitterFor(recordId + ":tick");
+    document.getElementById(selectedBoxId).appendChild(tick);
+  }
+
+  var params = new URLSearchParams(window.location.search);
+  var id = params.get("id") || "1";
+  render(id);
+</script>
+</body>
+</html>

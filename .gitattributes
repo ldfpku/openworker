@@ -22,6 +22,9 @@
 *.otf binary
 *.mp4 binary
 *.pdf binary
+*.xlsx binary
+*.xlsm binary
+*.docx binary
 *.zip binary
 *.tar binary
 *.gz binary
