@@ -13,8 +13,9 @@ import {
 } from "../api";
 import { ConnectorBadge } from "../connectors/ConnectorIcon";
 import { AddConnectionModal } from "./connectors/AddConnectionModal";
-import { ChannelPicker } from "./SubscriptionsChip";
+import { ChannelPicker, isSlackChannel } from "./SubscriptionsChip";
 import { SelectMenu } from "./SelectMenu";
+import { TaskFolderField } from "./TaskFolderField";
 import { FREQ_OPTIONS, toCron } from "../schedule";
 
 // The Automations quickstart (UX-DECISIONS §29): ONE template system. The former onboarding
@@ -44,6 +45,13 @@ interface QuickTemplate {
   needsChannel?: boolean;
   consent?: boolean; // write recipes carry the §25 consent line; reads carry disclosure
   deliver?: boolean; // the delivery-risk check's deliver-to choice
+  // Delivery's own "发送至 ▸ 微信私信" choice gates conns/needsChannel/consent dynamically
+  // instead of the static `conns`/`needsChannel`/`consent` fields above — see
+  // `effectiveConns` etc. below. Only the delivery template sets this.
+  weixinDeliverGate?: boolean;
+  // The work-folder picker (F1/F2): every template shows it and requires a pick before
+  // create, EXCEPT news (it reads the web, not the work folder).
+  noFolder?: boolean;
   day: string;
   time: string;
   instructions: (ctx: { repo: string; channel: string; deliver: "app" | "weixin" }) => string;
@@ -91,12 +99,15 @@ const TEMPLATES: QuickTemplate[] = [
     cadenceKey: "automations.cadence_weekdays",
     conns: [],
     deliver: true,
+    weixinDeliverGate: true,
     day: "weekdays",
     time: "08:30",
-    instructions: ({ deliver }) => {
+    instructions: ({ channel, deliver }) => {
       const gt = getI18n().t;
       return gt("automations.tmpl_delivery_instructions_prefix") +
-        (deliver === "app" ? gt("automations.tmpl_delivery_save") : gt("automations.tmpl_delivery_weixin"));
+        (deliver === "app"
+          ? gt("automations.tmpl_delivery_save")
+          : gt("automations.tmpl_delivery_weixin", { channel }));
     },
   },
   {
@@ -115,6 +126,7 @@ const TEMPLATES: QuickTemplate[] = [
     blurbKey: "automations.tmpl_news_blurb",
     cadenceKey: "automations.cadence_daily",
     conns: [],
+    noFolder: true,
     day: "daily",
     time: "08:00",
     instructions: () => getI18n().t("automations.tmpl_news_instructions"),
@@ -140,6 +152,7 @@ export function AutomationQuickstart({
     title: string;
     instructions: string;
     cron?: string;
+    workspace?: string;
     permissions?: { tool: string; target: string; access: "read" | "write" }[];
   }) => void;
 }) {
@@ -163,6 +176,7 @@ export function AutomationQuickstart({
   const [time, setTime] = useState("09:00");
   const [deliver, setDeliver] = useState<"app" | "weixin">("app");
   const [consent, setConsent] = useState(true);
+  const [folder, setFolder] = useState("");
   // The weixin connect row's target: its sign-in is the LOCAL QR modal (auth: "qr"), so the
   // broker flow below — and its cloud sign-in gate — must never see it.
   const [qrConn, setQrConn] = useState<Connector | null>(null);
@@ -189,14 +203,26 @@ export function AutomationQuickstart({
   }, [pickedKey]);
 
   const connState = (name: string) => connectors.find((c) => c.name === name);
-  const allConnected = !picked || picked.conns.every((c) => connState(c.name)?.connected);
+  // Delivery's "发送至 ▸ 微信私信" choice needs the SAME connect/recipient/consent gating as
+  // inspection/quality once picked — it just doesn't know that until `deliver` is read, so
+  // these "effective" values stand in for `picked.conns`/`needsChannel`/`consent` everywhere
+  // below instead of the static template fields.
+  const weixinGate = !!(picked?.weixinDeliverGate && deliver === "weixin");
+  const effectiveConns = weixinGate
+    ? [{ name: "weixin", whyKey: "automations.why_weixin_delivers" }]
+    : picked?.conns ?? [];
+  const effectiveNeedsChannel = !!(picked?.needsChannel || weixinGate);
+  const effectiveConsent = !!(picked?.consent || weixinGate);
+  const needsFolder = !!picked && !picked.noFolder;
+  const allConnected = !picked || effectiveConns.every((c) => connState(c.name)?.connected);
   // §25 consent line shows the HUMAN name (owner catch 2026-07-14: it echoed the raw
   // slack:T…/C… target). Names come from a picker pick (remembered per address) or the
   // recent list; a hand-typed raw address stays raw — we never guess.
   const [picked_names, setPickedNames] = useState<Record<string, { name: string; workspace?: string }>>({});
   const pickedInfo = picked_names[channel];
   const channelName = pickedInfo?.name || recent.find((c) => c.channel === channel)?.name;
-  const channelLabel = channelName ? `#${channelName}` : channel;
+  // Only Slack calls its targets "channels" (F5): a WeChat recipient shows their plain name.
+  const channelLabel = channelName ? (isSlackChannel(channel) ? `#${channelName}` : channelName) : channel;
   const channelWorkspace = pickedInfo?.workspace;
 
   // The poll flipping a row to ✓ is what ends its waiting state.
@@ -217,6 +243,7 @@ export function AutomationQuickstart({
     setDay(tpl.day);
     setTime(tpl.time);
     setConsent(true);
+    setFolder("");
     setConnFlow(null);
   };
 
@@ -277,8 +304,9 @@ export function AutomationQuickstart({
       title: t(picked.titleKey),
       instructions: picked.instructions({ repo, channel, deliver }),
       cron: toCron(time, day),
+      workspace: needsFolder ? folder : undefined,
       permissions:
-        picked.consent && consent && channel
+        effectiveConsent && consent && channel
           ? [{ tool: "send_message", target: channel, access: "write" }]
           : [],
     });
@@ -286,14 +314,16 @@ export function AutomationQuickstart({
 
   const gateHint = !allConnected
     ? t("automations.gate_connect", {
-        names: picked?.conns
+        names: effectiveConns
           .filter((c) => !connState(c.name)?.connected)
           .map((c) => connState(c.name)?.title || c.name)
           .join(t("automations.gate_join")),
       })
-    : picked?.needsChannel && !channel
+    : effectiveNeedsChannel && !channel
       ? t("automations.gate_pick_channel")
-      : "";
+      : needsFolder && !folder
+        ? t("automations.folder_gate_hint")
+        : "";
 
   const label = "block text-[12px] text-muted mt-3 mb-1";
   const input =
@@ -360,11 +390,11 @@ export function AutomationQuickstart({
             </span>
             <span className="text-[14px] font-semibold">{t(picked.titleKey)}</span>
             <span className="ml-auto text-[12px] text-faint max-sm:hidden">
-              {picked.conns.length ? t("automations.conns_delivery_sched") : t("automations.delivery_sched")} ·{" "}
+              {effectiveConns.length ? t("automations.conns_delivery_sched") : t("automations.delivery_sched")} ·{" "}
               {t(picked.cadenceKey)}
             </span>
           </div>
-          {picked.conns.map(({ name, whyKey }) => {
+          {effectiveConns.map(({ name, whyKey }) => {
             const c = connState(name);
             const flow = connFlow?.name === name ? connFlow : null;
             return (
@@ -464,7 +494,10 @@ export function AutomationQuickstart({
           )}
 
           {allConnected && (
-            <div className={picked.conns.length ? "bg-paper rounded-xl px-4 py-3.5 mt-3" : ""} data-testid="ob-recipe">
+            <div className={effectiveConns.length ? "bg-paper rounded-xl px-4 py-3.5 mt-3" : ""} data-testid="ob-recipe">
+              {needsFolder && (
+                <TaskFolderField value={folder} onChange={setFolder} required />
+              )}
               {picked.needsRepo && (
                 <>
                   <label className={label}>{t("automations.repository")}</label>
@@ -477,7 +510,7 @@ export function AutomationQuickstart({
                   />
                 </>
               )}
-              {picked.needsChannel && (
+              {effectiveNeedsChannel && (
                 <>
                   <label className={label}>{t("automations.post_to_channel")}</label>
                   <div data-testid="ob-channel">
@@ -527,7 +560,7 @@ export function AutomationQuickstart({
                   />
                 </>
               )}
-              {picked.consent ? (
+              {effectiveConsent ? (
                 <label className="flex items-start gap-2.5 mt-3.5 text-[13px] text-muted select-none">
                   <input
                     type="checkbox"
@@ -545,7 +578,7 @@ export function AutomationQuickstart({
                     {t("automations.consent_suffix")}
                   </span>
                 </label>
-              ) : picked.conns.length > 0 ? (
+              ) : effectiveConns.length > 0 ? (
                 <p className="text-[13px] text-muted mt-3">
                   {t("automations.read_only_pref")} <b className="text-ink">{t("automations.reads")}</b> {t("automations.read_only_suff")}
                 </p>
@@ -571,7 +604,12 @@ export function AutomationQuickstart({
                 (gateHint ? "" : "ml-auto ") +
                 "px-5 py-2 rounded-full bg-ink text-panel text-[13px] disabled:opacity-40"
               }
-              disabled={busy || !allConnected || (picked.needsChannel && !channel)}
+              disabled={
+                busy ||
+                !allConnected ||
+                (effectiveNeedsChannel && !channel) ||
+                (needsFolder && !folder)
+              }
               onClick={create}
               data-testid="ob-create"
             >
