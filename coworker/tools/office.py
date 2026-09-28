@@ -38,12 +38,16 @@ from __future__ import annotations
 import os
 import re
 import unicodedata
+import zipfile
 from datetime import date, datetime
+from datetime import time as dtime
 from pathlib import Path
 from typing import Any, Callable, Optional
 from uuid import uuid4
 
 import aisuite as ai
+
+from .files import resolve_read_path
 
 # -- limits ---------------------------------------------------------------------
 _MAX_SHEETS = 50
@@ -61,6 +65,54 @@ _FORMULA_WIDTH = 12  # a formula's TEXT is not what the reader sees; don't size 
 _EXCEL_WIDTH_MAX = 255  # Excel's own ceiling; a wider value is rejected on open
 
 _HEADER_FILL = "FFDDEBF7"
+
+# -- read-side limits -------------------------------------------------------------
+# `read_spreadsheet` streams via openpyxl's read_only mode, so an ordinary-sized workbook
+# never loads fully into memory — but the FILE itself still has to be opened and its zip
+# central directory parsed before any of that streaming starts, and a hostile or merely
+# huge attachment can make that step itself the cost. Capping the file's bytes up front is
+# the cheap, unconditional guard; the row/column caps below bound what one CALL returns,
+# once the file has already passed that gate.
+_MAX_READ_BYTES = 50 * 1024 * 1024  # 50 MB
+_DEFAULT_READ_ROWS = 300  # default AND ceiling — read_file's max_lines pattern
+_MAX_ROW_CELLS = 200  # guards a bogus wide `dimension` (one stray value out in column XFD)
+_MAX_CELL_DISPLAY_CHARS = 200
+_MAX_ROW_DISPLAY_CHARS = 1_500
+
+_READ_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "read_spreadsheet",
+        "description": (
+            "Read an Excel .xlsx/.xlsm workbook (openpyxl; no Excel needed). Returns "
+            "every sheet's name and size, then the chosen sheet's rows as numbered lines "
+            "('   12\\tA\\tB\\t...') so you can cite 「第 N 行」. Windowed: pass start_row "
+            "to continue past the default window. Formulas show their last-saved value."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "File path, relative to the workspace.",
+                },
+                "sheet": {
+                    "type": "string",
+                    "description": "Sheet name (default: the workbook's active sheet).",
+                },
+                "start_row": {
+                    "type": "integer",
+                    "description": "First row to read, 1-based (default 1).",
+                },
+                "max_rows": {
+                    "type": "integer",
+                    "description": f"How many rows (default {_DEFAULT_READ_ROWS}).",
+                },
+            },
+            "required": ["path"],
+        },
+    },
+}
 
 _SCHEMA = {
     "type": "function",
@@ -1126,3 +1178,298 @@ def office_tools(workspace: str, roots: Optional[list] = None) -> list:
     from coworker.tools.document import document_tools
 
     return [write_spreadsheet, *document_tools(workspace, roots)]
+
+
+# -- reading ----------------------------------------------------------------------------
+#
+# `read_spreadsheet` is the answer to a gap `write_spreadsheet` opened rather than closed:
+# the agent can now WRITE a real .xlsx, but `read_file` reads text with `errors="replace"`,
+# so a workbook comes back as zip bytes wearing UTF-8 clothes. Before this, the model's only
+# way to see what it (or the user) had written was `run_shell` + Python/PowerShell — which
+# needs approval, and in an unattended scheduled run every approval parks in the Inbox and
+# suspends the automation until a human clicks it.
+#
+# openpyxl's `read_only=True` mode streams the sheet's XML via SAX rather than building the
+# in-memory cell grid `write_spreadsheet` needs to build one, so this shares almost nothing
+# with the write path below except the path-containment rule (`resolve_read_path`, imported
+# from `tools/files.py` — identical to `read_file`'s, deliberately NOT the write side's
+# `resolve_target`: a READ may come from a read-only root, a write may not) and the
+# atomic-write module's general shape of "clear error, never a traceback".
+
+
+def _is_blank_cell(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and value.strip() == "")
+
+
+def _format_read_cell(value: Any) -> str:
+    """One cell's display text. Mirrors `_coerce`'s own idea of what a number/date looks
+    like, in reverse: this is read, not write, so there is no user-typed string to match —
+    only a python value openpyxl already decoded — but the same goals apply (no float
+    noise, ISO dates, nothing that silently loses precision)."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):  # before int: bool IS an int in python
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if value != value or abs(value) == float("inf"):  # NaN / inf: nothing else to show
+            return str(value)
+        if value == int(value) and abs(value) < 1e15:
+            return str(int(value))
+        return f"{value:.10g}"  # Excel's own displayed precision, without float noise
+    if isinstance(value, datetime):
+        return (
+            value.strftime("%Y-%m-%d %H:%M")
+            if (value.hour or value.minute or value.second)
+            else value.strftime("%Y-%m-%d")
+        )
+    if isinstance(value, date):
+        return value.strftime("%Y-%m-%d")
+    if isinstance(value, dtime):
+        return (
+            value.strftime("%H:%M:%S") if value.second else value.strftime("%H:%M")
+        )
+    text = str(value)
+    if len(text) > _MAX_CELL_DISPLAY_CHARS:
+        text = text[:_MAX_CELL_DISPLAY_CHARS] + "…"
+    # The cells of one row are joined with tabs below; a tab or newline INSIDE a cell would
+    # be indistinguishable from the column/row separator it sits next to.
+    return text.replace("\t", " ").replace("\n", " ").replace("\r", "")
+
+
+def _sheet_dims(ws: Any) -> tuple[int, int]:
+    """(max_row, max_column), or (0, 0) for a sheet whose `<dimension>` openpyxl could not
+    read (a file saved by a writer that omits it) rather than raising past this call."""
+    try:
+        return int(ws.max_row or 0), int(ws.max_column or 0)
+    except Exception:  # pragma: no cover - defensive; never seen, never a traceback either
+        return 0, 0
+
+
+def spreadsheet_read_tools(workspace: str, roots: Optional[list] = None) -> list:
+    """`read_spreadsheet`, rooted like `read_file`: relative paths resolve against
+    `workspace`, absolute paths must land in one of `roots` (read-only roots included —
+    unlike the write side). `roots` is held BY REFERENCE and re-read per call, same
+    reasoning as everywhere else in this module.
+    """
+    primary = Path(workspace).resolve()
+
+    def read_spreadsheet(
+        path: str,
+        sheet: Optional[str] = None,
+        start_row: int = 1,
+        max_rows: int = _DEFAULT_READ_ROWS,
+    ) -> dict[str, Any]:
+        """Read an Excel workbook. Returns every sheet's name/size, then the chosen
+        sheet's rows as numbered, tab-separated lines. `sheet` defaults to the active
+        sheet; `start_row`/`max_rows` window a large sheet."""
+        suffix = Path(str(path).rstrip(" .")).suffix.lower()
+        if suffix not in (".xlsx", ".xlsm"):
+            if suffix == ".xls":
+                return {
+                    "error": (
+                        ".xls is the old binary Excel format; read_spreadsheet can only "
+                        "read .xlsx/.xlsm. Ask the user to save it as .xlsx first."
+                    )
+                }
+            return {"error": f"path must end in .xlsx or .xlsm (got: {path})"}
+
+        target, home, err = resolve_read_path(path, primary, roots)
+        if err:
+            return {"error": err}
+        if not target.is_file():
+            return {"error": f"not a file: {path}"}
+        try:
+            size = target.stat().st_size
+        except OSError as exc:
+            return {"error": f"could not read {path}: {exc}"}
+        if size > _MAX_READ_BYTES:
+            return {
+                "error": (
+                    f"{path} is {size:,} bytes, over the {_MAX_READ_BYTES:,}-byte limit "
+                    "read_spreadsheet accepts"
+                )
+            }
+
+        from openpyxl import load_workbook
+        from openpyxl.utils.exceptions import InvalidFileException
+
+        try:
+            workbook = load_workbook(str(target), read_only=True, data_only=True)
+        except InvalidFileException as exc:
+            return {"error": f"could not open {path}: {exc}"}
+        except (zipfile.BadZipFile, KeyError, OSError, ValueError) as exc:
+            return {
+                "error": (
+                    f"could not open {path} as an Excel workbook — it may be "
+                    f"password-protected or corrupted ({exc})"
+                )
+            }
+        except Exception as exc:  # never a traceback for a file the model merely named
+            return {"error": f"could not open {path} as an Excel workbook: {exc}"}
+
+        try:
+            sheetnames = list(workbook.sheetnames)
+            if not sheetnames:
+                return {"error": f"{path} has no sheets"}
+            if sheet is None:
+                active = workbook.active
+                sheet_name = active.title if active is not None else sheetnames[0]
+            else:
+                wanted = str(sheet)
+                if wanted in sheetnames:
+                    sheet_name = wanted
+                else:
+                    match = next(
+                        (n for n in sheetnames if n.casefold() == wanted.casefold()),
+                        None,
+                    )
+                    if match is None:
+                        return {
+                            "error": (
+                                f'no sheet named "{wanted}" in {path} — available: '
+                                + ", ".join(sheetnames)
+                            )
+                        }
+                    sheet_name = match
+
+            worksheet = workbook[sheet_name]
+            total_rows, total_cols = _sheet_dims(worksheet)
+
+            start = start_row if isinstance(start_row, int) and start_row > 0 else 1
+            n = (
+                max_rows
+                if isinstance(max_rows, int) and max_rows > 0
+                else _DEFAULT_READ_ROWS
+            )
+            n = min(n, _DEFAULT_READ_ROWS)
+            end = min(start + n - 1, total_rows) if total_rows > 0 else start - 1
+
+            raw_rows: list[tuple] = []
+            display_lines: list[str] = []
+            if end >= start:
+                for offset, raw in enumerate(
+                    worksheet.iter_rows(min_row=start, max_row=end, values_only=True)
+                ):
+                    row_no = start + offset
+                    raw_rows.append(raw)
+                    cells = list(raw)
+                    last = len(cells)
+                    while last > 0 and _is_blank_cell(cells[last - 1]):
+                        last -= 1
+                    cells = cells[:last]
+                    col_truncated = len(cells) > _MAX_ROW_CELLS
+                    if col_truncated:
+                        cells = cells[:_MAX_ROW_CELLS]
+                    row_text = "\t".join(_format_read_cell(v) for v in cells)
+                    if col_truncated:
+                        row_text += "\t…(more columns)"
+                    if len(row_text) > _MAX_ROW_DISPLAY_CHARS:
+                        row_text = row_text[:_MAX_ROW_DISPLAY_CHARS] + "…(row truncated)"
+                    display_lines.append(f"{row_no:>6}\t{row_text}")
+
+            # Formulas: `data_only=True` returns the value Excel/WPS last CACHED for a
+            # formula cell. A workbook this app itself wrote with openpyxl (or any writer
+            # that never recalculated) has no cache, and the cell reads back as None —
+            # indistinguishable from a genuinely empty cell without a second look. Only
+            # taken when the window actually has a None in it, and only over that same
+            # window, so the common case (a workbook someone opened and saved in Excel)
+            # never pays for it.
+            formula_no_cache = 0
+            if raw_rows and any(v is None for row in raw_rows for v in row):
+                try:
+                    formula_wb = load_workbook(
+                        str(target), read_only=True, data_only=False
+                    )
+                    try:
+                        formula_ws = formula_wb[sheet_name]
+                        for disp_row, raw_row in zip(
+                            raw_rows,
+                            formula_ws.iter_rows(
+                                min_row=start, max_row=end, values_only=True
+                            ),
+                        ):
+                            for dv, rv in zip(disp_row, raw_row):
+                                if (
+                                    dv is None
+                                    and isinstance(rv, str)
+                                    and rv.startswith("=")
+                                ):
+                                    formula_no_cache += 1
+                    finally:
+                        formula_wb.close()
+                except Exception:
+                    pass  # best-effort note; never fail the read over it
+
+            overview_lines = [f"Workbook: {len(sheetnames)} sheet(s)"]
+            for name in sheetnames:
+                r, c = _sheet_dims(workbook[name])
+                marker = " (active)" if name == sheet_name else ""
+                overview_lines.append(f"  {name}{marker}: {r} row(s) x {c} col(s)")
+            overview = "\n".join(overview_lines)
+
+            if end >= start:
+                sheet_header = f'Sheet "{sheet_name}": rows {start}-{end} of {total_rows}'
+                body = "\n".join(display_lines)
+            elif total_rows == 0:
+                sheet_header = f'Sheet "{sheet_name}": empty'
+                body = ""
+            else:
+                sheet_header = (
+                    f'Sheet "{sheet_name}": no rows in range (sheet has {total_rows} '
+                    "row(s))"
+                )
+                body = ""
+            content = f"{overview}\n\n{sheet_header}\n{body}".rstrip()
+
+            result: dict[str, Any] = {
+                "path": str(target.relative_to(home)) if home == primary else str(target),
+                "sheet": sheet_name,
+                "start_row": start,
+                "end_row": end if end >= start else start - 1,
+                "total_rows": total_rows,
+                "total_cols": total_cols,
+                "content": content,
+            }
+            notes: list[str] = []
+            if end < total_rows:
+                notes.append(
+                    f"showing rows {start}-{end} of {total_rows}; call again with "
+                    f"start_row={end + 1} to continue"
+                )
+            if formula_no_cache:
+                notes.append(
+                    f"{formula_no_cache} formula cell(s) in this window have no cached "
+                    "value (the file wasn't saved by Excel/WPS) and show as empty"
+                )
+            if notes:
+                result["note"] = " ".join(notes)
+            return result
+        finally:
+            workbook.close()
+
+    read_spreadsheet.__name__ = "read_spreadsheet"
+    read_spreadsheet.__doc__ = _READ_SCHEMA["function"]["description"]
+    read_spreadsheet.__aisuite_tool_metadata__ = ai.ToolMetadata(
+        name="read_spreadsheet",
+        category="filesystem",
+        risk_level="low",
+        capabilities=["read"],
+        requires_approval=False,
+    )
+    read_spreadsheet.__coworker_schema__ = _READ_SCHEMA
+    return [read_spreadsheet]
+
+
+def office_read_tools(workspace: str, roots: Optional[list] = None) -> list:
+    """`read_spreadsheet` and `read_document` — the read-side counterpart to
+    `office_tools`, kept as a SEPARATE function (not folded into `office_tools`) because
+    `tests/test_office_tools.py` and `tests/test_document_tool.py` pin `office_tools`'s
+    return shape to exactly `[write_spreadsheet, write_document]`. `agent.py` composes the
+    two into the SAME `load_office_tools` loader, so the model finds every Office tool
+    behind one call regardless of which function built it.
+    """
+    from coworker.tools.document import document_read_tools
+
+    return [*spreadsheet_read_tools(workspace, roots), *document_read_tools(workspace, roots)]

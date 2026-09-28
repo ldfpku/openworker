@@ -53,11 +53,49 @@ from coworker.tools.office import (
     root_label,
 )
 
+from .files import resolve_read_path
+
 # -- limits ---------------------------------------------------------------------
 _MAX_MARKDOWN_CHARS = 2_000_000
 _MAX_TABLE_ROWS = 5_000  # one table
 _MAX_LIST_DEPTH = 3  # Word ships list styles for three levels; deeper is clamped
 _MAX_HEADING_LEVEL = 4  # h5/h6 render as h4 — a report with six levels has a structure bug
+
+# -- read-side limits -------------------------------------------------------------
+_MAX_READ_BYTES = 50 * 1024 * 1024  # 50 MB — same reasoning as tools/office.py
+_DEFAULT_READ_BLOCKS = 200  # default AND ceiling — read_file's max_lines pattern
+_MAX_READ_LINE_CHARS = 1_000
+
+_READ_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "read_document",
+        "description": (
+            "Read a Word .docx/.docm document (python-docx; no Word needed). Returns its "
+            "body in document order as numbered lines ('   12\\ttext') so you can cite "
+            "paragraphs by number: headings prefixed with #, list items with -/N., tables "
+            "as pipe rows. Windowed: pass start to continue past the default window."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "File path, relative to the workspace.",
+                },
+                "start": {
+                    "type": "integer",
+                    "description": "First block to read, 1-based (default 1).",
+                },
+                "max_blocks": {
+                    "type": "integer",
+                    "description": f"How many blocks (default {_DEFAULT_READ_BLOCKS}).",
+                },
+            },
+            "required": ["path"],
+        },
+    },
+}
 
 # -- the office look ------------------------------------------------------------
 _BODY_EASTASIA = "宋体"
@@ -1305,3 +1343,238 @@ def document_tools(workspace: str, roots: Optional[list] = None) -> list:
     )
     write_document.__coworker_schema__ = _SCHEMA
     return [write_document]
+
+
+# -- reading ------------------------------------------------------------------------------
+#
+# `read_document` closes the gap `write_document` opened: the agent can write a real .docx,
+# but `read_file` reads it as text with `errors="replace"` — zip bytes wearing UTF-8
+# clothes. This walks the SAME body `document.iter_inner_content()` gives in document
+# order and renders it back to the flat, numbered, markdown-ish lines the model can cite by
+# number, windowed exactly like `read_file`. It shares nothing with the WRITER above except
+# `resolve_read_path` (imported from `tools/files.py`, identical to `read_file`'s own
+# containment rule — deliberately not the write side's `prepare_target`, since a read may
+# come from a read-only root) — rendering Markdown INTO OOXML and rendering OOXML back to
+# text are different enough problems that sharing code between them would mean threading
+# one through the other's assumptions for no real gain.
+
+
+def _heading_level(style_name: str) -> Optional[int]:
+    """`#`-count for a paragraph's style, or None if it isn't a heading. Recognises the
+    built-in "Title" / "Heading N" names — what `write_document`'s own office look uses,
+    and what Word itself names them in an untouched document. A custom-named heading style
+    (a translated template, a corporate style guide) will not be recognised as one; there
+    is no reliable structural signal for "heading" short of `w:outlineLvl`, which most
+    custom styles don't set either."""
+    name = (style_name or "").strip()
+    if name == "Title":
+        return 1
+    match = re.match(r"^Heading (\d+)$", name)
+    return min(int(match.group(1)), 6) if match else None
+
+
+def _list_marker(paragraph: Any, style_name: str, counters: dict[Any, int]) -> Optional[str]:
+    """"- " / "N. " for a list-item paragraph, or None for an ordinary one.
+
+    A real signal (`w:numPr` on the paragraph) is checked first — that is what makes a
+    paragraph a list item regardless of what its style happens to be named. The style name
+    is the fallback for a paragraph that carries the intent (`List Bullet`/`List Number`,
+    what `write_document` itself produces) without `w:numPr` surviving some other editor's
+    round trip. Numbered vs bulleted is a name heuristic either way — OOXML's real answer
+    (the abstract numbering's `w:numFmt`) is what `write_document`'s OWN `_abstract_num_for`
+    resolves for the WRITE side, and reading it back would need the same lookup again for a
+    document this app did not write; "Number" in the style name is right for every style
+    Word ships and everything this app's own writer produces, which is the corpus that
+    matters here.
+    """
+    ppr = paragraph._p.pPr
+    has_num_pr = ppr is not None and ppr.numPr is not None
+    name = style_name or ""
+    if not has_num_pr and "List" not in name:
+        return None
+    ordered = "Number" in name
+    if not ordered:
+        return "- "
+    key: Any = name
+    if has_num_pr and ppr.numPr.numId is not None:
+        try:
+            key = int(ppr.numPr.numId.val)
+        except (TypeError, ValueError):
+            key = name
+    counters[key] = counters.get(key, 0) + 1
+    return f"{counters[key]}. "
+
+
+def _clean_cell_text(text: str) -> str:
+    """One table cell's text, made safe for a pipe-table cell: no `|` (the column
+    delimiter), no embedded newline/tab (which would otherwise look like more rows/cells)."""
+    return text.replace("|", "\\|").replace("\n", " ").replace("\t", " ").strip()
+
+
+def _table_lines(table: Any) -> list[str]:
+    """A GFM-ish pipe table: header row, a `---` separator, then the body.
+
+    Merged cells: `table.rows[r].cells` is python-docx's own resolution of the table's
+    grid, and for a HORIZONTAL merge (`gridSpan`) it returns the same `_Cell` — and so the
+    same text — at every grid position the merge covers; that repetition is kept as-is
+    rather than blanked out, because it is what the reader needs to see the row's shape
+    without cross-referencing a separate merge map. A VERTICAL merge's continuation cells
+    (`vMerge` with no content of their own) come back empty the same way `_Cell.text` always
+    would for an empty cell — also kept as-is, for the same reason in reverse: inventing a
+    repeated value the file does not actually carry would be a claim this function has no
+    basis for making.
+    """
+    rows = table.rows
+    if not rows:
+        return []
+    header_cells = [_clean_cell_text(c.text) for c in rows[0].cells]
+    ncols = len(header_cells)
+    out = [
+        "| " + " | ".join(header_cells) + " |",
+        "| " + " | ".join(["---"] * ncols) + " |",
+    ]
+    for row in rows[1:]:
+        cells = [_clean_cell_text(c.text) for c in row.cells]
+        if len(cells) < ncols:
+            cells += [""] * (ncols - len(cells))
+        elif len(cells) > ncols:
+            cells = cells[:ncols]
+        out.append("| " + " | ".join(cells) + " |")
+    return out
+
+
+def _render_document_lines(document: Any) -> list[str]:
+    """The document's body, in order, flattened to one rendered line per paragraph/list
+    item/table row — the unit `read_document`'s numbering and windowing operate on."""
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    lines: list[str] = []
+    counters: dict[Any, int] = {}
+    for item in document.iter_inner_content():
+        if isinstance(item, Paragraph):
+            style_name = item.style.name if item.style is not None else ""
+            text = item.text.strip()
+            level = _heading_level(style_name)
+            if level is not None:
+                lines.append(f"{'#' * level} {text}" if text else "#" * level)
+                continue
+            marker = _list_marker(item, style_name, counters)
+            lines.append((marker + text) if marker is not None else text)
+        elif isinstance(item, Table):
+            lines.extend(_table_lines(item))
+    return lines
+
+
+def document_read_tools(workspace: str, roots: Optional[list] = None) -> list:
+    """`read_document`, rooted like `read_file`: relative paths resolve against
+    `workspace`, absolute paths must land in one of `roots` (read-only roots included).
+    `roots` is held BY REFERENCE and re-read per call, same reasoning as the writer above.
+    """
+    primary = Path(workspace).resolve()
+
+    def read_document(
+        path: str,
+        start: int = 1,
+        max_blocks: int = _DEFAULT_READ_BLOCKS,
+    ) -> dict[str, Any]:
+        """Read a Word document's body in order as numbered lines (headings, paragraphs,
+        list items, tables as pipe rows). `start`/`max_blocks` window a large document."""
+        suffix = Path(str(path).rstrip(" .")).suffix.lower()
+        if suffix not in (".docx", ".docm"):
+            if suffix == ".doc":
+                return {
+                    "error": (
+                        ".doc is the old binary Word format; read_document can only read "
+                        ".docx/.docm. Ask the user to save it as .docx first."
+                    )
+                }
+            return {"error": f"path must end in .docx or .docm (got: {path})"}
+
+        target, home, err = resolve_read_path(path, primary, roots)
+        if err:
+            return {"error": err}
+        if not target.is_file():
+            return {"error": f"not a file: {path}"}
+        try:
+            size = target.stat().st_size
+        except OSError as exc:
+            return {"error": f"could not read {path}: {exc}"}
+        if size > _MAX_READ_BYTES:
+            return {
+                "error": (
+                    f"{path} is {size:,} bytes, over the {_MAX_READ_BYTES:,}-byte limit "
+                    "read_document accepts"
+                )
+            }
+
+        try:
+            from docx import Document
+            from docx.opc.exceptions import PackageNotFoundError
+        except ImportError:  # a build that trimmed the dependency
+            return {
+                "error": (
+                    "this build is missing python-docx, so it cannot read .docx files; "
+                    "ask the user to open the file themselves"
+                )
+            }
+
+        try:
+            document = Document(str(target))
+        except PackageNotFoundError as exc:
+            return {
+                "error": (
+                    f"could not open {path} as a Word document — it may be "
+                    f"password-protected or corrupted ({exc})"
+                )
+            }
+        except Exception as exc:  # never a traceback for a file the model merely named
+            return {"error": f"could not open {path} as a Word document: {exc}"}
+
+        try:
+            lines = _render_document_lines(document)
+        except Exception as exc:  # never a traceback over a document this app didn't write
+            return {"error": f"could not read {path}: {exc}"}
+
+        total = len(lines)
+        start_i = start if isinstance(start, int) and start > 0 else 1
+        n = (
+            max_blocks
+            if isinstance(max_blocks, int) and max_blocks > 0
+            else _DEFAULT_READ_BLOCKS
+        )
+        n = min(n, _DEFAULT_READ_BLOCKS)
+        end_i = min(start_i + n - 1, total) if total > 0 else start_i - 1
+
+        numbered: list[str] = []
+        for i in range(start_i, end_i + 1):
+            text = lines[i - 1]
+            if len(text) > _MAX_READ_LINE_CHARS:
+                text = text[:_MAX_READ_LINE_CHARS] + "…(line truncated)"
+            numbered.append(f"{i:>6}\t{text}")
+
+        result: dict[str, Any] = {
+            "path": str(target.relative_to(home)) if home == primary else str(target),
+            "start": start_i,
+            "end": end_i if end_i >= start_i else start_i - 1,
+            "total_blocks": total,
+            "content": "\n".join(numbered),
+        }
+        if end_i < total:
+            result["note"] = (
+                f"showing blocks {start_i}-{end_i} of {total}; call again with "
+                f"start={end_i + 1} to continue"
+            )
+        return result
+
+    read_document.__name__ = "read_document"
+    read_document.__doc__ = _READ_SCHEMA["function"]["description"]
+    read_document.__aisuite_tool_metadata__ = ai.ToolMetadata(
+        name="read_document",
+        category="filesystem",
+        risk_level="low",
+        capabilities=["read"],
+        requires_approval=False,
+    )
+    read_document.__coworker_schema__ = _READ_SCHEMA
+    return [read_document]
