@@ -24,7 +24,10 @@ _CREATE_SCHEMA = {
             "Create a scheduled automation that re-runs `instructions` on a schedule. Convert "
             "the user's natural-language timing into a cron expression yourself (e.g. "
             "'every day at 7:10pm' → '10 19 * * *'), or pass a one-time `fire_at` ISO datetime. "
-            "The user confirms before it is created."
+            "The user confirms before it is created. Never guess a messaging target: if no "
+            "exact `weixin:` target appears in the conversation, create the task without one "
+            "and tell the user to set the recipient on the automation's own page (「自动化」 ▸ "
+            "that automation ▸ 「发送到微信」)."
         ),
         "parameters": {
             "type": "object",
