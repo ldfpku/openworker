@@ -54,6 +54,40 @@ _SCHEMA = {
 }
 
 
+def resolve_read_path(
+    path: str, root: Path, roots: Optional[list]
+) -> tuple[Optional[Path], Path, Optional[str]]:
+    """(target, home, error) for a READ: relative to `root` (the workspace), or inside any
+    of the session's `roots` (each resolved fresh — see `resolved_paths` — because the list
+    is shared and mutated in place when the user grants a folder mid-session; snapshotting
+    it here is what once made `read_file` blind to a fresh grant, owner-hit 2026-08-31).
+
+    `error` is the exact wording `read_file` has always returned for an out-of-bounds path.
+    `home` is the root `target` ended up under (== `root` for the common case), which is
+    what a caller uses to decide whether to report a path relative to the workspace or an
+    absolute one — see every `result["path"]` built below and in `tools/office.py`.
+
+    Shared by `read_file` and the office readers (`read_spreadsheet`, `read_document`) so
+    the containment rule — the actual security boundary — can never drift between them; a
+    second hand-written copy is a second thing a future edit could get subtly wrong.
+    """
+    target = (root / path).resolve()
+    home = root
+    try:
+        target.relative_to(root)  # keep reads inside the workspace
+    except ValueError:
+        for r in resolved_paths(roots):
+            try:
+                target.relative_to(r)
+                home = r
+                break
+            except ValueError:
+                continue
+        else:
+            return None, root, "path escapes the session's directories"
+    return target, home, None
+
+
 def file_tools(workspace: str, roots: Optional[list] = None) -> list:
     """Windowed read_file rooted at `workspace`. With `roots` (RootDir list), absolute
     paths inside ANY root also resolve — multi-root sessions (universal scratch) address
@@ -79,22 +113,24 @@ def file_tools(workspace: str, roots: Optional[list] = None) -> list:
             else _DEFAULT_MAX_LINES
         )
         n = min(n, _DEFAULT_MAX_LINES)
-        target = (root / path).resolve()
-        home = root
-        try:
-            target.relative_to(root)  # keep reads inside the workspace
-        except ValueError:
-            for r in resolved_paths(roots):
-                try:
-                    target.relative_to(r)
-                    home = r
-                    break
-                except ValueError:
-                    continue
-            else:
-                return {"error": "path escapes the session's directories"}
+        target, home, err = resolve_read_path(path, root, roots)
+        if err:
+            return {"error": err}
         if not target.is_file():
             return {"error": f"not a file: {path}"}
+
+        # A ZIP-container or legacy-binary Office file read as text (errors="replace")
+        # comes back as garbage the model can neither cite nor trust — see `_READERS`
+        # below for why this raises (materialize_tools) rather than returning a dict like
+        # every other error in this function.
+        suffix = _judged_suffix(path)
+        if suffix in _READERS:
+            tool, message = _READERS[suffix]
+            error = ValueError(message)
+            error.materialize_tools = (tool,)
+            raise error
+        if suffix in _LEGACY_READER_MESSAGES:
+            raise ValueError(_LEGACY_READER_MESSAGES[suffix])
 
         selected: list[str] = []
         total = 0
@@ -223,6 +259,47 @@ _register_writer(
         legacy=frozenset(_LEGACY_WORD_SUFFIXES),
     ),
 )
+
+
+# The read-side counterpart: `read_file` opens everything with `errors="replace"`, so a
+# ZIP-container Office file comes back as zip bytes wearing UTF-8 clothes and a legacy
+# binary comes back as literal OLE2 garbage — neither is text the model can cite or trust.
+# Short redirect to the tool that can actually read it, `materialize_tools` bringing that
+# tool into the model's list on the very next round trip (see `_writer_error`'s docstring —
+# same mechanism, read side). `.xlsm`/`.docm` route through the same readers as
+# `.xlsx`/`.docx`: openpyxl and python-docx read macro-enabled workbooks/documents fine,
+# they just cannot be WRITTEN by this app (see `_WRITERS`).
+_READERS: dict[str, tuple[str, str]] = {
+    ".xlsx": (
+        "read_spreadsheet",
+        "this is an Excel workbook; call read_spreadsheet(path=…) instead of read_file.",
+    ),
+    ".xlsm": (
+        "read_spreadsheet",
+        "this is an Excel workbook; call read_spreadsheet(path=…) instead of read_file.",
+    ),
+    ".docx": (
+        "read_document",
+        "this is a Word document; call read_document(path=…) instead of read_file.",
+    ),
+    ".docm": (
+        "read_document",
+        "this is a Word document; call read_document(path=…) instead of read_file.",
+    ),
+}
+# `.xls`/`.doc` are the OLE2 binaries neither openpyxl nor python-docx can read at all —
+# there is no in-app tool to redirect to, only the same save-as-modern-format advice
+# `_writer_error` gives on the write side.
+_LEGACY_READER_MESSAGES: dict[str, str] = {
+    ".xls": (
+        ".xls is the old binary Excel format; read_file and read_spreadsheet can only "
+        "read .xlsx/.xlsm. Ask the user to save it as .xlsx first."
+    ),
+    ".doc": (
+        ".doc is the old binary Word format; read_file and read_document can only read "
+        ".docx/.docm. Ask the user to save it as .docx first."
+    ),
+}
 
 
 def _writer_error(suffix: str) -> ValueError:
