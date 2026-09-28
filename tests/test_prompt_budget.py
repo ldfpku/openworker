@@ -12,7 +12,16 @@ live in tests/test_office_integration.py.
 Round 5 (2026-09-18) is `write_document` joining the SAME loader: the tool itself stays
 deferred, so the only cost is the extra clause naming it in the loader's description
 (302 → 343 chars of loader schema) and the baseline moved 6,241 → 6,282. Its own exposure
-tests live in tests/test_document_integration.py."""
+tests live in tests/test_document_integration.py.
+
+Round 6 (2026-09-28) adds `read_spreadsheet`/`read_document` (tools/office.py,
+tools/document.py) to the SAME `load_office_tools` group — a read was the missing half:
+the agent could write a real .xlsx/.docx but not read one back without `run_shell`, which
+needs approval and stalls an unattended scheduled run. Both readers stay deferred, so the
+only prompt cost is the loader's description growing from "create real Office files" to
+"read and write real Office files" (343 → 344 chars of loader schema, 193 → 194 chars of
+description) — the baseline moved 6,282 → 6,283. Their own exposure tests live in
+tests/test_office_integration.py and tests/test_document_integration.py."""
 
 from __future__ import annotations
 
@@ -181,16 +190,18 @@ def test_instructions_carry_the_dynamic_hint_for_a_bare_workspace_session(tmp_pa
 
 
 def test_fresh_cowork_session_schema_size_stays_within_budget(tmp_path):
-    """Not a golden byte count — a tripwire. Re-measured (2026-09-18, round 5) at 6,282
+    """Not a golden byte count — a tripwire. Re-measured (2026-09-28, round 6) at 6,283
     chars of json.dumps(schemas()) for a fresh Cowork session (workspace only, no
-    messaging/memory configured), up from 6,241 earlier the same day and 5,937 on
-    2026-09-01. All of it is `load_office_tools` (343 chars of schema): the loader stands
-    in for BOTH `write_spreadsheet` (~2,300 chars of schema) and `write_document`
-    (~1,000), so declaring the two tools directly would have cost ten times as much. Round
-    5 added only the clause naming the second tool — +41 chars for a whole extra tool,
-    which is the deferral paying off rather than a new line item. 10% slack absorbs
-    incidental schema wording drift; a real addition to the roster should fail this and
-    prompt a deliberate re-measure, not an accidental one."""
+    messaging/memory configured), up from 6,282 on 2026-09-18 (round 5), 6,241 earlier
+    that same day, and 5,937 on 2026-09-01. All of it is `load_office_tools` (344 chars of
+    schema): the loader now stands in for FOUR tools — `write_spreadsheet` (2,346 chars of
+    schema), `write_document` (1,048), and round 6's `read_spreadsheet` (823) /
+    `read_document` (706) — 4,923 chars declared directly, over 14x the loader's own 344.
+    Round 6 added only one word to the loader's description ("read and write" for
+    "create") — +1 char for two whole extra tools, which is the deferral paying off rather
+    than a new line item. 10% slack absorbs incidental schema wording drift; a real
+    addition to the roster should fail this and prompt a deliberate re-measure, not an
+    accidental one."""
     engine = build_engine(agent=cowork_agent(), workspace=tmp_path, provider=_StubProvider())
     try:
         size = len(json.dumps(engine.registry.schemas()))
