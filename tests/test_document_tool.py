@@ -37,9 +37,11 @@ from coworker.tools import office as office_module
 from coworker.tools.document import (
     _PBDR_SEQ,
     _PPR_SEQ,
+    _READ_SCHEMA,
     _SCHEMA,
     _TBLPR_SEQ,
     _TCPR_SEQ,
+    document_read_tools,
     document_tools,
 )
 from coworker.tools.office import office_tools
@@ -1307,3 +1309,201 @@ def test_importing_the_module_does_not_import_python_docx():
     )
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "False False True"
+
+
+# -- read_document --------------------------------------------------------------------
+#
+# `write_document` writes a real .docx; `read_document` is the other half — the same gap
+# `read_spreadsheet` closes for workbooks (tests/test_office_tools.py), same reason: without
+# it the agent's only way to see a .docx was `run_shell` + Python, which needs approval and
+# stalls an unattended scheduled run in the Inbox. These cover document order, heading/list/
+# table rendering, windowing, and the same error shapes `read_file` already has.
+
+
+def _read_tool(workspace, roots=None):
+    tools = document_read_tools(str(workspace), roots=roots)
+    assert [getattr(t, "__name__", "") for t in tools] == ["read_document"]
+    return tools[0]
+
+
+def _fixture_document(path: Path) -> None:
+    """A document with the shapes a real one has, built with python-docx directly (NOT
+    through `write_document`) — this is what `read_document` has to cope with when it is
+    handed a file Word or WPS produced, not one this app wrote itself: a title, a heading,
+    a paragraph, a bullet list, a numbered list, a second heading, and a 3x3 table with
+    both a horizontal and a vertical merge.
+    """
+    from docx import Document
+
+    doc = Document()
+    doc.add_heading("季度报告", level=0)  # -> "Title" style
+    doc.add_heading("一、概况", level=1)  # -> "Heading 1"
+    doc.add_paragraph("本季度业绩良好。")
+    doc.add_paragraph("要点一", style="List Bullet")
+    doc.add_paragraph("要点二", style="List Bullet")
+    doc.add_paragraph("步骤一", style="List Number")
+    doc.add_paragraph("步骤二", style="List Number")
+
+    table = doc.add_table(rows=3, cols=3)
+    for r in range(3):
+        for c in range(3):
+            table.cell(r, c).text = f"r{r}c{c}"
+    table.cell(0, 0).merge(table.cell(0, 1))  # horizontal merge, header row
+    table.cell(1, 2).merge(table.cell(2, 2))  # vertical merge, last column
+
+    doc.add_heading("二、明细", level=2)  # -> "Heading 2"
+    doc.add_paragraph("最后一段。")
+    doc.save(str(path))
+
+
+def test_the_tool_reads_its_own_schema_and_metadata(tmp_path):
+    tool = _read_tool(tmp_path)
+    assert tool.__coworker_schema__ is _READ_SCHEMA
+    meta = tool.__aisuite_tool_metadata__
+    assert meta.risk_level == "low" and meta.requires_approval is False
+    fn = _READ_SCHEMA["function"]
+    assert fn["parameters"]["required"] == ["path"]
+    assert len(json.dumps(fn)) < 1500  # this schema is NOT behind a loader on its own
+
+
+def test_document_order_headings_paragraph_and_lists(tmp_path):
+    p = tmp_path / "报告.docx"
+    _fixture_document(p)
+    out = _read_tool(tmp_path)(path="报告.docx")
+    assert "error" not in out
+    lines = [line.split("\t", 1)[1] for line in out["content"].splitlines()]
+    assert lines[0] == "# 季度报告"  # Title -> a single #
+    assert lines[1] == "# 一、概况"  # Heading 1 -> a single #, same as write_document's own
+    assert lines[2] == "本季度业绩良好。"
+    assert lines[3] == "- 要点一"
+    assert lines[4] == "- 要点二"
+    assert lines[5] == "1. 步骤一"
+    assert lines[6] == "2. 步骤二"  # the numbered list counts up, not restarting per item
+
+
+def test_table_renders_as_pipe_rows_with_merges_repeated(tmp_path):
+    """The table has 3 physical rows (header + 2 body), so it renders as 4 pipe lines:
+    header, the `---` separator, and two body rows."""
+    p = tmp_path / "报告.docx"
+    _fixture_document(p)
+    out = _read_tool(tmp_path)(path="报告.docx")
+    lines = [line.split("\t", 1)[1] for line in out["content"].splitlines()]
+    table_lines = lines[7:11]
+    # Horizontally merged header cells (col A and col B) both carry the same joined text —
+    # python-docx aliases the merged block's content to every grid position it covers, and
+    # this renderer trusts that rather than trying to deduplicate it (see `_table_lines`).
+    header = table_lines[0]
+    assert header.count("r0c0 r0c1") == 2
+    assert "r0c2" in header
+    assert table_lines[1] == "| --- | --- | --- |"
+    # Vertically merged cells (body rows 1 and 2, last column) repeat the same way.
+    assert "r1c2 r2c2" in table_lines[2]
+    assert "r1c2 r2c2" in table_lines[3]
+    assert "r1c0" in table_lines[2] and "r2c0" in table_lines[3]
+
+
+def test_a_second_heading_after_the_table_keeps_counting_blocks(tmp_path):
+    p = tmp_path / "报告.docx"
+    _fixture_document(p)
+    out = _read_tool(tmp_path)(path="报告.docx")
+    lines = [line.split("\t", 1)[1] for line in out["content"].splitlines()]
+    assert lines[11] == "## 二、明细"  # Heading 2 -> two #s
+    assert lines[12] == "最后一段。"
+    assert out["total_blocks"] == 13
+
+
+def test_windowing_continues_from_the_note(tmp_path):
+    p = tmp_path / "报告.docx"
+    _fixture_document(p)
+    tool = _read_tool(tmp_path)
+
+    first = tool(path="报告.docx", max_blocks=5)
+    assert first["start"] == 1 and first["end"] == 5
+    assert "note" in first and "start=6" in first["note"]
+
+    second = tool(path="报告.docx", start=6, max_blocks=5)
+    assert second["start"] == 6 and second["end"] == 10
+    assert "note" in second and "start=11" in second["note"]
+
+    last = tool(path="报告.docx", start=11, max_blocks=5)
+    assert last["start"] == 11 and last["end"] == 13
+    assert "note" not in last  # nothing left to continue to
+
+
+def test_a_doc_gives_a_save_as_docx_message(tmp_path):
+    p = tmp_path / "旧文档.doc"
+    p.write_bytes(b"not really a doc")  # never opened — the suffix check runs first
+    out = _read_tool(tmp_path)(path="旧文档.doc")
+    assert "error" in out
+    assert "old binary Word format" in out["error"]
+    assert ".docx" in out["error"]
+
+
+def test_a_bad_suffix_is_refused_before_touching_the_filesystem(tmp_path):
+    out = _read_tool(tmp_path)(path="not-a-document.txt")
+    assert "error" in out and ".docx" in out["error"] and ".docm" in out["error"]
+
+
+def test_path_escaping_is_refused_the_same_way_read_file_is(tmp_path):
+    outside = tmp_path.parent / "elsewhere.docx"
+    out = _read_tool(tmp_path)(path=str(outside))
+    assert out == {"error": "path escapes the session's directories"}
+
+
+def test_a_read_only_root_is_still_readable_unlike_the_write_side(tmp_path):
+    ro = tmp_path / "ro"
+    ro.mkdir()
+    p = ro / "只读.docx"
+    _fixture_document(p)
+    out = document_read_tools(
+        str(tmp_path), roots=[{"path": str(ro), "writable": False}]
+    )[0](path=str(p))
+    assert "error" not in out
+    assert out["total_blocks"] == 13
+
+
+def test_a_file_over_the_size_cap_is_refused(tmp_path, monkeypatch):
+    p = tmp_path / "大文档.docx"
+    _fixture_document(p)
+    assert p.stat().st_size > 200  # sanity: the fixture is not trivially small
+    monkeypatch.setattr(document_module, "_MAX_READ_BYTES", 200)
+    out = _read_tool(tmp_path)(path="大文档.docx")
+    assert "error" in out and "200" in out["error"]
+
+
+def test_a_corrupt_file_gives_a_clear_error_never_a_traceback(tmp_path):
+    p = tmp_path / "坏文件.docx"
+    p.write_bytes(b"PK\x03\x04 this is not a real zip payload")
+    out = _read_tool(tmp_path)(path="坏文件.docx")
+    assert "error" in out
+    assert "password-protected or corrupted" in out["error"]
+
+
+def test_a_missing_file_reads_as_not_a_file(tmp_path):
+    out = _read_tool(tmp_path)(path="没有这个文件.docx")
+    assert out == {"error": "not a file: 没有这个文件.docx"}
+
+
+def test_a_docm_reads_the_same_as_docx(tmp_path):
+    """python-docx 1.2.0 opens a macro-enabled document the same as a plain one — verified
+    against the venv directly before writing this (see the PR notes); `read_document`
+    allows the suffix rather than pre-emptively refusing a format it can actually read."""
+    import shutil
+
+    p = tmp_path / "报告.docx"
+    _fixture_document(p)
+    q = tmp_path / "报告.docm"
+    shutil.copyfile(p, q)
+    out = _read_tool(tmp_path)(path="报告.docm")
+    assert "error" not in out and out["total_blocks"] == 13
+
+
+def test_read_document_is_a_plain_read_in_fork():
+    """The read-side pin matching `test_write_spreadsheet_is_a_declared_write_tool_in_fork`
+    (tests/test_office_integration.py): no name-table entry is needed for a read —
+    `classify()` falls through to the tool's own metadata (`requires_approval=False`) and
+    lands on RiskClass.READ."""
+    from coworker.risk import RiskClass, classify
+
+    meta = document_read_tools("/tmp/cw-document-read")[0].__aisuite_tool_metadata__
+    assert classify("read_document", meta) is RiskClass.READ
