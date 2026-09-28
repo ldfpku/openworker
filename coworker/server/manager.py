@@ -9406,9 +9406,9 @@ def _sweep_for_windows(
     workspace, so the shallow files are the ones found before a bound trips.
 
     `suffixes` filters by extension (default: the artifacts-panel document/media set);
-    `None` disables the filter entirely — every file counts, matching what `os.walk` + a
-    manual extension check used to do before `_recent_files` was rewritten on top of this
-    walk. Existing callers that don't pass `suffixes` see no behaviour change."""
+    `None` disables the filter entirely — every file counts, matching what `_recent_files`'s
+    old plain `Path.rglob("*")` walk did before it was rewritten on top of this one.
+    Existing callers that don't pass `suffixes` see no behaviour change."""
     from collections import deque
 
     skip = _artifact_skip_dirs()
