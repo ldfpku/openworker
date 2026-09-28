@@ -85,6 +85,12 @@ def test_invalid_names_rejected(bad):
         validate_name(bad)
 
 
+def test_chinese_name_error_says_where_chinese_goes():
+    # A Chinese name is the usual way users hit this; the message is shown verbatim.
+    with pytest.raises(ValueError, match="中文请写进描述里"):
+        validate_name("失效分析报告")
+
+
 def test_blank_instructions_rejected(store):
     with pytest.raises(ValueError, match="instructions"):
         store.create(name="empty", description="d", instructions="   ")

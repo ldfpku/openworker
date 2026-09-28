@@ -40,14 +40,17 @@ PROJECT_SCOPE = "project"
 
 def validate_name(name: str) -> str:
     """Skill names become folder names — reject anything that could escape the scope dir."""
+    # 这几条原样显示在 设置 ▸ 技能 的新建/导入报错里（save_skill 也把它回给 agent）。
+    # 最常见的撞法是起了中文名，所以直接告诉用户中文该放哪。
     name = (name or "").strip()
     if not name:
-        raise ValueError("Skill name is required.")
+        raise ValueError("技能名不能为空。")
     if len(name) > _MAX_NAME:
-        raise ValueError(f"Skill name too long (limit {_MAX_NAME} characters).")
+        raise ValueError(f"技能名太长了（最多 {_MAX_NAME} 个字符）。")
     if ".." in name or "/" in name or "\\" in name or not _NAME_RE.match(name):
         raise ValueError(
-            "Skill name may only contain letters, digits, dots, dashes, and underscores."
+            "技能名只能用英文字母、数字、点、短横线和下划线，并以字母或数字开头，"
+            "不能有中文和空格，比如 weekly-report。中文请写进描述里。"
         )
     return name
 
