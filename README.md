@@ -71,7 +71,7 @@
 
 此外还有一张 **NVIDIA (NIM)** 卡：端点已内置，向管理员索要一把 `nvapi-` 开头的 key 粘进去，即可使用英伟达线上的 Kimi K3。
 
-**能用哪些模型**：精选清单里 70 个型号，覆盖 OpenAI、Anthropic、Google Gemini、DeepSeek、Kimi、通义千问、MiniMax、Z.ai (GLM)、xAI Grok、Mistral、火山方舟等，也可以指向本机的 **Ollama** 完全离线跑。清单之外的模型串也能手填，效果自负。
+**能用哪些模型**：精选清单里 70 个型号，覆盖 OpenAI、Anthropic、Google Gemini、DeepSeek、Kimi、通义千问、MiniMax、Z.ai (GLM)、xAI Grok、Mistral、火山方舟等，也可以指向本机的 **Ollama** 完全离线跑。GPT / Claude 那条线（Cloudflare AI Gateway）的模型清单由网关按你本人的权限下发：登录后自动拉取，「测试」通过时也会更新，拉取失败时点清单上方的「重试」；只能从清单里勾选、设默认，**不能手填 id**。其余各卡清单之外的模型串仍能手填，效果自负。
 
 ---
 
