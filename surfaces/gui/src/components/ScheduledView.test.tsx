@@ -9,6 +9,9 @@ vi.mock("../api", () => ({
   deleteAutomation: vi.fn(),
   getAutomation: vi.fn(),
   getAutomations: vi.fn().mockResolvedValue([]),
+  getConnectors: vi.fn().mockResolvedValue([]),
+  getRecentChannels: vi.fn().mockResolvedValue([]),
+  getRecentWorkspaces: vi.fn().mockResolvedValue([]),
   markAutomationSeen: vi.fn().mockResolvedValue(undefined),
   updateAutomation: vi.fn().mockResolvedValue({}),
 }));
@@ -31,7 +34,7 @@ afterEach(cleanup);
 describe("ScheduledView empty state", () => {
   it("renders translated emphasis as a strong element, not literal markup", () => {
     const { container } = render(
-      <ScheduledView onOpenRun={vi.fn()} onRunNow={vi.fn()} />,
+      <ScheduledView onOpenRun={vi.fn()} onRunNow={vi.fn()} onOpenIntegrations={vi.fn()} />,
     );
 
     expect(
@@ -56,11 +59,14 @@ const task = (cron: string): Automation => ({
   run_count: 0,
   notify_on_completion: false,
   always_allowed: [],
+  workspace_private: false,
 });
 
 async function openEditor(cron: string) {
   vi.mocked(getAutomation).mockResolvedValue({ task: task(cron), runs: [] });
-  render(<ScheduledView onOpenRun={vi.fn()} onRunNow={vi.fn()} initialOpenId="t1" />);
+  render(
+    <ScheduledView onOpenRun={vi.fn()} onRunNow={vi.fn()} onOpenIntegrations={vi.fn()} initialOpenId="t1" />,
+  );
   fireEvent.click(await screen.findByText("Edit"));
   return screen.getByRole("combobox") as HTMLSelectElement;
 }

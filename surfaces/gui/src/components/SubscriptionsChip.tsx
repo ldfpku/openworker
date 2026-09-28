@@ -23,6 +23,13 @@ interface RosterHit {
   is_member: boolean;
 }
 
+// A channel address's platform: "weixin:o9…" → "weixin"; a bare id or a "slack:C0123" address
+// means Slack (the backend's own default when no platform prefix is given — mirrors
+// AccessSection.tsx's platformOf). Only Slack calls its targets "channels" (the # convention);
+// every other platform (WeChat today) shows the person's plain name (owner catch 2026-09-23:
+// a WeChat recipient was rendering as "#某某", which reads as a channel that doesn't exist).
+export const isSlackChannel = (channel: string) => !channel.includes(":") || channel.startsWith("slack:");
+
 // A channel input with a popover of recently-seen channels (the "recent list + type-the-id"
 // picker). Free typing is allowed (a slack:C0123 address or a channel Copy-link URL). The
 // popover is hand-rolled, NOT a <datalist>: WKWebView (the macOS desktop shell) doesn't render
@@ -137,7 +144,7 @@ export function ChannelPicker({
     recent.find((c) => c.channel === value)?.name ||
     roster.find((r) => r.address === value)?.name ||
     "";
-  const display = !focused && knownName ? `#${knownName}` : value;
+  const display = !focused && knownName ? (isSlackChannel(value) ? `#${knownName}` : knownName) : value;
 
   // A pick is a commit: blur the input so the display flips to the channel name (focus is
   // otherwise held by the mousedown-preventDefault that protects the pick from the blur).
@@ -193,7 +200,7 @@ export function ChannelPicker({
               }}
             >
               <span className="text-[13px] text-ink">
-                {c.name ? `#${c.name}` : c.channel}
+                {c.name ? (isSlackChannel(c.channel) ? `#${c.name}` : c.name) : c.channel}
               </span>
               {c.name && <span className="ml-1.5 text-[11px] text-faint">{c.channel}</span>}
               {c.last_text && (

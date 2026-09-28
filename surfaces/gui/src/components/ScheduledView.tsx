@@ -5,16 +5,22 @@ import {
   deleteAutomation,
   getAutomation,
   getAutomations,
+  getConnectors,
+  getRecentChannels,
   markAutomationSeen,
   announceAutomationsChanged,
   updateAutomation,
   type Automation,
+  type Connector,
+  type RecentChannel,
   type AutomationRun,
 } from "../api";
 import { BackLink } from "./BackLink";
 import { Icon } from "./Icon";
 import { PanelHead } from "./IntegrationsView";
 import { AutomationQuickstart } from "./AutomationQuickstart";
+import { ChannelPicker } from "./SubscriptionsChip";
+import { TaskFolderField } from "./TaskFolderField";
 import { FREQ_OPTIONS, fromCron, toCron } from "../schedule";
 import { IconButton } from "./IconButton";
 import { BTN_ACCENT_SM, BTN_BORDERED, BTN_BORDERED_SM, BTN_DANGER_SM } from "./buttons";
@@ -79,9 +85,11 @@ interface Props {
   onRunNow: (taskId: string, title?: string) => void;
   // Open directly on a task's detail (set by the run banner's "Back to runs").
   initialOpenId?: string | null;
+  // F4's "先在「连接器」里连接微信" → "去连接" button: hand off to the Connectors surface.
+  onOpenIntegrations: () => void;
 }
 
-export function ScheduledView({ onOpenRun, onRunNow, initialOpenId }: Props) {
+export function ScheduledView({ onOpenRun, onRunNow, initialOpenId, onOpenIntegrations }: Props) {
   const { t } = useTranslation();
   const [tasks, setTasks] = useState<Automation[]>([]);
   const [openId, setOpenId] = useState<string | null>(initialOpenId ?? null);
@@ -107,6 +115,7 @@ export function ScheduledView({ onOpenRun, onRunNow, initialOpenId }: Props) {
     title: string;
     instructions: string;
     cron?: string;
+    workspace?: string;
     permissions?: { tool: string; target: string; access: "read" | "write" }[];
   }) => {
     setBusy(payload.title);
@@ -132,6 +141,7 @@ export function ScheduledView({ onOpenRun, onRunNow, initialOpenId }: Props) {
         onBack={() => { setOpenId(null); refresh(); }}
         onOpenRun={onOpenRun}
         onRunNow={onRunNow}
+        onOpenIntegrations={onOpenIntegrations}
       />
     );
   }
@@ -219,13 +229,14 @@ function NewAutomationForm({
 }: {
   busy: boolean;
   onCancel: () => void;
-  onCreate: (p: { title: string; instructions: string; cron?: string }) => void;
+  onCreate: (p: { title: string; instructions: string; cron?: string; workspace?: string }) => void;
 }) {
   const { t } = useTranslation();
   const [title, setTitle] = useState("");
   const [instructions, setInstructions] = useState("");
   const [time, setTime] = useState("09:00");
   const [freq, setFreq] = useState("daily");
+  const [workspace, setWorkspace] = useState("");
 
   const valid = title.trim() && instructions.trim();
 
@@ -269,6 +280,7 @@ function NewAutomationForm({
           </select>
         </label>
       </div>
+      <TaskFolderField value={workspace} onChange={setWorkspace} />
       <div className="tmpl-form-actions">
         <button
           className={BTN_ACCENT_SM}
@@ -278,6 +290,7 @@ function NewAutomationForm({
               title: title.trim(),
               instructions: instructions.trim(),
               cron: toCron(time, freq),
+              workspace,
             })
           }
         >
@@ -289,11 +302,168 @@ function NewAutomationForm({
   );
 }
 
+// F4: "发送到微信" — set (or drop) this automation's WeChat recipient, whatever surface
+// created it. Three states: WeChat isn't connected at all; connected with no recipient yet
+// (an inline picker + the §25 consent line mints the grant); connected with one or more
+// recipients already granted (each with its own 撤销).
+function WeixinDeliverySection({
+  task,
+  onChanged,
+  onOpenIntegrations,
+}: {
+  task: Automation;
+  onChanged: () => void;
+  onOpenIntegrations: () => void;
+}) {
+  const { t } = useTranslation();
+  const [connectors, setConnectors] = useState<Connector[] | null>(null);
+  const [recent, setRecent] = useState<RecentChannel[]>([]);
+  const [editing, setEditing] = useState(false);
+  const [target, setTarget] = useState("");
+  const [consent, setConsent] = useState(false);
+  const [pickedName, setPickedName] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    getConnectors().then(setConnectors).catch(() => setConnectors([]));
+    getRecentChannels().then(setRecent).catch(() => setRecent([]));
+  }, [task.id]);
+
+  const connected = !!connectors?.find((c) => c.name === "weixin")?.connected;
+  const grants = (task.always_allowed || []).filter(
+    (r) => r.tool === "send_message" && r.target?.startsWith("weixin:"),
+  );
+  const nameFor = (address: string) =>
+    pickedName[address] || recent.find((c) => c.channel === address)?.name || address;
+  // The exact sentence Save appends below — also what Revoke looks for to remove again.
+  const sentenceFor = (addr: string) => "\n\n" + t("automations.deliver_weixin_sentence", { channel: addr });
+
+  const save = async () => {
+    if (!target || !consent) return;
+    setSaving(true);
+    try {
+      await updateAutomation(task.id, {
+        grant: { tool: "send_message", target, access: "write" },
+        instructions: task.instructions + sentenceFor(target),
+      });
+      setEditing(false);
+      setTarget("");
+      setConsent(false);
+      onChanged();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const revoke = async (entry: string, revokeTarget: string) => {
+    const sentence = sentenceFor(revokeTarget);
+    const changes: Record<string, any> = { revoke: entry };
+    // Template-created tasks (the quickstart recipes) weave their delivery line INTO the
+    // recipe's own wording (e.g. tmpl_inspection_instructions) rather than appending this
+    // exact sentence, so it never matches here and the instructions survive untouched —
+    // the user removes it by hand via 编辑 if they revoke a template's recipient.
+    if (task.instructions.includes(sentence)) {
+      changes.instructions = task.instructions.replace(sentence, "");
+    }
+    await updateAutomation(task.id, changes);
+    onChanged();
+  };
+
+  if (connectors === null) return <div className="dim">{t("automations.loading")}</div>;
+
+  if (!connected)
+    return (
+      <div className="flex items-center gap-2.5 text-[13px] text-muted">
+        <span>{t("automations.deliver_weixin_not_connected")}</span>
+        <button className={BTN_BORDERED_SM} onClick={onOpenIntegrations}>
+          {t("automations.go_connect")}
+        </button>
+      </div>
+    );
+
+  return (
+    <div>
+      {grants.length > 0 && (
+        <div className="sched-grants" data-testid="deliver-weixin-grants">
+          {grants.map((rule) => (
+            <div className="sched-grant" key={rule.entry}>
+              <span className="sched-grant-rule">{nameFor(rule.target!)}</span>
+              <button
+                className="link"
+                title={t("automations.revoke_title")}
+                onClick={() => revoke(rule.entry, rule.target!)}
+              >
+                {t("automations.revoke")}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      {editing ? (
+        <div className="rounded-xl2 border border-line bg-paper p-3 mt-2" data-testid="deliver-weixin-editor">
+          <ChannelPicker
+            value={target}
+            onChange={setTarget}
+            recent={recent.filter((c) => c.channel.startsWith("weixin:"))}
+            onPickName={(address, name) => setPickedName((m) => ({ ...m, [address]: name }))}
+          />
+          <p className="text-[11px] text-warnInk mt-1">{t("automations.bot_member_hint")}</p>
+          <label className="flex items-start gap-2.5 mt-2.5 text-[13px] text-muted select-none">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={consent}
+              onChange={(e) => setConsent(e.target.checked)}
+              data-testid="deliver-weixin-consent"
+            />
+            <span>
+              {t("automations.consent_prefix")}{" "}
+              <b className="text-ink" title={target || undefined}>
+                {target ? nameFor(target) : t("automations.the_channel")}
+              </b>{" "}
+              {t("automations.consent_suffix")}
+            </span>
+          </label>
+          <div className="flex items-center gap-3 mt-3">
+            <button
+              className={BTN_ACCENT_SM}
+              disabled={!target || !consent || saving}
+              onClick={save}
+              data-testid="deliver-weixin-save"
+            >
+              {saving ? t("automations.saving") : t("automations.save")}
+            </button>
+            <button
+              className="link"
+              onClick={() => {
+                setEditing(false);
+                setTarget("");
+                setConsent(false);
+              }}
+            >
+              {t("automations.cancel")}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          className={BTN_BORDERED_SM + (grants.length > 0 ? " mt-2" : "")}
+          onClick={() => setEditing(true)}
+          data-testid="deliver-weixin-set"
+        >
+          {t("automations.set_recipient")}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function TaskDetail({
   id,
   onBack,
   onOpenRun,
   onRunNow,
+  onOpenIntegrations,
 }: {
   id: string;
   onBack: () => void;
@@ -304,6 +474,7 @@ function TaskDetail({
     task?: { id: string; title: string },
   ) => void;
   onRunNow: (taskId: string, title?: string) => void;
+  onOpenIntegrations: () => void;
 }) {
   const { t } = useTranslation();
   const [task, setTask] = useState<Automation | null>(null);
@@ -313,6 +484,7 @@ function TaskDetail({
   const [instructions, setInstructions] = useState("");
   const [time, setTime] = useState("09:00");
   const [freq, setFreq] = useState("daily");
+  const [workspace, setWorkspace] = useState("");
   // False when the stored schedule says more than the simple form can (agent-written
   // cron, once-tasks) — saving would rewrite it, so the edit form must say so.
   const [cronMatched, setCronMatched] = useState(true);
@@ -357,6 +529,10 @@ function TaskDetail({
       </Shell>
     );
 
+  // The workspace value the form starts from — "" for a private automation regardless of
+  // what `task.workspace` itself holds, since only `workspace_private` is the display source
+  // of truth (F3).
+  const origWorkspace = () => (task.workspace_private ? "" : task.workspace);
   const startEdit = () => {
     setTitle(task.title);
     setInstructions(task.instructions);
@@ -365,6 +541,7 @@ function TaskDetail({
     setFreq(f);
     setCronMatched(matched);
     setSchedTouched(false);
+    setWorkspace(origWorkspace());
     setEditing(true);
   };
   const saveEdit = async () => {
@@ -374,6 +551,9 @@ function TaskDetail({
         title: title.trim(),
         instructions: instructions.trim(),
         ...(cronMatched || schedTouched ? { cron: toCron(time, freq) } : {}),
+        // Only sent when the user actually touched it — an untouched folder must survive a
+        // title/instructions-only edit unchanged (same rule as the schedule above).
+        ...(workspace !== origWorkspace() ? { workspace } : {}),
       });
       await refresh();
       setEditing(false);
@@ -390,6 +570,12 @@ function TaskDetail({
     announceAutomationsChanged(); // the sidebar band must not wait out its poll
     onBack();
   };
+
+  // F4 carves send_message → weixin:* grants out into their own "发送到微信" section below —
+  // everything else keeps living under "无需询问的允许项" (hidden entirely once it's empty).
+  const otherGrants = (task.always_allowed || []).filter(
+    (rule) => !(rule.tool === "send_message" && rule.target?.startsWith("weixin:")),
+  );
 
   return (
     <Shell>
@@ -479,6 +665,19 @@ function TaskDetail({
           </div>
         )}
 
+        <div className="sa-sub">{t("automations.folder_label")}</div>
+        {editing ? (
+          <TaskFolderField value={workspace} onChange={setWorkspace} />
+        ) : (
+          <div
+            className="dim"
+            style={{ marginBottom: 8, fontSize: 12.5 }}
+            title={task.workspace_private ? undefined : task.workspace}
+          >
+            {task.workspace_private ? t("automations.folder_private") : task.workspace}
+          </div>
+        )}
+
         <div className="sa-sub">{t("automations.instructions_label")}</div>
         {editing ? (
           <textarea
@@ -490,14 +689,16 @@ function TaskDetail({
           <div className="sched-instructions">{task.instructions}</div>
         )}
 
-        {(task.always_allowed || []).length > 0 && (
+        {/* F4 gives send_message → weixin:* grants their own "发送到微信" section below —
+            listing them here too would say the same thing twice. */}
+        {otherGrants.length > 0 && (
           <>
             <div className="sa-sub">{t("automations.allowed_without_asking")}</div>
             <div className="dim" style={{ marginBottom: 8, fontSize: 12.5 }}>
               {t("automations.allowed_desc")}
             </div>
             <div className="sched-grants" data-testid="task-grants">
-              {(task.always_allowed || []).map((rule) => (
+              {otherGrants.map((rule) => (
                 <div className="sched-grant" key={rule.entry}>
                   <span className="sched-grant-rule">
                     <code>{rule.tool}</code>
@@ -518,6 +719,9 @@ function TaskDetail({
             </div>
           </>
         )}
+
+        <div className="sa-sub">{t("automations.deliver_weixin_title")}</div>
+        <WeixinDeliverySection task={task} onChanged={refresh} onOpenIntegrations={onOpenIntegrations} />
 
         <div className="sa-sub">{t("automations.runs_label")}</div>
         <div className="dim" style={{ marginBottom: 8, fontSize: 12.5 }}>

@@ -2148,6 +2148,7 @@ export function App() {
           onOpenRun={openRunSession}
           onRunNow={runTaskNow}
           initialOpenId={scheduledOpenId}
+          onOpenIntegrations={() => setSurface("integrations")}
         />
       ) : surface === "integrations" ? (
         <IntegrationsView />
