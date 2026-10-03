@@ -212,7 +212,7 @@ export function ModelChecklist({
               {isFreeModel(id) && (
                 <span
                   className="mlist-free"
-                  title={t("Runs on the company NVIDIA relay or your own machine — no model bill")}
+                  title={t("Runs on your own machine — no model bill")}
                 >
                   {t("Free")}
                 </span>

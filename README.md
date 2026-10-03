@@ -21,7 +21,8 @@
 
 ## 安装
 
-> ⚠️ **v0.1.8 还是草稿 Release，尚未发布**，下面的链接暂时取不到东西。发布后即可下载。
+> 本次迁移版本为 **0.7.1**。完成 ZY 联调、CI、三平台构建及签名/更新清单校验后，
+> 发布流程会自动发布；任何环节失败都会保持草稿，不向已安装应用推送更新。
 
 **[github.com/ldfpku/openworker/releases](https://github.com/ldfpku/openworker/releases)**
 
@@ -49,29 +50,24 @@
 | | |
 | --- | --- |
 | **一个登记过的公司邮箱** | 用来证明「你是名单里的人」。就是管理员发安装包给你时用的那个。 |
-| **一把以你名字命名的 Gemini API key** | 调用 Google 模型的凭证，管理员发给你，不用自己申请。 |
-
-**这两样都是 Gemini 用的，缺一样都不行**——只登录不填 key、或只填 key 不登录，都会报错：登录说明你是谁，key 才是真正去调模型的凭证。GPT / Claude 那条线（Cloudflare AI Gateway）**什么都不用要**，登录就行（见下）。
-
-> 发给你的 key **是公司的**：别转给别人、别贴进群聊、别提交进任何代码仓库。它以你的名字命名，用了多少一目了然；真出事对得上号的就是你那一把。
+公司模型统一走 ZY 账号的 Cloudflare AI Gateway：只需登记过的邮箱登录，
+**不需要 Gemini key 或 NVIDIA key**。Google 模型仍在网关中提供。
 
 ### 配置模型
 
-打开 **设置 ▸ 模型**，两条路按需要选：
-
-| | **Gemini** | **GPT / Claude / 其他** |
-| --- | --- | --- |
-| 怎么开通 | 点「登录」→ 浏览器收验证码 → 再填上管理员给你的 key | 点「登录」→ 浏览器里验明身份，完事 |
-| 要填东西吗 | 要填那把 key | **什么都不填**——网关地址内置在应用里 |
-| 之后 | 令牌到期会提示重新登录 | 两周内自动续期，不用管 |
-
-两条路都不需要你安装任何额外软件，也不需要你自己的任何 Cloudflare 账号。
+打开 **设置 ▸ 模型 ▸ Cloudflare AI Gateway**，点「登录」，在浏览器里用公司邮箱
+验明身份即可。地址 `gateway.smjtools.com` 内置，登录后自动续期；
+从 DF 迁移至 ZY 后需要重新登录一次。无需额外软件或个人 Cloudflare 账号。
 
 练手可以走 **AMD Radeon Cloud Token Factory** 的公开免费模型：在「自定义端点」卡填入 `https://developer.amd.com.cn/radeon/api/v1` 和自己注册的 `rc-` 开头的 key，再手填 `DeepSeek-V4-Flash-0731` 即可，额度按天重置，不产生公司账单。
 
-此外还有一张 **NVIDIA (NIM)** 卡：端点已内置，向管理员索要一把 `nvapi-` 开头的 key 粘进去，即可使用英伟达线上的 Kimi K3。
+独立 Gemini 卡/中转与 NVIDIA (NIM) 卡已停用。其他现有提供商、Vertex、Ollama
+和自定义端点保留；不迁移旧 Gemini/NVIDIA 默认模型、会话或定时任务。
 
-**能用哪些模型**：精选清单里 78 个型号，覆盖 OpenAI、Anthropic、Google Gemini、DeepSeek、Kimi、通义千问、MiniMax、Z.ai (GLM)、xAI Grok、Mistral、火山方舟等，也可以指向本机的 **Ollama** 完全离线跑。GPT / Claude 那条线（Cloudflare AI Gateway）的模型清单由网关按你本人的权限下发：登录后自动拉取，「测试」通过时也会更新，拉取失败时点清单上方的「重试」；只能从清单里勾选、设默认，**不能手填 id**。其余各卡清单之外的模型串仍能手填，效果自负。
+**能用哪些模型**：Cloudflare AI Gateway 的模型清单由网关按你本人的权限下发，
+包含可用的 OpenAI、Anthropic、Google 等模型。登录后自动拉取，「测试」通过时也会更新，
+拉取失败时点清单上方的「重试」；只能从清单里勾选、设默认，**不能手填 id**。
+其他提供商仍按各自凭据配置，本机 **Ollama** 可完全离线运行。
 
 ---
 
@@ -151,7 +147,7 @@
 | [01-管理员初始化手册](docs/手册/01-管理员初始化手册.md) | 从零把这套东西搭起来的人 |
 | [02-运维手册](docs/手册/02-运维手册.md) | 日常加人删人、调额度、查用量的人 |
 | [03-用户手册](docs/手册/03-用户手册.md) | **所有使用者** |
-| [04-Cloudflare-AI-Gateway](docs/手册/04-Cloudflare-AI-Gateway.md) | 想用 Gemini 以外的模型 |
+| [04-Cloudflare-AI-Gateway](docs/手册/04-Cloudflare-AI-Gateway.md) | ZY 公司网关、登录、模型权限与计费 |
 | [05-微信接入](docs/手册/05-微信接入.md) | 想在微信里使唤 agent |
 
 ---

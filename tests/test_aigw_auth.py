@@ -33,7 +33,66 @@ class FakeSecrets:
 
 
 def _store(oauth: dict[str, Any], **profile: Any) -> FakeSecrets:
-    return FakeSecrets({aigw_auth.PROFILE: {**profile, aigw_auth.OAUTH_FIELD: oauth}})
+    return FakeSecrets({aigw_auth.PROFILE: {
+        aigw_auth.GENERATION_FIELD: aigw_auth.COMPANY_GATEWAY_GENERATION,
+        **profile, aigw_auth.OAUTH_FIELD: oauth,
+    }})
+
+
+def test_company_gateway_switch_discards_df_tokens_before_refresh(monkeypatch):
+    monkeypatch.setattr("httpx.post", lambda *a, **k: pytest.fail("must not refresh at the DF issuer"))
+    s = FakeSecrets({aigw_auth.PROFILE: {
+        "oauth": {"access_token": "df", "refresh_token": "df-refresh", "token_endpoint": "https://df.test/token"},
+        "access_token": "df-pasted", "thinking_budget": 1000,
+    }})
+    assert aigw_auth.access_token(s) == ""
+    assert s.get(aigw_auth.PROFILE) == {
+        aigw_auth.GENERATION_FIELD: aigw_auth.COMPANY_GATEWAY_GENERATION,
+        "thinking_budget": 1000,
+    }
+    assert aigw_auth.migrate_company_gateway(s) is False
+
+
+def test_account_switch_preserves_alternative_gateway(monkeypatch):
+    s = FakeSecrets({aigw_auth.PROFILE: {
+        "base_url": "https://alternative.test",
+        "oauth": {"access_token": "alternative", "expires_at": time.time() + 900},
+    }})
+    before = dict(s.data)
+    assert aigw_auth.migrate_company_gateway(s) is False
+    assert aigw_auth.access_token(s) == "alternative"
+    assert s.data == before
+
+
+@pytest.mark.parametrize("base_url", ["https://GATEWAY.SMJTOOLS.COM", "https://gateway.smjtools.com:443/compat"])
+def test_company_gateway_alias_cannot_keep_df_credentials(base_url):
+    s = FakeSecrets({aigw_auth.PROFILE: {
+        "base_url": base_url, "oauth": {"access_token": "df"},
+    }})
+    assert aigw_auth.migrate_company_gateway(s) is True
+    assert "oauth" not in s.get(aigw_auth.PROFILE)
+
+
+def test_manager_switch_clears_only_company_gateway_catalog(tmp_path, monkeypatch):
+    import json
+
+    from coworker.secrets import SecretStore
+    from coworker.server.manager import SessionManager
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    secrets = SecretStore()
+    secrets.put(aigw_auth.PROFILE, {"oauth": {"access_token": "df"}})
+    secrets.put("provider:gemini", {"api_key": "legacy-untouched"})
+    secrets.put("provider:custom", {"api_key": "custom-untouched"})
+    data = tmp_path / "data"
+    data.mkdir()
+    prefs = {"model_catalog": {"aigw": {"models": []}, "custom": {"models": []}}}
+    (data / "prefs.json").write_text(json.dumps(prefs), encoding="utf-8")
+    manager = SessionManager(data_dir=data)
+    assert "aigw" not in manager._model_catalog
+    assert "custom" in manager._model_catalog
+    assert manager.secrets.get("provider:gemini")["api_key"] == "legacy-untouched"
+    assert manager.secrets.get("provider:custom")["api_key"] == "custom-untouched"
 
 
 class _Resp:

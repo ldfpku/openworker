@@ -1,5 +1,5 @@
 // The model picker's badge slot. An Option carries exactly ONE badge, and two facts now
-// compete for it: "free" (nvidia/ollama — costs nothing per token) and "has a same-tier
+// compete for it: "free" (local Ollama) and "has a same-tier
 // stand-in" (an AI Gateway model with a Dynamic Route, which survives a 429 on the shared
 // wholesale pool by re-sending on its partner). Free wins the pill; the stand-in joins the
 // tooltip. Getting that precedence wrong would either hide what a turn costs or promise a
@@ -18,7 +18,7 @@ function stubFetch() {
 const MODELS = [
   "aigw:anthropic/claude-fable-5",
   "aigw:anthropic/claude-haiku-4-5",
-  "nvidia:qwen3-coder",
+  "ollama:qwen3-coder:30b",
 ];
 
 const props = (extra: Partial<Parameters<typeof Composer>[0]> = {}) => ({
@@ -28,11 +28,11 @@ const props = (extra: Partial<Parameters<typeof Composer>[0]> = {}) => ({
   modelLabels: {
     "aigw:anthropic/claude-fable-5": "Claude Fable 5 · via Cloudflare",
     "aigw:anthropic/claude-haiku-4-5": "Claude Haiku 4.5 · via Cloudflare",
-    "nvidia:qwen3-coder": "Qwen3 Coder · via NVIDIA",
+    "ollama:qwen3-coder:30b": "Qwen3 Coder · Ollama",
   },
   modelFallbacks: {
     "aigw:anthropic/claude-fable-5": "GPT-5.6 Sol · via Cloudflare",
-    "nvidia:qwen3-coder": "GPT-5.6 Terra · via Cloudflare",
+    "ollama:qwen3-coder:30b": "GPT-5.6 Terra · via Cloudflare",
   },
   running: false,
   connected: true,

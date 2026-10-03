@@ -809,7 +809,7 @@ export function Composer(props: Props) {
     // the routing suffix is noise (same trim the topbar subtitle does).
     const standIn = props.modelFallbacks?.[m]?.split(" · ")[0];
     const standInTip = standIn ? t("composer.fallback_badge_tip", { model: standIn }) : "";
-    const freeTip = t("Runs on the company NVIDIA relay or your own machine — no model bill");
+    const freeTip = t("Runs on your own machine — no model bill");
     const badge = free
       ? { badge: t("Free"), badgeTitle: [freeTip, standInTip].filter(Boolean).join(" · ") }
       : standIn

@@ -899,18 +899,15 @@ def test_gateway_rows_are_text_and_vision_only():
         ), full_id
 
 
-def test_gateway_gemini_rows_are_a_subset_of_the_direct_ones():
-    # Same spelling on both routes, `-preview` suffixes and all — this path forwards the
-    # id to Google verbatim. But a strict SUBSET, not a copy: Unified Billing covers only
-    # part of the line here (see the matrix comment), and 2.5 is deliberately direct-only.
-    # A new gateway row that is not also a direct row is almost certainly a typo.
-    direct_3x = {
-        m.split(":", 1)[1] for m in MATRIX if m.startswith("gemini:gemini-3")
-    }
+def test_gateway_google_models_survive_standalone_gemini_retirement():
     gateway = {
         m.split("/", 1)[1] for m in MATRIX if m.startswith("aigw:google-ai-studio/")
     }
-    assert gateway and gateway <= direct_3x, sorted(gateway - direct_3x)
+    assert gateway == {
+        "gemini-3-flash-preview", "gemini-3.1-flash-lite",
+        "gemini-3.1-pro-preview", "gemini-3.6-flash",
+    }
+    assert not any(m.startswith("gemini:") for m in MATRIX)
     assert not any(m.startswith("aigw:google-ai-studio/gemini-2") for m in MATRIX)
 
 

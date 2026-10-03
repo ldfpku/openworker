@@ -1,5 +1,71 @@
 # Cloudflare AI Gateway 手册
 
+## 当前拓扑：ZY 账号（0.7.1 起）
+
+公司链路为 **OpenWorker → ZY Access → gateway-guard → ZY AI Gateway**。
+用户地址仍是 `gateway.smjtools.com`；ZY 的团队域为 `zy-smj.cloudflareaccess.com`，
+应用 AUD 必须来自 ZY 新建应用。只需工作邮箱登录，Google 模型保留在网关中；
+独立 Gemini 中转和 NVIDIA 卡不再使用。
+
+**本域名属于 gateway-guard Worker，而不是 AI Gateway 的直接自定义域。**
+不要按旧 §1.1 给 AI Gateway 再挂同名域，也不要删除域名以致级联删除 Access/OAuth。
+部署账号、共享 D1、上游网关和 Run Secret 都必须是 ZY 的实际资源。
+
+保留 Managed OAuth/PKCE、固定 loopback 回调、DCR、15m token/336h 授权会话、
+按人模型清单 `/gate/models`、权限 `/gate/policy`、配额、三条协议与 §8 的五条动态路由。
+客户端从 DF 升级后需重新登录；不会把 DF refresh token 送往 ZY。
+
+统一计费由 ZY 余额支付。客户端凭据必须由 guard 剥离，防止占位 key 被误当成厂商 key；
+真实验证必须跳过响应缓存，检查 ZY 日志的计费、身份归因和实际模型。
+Google 可用型号以 ZY 登录后的清单为准，不以旧直接提供商清单为依据。
+
+新配置不得降低 Access 或模型权限闸。未迁移其他服务，且不得误改 ZY VPN。
+自动发布与版本规则见 [01-管理员初始化手册](./01-管理员初始化手册.md)。
+
+### 管理员本地环境变量
+
+仓库根目录的 `.env` 仅用于管理员操作，不是桌面客户端配置，不得分发给员工。
+新环境可从 [`.env.example`](../../.env.example) 创建；只保留以下四项：
+
+| 变量 | 用途 |
+| --- | --- |
+| `ZY_AI_GATEWAY` | ZY 账号范围的 AI Gateway Read/Edit 管理令牌 |
+| `AIG_TOKEN` | 独立的 ZY AI Gateway Run 令牌，最终写入 guard 的加密 Secret |
+| `CLOUDFLARE_ACCOUNT_ID` | ZY 账号 ID，须与 guard 部署配置一致 |
+| `CLOUDFLARE_ZONE_ID` | ZY 的域名 Zone ID，不得沿用 DF 值 |
+
+不再保留本项目旧 `GEMINI_API_KEY`、`CF_AIG_TOKEN`、`CF_GATEWAY_API_TOKEN`，
+或另一份 `CLOUDFLARE_API_TOKEN`。不要修改其他项目或用户/系统级环境变量。
+
+**写入 `.env` 不等于设置进程环境。** 在 OpenWorker 根目录的 PowerShell 7 会话中，
+显式加载 [导入脚本](../../packaging/Import-ZyGatewayEnvironment.ps1)：
+
+```powershell
+. .\packaging\Import-ZyGatewayEnvironment.ps1
+cf ai-gateway gateways get openworker-agw
+```
+
+脚本校验全部配置后，仅设置当前进程环境，并把 `ZY_AI_GATEWAY` 映射为 CLI 标准变量
+`CLOUDFLARE_API_TOKEN`；不会打印令牌、执行表达式或写入用户/系统级环境。
+支持 `KEY=VALUE`、整行注释、成对引号；不支持行内注释或 `${VAR}` 展开。
+每个新会话须重新加载。
+
+这个管理令牌**不能用于 Workers 部署、Access 或 D1 操作**；这些操作仍使用独立的
+迁移管理凭据。`AIG_TOKEN` 不会因本地加载而自动上传到 Cloudflare，必须在上线前
+写入 guard 的加密 Secret，由 Worker 从 `env.AIG_TOKEN` 读取；不得放进
+Wrangler `vars`、源码、构建产物或客户端环境。配置 Run 令牌也不等于已有预付余额，
+仍需确认 Credits Available 并完成真实联调。
+
+2026-10-03 迁移上线前，ZY 预付余额已由管理员确认，三条上游协议的跳缓存
+真实推理已通过。guard 部署时只注入 `AIG_TOKEN`，不要将整个本地 `.env`
+作为 `--secrets-file` 上传，否则会把管理令牌一起送入 Worker。
+
+## 历史背景与协议说明
+
+下面 §0–§1 的直通网关/Gemini 双通路描述是旧方案背景，不是 ZY 部署步骤。
+后续三条 wire、错误诊断和动态路由的协议细节仍可参考，但旧账号的实测结果不能代替
+ZY 的有效凭据联调。
+
 > **读者**：管理员（配置那一次）和所有使用者（登录那一步）。
 > **什么时候读**：想用 GPT / Claude / Gemini 而不想自己配 API key 的时候。
 > **同事要准备什么**：工作邮箱。没了。

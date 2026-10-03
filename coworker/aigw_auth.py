@@ -63,6 +63,8 @@ logger = logging.getLogger(__name__)
 #: never collide with `base_url`, the legacy pasted `access_token`, or `thinking_budget`.
 PROFILE = "provider:aigw"
 OAUTH_FIELD = "oauth"
+COMPANY_GATEWAY_GENERATION = "zy-20261003"
+GENERATION_FIELD = "company_gateway_generation"
 
 CLIENT_NAME = "OpenWorker"
 CALLBACK_PATH = "/aigw/callback"
@@ -115,6 +117,33 @@ def _profile(secrets: SecretStore) -> dict[str, Any]:
 def _state(secrets: SecretStore) -> dict[str, Any]:
     raw = _profile(secrets).get(OAUTH_FIELD)
     return dict(raw) if isinstance(raw, dict) else {}
+
+def migrate_company_gateway(secrets: SecretStore) -> bool:
+    """Retire DF credentials once, without changing explicitly configured other gateways."""
+    with _refresh_lock:
+        return _migrate_company_gateway(secrets)
+
+
+def _migrate_company_gateway(secrets: SecretStore) -> bool:
+    global _last_error
+    from .providers.aigateway_provider import DEFAULT_BASE_URL, normalise_base, resolve_settings
+
+    profile = _profile(secrets)
+    base_url, _ = resolve_settings(profile)
+    company_origins = {DEFAULT_BASE_URL.casefold(), DEFAULT_BASE_URL.casefold() + ":443"}
+    if normalise_base(base_url).casefold() not in company_origins:
+        return False
+    if profile.get(GENERATION_FIELD) == COMPANY_GATEWAY_GENERATION:
+        return False
+    had_session = bool(profile.get(OAUTH_FIELD) or profile.get("access_token"))
+    profile.pop(OAUTH_FIELD, None)
+    profile.pop("access_token", None)
+    profile[GENERATION_FIELD] = COMPANY_GATEWAY_GENERATION
+    secrets.put(PROFILE, profile)
+    if had_session:
+        _last_error = "公司网关已迁移至 ZY，请重新登录。"
+        logger.info("company gateway credentials retired for account migration")
+    return True
 
 
 def _save_state(secrets: SecretStore, patch: dict[str, Any]) -> dict[str, Any]:
@@ -395,6 +424,7 @@ def begin_login(secrets: SecretStore, base_url: str = "") -> dict[str, Any]:
     """
     global _pending, _last_error
 
+    migrate_company_gateway(secrets)
     if not base_url:
         # Profile → env → the built-in company gateway: the same chain the provider itself
         # resolves, which is why the pane can offer Sign in with nothing typed anywhere.
@@ -515,6 +545,7 @@ def access_token(secrets: SecretStore) -> str:
     Returns "" when nobody has signed in, which the provider reports as "not signed in"
     rather than as a failed call.
     """
+    migrate_company_gateway(secrets)
     state = _state(secrets)
     if _is_fresh(state):
         return str(state.get("access_token") or "")
@@ -536,6 +567,7 @@ def access_token(secrets: SecretStore) -> str:
 
 def status(secrets: SecretStore) -> dict[str, Any]:
     """What the settings pane renders. Local only — no network."""
+    migrate_company_gateway(secrets)
     state = _state(secrets)
     signed_in = bool(state.get("access_token") or state.get("refresh_token"))
     return {

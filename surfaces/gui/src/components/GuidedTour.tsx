@@ -45,7 +45,7 @@ export function GuidedTour(props: { onDone: () => void }) {
       badge: t("Model"),
       title: t("Pick a model"),
       body: t(
-        "Gemini 3.7 Flash is the fast default for daily work. Switch to Gemini 3.1 Pro when you need deeper reasoning — slower and pricier.",
+        "Choose from your connected providers. The company AI Gateway supplies the models your account may use, including Google models.",
       ),
       selectors: ['[data-tour="model"]'],
     },

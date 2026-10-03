@@ -17,11 +17,6 @@ import { BackLink } from "../components/BackLink";
 import { BTN_BORDERED } from "../components/buttons";
 import { GatewaySignIn } from "./GatewaySignIn";
 import { PROVIDER_LOGOS, providerRank } from "./logos";
-import { RelaySignIn } from "./RelaySignIn";
-
-/** The one provider whose credential comes from signing in to the company relay instead of
- *  from an API key field (see RelaySignIn). */
-const RELAY_PROVIDER = "gemini";
 
 /** The AI Gateway signs in too, but its login IS the credential rather than one half of
  *  it — and its address is baked in, so its pane is the card alone (GatewaySignIn). */
@@ -37,12 +32,9 @@ const GATEWAY_PROVIDER = "aigw";
 export const KEY_HELP: Record<string, { url: string; label: string }> = {
   anthropic: { url: "https://console.anthropic.com/settings/keys", label: "console.anthropic.com" },
   openai: { url: "https://platform.openai.com/api-keys", label: "platform.openai.com" },
-  gemini: { url: "https://aistudio.google.com/apikey", label: "aistudio.google.com" },
   // No entry for `aigw` on purpose: there is no key to fetch. It authenticates with the
   // user's own Access login against a gateway address their administrator gives them, so
   // a "get your API key here" link would send them somewhere with nothing to collect.
-  // No entry for `nvidia` either: its `nvapi-` keys are issued by the administrator —
-  // there is no self-serve key page to link to (the card's blurb says who to ask).
   ark: { url: "https://console.byteplus.com/ark/region:ark+ap-southeast-1/apiKey", label: "console.byteplus.com" },
   "ark-agent-plan-cn": { url: "https://console.volcengine.com/ark/region:cn-beijing/openManagement?LLM=%7B%7D&advancedActiveKey=agentPlan", label: "console.volcengine.com" },
   openrouter: { url: "https://openrouter.ai/keys", label: "openrouter.ai" },
@@ -535,17 +527,6 @@ export function ProviderForm({
   if (!sel) return null;
 
 
-  // Gemini takes two credentials, so its pane shows the sign-in card ABOVE the ordinary
-  // key field rather than instead of it: the company relay needs a login to know who is
-  // calling (and which quota to count against), and Google needs the person's own key.
-  // Order matters — signing in is step 1, and the card names step 2.
-  const relayCard =
-    sel === RELAY_PROVIDER ? (
-      <div className="mt-3 mb-1">
-        <RelaySignIn tp={tp} onChanged={ps.refreshAll} keyState={`${info?.configured}:${info?.key_set_at || ""}`} />
-      </div>
-    ) : null;
-
   // The gateway's card sits in the same slot, but for the opposite reason: its address is
   // baked into the app and the login is the whole credential, so the provider declares no
   // fields and this card IS the entire pane — sign-in saves the provider, and Test lives
@@ -619,14 +600,6 @@ export function ProviderForm({
       {info?.blurb && <p className="text-[12px] text-faint mt-1">{t(info.blurb)}</p>}
 
       {info?.auth === "oauth" && <OAuthSignIn info={info} tp={tp} onChanged={ps.refreshAll} />}
-
-      {/* Fork sign-in panes: Gemini goes through the company relay, GPT/Claude through
-
-          the Cloudflare AI Gateway. Upstream has neither, so the merge dropped these two
-
-          render sites and left the cards defined but unmounted — no way to sign in. */}
-
-      {relayCard}
 
       {gatewayCard}
 

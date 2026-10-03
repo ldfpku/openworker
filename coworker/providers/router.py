@@ -17,7 +17,7 @@ from typing import Any, Optional
 
 from .base import ProviderClient
 from .capabilities import capabilities_for
-from .registry import build_provider_client, get_descriptor
+from .registry import RETIRED_PROVIDERS, build_provider_client, get_descriptor, retired_provider_error
 
 
 class ProviderRouter(ProviderClient):
@@ -51,6 +51,8 @@ class ProviderRouter(ProviderClient):
         """
         if ":" in model:
             prefix = model.split(":", 1)[0]
+            if prefix in RETIRED_PROVIDERS:
+                raise ValueError(retired_provider_error(prefix))
             if get_descriptor(prefix) is not None:
                 return prefix
         return self._default

@@ -1687,11 +1687,7 @@ def test_providers_models_refresh_route_unsupported_provider(tmp_path):
     assert res["ok"] is False and res["unsupported"] is True
 
 
-def test_relay_callback_success_kicks_the_gemini_catalog(tmp_path, monkeypatch):
-    """Signing in to the company relay is what makes it answer `/v1beta/models`, so a
-    completed sign-in pulls Gemini's catalog right away — a "not signed in" failure
-    recorded minutes earlier must not sit out its retry window while Settings shows the
-    built-in list. A failed exchange kicks nothing."""
+def test_retired_relay_callback_never_exchanges_codes_or_refreshes_catalog(tmp_path, monkeypatch):
     from coworker import relay_auth
 
     kicked: list[str] = []
@@ -1701,18 +1697,12 @@ def test_relay_callback_success_kicks_the_gemini_catalog(tmp_path, monkeypatch):
     monkeypatch.setattr(
         relay_auth,
         "deliver_callback",
-        lambda secrets, code, state: {"ok": True, "email": "a@x.test", "name": "A"},
+        lambda secrets, code, state: pytest.fail("retired callback must not exchange a code"),
     )
     client = _client(tmp_path, [])
     res = client.get("/relay/callback", params={"code": "c", "state": "s"})
-    assert res.status_code == 200 and kicked == ["gemini"]
-
-    monkeypatch.setattr(
-        relay_auth, "deliver_callback", lambda secrets, code, state: {"ok": False, "error": "x"}
-    )
-    kicked.clear()
-    res = client.get("/relay/callback", params={"code": "c", "state": "s"})
-    assert res.status_code == 400 and kicked == []
+    assert res.status_code == 404 and kicked == []
+    assert client.post("/v1/relay/login").status_code == 404
 
 
 def test_ws_ready_reports_live_turn(tmp_path):

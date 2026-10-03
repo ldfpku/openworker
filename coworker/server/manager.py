@@ -99,6 +99,7 @@ from ..providers import (
     verify_provider_key,
 )
 from ..providers.catalog import CATALOG_PROVIDERS, supports_catalog
+from ..providers.registry import RETIRED_PROVIDERS
 from ..secrets import SecretStore, state_dir
 from ..sessions import SessionRecord
 from ..teams import Actor as TeamActor
@@ -349,6 +350,9 @@ class SessionManager:
         self._autotitle_sig: dict[str, int] = {}
         self.workspace_trust = WorkspaceTrustStore()
         self.secrets = SecretStore()
+        from ..aigw_auth import migrate_company_gateway
+
+        gateway_changed = migrate_company_gateway(self.secrets)
         # No explicit provider injected → route by the model's `provider:` prefix (OpenAI default,
         # Ollama, …). Tests inject a provider directly and bypass the router. The same router is
         # shared by every engine and the `/v1/chat/completions` proxy.
@@ -387,6 +391,11 @@ class SessionManager:
         self._data_base = base
         # Desktop/UI prefs (default model, onboarding state) — not secrets; a plain JSON file.
         self._prefs = self._load_prefs()
+        if gateway_changed:
+            catalog = self._prefs.get("model_catalog")
+            if isinstance(catalog, dict):
+                catalog.pop("aigw", None)
+                self._save_prefs()
         if self._prefs.get("default_model"):
             self.model = self._prefs["default_model"]
         # Item 6: the scratch base used to be lazily created on the first session — Settings
@@ -4476,13 +4485,6 @@ class SessionManager:
             ]
             if other_required:
                 return api_key, merged, "missing: " + ", ".join(other_required)
-        if name == "gemini":
-            # Not a descriptor field (nothing types it into a form), so the merge loop above
-            # never picks it up — but the relay refuses an unauthenticated probe, so a live
-            # call would fail for a correctly configured colleague without it.
-            from ..providers.gemini_provider import resolve_relay_token
-
-            merged["relay_token"] = resolve_relay_token(self.secrets) or ""
         if name == "aigw":
             # Same reason as the relay above: the OAuth session is not a form field, and
             # a live call has to use the credential a real call would use — otherwise a
@@ -4669,16 +4671,6 @@ class SessionManager:
                     d.name
                 ),
             }
-            if d.name == "gemini":
-                # The relay refuses a key without a login and a login without a key
-                # (README: "缺一样都不行"). "configured" only means the key is there, so
-                # the card said "✓ Connected" while the very next request would fail
-                # with "not signed in" (audit 2026-09-10). Say which half is missing.
-                from ..providers.gemini_provider import resolve_relay_token
-
-                row["needs_signin"] = configured and not bool(
-                    resolve_relay_token(self.secrets)
-                )
             if d.auth == "oauth":
                 # Sign-in state instead of key state; the token values themselves
                 # never leave the SecretStore.
@@ -5083,7 +5075,7 @@ class SessionManager:
         """The provider a model string routes to (known `prefix:` or the OpenAI default)."""
         if ":" in (model or ""):
             prefix = model.split(":", 1)[0]
-            if get_descriptor(prefix) is not None:
+            if prefix in RETIRED_PROVIDERS or get_descriptor(prefix) is not None:
                 return prefix
         return "openai"
 

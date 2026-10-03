@@ -74,11 +74,10 @@ describe("parseAppTarget", () => {
   });
 });
 
-// The badge is a claim about who pays, so it must stay pinned to the two routes that
-// really cost nothing per token.
+// The badge is a claim about who pays; only local Ollama has no model bill.
 describe("isFreeModel", () => {
-  it("tags the NVIDIA relay and local Ollama, nothing else", () => {
-    expect(isFreeModel("nvidia:moonshotai/kimi-k3")).toBe(true);
+  it("tags local Ollama, not the retired NVIDIA provider", () => {
+    expect(isFreeModel("nvidia:moonshotai/kimi-k3")).toBe(false);
     expect(isFreeModel("ollama:qwen3-coder:30b")).toBe(true);
     expect(isFreeModel("anthropic:claude-sonnet-5")).toBe(false);
     expect(isFreeModel("aigw:openai/gpt-5.6")).toBe(false);

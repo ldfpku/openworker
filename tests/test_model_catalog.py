@@ -48,9 +48,7 @@ def test_catalog_providers_membership():
     for name in (
         "openai",
         "anthropic",
-        "gemini",
         "custom",
-        "nvidia",
         "together",
         "fireworks",
         "openrouter",
@@ -68,6 +66,8 @@ def test_catalog_providers_membership():
         assert supports_catalog(name), name
         assert name in CATALOG_PROVIDERS
     for name in (
+        "gemini",
+        "nvidia",
         "ollama",
         "ark",
         "ark-agent-plan-cn",
@@ -271,7 +271,7 @@ def _patch_get(monkeypatch, status=200, json_body=None, capture=None, raise_exc=
     monkeypatch.setattr("httpx.get", fake_get)
 
 
-def test_list_provider_models_gemini_relay_header_and_fields(monkeypatch):
+def test_retired_gemini_catalog_does_not_query_the_relay(monkeypatch):
     cap: dict = {}
     _patch_get(
         monkeypatch,
@@ -291,17 +291,8 @@ def test_list_provider_models_gemini_relay_header_and_fields(monkeypatch):
     res = list_provider_models(
         "gemini", api_key="AIza-x", fields={"relay_token": "owr_x"}
     )
-    assert res["ok"] is True
-    assert res["models"] == [
-        {
-            "id": "gemini-3.7-flash",
-            "label": "Gemini 3.7 Flash · Google",
-            "context_window": 1048576,
-        }
-    ]
-    assert cap["url"] == "https://gemini.smjtools.com/v1beta/models"
-    assert cap["headers"]["x-goog-api-key"] == "AIza-x"
-    assert cap["headers"]["Authorization"] == "Bearer owr_x"
+    assert res["ok"] is False and res["unsupported"] is True
+    assert cap == {}
 
 
 def test_list_provider_models_anthropic(monkeypatch):
@@ -336,9 +327,8 @@ def test_list_provider_models_nvidia_and_openrouter(monkeypatch):
     res = list_provider_models(
         "nvidia", api_key="nvapi-x", provider_title="NVIDIA (NIM)"
     )
-    assert res["ok"] is True
-    assert res["models"][0]["label"] == "Kimi K3 · via NVIDIA"
-    assert "nvidia.smjtools.com" in cap["url"]
+    assert res["ok"] is False and res["unsupported"] is True
+    assert cap == {}
 
     _patch_get(
         monkeypatch,

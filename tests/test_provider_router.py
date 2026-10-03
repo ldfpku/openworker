@@ -443,7 +443,7 @@ def test_set_provider_skips_recommended_when_not_pulled(tmp_path, monkeypatch):
 def test_provider_builders(monkeypatch):
     import pytest
 
-    from coworker.providers import AnthropicProvider, GeminiProvider
+    from coworker.providers import AnthropicProvider
     from coworker.providers.registry import build_provider_client
 
     # anthropic and gemini are native: key resolution deferred to first call
@@ -453,12 +453,8 @@ def test_provider_builders(monkeypatch):
     with pytest.raises(RuntimeError, match="Anthropic"):
         build_provider_client("anthropic", {}, None)._ensure_client()
 
-    g = build_provider_client("gemini", {"api_key": "AIza-x"}, None)
-    assert isinstance(g, GeminiProvider) and g._api_key == "AIza-x"
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-    with pytest.raises(RuntimeError, match="Gemini"):
-        build_provider_client("gemini", {}, None)._ensure_client()
+    with pytest.raises(ValueError, match="no longer available"):
+        build_provider_client("gemini", {"api_key": "AIza-x"}, None)
 
     # OpenAI custom endpoint (Azure /openai/v1, OpenRouter, vLLM, …) passes through and
     # keeps Chat Completions; a blank endpoint means stock OpenAI → the Responses API.
@@ -479,7 +475,7 @@ def test_anthropic_gemini_capabilities():
         assert caps.parallel_tool_calls is True  # both native: results fold correctly
 
 
-def test_anthropic_gemini_provider_config(tmp_path, monkeypatch):
+def test_anthropic_provider_and_retired_gemini_config(tmp_path, monkeypatch):
     monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
@@ -488,9 +484,8 @@ def test_anthropic_gemini_provider_config(tmp_path, monkeypatch):
     mgr = SessionManager(data_dir=tmp_path)
     provs = {p["name"]: p for p in mgr.get_providers()}
     assert provs["anthropic"]["configured"] is False
-    assert provs["gemini"]["needs_key"] is True
+    assert "gemini" not in provs
     assert "claude-sonnet-4-6" in provs["anthropic"]["suggested_models"]
-    assert "gemini-2.5-flash" in provs["gemini"]["suggested_models"]
 
     res = mgr.set_provider("anthropic", {"api_key": "sk-ant-test"})
     assert res["ok"] is True and res["recommended_model"] == "claude-fable-5"
@@ -500,10 +495,10 @@ def test_anthropic_gemini_provider_config(tmp_path, monkeypatch):
     # the recommended model is auto-added to the curated list with its provider prefix
     assert "anthropic:claude-fable-5" in mgr.get_settings()["models"]
 
-    # env var alone marks a provider configured
+    # An old environment key cannot reactivate the retired provider.
     monkeypatch.setenv("GEMINI_API_KEY", "AIza-env")
     provs = {p["name"]: p for p in mgr.get_providers()}
-    assert provs["gemini"]["configured"] is True
+    assert "gemini" not in provs
 
 
 def test_first_configured_provider_wins_default(tmp_path, monkeypatch):
@@ -522,7 +517,7 @@ def test_first_configured_provider_wins_default(tmp_path, monkeypatch):
     assert mgr.model == "anthropic:claude-fable-5"
 
     # but a default that already works is never stolen by the next provider
-    mgr.set_provider("gemini", {"api_key": "AIza-x"})
+    mgr.set_provider("zai", {"api_key": "zk-x"})
     assert mgr.model == "anthropic:claude-fable-5"
 
 

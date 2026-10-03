@@ -42,6 +42,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import subprocess
 import sys
 import tempfile
@@ -241,13 +242,18 @@ class GhApi:
         env["GH_NO_UPDATE_NOTIFIER"] = "1"
         return env
 
-    def _api(self, path: str, *, method: str = "GET", allow_404: bool = False) -> Any:
+    def _api(
+        self, path: str, *, method: str = "GET", allow_404: bool = False,
+        payload: dict | None = None,
+    ) -> Any:
         cmd = ["gh", "api", "--method", method, "-H", "Accept: application/vnd.github+json", path]
+        if payload is not None:
+            cmd.extend(["--input", "-"])
         last = ""
         for attempt in range(1, _API_RETRIES + 1):
             proc = subprocess.run(
                 cmd,
-                stdin=subprocess.DEVNULL,
+                **({"stdin": subprocess.DEVNULL} if payload is None else {"input": json.dumps(payload)}),
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -304,6 +310,18 @@ class GhApi:
         return list(refs or [])
 
     # -- writes ------------------------------------------------------------------------
+
+    def create_draft(self, tag: str) -> dict:
+        return self._api(
+            f"repos/{self.repo}/releases", method="POST",
+            payload={"tag_name": tag, "draft": True, "generate_release_notes": True},
+        )
+
+    def publish_release(self, release_id: int) -> dict:
+        return self._api(
+            f"repos/{self.repo}/releases/{release_id}", method="PATCH",
+            payload={"draft": False, "make_latest": "true"},
+        )
 
     def delete_asset(self, asset_id: int) -> None:
         self._api(
@@ -1087,6 +1105,82 @@ def cmd_verify(args: argparse.Namespace) -> int:
     return 0
 
 
+def prepare_release(api: Any, tag: str) -> dict:
+    matches = [r for r in api.list_releases() if r.get("tag_name") == tag]
+    if len(matches) > 1:
+        raise GhError(f"multiple releases for {tag}")
+    release = matches[0] if matches else api.create_draft(tag)
+    if not isinstance(release, dict) or release.get("tag_name") != tag or not release.get("id"):
+        raise GhError(f"could not verify prepared release for {tag}")
+    return release
+
+
+_STABLE_TAG = re.compile(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)")
+
+
+def _release_version(tag: str) -> tuple[int, int, int]:
+    if not _STABLE_TAG.fullmatch(tag):
+        raise GhError(f"not a stable release tag: {tag!r}")
+    major, minor, patch = map(int, tag[1:].split("."))
+    return major, minor, patch
+
+
+def run_publish(
+    api: Any, *, tag: str, version: str, dist: Path, release_id: int | None = None,
+) -> VerifyRun:
+    if tag != f"v{version}":
+        raise GhError("release tag does not match the app version")
+    wanted_version = _release_version(tag)
+    out = run_verify(api, tag=tag, version=version, dist=dist, release_id=release_id)
+    if not out.ok:
+        return out
+    release = resolve_release(api, tag, release_id)
+    if release.get("prerelease"):
+        raise GhError("automatic publication requires a stable release")
+    if not release.get("draft"):
+        return out
+    if not 1 <= wanted_version[2] <= 9:
+        raise GhError("new releases require a patch component in the range 1-9")
+    for existing in api.list_releases():
+        if existing.get("draft") or existing.get("prerelease"):
+            continue
+        existing_tag = str(existing.get("tag_name") or "")
+        if _STABLE_TAG.fullmatch(existing_tag):
+            if _release_version(existing_tag) > wanted_version:
+                raise GhError(f"refusing to replace newer published release {existing_tag} with {tag}")
+    published = api.publish_release(int(release["id"]))
+    if published.get("draft") is not False or published.get("tag_name") != tag:
+        raise GhError("publication response did not confirm the expected release")
+    verified = api.get_release(int(release["id"]))
+    if not verified or verified.get("draft") is not False or verified.get("tag_name") != tag:
+        raise GhError("published release could not be read back")
+    return out
+
+
+def cmd_prepare(args: argparse.Namespace) -> int:
+    release = prepare_release(GhApi(args.repo), args.tag)
+    release_id = int(release["id"])
+    output = os.environ.get("GITHUB_OUTPUT")
+    if output:
+        with open(output, "a", encoding="utf-8") as stream:
+            stream.write(f"id={release_id}\n")
+    print(f"release ready: id={release_id} tag={args.tag} draft={release.get('draft')}")
+    return 0
+
+
+def cmd_publish(args: argparse.Namespace) -> int:
+    out = run_publish(
+        GhApi(args.repo), tag=args.tag, version=args.version,
+        dist=args.dist, release_id=args.release_id,
+    )
+    if not out.ok:
+        for problem in out.problems:
+            _error(problem)
+        return 1
+    print(f"published release verified: {args.tag}")
+    return 0
+
+
 def cmd_make_selftest_dist(args: argparse.Namespace) -> int:
     return make_selftest_dist(
         version=args.version, tag=args.tag, repo=args.repo, dist=args.dist, big_mb=args.big_mb
@@ -1122,6 +1216,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     ve = subs.add_parser("verify", help="read-only audit of the finished release")
     _add_common(ve)
     ve.set_defaults(func=cmd_verify)
+
+    prepare = subs.add_parser("prepare", help="create a draft or reuse an existing release without demoting it")
+    _add_common(prepare)
+    prepare.set_defaults(func=cmd_prepare)
+
+    publish = subs.add_parser("publish", help="verify complete assets, then publish the stable release")
+    _add_common(publish)
+    publish.set_defaults(func=cmd_publish)
 
     mk = subs.add_parser("make-selftest-dist", help="build a throwaway dist/ for a dry run")
     mk.add_argument("--version", required=True)

@@ -16,8 +16,8 @@ from coworker.providers import detect_provider, verify_provider_key
     [
         ("sk-ant-api03-abc", "anthropic"),
         ("sk-or-v1-abc", "openrouter"),
-        ("AIzaSyAbc123", "gemini"),
-        ("nvapi-AbC123", "nvidia"),
+        ("AIzaSyAbc123", None),
+        ("nvapi-AbC123", None),
         ("sk-proj-abc", "openai"),
         ("sk_live_abc", "openai"),
         ("", None),
@@ -89,18 +89,15 @@ def test_verify_anthropic_headers(monkeypatch):
     assert "anthropic-version" in cap["headers"]
 
 
-def test_verify_gemini_uses_relay_and_header_auth(monkeypatch):
-    # gemini-relay multi-user rollout: the probe now hits the company relay with the key
-    # in a header, not `?key=` on the (unreachable-from-China) Google endpoint.
+def test_retired_gemini_makes_no_probe(monkeypatch):
     cap: dict = {}
     _patch_get(monkeypatch, status=200, capture=cap)
-    verify_provider_key("gemini", api_key="AIza-x")
-    assert cap["url"] == "https://gemini.smjtools.com/v1beta/models"
-    assert cap["headers"]["x-goog-api-key"] == "AIza-x"
-    assert "params" not in cap
+    res = verify_provider_key("gemini", api_key="AIza-x")
+    assert not res["ok"] and "no longer available" in res["error"]
+    assert cap == {}
 
 
-def test_verify_gemini_surfaces_the_relays_own_words(monkeypatch):
+def test_retired_gemini_does_not_query_the_old_relay(monkeypatch):
     """The v3 relay refuses in a Google-shaped JSON envelope whose message was written for
     the person (not signed in / login revoked / over quota) — Test passes it through
     instead of flattening every 4xx into "Invalid API key."."""
@@ -116,17 +113,17 @@ def test_verify_gemini_surfaces_the_relays_own_words(monkeypatch):
 
     monkeypatch.setattr("httpx.get", fake_get)
     res = verify_provider_key("gemini", api_key="AIzaSy-x")
-    assert res == {"ok": False, "error": message}
+    assert res["ok"] is False and "no longer available" in res["error"]
 
 
-def test_verify_gemini_non_json_error_still_maps(monkeypatch):
+def test_retired_gemini_does_not_require_an_upstream_response(monkeypatch):
     # a fake with no .json at all — the passthrough must degrade to the generic mapping
     _patch_get(monkeypatch, status=403)
     res = verify_provider_key("gemini", api_key="AIza-x")
-    assert res == {"ok": False, "error": "Invalid API key."}
+    assert res["ok"] is False and "no longer available" in res["error"]
 
 
-def test_verify_gemini_maps_unusable_auth_key_to_a_key_swap_hint(monkeypatch):
+def test_retired_gemini_does_not_accept_old_auth_keys(monkeypatch):
     """An unusable AI Studio `AQ.…` auth key (dead / mis-copied / the wrong one): Google
     answers 401 ACCESS_TOKEN_TYPE_UNSUPPORTED (header form) / API_KEY_SERVICE_BLOCKED
     (bearer form) — verified live 2026-08-27; a healthy auth key sails through untouched.
@@ -154,7 +151,7 @@ def test_verify_gemini_maps_unusable_auth_key_to_a_key_swap_hint(monkeypatch):
         monkeypatch.setattr("httpx.get", fake_get)
         res = verify_provider_key("gemini", api_key="AQ.Ab8-auth-key")
         assert res["ok"] is False
-        assert "拒收了这一把" in res["error"]
+        assert "no longer available" in res["error"]
 
 
 def test_verify_ollama_uses_v1_models_no_key(monkeypatch):

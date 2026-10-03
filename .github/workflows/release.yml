@@ -5,8 +5,7 @@
 # .venv with PyInstaller) and publishes the results.
 #
 # Triggers:
-#   - tag push `v*`  → builds all targets and attaches them to a DRAFT GitHub Release
-#                      (review, then publish by hand).
+#   - tag push `v*`  → CI, signed builds, verified uploads, then automatic publication.
 #   - manual run     → from a branch: builds and uploads workflow artifacts only (no
 #                      release). At a tag ref it behaves exactly like a tag push — the
 #                      release job keys off the ref, not the event. bump-and-tag.yml
@@ -42,7 +41,13 @@ defaults:
     shell: bash
 
 jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   build:
+    needs: checks
     strategy:
       fail-fast: false
       matrix:
@@ -176,12 +181,9 @@ jobs:
     # approach. Being killed here is safe: an interrupted upload leaves only a `starter`
     # record, which the next run deletes before re-uploading that one file.
     timeout-minutes: 120
-    # One release job per tag, and never cancel one mid-upload. Two concurrent jobs on the
-    # same tag would each see the other's in-flight asset as a `state=starter` half-finished
-    # record and delete it (that IS the right thing to do for a genuinely abandoned upload —
-    # it just must never be another job's live one).
+    # Serialize publication across tags so an older run cannot replace a newer latest.
     concurrency:
-      group: release-${{ github.ref }}
+      group: release-publication
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7
@@ -213,16 +215,13 @@ jobs:
             echo "::warning::no updater signatures in dist/ — release ships WITHOUT auto-update manifest"
           fi
 
-      # Creates the draft and its notes ONLY. No `files:` — this action uploads everything
-      # at once and, with its default `overwrite_files: true`, a re-run deletes the assets
-      # that already landed before starting over. v0.6.2 lost two runs that way to transient
-      # uploads.github.com 500s. The two steps below do the upload instead, one file at a
-      # time, re-uploading only what is missing.
-      - uses: softprops/action-gh-release@v3
+      - name: Prepare draft (preserving already-published releases)
         id: draft
-        with:
-          draft: true
-          generate_release_notes: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 packaging/upload_release_assets.py prepare \
+            --repo "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME" --dist dist
 
       # A build with no .sig files (the ::warning:: branch above) fails this step's
       # preflight, because dist/ then holds neither the signatures nor latest.json and the
@@ -249,5 +248,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 packaging/upload_release_assets.py verify \
+            --repo "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME" \
+            --release-id "${{ steps.draft.outputs.id }}" --dist dist
+
+      - name: Publish automatically after verification
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 packaging/upload_release_assets.py publish \
             --repo "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME" \
             --release-id "${{ steps.draft.outputs.id }}" --dist dist

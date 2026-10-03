@@ -9,8 +9,7 @@
 #     `gh workflow run` 在新 tag 的 ref 上显式触发 release.yml——workflow_dispatch 不受
 #     防递归限制，而 release job 的条件只看 ref 是不是 tag，dispatch 到 tag 上同样成立。
 #
-# 产物仍然是 DRAFT Release：构建完去 Releases 页 review，点 Publish 才会把更新真正
-# 推给装好的应用。这道人工闸是有意保留的——Publish 即全员升级。
+# 构建、CI、签名和更新清单校验全部通过后自动发布；失败的草稿不会推给已安装的应用。
 #
 # 顺带：GITHUB_TOKEN 推的版本号提交同样不触发 ci.yml。bump 提交只改一个数字，可接受。
 
@@ -52,31 +51,7 @@ jobs:
         env:
           BUMP: ${{ inputs.bump }}
         run: |
-          NEXT=$(python3 - "$BUMP" <<'EOF'
-          import json, sys
-          from pathlib import Path
-
-          conf = Path("surfaces/gui/src-tauri/tauri.conf.json")
-          text = conf.read_text(encoding="utf-8")
-          current = json.loads(text)["version"]
-          major, minor, patch = (int(x) for x in current.split("."))
-          bump = sys.argv[1]
-          if bump == "major":
-              major, minor, patch = major + 1, 0, 0
-          elif bump == "minor":
-              minor, patch = minor + 1, 0
-          else:
-              patch += 1
-          next_version = f"{major}.{minor}.{patch}"
-          # 精确替换那一行，不走 json.dump——它会把整个文件重排。
-          needle = f'"version": "{current}"'
-          assert text.count(needle) == 1, f"expected exactly one {needle!r}"
-          conf.write_text(
-              text.replace(needle, f'"version": "{next_version}"'), encoding="utf-8"
-          )
-          print(next_version)
-          EOF
-          )
+          NEXT=$(python3 packaging/bump_version.py "$BUMP")
           echo "next=$NEXT" >> "$GITHUB_OUTPUT"
           echo "将发布 v$NEXT"
 
@@ -93,7 +68,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add surfaces/gui/src-tauri/tauri.conf.json
-          git commit -m "Prepare app release ${NEXT}"
+          git commit -m "Prepare app release ${NEXT}" -m "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
           git tag "v${NEXT}"
           # 原子推送：提交和 tag 一起上；main 若在此期间被人推动，整体失败，重跑即可。
           git push --atomic origin main "v${NEXT}"
@@ -110,6 +85,6 @@ jobs:
             echo "## v${NEXT} 已进入构建"
             echo ""
             echo "- 构建进度：[Release workflow](https://github.com/${GITHUB_REPOSITORY}/actions/workflows/release.yml)，三平台约 21 分钟"
-            echo "- 构建完成后：[Releases](https://github.com/${GITHUB_REPOSITORY}/releases) 里出现**草稿**，review 后点 Publish"
-            echo "- Publish 之后，装好的应用才会收到这次自动更新"
+            echo "- CI、三平台构建、签名和产物校验全部通过后自动发布：[Releases](https://github.com/${GITHUB_REPOSITORY}/releases)"
+            echo "- 发布之后，装好的应用会收到这次自动更新；任何校验失败都会阻止发布"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -247,6 +247,22 @@ class FakeGh:
         self.deleted_releases: list[int] = []
         self.illegal_deletes: list[str] = []
         self.stopped: list[str] = []
+        self.published: list[int] = []
+
+    def create_draft(self, tag: str) -> dict:
+        release = {"id": next(self._ids), "tag_name": tag, "draft": True}
+        self.releases.append(release)
+        return release
+
+    def publish_release(self, release_id: int) -> dict:
+        release = self.get_release(release_id)
+        assert release is not None
+        release["draft"] = False
+        self.published.append(release_id)
+        for stored in self.releases:
+            if stored["id"] == release_id:
+                stored["draft"] = False
+        return release
 
     # -- internals ---------------------------------------------------------------------
 
@@ -1016,6 +1032,82 @@ def test_the_versioned_names_track_the_version():
 # --------------------------------------------------------------------------------------
 # GhApi._paginated — offline, with a stub executor in place of the gh subprocess
 # --------------------------------------------------------------------------------------
+
+def test_prepare_does_not_demote_a_published_release(tmp_path):
+    dist = build_dist(tmp_path)
+    api = FakeGh(dist, clock=FakeClock(), releases=[
+        {"id": RELEASE_ID, "tag_name": TAG, "draft": False},
+    ])
+    assert mod.prepare_release(api, TAG)["draft"] is False
+    assert len(api.releases) == 1
+
+
+def test_prepare_creates_only_one_draft_on_retry(tmp_path):
+    api = FakeGh(build_dist(tmp_path), clock=FakeClock(), releases=[])
+    first = mod.prepare_release(api, TAG)
+    assert first["draft"] is True
+    assert mod.prepare_release(api, TAG)["id"] == first["id"]
+    assert len(api.releases) == 1
+
+
+def test_publication_requires_all_verified_assets(tmp_path):
+    dist = build_dist(tmp_path)
+    api = FakeGh(dist, clock=FakeClock(), assets=remote_assets(dist, omit=("latest.json",)))
+    out = mod.run_publish(api, tag=TAG, version=VERSION, dist=dist)
+    assert not out.ok
+    assert api.published == []
+    assert api.releases[0]["draft"] is True
+
+
+def test_publication_rejects_wrong_signature_or_digest(tmp_path):
+    dist = build_dist(tmp_path)
+    api = FakeGh(dist, clock=FakeClock(), assets=remote_assets(
+        dist, digest_override={"OpenWorker-windows-setup.exe.sig": "0" * 64},
+    ))
+    assert not mod.run_publish(api, tag=TAG, version=VERSION, dist=dist).ok
+    assert api.published == []
+
+
+def test_complete_publication_is_read_back_and_retry_safe(tmp_path):
+    dist = build_dist(tmp_path)
+    api = FakeGh(dist, clock=FakeClock(), assets=remote_assets(dist))
+    assert mod.run_publish(api, tag=TAG, version=VERSION, dist=dist).ok
+    assert api.published == [RELEASE_ID]
+    assert api.releases[0]["draft"] is False
+    assert mod.run_publish(api, tag=TAG, version=VERSION, dist=dist).ok
+    assert api.published == [RELEASE_ID]
+
+
+def test_older_draft_cannot_replace_newer_published_release(tmp_path):
+    dist = build_dist(tmp_path)
+    api = FakeGh(dist, clock=FakeClock(), assets=remote_assets(dist), releases=[
+        {"id": RELEASE_ID, "tag_name": TAG, "draft": True},
+        {"id": 99, "tag_name": "v1.2.4", "draft": False},
+    ])
+    with pytest.raises(mod.GhError, match="newer published"):
+        mod.run_publish(api, tag=TAG, version=VERSION, dist=dist)
+    assert api.published == []
+
+
+def test_mismatched_tag_cannot_publish(tmp_path):
+    api = FakeGh(build_dist(tmp_path), clock=FakeClock())
+    with pytest.raises(mod.GhError, match="does not match"):
+        mod.run_publish(api, tag=TAG, version="1.2.4", dist=api.dist)
+    assert api.published == []
+
+@pytest.mark.parametrize("patch", [0, 10, 14])
+def test_new_release_with_out_of_policy_patch_cannot_publish(tmp_path, patch):
+    version = f"1.2.{patch}"
+    tag = f"v{version}"
+    dist = build_dist(tmp_path, version=version, tag=tag)
+    api = FakeGh(
+        dist, clock=FakeClock(), version=version,
+        assets=remote_assets(dist, version=version),
+        releases=[{"id": RELEASE_ID, "tag_name": tag, "draft": True}],
+    )
+    with pytest.raises(mod.GhError, match="range 1-9"):
+        mod.run_publish(api, tag=tag, version=version, dist=dist)
+    assert api.published == []
 
 
 def _stub_api(api, pages: dict[int, list]) -> list[str]:

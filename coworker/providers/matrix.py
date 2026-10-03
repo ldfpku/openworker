@@ -135,52 +135,6 @@ MATRIX: dict[str, ModelEntry] = {
     "anthropic:claude-haiku-4-5": ModelEntry(
         "Claude Haiku 4.5 · Anthropic", _AGENTIC_VISION, 200_000
     ),
-    # Gemini (thought signatures required in tool loops — carried via the `_gemini`
-    # message sidecar, see gemini_provider.py). Reconciled against
-    # https://ai.google.dev/gemini-api/docs/models on 2026-08-22: every 2.5-and-newer
-    # general text+vision chat model, newest first. Deliberately excluded, because none of
-    # them is a chat model this app can drive — TTS (`*-tts`), image generation
-    # (`*-image`, the Nano Banana line), live/native-audio, Veo, Lyria, embeddings,
-    # robotics-ER, and the specialized agents (computer-use, deep-research, antigravity).
-    # Also excluded: everything the page marks shut down (2.0 Flash, 2.0 Flash-Lite,
-    # gemini-3-pro-preview, gemini-3.1-flash-lite-preview).
-    # Every one of these reports the same limits on its model card: 1,048,576 input /
-    # 65,536 output tokens, function calling Supported.
-    "gemini:gemini-3.7-flash": ModelEntry(
-        "Gemini 3.7 Flash · Google", _AGENTIC_VISION, 1_048_576
-    ),
-    "gemini:gemini-3.6-flash": ModelEntry(
-        "Gemini 3.6 Flash · Google", _AGENTIC_VISION, 1_048_576
-    ),
-    "gemini:gemini-3.5-flash": ModelEntry(
-        "Gemini 3.5 Flash · Google", _AGENTIC_VISION, 1_048_576
-    ),
-    "gemini:gemini-3.5-flash-lite": ModelEntry(
-        "Gemini 3.5 Flash-Lite · Google", _AGENTIC_VISION, 1_048_576
-    ),
-    "gemini:gemini-3.1-flash-lite": ModelEntry(
-        "Gemini 3.1 Flash-Lite · Google", _AGENTIC_VISION, 1_048_576
-    ),
-    # The only Pro in the 3.x line is still preview-tagged, so it stays despite the rule of
-    # thumb that previews don't belong in a curated list. gemini-3-flash-preview is here
-    # only because the vendor page still lists it as available — it is a preview of an older
-    # generation than the stable Flash models above it, and previews do get shut down
-    # (gemini-3-pro-preview already has been), so it is the first row to drop on a refresh.
-    "gemini:gemini-3.1-pro-preview": ModelEntry(
-        "Gemini 3.1 Pro · Google", _AGENTIC_VISION, 1_048_576
-    ),
-    "gemini:gemini-3-flash-preview": ModelEntry(
-        "Gemini 3 Flash · Google", _AGENTIC_VISION, 1_048_576
-    ),
-    "gemini:gemini-2.5-pro": ModelEntry(
-        "Gemini 2.5 Pro · Google", _AGENTIC_VISION, 1_048_576
-    ),
-    "gemini:gemini-2.5-flash": ModelEntry(
-        "Gemini 2.5 Flash · Google", _AGENTIC_VISION, 1_048_576
-    ),
-    "gemini:gemini-2.5-flash-lite": ModelEntry(
-        "Gemini 2.5 Flash-Lite · Google", _AGENTIC_VISION, 1_048_576
-    ),
     # Ark Responses API providers (verified 2026-08-14). BytePlus pay-as-you-go and
     # Volcengine Agent Plan intentionally use separate provider prefixes because their
     # endpoints, credentials, regions, and model catalogs are not interchangeable.
@@ -215,12 +169,6 @@ MATRIX: dict[str, ModelEntry] = {
     "mistral:mistral-large-latest": ModelEntry(
         "Mistral Large · Mistral", _AGENTIC, 128_000
     ),
-    # Kimi K3 through the company's NVIDIA NIM relay (nvidia.smjtools.com, per-person
-    # `nvapi-` keys from the administrator). Image input works through the relay (its
-    # README demonstrates a chat/completions image_url round trip); the context window
-    # NIM serves was not verified, so the meter hides rather than borrowing Together's
-    # 1M figure for the same model.
-    "nvidia:moonshotai/kimi-k3": ModelEntry("Kimi K3 · via NVIDIA", _AGENTIC_IMAGE),
     # -- resellers (their model namespaces, verbatim) -----------------------------
     "together:thinkingmachines/Inkling": ModelEntry("Inkling · via Together"),
     "together:zai-org/GLM-5.2": ModelEntry("GLM-5.2 · via Together", _AGENTIC, 128_000),
@@ -458,7 +406,6 @@ _UTILITY_MODELS: tuple[tuple[str, str], ...] = (
     ("aigw:openai/", "aigw:openai/gpt-5.6-luna"),
     ("aigw:google-ai-studio/", "aigw:google-ai-studio/gemini-3.1-flash-lite"),
     ("anthropic:", "anthropic:claude-haiku-4-5"),
-    ("gemini:gemini-", "gemini:gemini-3.5-flash-lite"),
     ("bedrock:claude/", "bedrock:claude/anthropic.claude-haiku-4-5-v1:0"),
     ("vertex:claude/", "vertex:claude/claude-haiku-4-5"),
     ("vertex:gemini/", "vertex:gemini/gemini-3.6-flash"),

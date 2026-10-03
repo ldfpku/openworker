@@ -403,9 +403,6 @@ COMPAT_VENDORS = {
     "qwen": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
     "xai": "https://api.x.ai/v1",
     "mistral": "https://api.mistral.ai/v1",
-    # The company NVIDIA NIM relay — same descriptor shape as the vendors above (key +
-    # prefilled editable endpoint), the endpoint just points at the relay.
-    "nvidia": "https://nvidia.smjtools.com/v1",
 }
 
 
@@ -653,7 +650,7 @@ def test_reseller_descriptors_and_matrix_stay_in_lockstep():
     from coworker.providers.matrix import models_for_provider
     from coworker.providers.registry import get_descriptor
 
-    for name in ("together", "fireworks", "openrouter", "nvidia"):
+    for name in ("together", "fireworks", "openrouter"):
         d = get_descriptor(name)
         assert d is not None and d.needs_key
         curated = models_for_provider(name)
@@ -678,7 +675,6 @@ def test_utility_model_for_every_table_row_and_fallback():
             "aigw:google-ai-studio/gemini-3.1-flash-lite"
         ),
         "anthropic:claude-opus-4-8": "anthropic:claude-haiku-4-5",
-        "gemini:gemini-3.7-flash": "gemini:gemini-3.5-flash-lite",
         "bedrock:claude/anthropic.claude-sonnet-4-6-v1:0": (
             "bedrock:claude/anthropic.claude-haiku-4-5-v1:0"
         ),

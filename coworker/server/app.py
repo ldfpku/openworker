@@ -276,7 +276,6 @@ def create_app(manager: SessionManager) -> FastAPI:
         "/auth/callback",
         "/mcp/oauth/callback",
         "/oauth/callback",
-        "/relay/callback",
     }
 
     def _request_authenticated(request: Request) -> bool:
@@ -1740,78 +1739,6 @@ def create_app(manager: SessionManager) -> FastAPI:
                 "Signed in",
                 "You're signed in to OpenWorker Cloud. "
                 "You can close this tab and return to OpenWorker.",
-            )
-        )
-
-    @app.post("/v1/relay/login")
-    def relay_login() -> dict[str, Any]:
-        """Start Gemini-relay sign-in (Cloudflare Access one-time PIN). The sidecar opens
-        the system browser itself, same as cloud sign-in above."""
-        import webbrowser
-
-        from .. import relay_auth
-        from ..config import load_config
-
-        out = relay_auth.begin_login(load_config())
-        if out.get("ok"):
-            webbrowser.open(out["login_url"])
-        return out
-
-    @app.get("/v1/relay/status")
-    async def relay_status(verify: int = 0) -> dict[str, Any]:
-        """Local view by default; `?verify=1` also asks the relay whether the token still
-        resolves, which is how a revoked colleague finds out."""
-        from .. import relay_auth
-
-        return await asyncio.to_thread(
-            lambda: relay_auth.status(manager.secrets, verify=bool(verify))
-        )
-
-    @app.post("/v1/relay/logout")
-    async def relay_logout() -> dict[str, Any]:
-        from .. import relay_auth
-
-        return await asyncio.to_thread(lambda: relay_auth.logout(manager.secrets))
-
-    @app.get("/relay/callback")
-    async def relay_auth_callback(code: str = "", state: str = "", error: str = ""):
-        # Loopback landing for the relay sign-in flow (relay_auth.py). Browser-facing:
-        # returns the same styled card as the cloud/connector callbacks, in Chinese to match
-        # the Cloudflare Access login pages the colleague just came through.
-        from fastapi.responses import HTMLResponse
-
-        from .. import relay_auth
-
-        failed_detail = "关掉这个标签页，回 OpenWorker 重新点一次「登录」。"
-        if error:
-            return HTMLResponse(
-                _browser_page("登录失败", failed_detail, ok=False, error=error, company=True),
-                status_code=400,
-            )
-        result = await asyncio.to_thread(
-            lambda: relay_auth.deliver_callback(manager.secrets, code, state)
-        )
-        if not result.get("ok"):
-            return HTMLResponse(
-                _browser_page(
-                    "登录失败",
-                    failed_detail,
-                    ok=False,
-                    error=result.get("error", ""),
-                    company=True,
-                ),
-                status_code=400,
-            )
-        # Signing in is what makes the relay answer `/v1beta/models` at all: pull the
-        # catalog now, rather than leaving a "not signed in" failure recorded minutes ago
-        # to sit out its retry window while Settings shows the built-in list.
-        manager.kick_catalog_refresh("gemini")
-        who = result.get("name") or result.get("email") or ""
-        return HTMLResponse(
-            _browser_page(
-                "已登录",
-                f"{who}，你已经登录 OpenWorker 中转，可以关掉这个标签页回到 OpenWorker 了。",
-                company=True,
             )
         )
 
