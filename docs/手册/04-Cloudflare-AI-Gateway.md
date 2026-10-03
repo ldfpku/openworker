@@ -59,6 +59,9 @@ Wrangler `vars`、源码、构建产物或客户端环境。配置 Run 令牌也
 2026-10-03 迁移上线前，ZY 预付余额已由管理员确认，三条上游协议的跳缓存
 真实推理已通过。guard 部署时只注入 `AIG_TOKEN`，不要将整个本地 `.env`
 作为 `--secrets-file` 上传，否则会把管理令牌一起送入 Worker。
+ZY guard 现已绑定 `gateway.smjtools.com`；未登录及无效令牌请求返回 401，
+OAuth 发现指向 ZY 团队域，workers.dev/预览旁路关闭。后续只以 ZY 为准，
+不再迁移或对账 DF 数据；桌面端升级后仍须通过真实工作邮箱重新登录。
 
 ## 历史背景与协议说明
 
