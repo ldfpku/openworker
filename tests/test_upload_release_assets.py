@@ -844,6 +844,37 @@ def test_the_matching_release_id_is_accepted(dist, clock):
     assert run.ok, run.errors
 
 
+@pytest.mark.parametrize("operation", ["upload", "verify", "publish"])
+def test_prepared_draft_is_resolved_by_id_before_listing_catches_up(dist, clock, monkeypatch, operation):
+    gh = FakeGh(dist, clock=clock, assets=remote_assets(dist))
+    monkeypatch.setattr(gh, "list_releases", lambda: [])
+    if operation == "upload":
+        out = run_upload(gh, clock, dist, release_id=RELEASE_ID)
+        assert out.ok, out.errors
+    else:
+        action = mod.run_verify if operation == "verify" else mod.run_publish
+        out = action(gh, tag=TAG, version=VERSION, dist=dist, release_id=RELEASE_ID)
+        assert out.ok, out.problems
+
+
+def test_unlisted_release_id_must_still_match_tag(dist, clock, monkeypatch):
+    gh = FakeGh(dist, clock=clock, releases=[{"id": RELEASE_ID, "tag_name": "v9.9.9", "draft": True}])
+    monkeypatch.setattr(gh, "list_releases", lambda: [])
+    out = run_upload(gh, clock, dist, release_id=RELEASE_ID)
+    assert not out.ok
+    assert any("--release-id" in error for error in out.errors)
+    assert gh.uploads == []
+
+
+def test_explicit_id_does_not_hide_a_different_release_with_same_tag(dist, clock, monkeypatch):
+    gh = FakeGh(dist, clock=clock)
+    monkeypatch.setattr(gh, "list_releases", lambda: [{"id": 43, "tag_name": TAG, "draft": True}])
+    out = run_upload(gh, clock, dist, release_id=RELEASE_ID)
+    assert not out.ok
+    assert any("42" in error and "43" in error for error in out.errors)
+    assert gh.uploads == []
+
+
 # --------------------------------------------------------------------------------------
 # 12: verify
 # --------------------------------------------------------------------------------------

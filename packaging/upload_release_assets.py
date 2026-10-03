@@ -422,8 +422,21 @@ def resolve_release(api: Any, tag: str, release_id: int | None = None) -> dict:
     Paginated on purpose: a repo with more than 100 releases would silently hide the
     right one behind a single-page fetch, and "no release for tag" on a good tag is a
     far more confusing failure than a slow listing.
+
+    A newly prepared draft may not be listed yet. Confirm its explicit ID directly,
+    while retaining the listing's duplicate-tag check.
     """
     matches = [r for r in api.list_releases() if r.get("tag_name") == tag]
+    if release_id is not None:
+        confirmed = api.get_release(release_id)
+        if (
+            not confirmed
+            or int(confirmed.get("id", -1)) != int(release_id)
+            or confirmed.get("tag_name") != tag
+        ):
+            raise GhError(f"--release-id {release_id} is not the release for tag {tag}")
+        matches = [r for r in matches if int(r.get("id", -1)) != int(release_id)]
+        matches.append(confirmed)
     if not matches:
         raise GhError(f"no release for tag {tag} in {api.repo}")
     if len(matches) > 1:
