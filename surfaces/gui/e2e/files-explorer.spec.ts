@@ -13,8 +13,10 @@ test("Files lists the session roots and browses into a file", async ({ page }) =
   // Collapsed by default like every section (the More fold is gone — owner 2026-08-20).
   await page.getByTestId("rail-toggle-files").click();
   const row = page.getByTestId("files-root-row").first();
-  await expect(row).toContainText("scratch");
+  await expect(row).toContainText("Conversation folder");
+  await expect(row).not.toContainText("scratch");
   await expect(row).toContainText("read-write");
+  await expect(row).toHaveAttribute("title", "/Users/test/OpenWorker/launch-note");
 
   // Root → folder listing in the viewer, breadcrumb says Files.
   await row.click();

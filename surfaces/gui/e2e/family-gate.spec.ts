@@ -51,10 +51,10 @@ test("gated coworker: send with no folder asks where to work; temp folder sends 
   await expect(page.locator(".main-scroll").getByText("fix the tests", { exact: true })).toHaveCount(1);
   await expect(page.getByText("Temporary folder created · git initialized")).toBeVisible();
 
-  // The raw temp path never shows: header says "Temporary folder" + Save as project….
+  // The raw temp path never shows: header says "Conversation folder" + Save as project….
   const sub = page.getByTestId("session-subtitle");
   await expect(sub).toContainText("Security Coworker");
-  await expect(sub).toContainText("Temporary folder");
+  await expect(sub).toContainText("Conversation folder");
   await expect(sub).not.toContainText("ow-temp");
   await expect(page.getByTestId("save-as-project")).toBeVisible();
 

@@ -30,7 +30,7 @@ test("no topbar opener; the Access header IS the ambient glance; expanding edits
   await expect(body.getByText("Sources")).toBeVisible();
   await expect(body.getByText("Slack", { exact: true })).toBeVisible();
   await expect(body.getByText("email context for morning summaries")).toBeVisible();
-  await expect(body.getByTestId("drawer-directories").getByText("Temporary folder")).toBeVisible();
+  await expect(body.getByTestId("drawer-directories").getByText("Conversation folder", { exact: true })).toBeVisible();
   await expect(page.getByRole("dialog")).toHaveCount(0);
 
   // Channels is a chat capability, not a two_way one: Slack gets the drill-down, GitHub
