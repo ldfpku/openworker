@@ -154,6 +154,11 @@
 | [04-Cloudflare-AI-Gateway](docs/手册/04-Cloudflare-AI-Gateway.md) | ZY 公司网关、登录、模型权限与计费 |
 | [05-微信接入](docs/手册/05-微信接入.md) | 想在微信里使唤 agent |
 
+**平台协同（管理员/开发者）**：公司共享平台接管和本库后续适配见私有
+[smj-platform · OpenWorker 交接](https://github.com/ldfpku/smj-platform/blob/main/docs/repos/openworker.md)
+（需仓库授权）。网关域名保持不变；接口、权限、额度与错误契约先由平台明确，
+再在本库调整客户端，不把平台管理凭据或内部资源清单打包进应用。
+
 ---
 
 ## 从源码运行
