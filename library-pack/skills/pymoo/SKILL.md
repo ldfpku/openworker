@@ -7,6 +7,7 @@ compatibility: Requires Python 3.10+ and pymoo (uv pip install). Optional matplo
 metadata:
   version: "1.3"
   skill-author: K-Dense Inc.
+source: K-Dense-AI/scientific-agent-skills
 ---
 
 # Pymoo - Multi-Objective Optimization in Python

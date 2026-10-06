@@ -9,6 +9,7 @@ metadata:
   adapted-by: K-Dense Inc.
   source: https://github.com/anthropics/skills/tree/main/skills/xlsx
 compatibility: Requires Python 3.8+, LibreOffice (soffice on PATH), and gcc only when Unix sockets are restricted
+source: K-Dense-AI/scientific-agent-skills
 ---
 
 # XLSX creation, editing, and analysis

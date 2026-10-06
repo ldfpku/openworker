@@ -7,6 +7,7 @@ compatibility: Requires Python 3.10+ and the aeon package (uv pip install). Opti
 metadata:
   version: "1.0"
   skill-author: K-Dense Inc.
+source: K-Dense-AI/scientific-agent-skills
 ---
 
 # Aeon Time Series Machine Learning

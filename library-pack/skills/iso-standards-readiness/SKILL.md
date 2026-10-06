@@ -9,6 +9,7 @@ metadata:
   skill-author: K-Dense Inc.
   supersedes: iso-13485-certification
   last-reviewed: "2026-07-26"
+source: K-Dense-AI/scientific-agent-skills
 ---
 
 # ISO Standards Readiness Evidence Preparation

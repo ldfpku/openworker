@@ -18,6 +18,7 @@ metadata:
     - name: OPENALEX_EMAIL
       required: false
       description: Contact email for the faster OpenAlex polite pool.
+source: K-Dense-AI/scientific-agent-skills
 ---
 
 # Citation Management

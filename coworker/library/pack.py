@@ -1,8 +1,9 @@
 """Read-only access to the pre-built library data pack (library-pack/).
 
 The pack ships pre-packaged expert prompts (agency-agents / agency-agents-zh) and
-skills (scientific-agent-skills) for browsing inside coworker — see
-library-pack/index.json and library-pack/ATTRIBUTION.md for provenance. This module
+skills (anthropics/knowledge-work-plugins, one category per plugin, plus the
+manufacturing-relevant subset of scientific-agent-skills) for browsing inside coworker —
+see library-pack/index.json and library-pack/ATTRIBUTION.md for provenance. This module
 only reads the pack; nothing here writes to it (the pack is built by a separate script).
 
 Location resolution order:
@@ -207,4 +208,9 @@ class LibraryPack:
             "scripts": entry.get("scripts", 0),
             "compatibility": entry.get("compatibility", ""),
             "license": entry.get("license", ""),
+            # 来源标记（packaging/gen_library.py 写进 index.json）：上游仓库、作者，以及
+            # knowledge-work-plugins 的技能所属的插件名（即它在库里的分类）。
+            "source": entry.get("source", ""),
+            "author": entry.get("author", ""),
+            "plugin": entry.get("plugin", ""),
         }

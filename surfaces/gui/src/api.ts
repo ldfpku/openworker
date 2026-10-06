@@ -2747,6 +2747,10 @@ export interface LibrarySkill {
   files: number;
   compatibility?: string;
   license?: string;
+  /** 来源标记：上游仓库（如 anthropics/knowledge-work-plugins）、作者，以及所属插件。 */
+  source?: string;
+  author?: string;
+  plugin?: string;
 }
 
 const libraryUrl = (path = "") => `${httpBase()}/v1/library${path}`;
@@ -2861,6 +2865,10 @@ export async function librarySkillDetail(
   skill_md: string;
   skill_md_zh?: string;
   files: string[];
+  license?: string;
+  source?: string;
+  author?: string;
+  plugin?: string;
 } | null> {
   const res = await fetch(libraryUrl(`/skill?name=${encodeURIComponent(name)}`));
   const data = await res.json();
@@ -2872,6 +2880,10 @@ export async function librarySkillDetail(
         skill_md: data.skill_md,
         skill_md_zh: data.skill_md_zh,
         files: data.files ?? [],
+        license: data.license,
+        source: data.source,
+        author: data.author,
+        plugin: data.plugin,
       }
     : null;
 }

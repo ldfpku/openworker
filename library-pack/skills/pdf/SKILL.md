@@ -6,6 +6,7 @@ metadata:
   version: "1.2"
   skill-author: Anthropic, PBC
   source: https://github.com/anthropics/skills/tree/main/skills/pdf
+source: K-Dense-AI/scientific-agent-skills
 ---
 
 # PDF Processing Guide

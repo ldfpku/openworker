@@ -7,6 +7,7 @@ compatibility: Requires Python 3.10+ for polars 1.41.x. Install with uv pip inst
 metadata:
   version: "1.1"
   skill-author: K-Dense Inc.
+source: K-Dense-AI/scientific-agent-skills
 ---
 
 # Polars

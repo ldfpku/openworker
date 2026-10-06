@@ -7,6 +7,7 @@ allowed-tools: Read Write Edit Bash Glob
 metadata:
   version: "1.2"
   skill-author: K-Dense Inc.
+source: K-Dense-AI/scientific-agent-skills
 ---
 
 # SimPy

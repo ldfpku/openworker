@@ -43,8 +43,27 @@ const SKILLS = [
     files: 25,
     compatibility: "Python 3.9+",
     license: "BSD-3-Clause license",
+    source: "K-Dense-AI/scientific-agent-skills",
+    author: "K-Dense AI",
   },
 ];
+
+// A knowledge-work skill as the pack indexes it: plugin = category, Anthropic as author.
+const SKILL_RUNBOOK = {
+  name: "runbook",
+  description: "Create or update an operational runbook.",
+  description_zh: "创建或更新运行手册。",
+  category: "operations",
+  categoryName: "运营管理",
+  scripts: 0,
+  references: 0,
+  assets: 0,
+  files: 2,
+  license: "Apache-2.0",
+  source: "anthropics/knowledge-work-plugins",
+  author: "Anthropic",
+  plugin: "operations",
+};
 
 // The consent record install-expert hands back (same shape as POST /v1/personas/install's
 // `consent` array) for the geographer — used by every install→consent→enable test below.
@@ -278,10 +297,43 @@ describe("LibraryView — tab switching", () => {
     expect(within(card).getByText("scanpy")).toBeTruthy();
     expect(within(card).getByText("科学软件包")).toBeTruthy();
     expect(within(card).getByText("15 scripts")).toBeTruthy();
+    // The source mark: who the skill comes from, with the upstream repo as the tooltip.
+    const source = within(card).getByTestId("skill-source-chip-scanpy");
+    expect(source.textContent).toBe("K-Dense AI");
+    expect(source.getAttribute("title")).toBe("K-Dense-AI/scientific-agent-skills");
     expect(screen.queryByText("地理学家")).toBeNull();
 
     fireEvent.click(screen.getByTestId("library-tab-experts"));
     expect(await screen.findByText("地理学家")).toBeTruthy();
+  });
+
+  it("marks an Anthropic knowledge-work skill with its plugin category and source", async () => {
+    const api = await import("../api");
+    vi.mocked(api.librarySkills).mockResolvedValueOnce([SKILL_RUNBOOK]);
+    vi.mocked(api.librarySkillDetail).mockResolvedValueOnce({
+      name: "runbook",
+      description: SKILL_RUNBOOK.description,
+      skill_md: "# runbook\n\nsteps here",
+      files: ["CONNECTORS.md"],
+      license: "Apache-2.0",
+      source: "anthropics/knowledge-work-plugins",
+      author: "Anthropic",
+      plugin: "operations",
+    });
+    render(<LibraryView onStartExpertSession={vi.fn()} onStartTeamSession={vi.fn()} />);
+    await screen.findByText("地理学家");
+    fireEvent.click(screen.getByTestId("library-tab-skills"));
+    const card = await screen.findByTestId("skill-card-runbook");
+    expect(within(card).getByText("运营管理")).toBeTruthy();
+    expect(within(card).getByTestId("skill-source-chip-runbook").textContent).toBe("Anthropic");
+    expect(screen.queryByTestId("skill-card-scanpy")).toBeNull();
+
+    fireEvent.click(within(card).getByText("View description"));
+    const modal = await screen.findByTestId("library-detail-modal");
+    await within(modal).findByText(/steps here/);
+    expect(within(modal).getByTestId("skill-source").textContent).toBe(
+      "Source: Anthropic · anthropics/knowledge-work-plugins · plugin operations · Apache-2.0",
+    );
   });
 
   it("opens the skill detail modal listing bundled files", async () => {

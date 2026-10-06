@@ -7,6 +7,7 @@ compatibility: Requires Python 3.8+ and seaborn 0.13.2-compatible dependencies. 
 metadata:
   version: "1.2"
   skill-author: K-Dense Inc.
+source: K-Dense-AI/scientific-agent-skills
 ---
 
 # Seaborn Statistical Visualization

@@ -9,8 +9,8 @@
     },
     {
       "name": "sidecar",
-      "runtimeExecutable": ".venv/Scripts/openworker-server.exe",
-      "runtimeArgs": [],
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "coworker.server.run", "--port", "8765"],
       "port": 8765
     }
   ]

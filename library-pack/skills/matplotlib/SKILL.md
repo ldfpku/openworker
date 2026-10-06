@@ -7,6 +7,7 @@ compatibility: Requires Python 3.10+ and Matplotlib 3.10.x. Use `uv add matplotl
 metadata:
   version: "1.1"
   skill-author: K-Dense Inc.
+source: K-Dense-AI/scientific-agent-skills
 ---
 
 # Matplotlib

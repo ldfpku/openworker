@@ -6,6 +6,7 @@ compatibility: Python 3.10+ and uv. Examples target MarkItDown 0.1.6. Core local
 metadata:
   version: "2.1"
   skill-author: K-Dense Inc.
+source: K-Dense-AI/scientific-agent-skills
 ---
 
 # MarkItDown

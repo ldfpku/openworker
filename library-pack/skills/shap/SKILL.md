@@ -7,6 +7,7 @@ allowed-tools: "Read Bash"
 metadata:
   version: "2.0"
   skill-author: K-Dense Inc.
+source: K-Dense-AI/scientific-agent-skills
 ---
 
 # SHAP

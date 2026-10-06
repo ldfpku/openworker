@@ -7,6 +7,7 @@ allowed-tools: Read Write Edit Bash
 metadata:
   version: "1.0"
   skill-author: K-Dense Inc.
+source: K-Dense-AI/scientific-agent-skills
 ---
 
 # Uncertainty and units

@@ -64,6 +64,10 @@ type SkillResult = {
   skill_md: string;
   skill_md_zh?: string;
   files: string[];
+  license?: string;
+  source?: string;
+  author?: string;
+  plugin?: string;
 };
 
 // 技能库的中文层：数据里带 description_zh / skill_md_zh 时中文界面优先展示，
@@ -990,12 +994,19 @@ function SkillCard({
           className="w-8 h-8 rounded-lg shrink-0 grid place-items-center text-[16px] bg-accentSoft text-accent"
           aria-hidden
         >
-          🧪
+          {entry.plugin ? "🧩" : "🧪"}
         </div>
         <div className="min-w-0 flex-1">
           <div className="text-[10.5px] text-accent font-medium mb-0.5 truncate">{entry.categoryName}</div>
           <div className="text-[13.5px] font-semibold leading-snug">{entry.name}</div>
         </div>
+        {/* Source mark (index.json `author`/`source`): the Anthropic knowledge-work skills
+            and the kept scientific ones sit side by side, and the card must say which. */}
+        {entry.author && (
+          <span className={CHIP} title={entry.source} data-testid={`skill-source-chip-${entry.name}`}>
+            {entry.author}
+          </span>
+        )}
         {installed && (
           <span className={CHIP} data-testid={`skill-installed-chip-${entry.name}`}>
             {t("Installed")}
@@ -1358,6 +1369,19 @@ function SkillDetailModal({
         <>
           {data.description && (
             <div className="text-[12.5px] text-muted mb-3">{skillDesc(data)}</div>
+          )}
+          {(data.author || data.source) && (
+            <div className="text-[11.5px] text-faint mb-3" data-testid="skill-source">
+              {t("Source")}:{" "}
+              {[
+                data.author,
+                data.source,
+                data.plugin ? t("plugin {{plugin}}", { plugin: data.plugin }) : "",
+                data.license,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+            </div>
           )}
           {/* Installed: the text shown is the local copy's — what the model actually loads
               (the shipped page could read differently after an edit, or in Chinese while

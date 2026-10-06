@@ -8,6 +8,7 @@ metadata:
   version: "1.0"
   skill-author: K-Dense Inc.
   last-reviewed: "2026-07-27"
+source: K-Dense-AI/scientific-agent-skills
 ---
 
 # Analytical Method Validation

@@ -6,6 +6,7 @@ metadata:
   version: "2.1"
   skill-author: Anthropic, PBC
   source: https://github.com/anthropics/skills/tree/main/skills/pptx
+source: K-Dense-AI/scientific-agent-skills
 ---
 
 # PPTX creation, editing, and analysis

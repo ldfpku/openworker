@@ -7,6 +7,7 @@ allowed-tools: Read Write Edit Bash
 metadata:
   version: "1.1"
   skill-author: K-Dense Inc.
+source: K-Dense-AI/scientific-agent-skills
 ---
 
 # scikit-survival

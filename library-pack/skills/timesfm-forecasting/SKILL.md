@@ -7,6 +7,7 @@ metadata:
   version: "1.2"
   skill-author: Clayton Young / Superior Byte Works, LLC (@borealBytes)
   skill-version: 1.0.0
+source: K-Dense-AI/scientific-agent-skills
 ---
 
 # TimesFM Forecasting

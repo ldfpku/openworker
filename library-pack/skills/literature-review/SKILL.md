@@ -12,6 +12,7 @@ metadata:
     - name: OPENROUTER_API_KEY
       required: false
       description: OpenRouter API key for the skill's LLM-powered steps.
+source: K-Dense-AI/scientific-agent-skills
 ---
 
 # Literature Review

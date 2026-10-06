@@ -7,6 +7,7 @@ license: MIT license
 metadata:
   version: "1.0"
   skill-author: K-Dense Inc.
+source: K-Dense-AI/scientific-agent-skills
 ---
 
 # Statistical Power & Sample Size

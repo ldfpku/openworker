@@ -6,6 +6,7 @@ compatibility: Python 3.11+ standard library for optional offline CLIs. The opti
 metadata:
   version: "1.2"
   skill-author: "K-Dense Inc."
+source: K-Dense-AI/scientific-agent-skills
 ---
 
 # Market Research Reports

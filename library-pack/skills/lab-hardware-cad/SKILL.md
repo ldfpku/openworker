@@ -9,6 +9,7 @@ metadata:
   skill-author: K-Dense Inc.
   last-reviewed: "2026-08-15"
   build123d-version: "0.11.1"
+source: K-Dense-AI/scientific-agent-skills
 ---
 
 # Lab Hardware CAD

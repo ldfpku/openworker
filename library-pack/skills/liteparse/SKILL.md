@@ -7,6 +7,7 @@ compatibility: Python 3.10+. Optional LibreOffice (Office formats) and ImageMagi
 metadata:
   version: "1.1"
   skill-author: K-Dense Inc.
+source: K-Dense-AI/scientific-agent-skills
 ---
 
 # LiteParse — Local Document Parsing

@@ -7,6 +7,7 @@ license: BSD-3-Clause license
 metadata:
   version: "1.2"
   skill-author: K-Dense Inc.
+source: K-Dense-AI/scientific-agent-skills
 ---
 
 # Statsmodels: Statistical Modeling and Econometrics

@@ -7,6 +7,7 @@ compatibility: Needs network access and curl. The bundled scripts require Python
 metadata:
   version: "2.0"
   skill-author: "K-Dense Inc."
+source: K-Dense-AI/scientific-agent-skills
 ---
 
 # Paper Lookup

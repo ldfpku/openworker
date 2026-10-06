@@ -7,6 +7,7 @@ compatibility: Requires Python 3.11+ and scikit-learn 1.7+. NumPy and SciPy are 
 metadata:
   version: "1.2"
   skill-author: K-Dense Inc.
+source: K-Dense-AI/scientific-agent-skills
 ---
 
 # Scikit-learn
