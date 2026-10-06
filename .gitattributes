@@ -6,12 +6,10 @@
 #   repo stays consistent across macOS / Linux / Windows / CI.
 #
 # What still produces CRLF on Windows is tools writing files after checkout: Python's
-# text mode (use newline="
-"), editors without `files.eol`, and clones made with the
+# text mode (open files with newline=LF), editors without an LF setting, and clones made with the
 # Git-for-Windows default core.autocrlf=true (set core.autocrlf=false globally, or
 # ship a global attributes file with `* text=auto eol=lf`).
-# Keep the VS Code `files.eol: "
-"` (see .vscode/settings.json) so saves write LF.
+# Keep the VS Code files.eol setting at LF (see .vscode/settings.json) so saves write LF.
 * text=auto eol=lf
 
 # Never normalize binary assets (would corrupt them). The `* text=auto` above
