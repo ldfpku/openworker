@@ -1,11 +1,17 @@
 # Normalize line endings in the Git repo to LF.
 #
 # - `text=auto` lets git decide binary-vs-text per file (binary stays untouched).
-# - `eol=lf` stores every text file as LF; git checks out CRLF automatically on
-#   Windows, so Windows editors see familiar line endings while the repo stays
-#   consistent across macOS / Linux / Windows / CI.
+# - `eol=lf` stores every text file as LF AND checks it out as LF on every platform
+#   (it overrides core.autocrlf), so the working tree is LF on Windows too and the
+#   repo stays consistent across macOS / Linux / Windows / CI.
 #
-# Keep the VS Code `files.eol: "lf"` (see .vscode/settings.json) so saves write LF.
+# What still produces CRLF on Windows is tools writing files after checkout: Python's
+# text mode (use newline="
+"), editors without `files.eol`, and clones made with the
+# Git-for-Windows default core.autocrlf=true (set core.autocrlf=false globally, or
+# ship a global attributes file with `* text=auto eol=lf`).
+# Keep the VS Code `files.eol: "
+"` (see .vscode/settings.json) so saves write LF.
 * text=auto eol=lf
 
 # Never normalize binary assets (would corrupt them). The `* text=auto` above
