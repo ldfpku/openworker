@@ -372,19 +372,35 @@ cloudflared access token -app=https://gateway.smjtools.com
   Cloudflare 托管的取 Workers AI 目录。新型号进了目录，下次拉取时就会出现，不用发版。
 - **范围**：只列 help 后台设置项 `models.families` 里的厂商（目前六家）。
 - **按人剔除**：没有权限的人看不到受限模型（受限清单在 help /admin 里勾）。
+- **对谁都剔除**：help 后台设置项 `models.uncovered` 里的型号（2026-10-10 起）——统一计费不覆盖、
+  或厂商已下线的，谁的清单里都不列；硬发过去 guard 会回 403 `model_uncovered`（中文）。
 
-所以一个模型不在某人的清单里，通常是这三种原因之一：Cloudflare 目录里还没有它（或上架超过一年被筛掉了）、
-它的厂商不在 `models.families` 里、它受限而这个人没权限。要让它出现，改后两样；同事那边没有办法绕过。
+所以一个模型不在某人的清单里，通常是这四种原因之一：Cloudflare 目录里还没有它（或上架超过一年被筛掉了）、
+它的厂商不在 `models.families` 里、它受限而这个人没权限、它在 `models.uncovered` 里。
+要让它出现，改后三样；同事那边没有办法绕过。
 Cloudflare 的完整目录在 <https://developers.cloudflare.com/ai/models/>。
 
-但**目录里有不等于这条路上能用**。判断的唯一可靠办法是看网关日志里的 `wholesale` 字段：
+**目录里有不等于这条路上能用**——这正是 `models.uncovered` 存在的原因。判断的唯一可靠办法是看网关
+日志里的 `wholesale` 字段：
 
 - `wholesale: true` —— 这次请求走了统一计费，能用。
 - `wholesale: false` —— 网关决定不替这个模型付钱，于是把请求裸转给厂商，
   厂商回一句缺凭据的错。**这是覆盖范围的问题，不是你配置错了**，配 BYOK 才能用。
 
-Gemini 那句 `Missing or invalid Authorization header` 就是这么来的——听着像鉴权问题，
-实际是覆盖问题。
+三家厂商的那句话分别是：OpenAI `Missing bearer or basic authentication in header`（401）、
+Anthropic `x-api-key header is required`（401）、Google `Missing or invalid Authorization header`
+（400）——听着都像鉴权问题，实际是覆盖问题。2026-10-10 员工撞上的就是 OpenAI 这句：
+`openai/gpt-6.1-sol-pro` 在计价目录里、不在统一计费里（不带 Pro 的 `gpt-6.1-sol` 在）。
+0.7.3 起客户端会把这三句翻译成「不在公司网关统一计费覆盖内，换一个模型」。
+
+**维护 `models.uncovered`**（管理员，新型号上架或怀疑覆盖范围变了时）：
+对清单里的型号各发一次最小请求（OpenAI 走 `/openai/v1/responses` 带 `max_output_tokens: 16`，
+Anthropic 走 `/anthropic/v1/messages` **带 `anthropic-version` 头**，Google 走 `/compat`），
+再按网关日志判：`wholesale: false` 加 401/400 缺凭据 = 不覆盖；404 `does not exist` = 已下线；
+两者都进清单。429/402 「rate limit」是共享池忙，不是不覆盖，等几秒重试。2026-10-10 那一轮
+91 个第三方型号合计不到 0.01 美元。清单在 smj-help-website 的 guard 默认值
+（`workers/gateway-guard/src/gate.ts` 的 `DEFAULT_UNCOVERED`）与生产 D1 的 `models.uncovered`
+各一份，改哪一份见该仓库 `docs/12-gateway-guard.md` 第 11 节。
 
 ### ⚠ 三种误读探测结果的方式
 
@@ -437,7 +453,8 @@ Gemini 那句 `Missing or invalid Authorization header` 就是这么来的——
 | `403 Your request was blocked.` | 边缘的「阻止 AI 机器人」打的，不是 Access。见 1.5 |
 | 报「共享容量忙」 | 临时的，等几秒重试；天天撞就配 BYOK 独占一个池子 |
 | 报「共享容量忙，同档备选也忙」 | 动态路由已经自动重发过一次还是没成——等几秒重试。括号里的路由名拿去第 8 节排错 |
-| 模型报缺 Authorization | 这个模型不在统一计费覆盖里，见第 5 节 |
+| 模型报缺 Authorization / `Missing bearer or basic authentication` / `x-api-key header is required` | 这个模型不在统一计费覆盖里，见第 5 节；把它加进 help 后台的 `models.uncovered`，清单里就不再出现 |
+| 报「不在公司网关的统一计费覆盖内」（403 `model_uncovered`） | guard 已把这个型号列为发不出去的，换清单里的其他模型；确认覆盖范围变了再从 `models.uncovered` 里移除 |
 | 「用户洞察」是空的 | 流量没走自定义域，或者用的是 service token（它的身份是空的） |
 | 调用成功但日志里没有 | 走到账号的 `default` 网关去了——只有自己拿 `CLOUDFLARE_AIGW_BASE_URL` 覆盖过地址才会发生 |
 
@@ -565,8 +582,11 @@ schema 认识的字段」，这个假设本来就撑着表里 openai 主选的�
 - **长会话撞 429 却没有重发**，先别当 bug：日志里如果有
   `does not fit the stand-in … (window …)`，那是 8.4 的窗口闸按设计拦下的——这一轮装不进
   对家。要么等主选空出来，要么先让会话压缩一次。
-- **网关当前的限流配置**（2026-09 实测）：rate limiting 200 次/60 秒、spend limit
-  $20/86400 秒、网关到上游 `retry_max_attempts=3` 指数退避。这些是网关到上游的重试，
+- **网关当前的限流配置**（ZY，2026-10-10 读回）：网关自身的 rate limiting **关着**（0 次/0 秒）；
+  跑飞的兜底靠两层别的东西——gateway-guard 的按人限额（默认每人每分钟 30 次、每天 1200 次，
+  help 后台可调）和 Cloudflare 对统一计费的平台上限（每个网关每 60 秒 200 次，超了回 429）。
+  上面 1.1 表里「Rate limiting 100/60s」是 DF 时期直通网关的建议，ZY 这条链路上不再需要。
+  spend limit 和网关到上游的重试按控制台当前值为准；那些是网关到上游的重试，
   和这里说的客户端重发是两码事。
 
 ---

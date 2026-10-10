@@ -32,6 +32,19 @@ def _no_live_model_catalog(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _forget_refused_params():
+    """The Responses provider remembers which params each model refused (process-wide,
+    `openai_responses._REFUSED_PARAMS`) so later calls skip the 400 round trip. Tests
+    that queue an "Unsupported parameter" error would otherwise teach every later test
+    using the same model id to pre-drop that param."""
+    from coworker.providers import openai_responses
+
+    openai_responses._REFUSED_PARAMS.clear()
+    yield
+    openai_responses._REFUSED_PARAMS.clear()
+
+
+@pytest.fixture(autouse=True)
 def _isolated_state_dir(tmp_path, monkeypatch):
     """EVERY test gets an isolated SecretStore/state dir. Without this, any test that builds
     a SessionManager reads the developer's real machine-global state — including their cloud

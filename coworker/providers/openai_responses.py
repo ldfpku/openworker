@@ -64,6 +64,28 @@ _SETTINGS_WHITELIST = {
 # server names exactly one offender per error, so each retry drops exactly that.
 _UNSUPPORTED_PARAM = re.compile(r"unsupported (?:parameter|value)s?:?\s*'([^']+)'")
 
+# What each model has already refused, learned from `_param_fix_retry` and dropped up
+# front on every later call to that model in this process. Without it every session
+# title and every prompt enhancement paid the same wasted round trip: the gateway log of
+# 2026-10-10 shows each `gpt-5.6-luna` title call as a 400 (`temperature`) followed by
+# the retry. Keyed on the bare model id the wire sees; process-lifetime only, so a model
+# that starts accepting a param again is picked up on the next restart.
+_REFUSED_PARAMS: dict[str, set[str]] = {}
+
+
+def _without_refused(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """`kwargs` minus the params this model is known to reject."""
+    refused = _REFUSED_PARAMS.get(str(kwargs.get("model") or ""))
+    if not refused:
+        return kwargs
+    return {k: v for k, v in kwargs.items() if k not in refused}
+
+
+def _remember_refused(model: Any, before: dict[str, Any], after: dict[str, Any]) -> None:
+    dropped = set(before) - set(after)
+    if dropped:
+        _REFUSED_PARAMS.setdefault(str(model or ""), set()).update(dropped)
+
 
 def _param_fix_retry(kwargs: dict[str, Any], exc: Exception) -> dict[str, Any]:
     """Kwargs for the one retry an unsupported-parameter error earns, or re-raise.
@@ -399,13 +421,17 @@ class OpenAIResponsesProvider(ProviderClient):
     def _create(self, client: Any, kwargs: dict[str, Any]) -> Any:
         # An explicit `timeout` must be a wall-clock bound — see base.bounded_client.
         client = bounded_client(client, kwargs.get("timeout"))
+        kwargs = _without_refused(kwargs)
         # Up to three param-fix retries: sampling params, `reasoning`, and `include` can
-        # each need dropping depending on the model (reasoning vs not).
+        # each need dropping depending on the model (reasoning vs not). Each drop is
+        # remembered so the next call to this model skips the round trip.
         for _ in range(3):
             try:
                 return client.responses.create(**kwargs)
             except Exception as exc:
-                kwargs = _param_fix_retry(kwargs, exc)
+                fixed = _param_fix_retry(kwargs, exc)
+                _remember_refused(kwargs.get("model"), kwargs, fixed)
+                kwargs = fixed
         return client.responses.create(**kwargs)
 
     def complete(

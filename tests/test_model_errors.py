@@ -141,6 +141,60 @@ def test_model_restricted_without_extractable_message_gets_a_fallback():
     assert msg and "restricted by your administrator" in msg
 
 
+_GUARD_UNCOVERED_403 = (
+    "Error code: 403 - {'error': {'code': 'model_uncovered', 'type': 'model_uncovered', "
+    "'status': 403, 'message': '模型 openai/gpt-6.1-sol-pro 目前不在公司网关的统一计费覆盖内，"
+    "或厂商已下线（发出去只会收到厂商的「缺 key」错误），已从可选清单移除。请改用清单里的其他模型；"
+    "确需此模型请联系管理员。[gateway-guard]'}}"
+)
+
+
+def test_gateway_guard_uncovered_surfaces_its_own_message():
+    # gateway-guard's "cannot be sent" list (models.uncovered, 2026-10-10): the Chinese
+    # message already says it is a billing-coverage gap — shown verbatim, no SDK shell,
+    # and never the "ask the administrator to open it up" advice of model_restricted.
+    exc = _status_error(403, _GUARD_UNCOVERED_403.split(" - ", 1)[1])
+    msg = friendly_model_error("aigw:openai/gpt-6.1-sol-pro", exc)
+    assert msg and msg.endswith("[gateway-guard]")
+    assert "统一计费" in msg
+    assert "Error code" not in msg
+    assert not is_transient_model_error(exc)
+
+    fallback = friendly_model_error("aigw:openai/gpt-6.1-sol-pro", RuntimeError("403 model_uncovered"))
+    assert fallback and "isn't covered by the company gateway's credits" in fallback
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # OpenAI, 401, through /openai/v1/responses — the employee report of 2026-10-10
+        "{'error': {'message': 'Missing bearer or basic authentication in header', "
+        "'type': 'invalid_request_error', 'param': None, 'code': None}}",
+        # Anthropic, 401, through /anthropic/v1/messages
+        '{"type":"error","error":{"type":"authentication_error","message":"x-api-key header is required"}}',
+        # Google AI Studio, 400, through /compat
+        '[{"error": {"code": 400, "message": "Missing or invalid Authorization header.", "status": "INVALID_ARGUMENT"}}]',
+    ],
+)
+def test_vendor_keyless_refusal_on_a_gateway_model_is_a_coverage_gap(body):
+    # Unified Billing did not apply (gateway log `wholesale: false`): the gateway forwarded
+    # the call bare and the vendor asked for a key. Through the company gateway that is
+    # "not covered", never "enter your key" — there is no per-person key to enter.
+    status = 400 if "INVALID_ARGUMENT" in body else 401
+    exc = _status_error(status, body)
+    msg = friendly_model_error("aigw:openai/gpt-6.1-sol-pro", exc)
+    assert msg and "isn't covered by the company gateway's credits" in msg
+    assert "key of your own" in msg
+    assert not is_transient_model_error(exc)
+
+
+def test_vendor_keyless_refusal_on_a_direct_provider_passes_through_raw():
+    # The same words from OpenAI itself mean "you have not entered your key" — a different
+    # fix, so the raw message (which says exactly that) must survive.
+    exc = _status_error(401, "{'error': {'message': 'Missing bearer or basic authentication in header'}}")
+    assert friendly_model_error("gpt-5.6-sol", exc) is None
+
+
 def test_unrelated_errors_pass_through_raw():
     # a plain rate-limit (429 without a quota code) must NOT be dressed up
     assert (

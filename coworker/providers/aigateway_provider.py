@@ -374,14 +374,22 @@ def fetch_gate_policy(
 
 def blocked_model_ids(policy: Optional[dict[str, Any]]) -> frozenset[str]:
     """`fetch_gate_policy` result → normalized bare ids ("author/model", lowercase).
-    None / malformed → empty set (no filtering)."""
+    None / malformed → empty set (no filtering).
+
+    Two lists fold into one here: `blocked` (restricted for this person's role) and
+    `uncovered` (guard ≥ 2026-10-10: models the gateway cannot send for anyone — not on
+    Unified Billing, or retired by the vendor). The picker hides both for the same
+    reason: selecting one only buys a 403. An older guard sends no `uncovered` key.
+    """
     if not policy:
         return frozenset()
     blocked = policy.get("blocked")
     if not isinstance(blocked, list):
         return frozenset()
+    uncovered = policy.get("uncovered")
+    ids = list(blocked) + (list(uncovered) if isinstance(uncovered, list) else [])
     return frozenset(
-        str(m).strip().lower() for m in blocked if isinstance(m, str) and str(m).strip()
+        str(m).strip().lower() for m in ids if isinstance(m, str) and str(m).strip()
     )
 
 

@@ -102,6 +102,17 @@ def test_blocked_model_ids_normalizes_and_tolerates_junk():
     ) == frozenset({"openai/gpt-5.6-sol", "anthropic/claude-fable-5"})
 
 
+def test_blocked_model_ids_folds_in_the_guards_uncovered_list():
+    # guard ≥ 2026-10-10 adds `uncovered` (not on Unified Billing / retired by the vendor,
+    # for everyone) next to `blocked` (restricted for this role). The picker hides both.
+    assert blocked_model_ids(
+        {"blocked": [], "uncovered": ["openai/gpt-6.1-sol-pro", " Anthropic/Claude-Haiku-5-5 ", ""]}
+    ) == frozenset({"openai/gpt-6.1-sol-pro", "anthropic/claude-haiku-5-5"})
+    assert blocked_model_ids({"blocked": ["openai/gpt-5.6-sol"], "uncovered": "nope"}) == frozenset(
+        {"openai/gpt-5.6-sol"}
+    )
+
+
 # -- is_blocked_model ---------------------------------------------------------------------
 # Mirrors gateway-guard's own server-side match exactly: exact id, or the same base id
 # plus one optional dated/tagged suffix in a fixed shape. A miss here is only ever

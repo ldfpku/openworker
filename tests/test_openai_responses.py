@@ -539,6 +539,27 @@ def test_complete_retries_dropping_rejected_params():
     assert "reasoning" not in fake.kwargs and "include" not in fake.kwargs
 
 
+def test_rejected_params_are_remembered_per_model():
+    # 2026-10-10 gateway log: every session-title call to gpt-5.6-luna was a 400 on
+    # `temperature` followed by the retry. The second call to the same model must not
+    # pay that round trip again; a different model starts clean.
+    fake = _FakeClient(
+        response=_response([_message_item("ok")]),
+        errors=[Exception("Unsupported parameter: 'temperature' is not supported with this model.")],
+    )
+    provider = OpenAIResponsesProvider(client=fake)
+    msgs = [{"role": "user", "content": "x"}]
+    provider.complete(model="gpt-5.6-luna", messages=msgs, temperature=0.2)
+    assert len(fake.calls) == 2 and "temperature" not in fake.kwargs
+
+    provider.complete(model="gpt-5.6-luna", messages=msgs, temperature=0.2)
+    assert len(fake.calls) == 3, "second call: temperature dropped up front, no retry"
+    assert "temperature" not in fake.kwargs
+
+    provider.complete(model="gpt-5.3-chat", messages=msgs, temperature=0.2)
+    assert len(fake.calls) == 4 and fake.kwargs["temperature"] == 0.2, "other models unaffected"
+
+
 # -- stream() ------------------------------------------------------------------------
 
 

@@ -94,6 +94,26 @@ def is_gateway_busy(exc: Exception) -> bool:
 # every marker above (a message matching `permission_error` etc. would get swallowed here).
 _RESTRICTED = "model_restricted"
 
+# The same guard's "cannot be sent at all" list (smj-help-website `models.uncovered`,
+# 2026-10-10): models the pricing catalog lists but Unified Billing does not cover, or the
+# vendor has retired. Answered 403 with code model_uncovered and a Chinese message that
+# already says it is a billing-coverage gap, not a permission — shown verbatim, like
+# model_restricted. Kept as a separate code on purpose: "ask the administrator to open it
+# up" is the wrong advice here, no role change makes the vendor accept a keyless call.
+_UNCOVERED = "model_uncovered"
+
+# What the vendor itself says when the gateway forwarded a call WITHOUT credentials —
+# i.e. Unified Billing did not apply (`wholesale: false` in the gateway log) and the
+# request reached OpenAI / Anthropic / Google bare. Verbatim from the live gateway on
+# 2026-10-10. Only meaningful on a gateway-routed model: on a direct provider the same
+# words mean "you have not entered your key", which is a different fix entirely.
+_VENDOR_NO_CREDENTIAL = (
+    "missing bearer or basic authentication",  # OpenAI, 401
+    "you didn't provide an api key",  # OpenAI, 401 (older wording)
+    "x-api-key header is required",  # Anthropic, 401
+    "missing or invalid authorization header",  # Google AI Studio, 400
+)
+
 # The same guard's per-person usage ceiling (smj-help-website T30, 2026-09-23) answers
 # **429** with {"error": {"code": "quota_exceeded", "scope": "rpm"|"rpd"|"tpd"|"suspended",
 # "retry_after": N, "message": "<Chinese sentence ending in [gateway-guard]>"}} plus a
@@ -225,9 +245,14 @@ def is_transient_model_error(exc: BaseException) -> bool:
     # credit and entitlement failures arrive on transient-LOOKING statuses — OpenAI bills
     # an exhausted quota as 429, the gateway's "needs BYOK" as 402 — but nothing about the
     # account changes in six seconds, so they are permanent for our purposes.
-    if _RESTRICTED in text or is_gateway_quota_exceeded(exc):
+    if _RESTRICTED in text or _UNCOVERED in text or is_gateway_quota_exceeded(exc):
         return False
     if any(marker in text for marker in _NO_QUOTA + _NEEDS_BYOK + _NO_ACCESS):
+        return False
+    # The vendor's keyless refusal through the gateway is a coverage gap: the next send
+    # is just as keyless (401/400, so the status check below would agree — this makes
+    # the intent explicit rather than incidental).
+    if any(marker in text for marker in _VENDOR_NO_CREDENTIAL):
         return False
     status = _status_of(exc)
     # Cloudflare's shared-pool refusal comes back as 402 OR 429 and is transient by
@@ -311,6 +336,25 @@ def friendly_model_error(model: str, exc: Exception) -> Optional[str]:
         return (
             f"{model} is restricted by your administrator — pick a different model, "
             "or ask the administrator to open it up."
+        )
+    if _UNCOVERED in text:
+        m = _MESSAGE_RE.search(raw)
+        if m:
+            return m.group(1)
+        return (
+            f"{model} isn't covered by the company gateway's credits (or the vendor has "
+            "retired it) — pick a different model from the list."
+        )
+    if model.lower().startswith("aigw:") and any(
+        marker in text for marker in _VENDOR_NO_CREDENTIAL
+    ):
+        # An older guard (or a model that only just lost coverage) let the call through
+        # bare: the vendor's "no key" refusal is really "not on Unified Billing". Nothing
+        # the user can enter fixes it — the company gateway holds no per-person keys.
+        return (
+            f"{model} isn't covered by the company gateway's credits — the gateway sent "
+            "the call without a key and the vendor refused it. Pick a different model "
+            "from the list; no key of your own is needed or accepted here."
         )
     if is_gateway_quota_exceeded(exc):
         m = _MESSAGE_RE.search(raw)
