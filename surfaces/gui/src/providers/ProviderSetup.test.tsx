@@ -2,7 +2,13 @@
 // only the selected method's fields render, and clicking a segment switches them.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { KEY_HELP, ProviderForm, ProviderMark, type ProviderSetupState } from "./ProviderSetup";
+import {
+  KEY_HELP,
+  ProviderForm,
+  ProviderMark,
+  localizeVerifyError,
+  type ProviderSetupState,
+} from "./ProviderSetup";
 import type { ProviderInfo } from "../api";
 
 vi.mock("../tauri", () => ({ openExternal: vi.fn() }));
@@ -65,6 +71,7 @@ function makePs(fields: Record<string, string>, setFieldValue = vi.fn()): Provid
     statusFor: () => null,
     saveField: async () => {},
     fieldSaved: null,
+    invalid: new Set(),
   };
 }
 
@@ -148,6 +155,7 @@ function makePsForInfo(info: ProviderInfo, fields: Record<string, string>): Prov
     statusFor: () => null,
     saveField: async () => {},
     fieldSaved: null,
+    invalid: new Set(),
   };
 }
 
@@ -192,6 +200,101 @@ describe("ProviderForm auth-method choice", () => {
     render(<ProviderForm ps={makePs({ auth_method: "iam" })} tp="t" />);
     expect(screen.getByTestId("t-field-aws_secret_access_key")).toBeTruthy();
     expect(screen.queryByTestId("t-field-bedrock_api_key")).toBeNull();
+  });
+});
+
+describe("ProviderForm Test feedback (owner-hit 2026-10-14: Vertex's Test seemed to do nothing)", () => {
+  const VERTEX: ProviderInfo = {
+    name: "vertex",
+    title: "Vertex AI (Google Cloud)",
+    needs_key: true,
+    configured: false,
+    values: {},
+    suggested_models: [],
+    recommended_model: null,
+    fields: [
+      { key: "project", label: "GCP project ID", secret: false, required: true, help: "", placeholder: "my-project-123" },
+      { key: "location", label: "Location", secret: false, required: true, help: "", placeholder: "global", default: "global" },
+      {
+        key: "auth_method",
+        label: "Connect with",
+        secret: false,
+        required: false,
+        help: "",
+        placeholder: "",
+        default: "adc",
+        choices: [
+          { value: "adc", label: "Google Cloud login", command: "gcloud auth application-default login" },
+          { value: "api_key", label: "API key" },
+        ],
+      },
+    ],
+  };
+
+  it("a failed Test shows its reason beside the button and marks the empty fields", () => {
+    const ps = {
+      ...makePsForInfo(VERTEX, { project: "", location: "global", auth_method: "adc" }),
+      verify: { state: "error" as const, msg: "Fill these in first: GCP project ID" },
+      invalid: new Set(["project"]),
+    };
+    render(<ProviderForm ps={ps} tp="t" />);
+    const err = screen.getByTestId("t-verify-error");
+    expect(err.textContent).toBe("Fill these in first: GCP project ID");
+    expect(err.getAttribute("role")).toBe("alert");
+    // Inside the method card, next to the button — and only once on the page.
+    expect(err.parentElement?.contains(screen.getByTestId("t-test"))).toBe(true);
+    expect(screen.getAllByText("Fill these in first: GCP project ID")).toHaveLength(1);
+    const project = screen.getByTestId("t-field-project");
+    expect(project.getAttribute("aria-invalid")).toBe("true");
+    expect(project.className).toContain("border-danger");
+    expect(screen.getByTestId("t-field-location").getAttribute("aria-invalid")).toBeNull();
+    // The caret goes to the first field that needs filling.
+    expect(document.activeElement).toBe(project);
+  });
+
+  it("the Test button says it is testing instead of a bare ellipsis", () => {
+    const ps = {
+      ...makePsForInfo(VERTEX, { project: "p", location: "global", auth_method: "adc" }),
+      verify: { state: "testing" as const },
+    };
+    render(<ProviderForm ps={ps} tp="t" />);
+    const btn = screen.getByTestId("t-test") as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+    expect(btn.textContent).not.toBe("…");
+  });
+
+  it("copying the command says so", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    render(<ProviderForm ps={makePsForInfo(VERTEX, { project: "", location: "global", auth_method: "adc" })} tp="t" />);
+    expect(screen.queryByTestId("t-cmd-copied")).toBeNull();
+    fireEvent.click(screen.getByTestId("t-cmd-copy"));
+    expect(writeText).toHaveBeenCalledWith("gcloud auth application-default login");
+    expect((await screen.findByTestId("t-cmd-copied")).getAttribute("role")).toBe("status");
+  });
+
+  it("a copy the clipboard refused claims nothing", async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error("denied"));
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    render(<ProviderForm ps={makePsForInfo(VERTEX, { project: "", location: "global", auth_method: "adc" })} tp="t" />);
+    fireEvent.click(screen.getByTestId("t-cmd-copy"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(screen.queryByTestId("t-cmd-copied")).toBeNull();
+  });
+
+  it("backend errors are shown in the person's language", () => {
+    const table: Record<string, string> = {
+      "GCP project ID": "GCP 项目 ID",
+      Location: "位置",
+      "provider.list_sep": "、",
+      "Google rejected the credentials.": "Google 拒绝了该凭证。",
+    };
+    const t = (key: string, o?: Record<string, unknown>) =>
+      key === "provider.err_missing_fields" ? "请先填写：" + String(o?.fields) : (table[key] ?? key);
+    expect(localizeVerifyError("missing: GCP project ID, Location", t)).toBe("请先填写：GCP 项目 ID、位置");
+    expect(localizeVerifyError("Google rejected the credentials.", t)).toBe("Google 拒绝了该凭证。");
+    expect(localizeVerifyError("Vertex AI returned HTTP 500.", t)).toBe("Vertex AI returned HTTP 500.");
   });
 });
 

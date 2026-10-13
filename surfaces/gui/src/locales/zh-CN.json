@@ -395,6 +395,7 @@
   "Couldn't add that channel.": "无法添加该频道。",
   "Couldn't check right now — try again later.": "暂时无法检查，请稍后重试。",
   "Couldn't load providers.": "无法加载提供商列表。",
+  "Couldn't reach Google to refresh the credentials — check the network or proxy.": "连不上 Google，无法刷新凭证——请检查网络或代理。",
   "Couldn't reach the gateway — check your network and try again.": "连不上网关——检查一下网络，稍后再试。",
   "Couldn't reach the local OpenWorker service.": "连不上本机的 OpenWorker 服务。",
   "Couldn't start sign-in.": "无法发起登录。",

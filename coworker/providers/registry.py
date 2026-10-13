@@ -549,6 +549,10 @@ DESCRIPTORS: list[ProviderDescriptor] = [
                 "location",
                 "Location",
                 secret=False,
+                # Prefilled, not just hinted: as a placeholder the grey "global" read as
+                # an already-filled field, and Test then failed on "missing: Location"
+                # (owner-hit 2026-10-14).
+                default="global",
                 placeholder="global",
                 help="Use `global` for the newest Gemini and Claude models. Some models "
                 "are regional — Model Garden lists each (Claude also: us-east5 / "
@@ -1179,11 +1183,21 @@ def _verify_vertex(fields: dict[str, Any], timeout: float) -> dict[str, Any]:
             creds, _ = google.auth.default(
                 scopes=["https://www.googleapis.com/auth/cloud-platform"]
             )
+        import functools
+
         from google.auth.transport.requests import Request
 
-        creds.refresh(Request())
+        # google-auth's transport waits 120 s by default; on a network that cannot reach
+        # oauth2.googleapis.com the Test button would sit there for two minutes looking
+        # dead. Bound the token refresh by the same timeout as the probe itself.
+        creds.refresh(functools.partial(Request(), timeout=timeout))
     except Exception as exc:
         kind = exc.__class__.__name__
+        if kind == "TransportError":
+            return {
+                "ok": False,
+                "error": "Couldn't reach Google to refresh the credentials — check the network or proxy.",
+            }
         if kind == "DefaultCredentialsError":
             return {
                 "ok": False,

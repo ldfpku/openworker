@@ -400,3 +400,59 @@ def test_verify_vertex_maps_permission_errors(monkeypatch):
         fields={"project": "nope", "location": "us-east5", "service_account_json": "x"},
     )
     assert not out["ok"] and "not found" in out["error"]
+
+
+# -- settings-page Test feedback (owner-hit 2026-10-14: Test "did nothing") ------------------
+
+
+def test_vertex_location_is_prefilled_with_global():
+    """The grey placeholder read as an already-filled field, and Test then failed on
+    "missing: Location". The form prefills from `default`, so it must carry the value."""
+    from coworker.providers.registry import get_descriptor
+
+    location = next(f for f in get_descriptor("vertex").fields if f.key == "location")
+    assert location.default == "global"
+    assert location.required
+
+
+def test_verify_vertex_bounds_the_token_refresh(monkeypatch):
+    """google-auth waits 120 s by default; the refresh must inherit the probe's timeout so
+    an unreachable Google does not leave the Test button looking dead for two minutes."""
+    from coworker.providers.registry import verify_provider_key
+
+    seen: dict = {}
+
+    class _Creds:
+        token = None
+
+        def refresh(self, request):
+            seen["timeout"] = getattr(request, "keywords", {}).get("timeout")
+            self.token = "tok"
+
+    _patch_verify(monkeypatch, _Creds(), 200)
+    out = verify_provider_key(
+        "vertex",
+        fields={"project": "proj", "location": "global", "service_account_json": "x"},
+        timeout=7.0,
+    )
+    assert out == {"ok": True}
+    assert seen["timeout"] == 7.0
+
+
+def test_verify_vertex_names_an_unreachable_google(monkeypatch):
+    from coworker.providers.registry import verify_provider_key
+
+    class TransportError(Exception):
+        pass
+
+    class _Creds:
+        def refresh(self, request):
+            raise TransportError("timed out")
+
+    _patch_verify(monkeypatch, _Creds(), 200)
+    out = verify_provider_key(
+        "vertex",
+        fields={"project": "proj", "location": "global", "service_account_json": "x"},
+    )
+    assert not out["ok"]
+    assert "reach Google" in out["error"] and "proxy" in out["error"]

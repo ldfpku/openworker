@@ -101,6 +101,22 @@ export interface ProviderSetupState {
   // owner-hit 2026-07-23: the budget silently never saved).
   saveField: (key: string) => Promise<void>;
   fieldSaved: string | null; // field key flashing "✓ Saved"
+  // Required fields a Test click found empty — they wear a red border until typed in
+  // (owner-hit 2026-10-14: Vertex's Test "did nothing" — the only feedback was one line of
+  // English below the card).
+  invalid: Set<string>;
+}
+
+/** A failed Test's message, in the person's language. The backend answers in English;
+ *  fixed sentences are looked up in the word table (falling back to themselves), and its
+ *  "missing: A, B" list is rebuilt from the translated field labels. */
+export function localizeVerifyError(msg: string, t: (key: string, o?: Record<string, unknown>) => string): string {
+  const m = /^missing:\s*(.+)$/.exec(msg.trim());
+  if (m)
+    return t("provider.err_missing_fields", {
+      fields: m[1].split(/,\s*/).map((label) => t(label)).join(t("provider.list_sep")),
+    });
+  return t(msg);
 }
 
 export function useProviderSetup(opts?: {
@@ -129,6 +145,7 @@ export function useProviderSetup(opts?: {
   // Which non-secret field just blur-saved (flashes "✓ Saved" in the input).
   const [fieldSaved, setFieldSaved] = useState<string | null>(null);
   const fieldSavedTimer = useRef<number | null>(null);
+  const [invalid, setInvalid] = useState<Set<string>>(new Set());
 
   const refreshProviders = () =>
     getProviders()
@@ -159,6 +176,7 @@ export function useProviderSetup(opts?: {
     setDirty(!!draft && Object.values(draft).some(Boolean));
     setVerify({ state: "idle" });
     setShowEndpoint(false);
+    setInvalid(new Set());
   };
 
   const backToGallery = () => {
@@ -176,10 +194,35 @@ export function useProviderSetup(opts?: {
   // clicks). With `stayAfterTest` the return is skipped — see the option's note above.
   const runTestAndSave = async (): Promise<boolean> => {
     if (!sel) return false;
+    // Required, visible, non-secret fields left empty: say which ones, on the fields
+    // themselves, without a round trip. (Secrets are exempt — a blank key on a configured
+    // provider means "use the stored one", and the backend owns that check.)
+    const missing = (info?.fields || []).filter(
+      (f) =>
+        f.required &&
+        !f.secret &&
+        !(f.choices && f.choices.length) &&
+        (!f.show_when || Object.entries(f.show_when).every(([k, v]) => (fields[k] || "") === v)) &&
+        !(fields[f.key] || "").trim(),
+    );
+    if (missing.length) {
+      setInvalid(new Set(missing.map((f) => f.key)));
+      setVerify({
+        state: "error",
+        msg: t("provider.err_missing_fields", {
+          fields: missing.map((f) => t(f.label)).join(t("provider.list_sep")),
+        }),
+      });
+      return false;
+    }
+    setInvalid(new Set());
     setVerify({ state: "testing" });
     const res = await verifyProvider(sel, fields).catch(() => ({ ok: false, error: t("provider.err_unreachable") }));
     if (!res.ok) {
-      setVerify({ state: "error", msg: res.error || t("provider.err_couldnt_verify") });
+      setVerify({
+        state: "error",
+        msg: res.error ? localizeVerifyError(res.error, t) : t("provider.err_couldnt_verify"),
+      });
       return false;
     }
     if (dirty || !info?.configured) {
@@ -314,6 +357,12 @@ export function useProviderSetup(opts?: {
       setFields((cur) => ({ ...cur, [key]: value }));
       setDirty(true);
       setVerify({ state: "idle" });
+      setInvalid((cur) => {
+        if (!cur.has(key)) return cur;
+        const next = new Set(cur);
+        next.delete(key);
+        return next;
+      });
     },
     dirty,
     verify,
@@ -335,6 +384,7 @@ export function useProviderSetup(opts?: {
     removeKey,
     saveField,
     fieldSaved,
+    invalid,
     cancelBackTimer: () => {
       if (backTimer.current) window.clearTimeout(backTimer.current);
     },
@@ -524,6 +574,32 @@ export function ProviderForm({
   // the first field for keyless providers (Ollama's Detect).
   const requiredSecret = fieldsAll.find((x) => x.secret && x.required);
   const testKey = requiredSecret ? requiredSecret.key : fieldsAll[0]?.key;
+  // The command chip copies silently otherwise — the clipboard changed but nothing on
+  // screen said so (owner-hit 2026-10-14).
+  const [copied, setCopied] = useState(false);
+  const copiedTimer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (copiedTimer.current) window.clearTimeout(copiedTimer.current);
+    },
+    [],
+  );
+  const copyCommand = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      return; // no clipboard access: claim nothing
+    }
+    setCopied(true);
+    if (copiedTimer.current) window.clearTimeout(copiedTimer.current);
+    copiedTimer.current = window.setTimeout(() => setCopied(false), 1600);
+  };
+  // A Test click that found required fields empty puts the caret in the first of them.
+  const firstInvalid = fieldsAll.find((f) => ps.invalid.has(f.key))?.key;
+  useEffect(() => {
+    if (!firstInvalid) return;
+    document.querySelector<HTMLInputElement>(`[data-testid="${tp}-field-${firstInvalid}"]`)?.focus();
+  }, [firstInvalid, tp]);
   if (!sel) return null;
 
 
@@ -544,7 +620,15 @@ export function ProviderForm({
       <div className="flex gap-2">
         <div className="relative flex-1 min-w-0">
           <input
-            className={input + (ps.savedState && testable ? " border-ok pr-32" : " border-line")}
+            className={
+              input +
+              (ps.invalid.has(f.key)
+                ? " border-danger"
+                : ps.savedState && testable
+                  ? " border-ok pr-32"
+                  : " border-line")
+            }
+            aria-invalid={ps.invalid.has(f.key) || undefined}
             type={f.secret ? "password" : "text"}
             placeholder={f.secret && ps.credentialed && !ps.dirty ? "••••••••" : f.placeholder && t(f.placeholder)}
             value={ps.fields[f.key] || ""}
@@ -655,12 +739,22 @@ export function ProviderForm({
             {selected?.command && (
               <button
                 className="mt-2.5 inline-flex items-center gap-2 rounded-lg border border-line bg-panel px-2.5 py-1.5 text-[12px] font-mono text-ink hover:border-lineStrong"
-                onClick={() => void navigator.clipboard?.writeText(selected.command || "")}
+                onClick={() => void copyCommand(selected.command || "")}
                 title={t("provider.copy_command")}
                 data-testid={`${tp}-cmd-copy`}
               >
                 {selected.command}
-                <span className="font-sans text-[11px] text-faint">⧉</span>
+                {copied ? (
+                  <span
+                    className="font-sans text-[11px] font-medium text-ok"
+                    role="status"
+                    data-testid={`${tp}-cmd-copied`}
+                  >
+                    ✓ {t("provider.copied_command")}
+                  </span>
+                ) : (
+                  <span className="font-sans text-[11px] text-faint">⧉</span>
+                )}
               </button>
             )}
             {methodFields.map((f) => fieldRow(f, false))}
@@ -668,6 +762,16 @@ export function ProviderForm({
               {ps.savedState ? (
                 <span className="text-[12px] font-medium text-ok" data-testid={`${tp}-saved-pill`}>
                   {t("provider.tested_saved_pill")}
+                </span>
+              ) : ps.verify.state === "error" ? (
+                // The failure sits beside the button that produced it, not in a line
+                // below the card where it read as part of the page.
+                <span
+                  className="text-[12px] font-medium text-danger"
+                  role="alert"
+                  data-testid={`${tp}-verify-error`}
+                >
+                  {ps.verify.msg}
                 </span>
               ) : (
                 <span className="text-[12px] text-faint">{t("provider.test_save_hint")}</span>
@@ -678,7 +782,7 @@ export function ProviderForm({
                 disabled={ps.verify.state === "testing"}
                 data-testid={`${tp}-test`}
               >
-                {ps.verify.state === "testing" ? "…" : t("provider.test_save_btn")}
+                {ps.verify.state === "testing" ? t("provider.testing_btn") : t("provider.test_save_btn")}
               </button>
             </div>
           </div>
@@ -753,7 +857,11 @@ export function ProviderForm({
 
       {/* Error line: fixed height so failures never reflow the form. */}
       <div className="mt-3 min-h-[19px] text-[13px]">
-        {ps.verify.state === "error" && <span className="text-warnInk">{ps.verify.msg}</span>}
+        {ps.verify.state === "error" && !choice && (
+          <span className="text-warnInk" role="alert" data-testid={`${tp}-verify-error`}>
+            {ps.verify.msg}
+          </span>
+        )}
       </div>
       {info?.auth === "oauth" ? null : footer}
     </div>

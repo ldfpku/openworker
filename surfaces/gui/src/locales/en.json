@@ -1601,6 +1601,10 @@
     "copy_command": "Copy command",
     "test_save_hint": "Runs one read-only check, then saves.",
     "test_save_btn": "Test & save",
+    "err_missing_fields": "Fill these in first: {{fields}}",
+    "list_sep": ", ",
+    "testing_btn": "Testing…",
+    "copied_command": "Copied",
     "err_save_failed": "verified, but the key could not be saved",
     "needs_sign_in": "Key saved · sign in to use it"
   },

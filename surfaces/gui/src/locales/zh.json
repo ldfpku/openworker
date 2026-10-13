@@ -1570,6 +1570,10 @@
     "copy_command": "复制命令",
     "test_save_hint": "运行一次只读检查，然后保存。",
     "test_save_btn": "测试并保存",
+    "err_missing_fields": "请先填写：{{fields}}",
+    "list_sep": "、",
+    "testing_btn": "测试中…",
+    "copied_command": "已复制",
     "err_save_failed": "已验证，但密钥没能保存",
     "needs_sign_in": "已填 key · 还需登录"
   },
