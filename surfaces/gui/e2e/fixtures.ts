@@ -947,6 +947,10 @@ export async function mockApi(page: import("@playwright/test").Page) {
         }
         // A reasoning model's turn: thinking deltas tick in slowly, then the answer —
         // the assistant_message carries the full trace like the real engine's payload.
+        // 400ms a tick: the spec has to see "Thinking…", click it and read the trace
+        // while the turn is still live. At 120ms that window was under half a second,
+        // which WebKit under a parallel run missed three times out of four — the click
+        // landed on the finalized disclosure instead.
         if (/think hard/i.test(msg.text)) {
           const thoughts = ["Weighing options. ", "Comparing tradeoffs. ", "Settling it. "];
           let tick = 0;
@@ -963,7 +967,7 @@ export async function mockApi(page: import("@playwright/test").Page) {
               reasoning: thoughts.join(""),
             });
             send("turn_done");
-          }, 120);
+          }, 400);
           return;
         }
         // Auto-compaction (OPE-27): the server signals `compacting` (the transient

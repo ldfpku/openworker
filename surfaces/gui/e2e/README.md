@@ -7,10 +7,16 @@ Python backend**, run deterministically, and never mutate real state.
 ## Run
 
 ```bash
-npm run e2e          # headless
+npm run e2e          # headless, Chromium (what WebView2 on Windows is)
+npm run e2e:webkit   # the same specs in WebKit (what WKWebView on macOS is)
 npm run e2e:ui       # Playwright UI mode (watch/inspect)
-npx playwright test e2e/settings.spec.ts   # a single spec
+npx playwright test --project=chromium e2e/settings.spec.ts   # a single spec
 ```
+
+`e2e:webkit` needs the WebKit build once: `npx playwright install webkit`. CI runs it on a
+macOS runner (`gui-e2e-webkit` in `.github/workflows/ci.yml`). When a bug is reported from a
+Mac and will not reproduce on Windows, run the matching spec with `--project=webkit` first.
+Without `--project`, `npx playwright test` runs both engines.
 
 ## Live smoke (not CI)
 

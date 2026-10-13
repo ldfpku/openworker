@@ -82,3 +82,28 @@ jobs:
       - name: e2e
         working-directory: surfaces/gui
         run: npm run e2e
+
+  # The same specs in WebKit. The macOS app renders in WKWebView, and until 2026-10-13
+  # nothing here ran in it: a confirm button that disarmed on blur could not be clicked on
+  # a Mac (WebKit drops focus on mousedown over a <button>) while Chromium and jsdom both
+  # passed. Runs on macOS on purpose — it is the platform the app ships WebKit on, and
+  # WebKit's Linux builds do not share that focus behaviour, so an ubuntu lane would have
+  # stayed green through the very bug this lane exists for.
+  gui-e2e-webkit:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: surfaces/gui/package-lock.json
+      - name: npm ci
+        working-directory: surfaces/gui
+        run: npm ci
+      - name: Install Playwright WebKit
+        working-directory: surfaces/gui
+        run: npx playwright install webkit
+      - name: e2e (WebKit)
+        working-directory: surfaces/gui
+        run: npm run e2e:webkit

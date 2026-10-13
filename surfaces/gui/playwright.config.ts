@@ -15,7 +15,16 @@ export default defineConfig({
     baseURL: `http://localhost:${PORT}`,
     trace: "on-first-retry",
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  // Two engines because we ship two: WebView2 (Chromium) on Windows, WKWebView (WebKit) on
+  // macOS. `npm run e2e` runs chromium only, so a machine without the WebKit build keeps
+  // working; `npm run e2e:webkit` (CI: the macOS lane) runs the same specs in WebKit. It
+  // exists because of 2026-10-13: a confirm button that disarmed on blur could not be
+  // clicked on a Mac — WebKit drops focus on mousedown over a <button> — and every check
+  // we had ran in Chromium or jsdom, where it worked.
+  projects: [
+    { name: "chromium", use: { ...devices["Desktop Chrome"] } },
+    { name: "webkit", use: { ...devices["Desktop Safari"] } },
+  ],
   webServer: {
     // Dev server on a dedicated port so it never collides with a running `npm run dev` (5173).
     command: `npm run dev -- --port ${PORT} --strictPort`,

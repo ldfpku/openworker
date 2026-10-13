@@ -6,7 +6,13 @@ import { expect } from "@playwright/test";
 import { test } from "./fixtures";
 
 // The copy test asserts real clipboard writes — grant instead of relying on defaults.
-test.use({ permissions: ["clipboard-write"] });
+// Chromium only: WebKit has no permission by that name (the context refuses to open) and
+// allows a clipboard write from a user gesture, which the click on Copy is.
+test.use({
+  permissions: async ({ browserName }, use) => {
+    await use(browserName === "chromium" ? ["clipboard-write"] : []);
+  },
+});
 
 const scrollerState = `(() => {
   const el = document.querySelector(".main-scroll");
