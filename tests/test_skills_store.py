@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import stat
 import zipfile
 from pathlib import Path
 
@@ -168,6 +169,104 @@ def test_delete_symlinked_folder_not_followed(store, tmp_path):
     except ValueError:
         pass
     assert (outside / "SKILL.md").is_file()
+
+
+def test_delete_removes_read_only_files(store):
+    """A folder import copies the read-only attribute along with the file (copy2). On
+    Windows a bare rmtree stopped at it with PermissionError — an HTTP 500 the Settings
+    screen showed as nothing happening."""
+    store.create(name="locked", description="", instructions="x")
+    ref = store.global_dir / "locked" / "ref"
+    ref.mkdir()
+    data = ref / "data.txt"
+    data.write_text("x", encoding="utf-8")
+    os.chmod(data, stat.S_IREAD)
+    if os.name != "nt":
+        os.chmod(ref, 0o555)  # POSIX: an unwritable dir is what blocks its children
+    store.delete("locked")
+    assert not (store.global_dir / "locked").exists()
+    assert store.rows() == []
+    # Nothing is left parked anywhere either.
+    assert list(store.global_dir.parent.glob(".global-skills-deleted-*")) == []
+    assert list(store._deleted_dir.glob("*")) == []
+
+
+def test_delete_of_a_project_skill_leaves_nothing_in_the_project(store, workspace):
+    """A project's .coworker folder travels with the repo: the delete must not park its
+    leftovers there where they could be committed."""
+    store.create(
+        name="proj-skill", description="", instructions="x", scope="project", workspace=workspace
+    )
+    store.delete("proj-skill", workspace)
+    assert [p.name for p in (workspace / ".coworker").iterdir()] == ["skills"]
+    assert list((workspace / ".coworker" / "skills").iterdir()) == []
+
+
+def test_delete_refused_touches_nothing(store, monkeypatch):
+    """A folder the OS will not release (a file open elsewhere, a shell sitting in it) is
+    refused as a whole: the skill stays complete and listed, and the caller gets a
+    ValueError to show — never a partial delete, never a bare OSError."""
+    store.create(name="busy", description="", instructions="x")
+    (store.global_dir / "busy" / "a.py").write_text("print(1)", encoding="utf-8")
+
+    def held(src, dst):
+        raise PermissionError(13, "The process cannot access the file", str(src))
+
+    monkeypatch.setattr(os, "rename", held)
+    with pytest.raises(ValueError, match="无法删除技能 busy"):
+        store.delete("busy")
+    assert (store.global_dir / "busy" / "SKILL.md").is_file()
+    assert (store.global_dir / "busy" / "a.py").is_file()
+    assert [r["name"] for r in store.rows()] == ["busy"]
+
+
+def test_listed_name_differs_from_folder(store, workspace):
+    """rows() lists a skill by its frontmatter name; every management call has to find it
+    by that same name. A hand-copied or renamed folder used to be listed but unreachable:
+    delete, edit and "show folder" all answered Unknown skill."""
+    folder = store.global_dir / "my-folder"
+    folder.mkdir(parents=True)
+    (folder / "SKILL.md").write_text(SKILL_MD, encoding="utf-8")  # declares `greet`
+    assert [r["name"] for r in store.rows()] == ["greet"]
+    assert store.find("greet") == (folder, "global")
+    store.update("greet", description="edited")
+    assert store.rows()[0]["description"] == "edited"
+    store.move("greet", to_scope="project", workspace=workspace)
+    assert (workspace / ".coworker" / "skills" / "my-folder" / "SKILL.md").is_file()
+    store.delete("greet", workspace)
+    assert store.rows(workspace) == []
+
+
+def test_listed_name_wins_over_a_folder_of_that_name(store):
+    """Folder `b` declares `c`; folder `a` declares `b`. Deleting what the list calls `b`
+    must remove folder `a`, not the skill the list shows as `c`."""
+    for folder, declared in (("a", "b"), ("b", "c")):
+        d = store.global_dir / folder
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            f"---\nname: {declared}\ndescription: d\n---\n\nbody\n", encoding="utf-8"
+        )
+    store.delete("b")
+    assert [r["name"] for r in store.rows()] == ["c"]
+    assert (store.global_dir / "b" / "SKILL.md").is_file()
+
+
+def test_name_that_is_not_folder_safe_is_still_manageable(store):
+    """A hand-written skill may declare a Chinese name. It is listed under it, so it must
+    be possible to switch off and delete under it — the name is matched, never used as a
+    path, so the traversal guard on new names is not weakened."""
+    folder = store.global_dir / "weekly"
+    folder.mkdir(parents=True)
+    (folder / "SKILL.md").write_text(
+        "---\nname: 周报 助手\ndescription: d\n---\n\nbody\n", encoding="utf-8"
+    )
+    store.set_enabled("周报 助手", False)
+    assert store.rows()[0]["enabled"] is False
+    store.delete("周报 助手")
+    assert store.rows() == []
+    for hostile in ("..", "../x", "a/b"):
+        with pytest.raises(ValueError):
+            store.delete(hostile)
 
 
 def test_move_roundtrip(store, workspace):

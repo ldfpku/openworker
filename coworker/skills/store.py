@@ -15,10 +15,13 @@ be saved before anything lands in a scope dir. Staged content sits under
 
 from __future__ import annotations
 
+import errno
 import io
 import json
+import os
 import re
 import shutil
+import stat
 import threading
 import uuid
 import zipfile
@@ -164,6 +167,35 @@ def _rewrite_skill_md(md: Path, *, description: str, instructions: str) -> bool:
     return True
 
 
+def _make_deletable(folder: Path) -> None:
+    """Clear whatever would make ``rmtree`` stop halfway: the read-only attribute on
+    Windows (a folder import copies it along with the file — ``shutil.copy2``), and
+    unwritable directories on POSIX. Best effort; the delete that follows reports."""
+    for root, dirs, files in os.walk(folder):
+        for entry in [*dirs, *files]:
+            path = os.path.join(root, entry)
+            try:
+                if os.path.islink(path):
+                    continue
+                mode = os.stat(path).st_mode
+                extra = stat.S_IXUSR if stat.S_ISDIR(mode) else 0
+                os.chmod(path, mode | stat.S_IWRITE | extra)
+            except OSError:
+                continue
+
+
+def _delete_refused(name: str, folder: Path, exc: OSError) -> ValueError:
+    """The message 设置 ▸ 技能 shows verbatim when a skill folder will not go."""
+    if isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in (5, 32):
+        reason = (
+            "它的文件夹或里面的文件正被占用——可能有会话还在使用这个技能，"
+            "或者文件夹、其中的文件正在别的程序里开着。请结束相关会话、关闭这些窗口后再删除。"
+        )
+    else:
+        reason = f"系统拒绝了这次删除（{exc.strerror or exc}）。"
+    return ValueError(f"无法删除技能 {name}：{reason}技能未被改动。位置：{folder}")
+
+
 class SkillStore:
     """Folder-backed skill CRUD across the global + project scopes."""
 
@@ -171,6 +203,7 @@ class SkillStore:
         self.global_dir = Path(global_dir) if global_dir else state_dir() / "skills"
         self._settings_path = state_dir() / "skills-settings.json"
         self._staging_dir = state_dir() / "skills-staged"
+        self._deleted_dir = state_dir() / "skills-deleted"
         self._lock = threading.Lock()
 
     # -- scope dirs ---------------------------------------------------------------
@@ -207,15 +240,55 @@ class SkillStore:
         self, name: str, workspace: Optional[str | Path] = None
     ) -> tuple[Path, str]:
         """Locate a skill by name, most-local first (project before global) — mirrors the
-        loader's collision precedence so management operates on the copy the model sees."""
-        name = validate_name(name)
+        loader's collision precedence so management operates on the copy the model sees.
+
+        "Name" is the one the Settings list and the catalog show: the frontmatter
+        ``name:``, which is the folder name for everything this store writes but not for
+        a folder a person copied in or renamed by hand. Looking only at
+        ``<scope>/<name>/`` left such a skill listed but impossible to delete, edit or
+        reveal — and one whose declared name is not folder-safe (a Chinese name) was
+        refused before the lookup even ran.
+        """
+        name = (name or "").strip()
+        invalid: Optional[ValueError] = None
+        try:
+            validate_name(name)
+        except ValueError as exc:
+            invalid = exc
+        bases: list[tuple[Path, str]] = []
         if workspace:
-            project = self.project_dir(Path(workspace).expanduser())
-            if (project / name / "SKILL.md").is_file():
-                return self._folder_of(project, name), PROJECT_SCOPE
-        if (self.global_dir / name / "SKILL.md").is_file():
-            return self._folder_of(self.global_dir, name), GLOBAL_SCOPE
+            bases.append((self.project_dir(Path(workspace).expanduser()), PROJECT_SCOPE))
+        bases.append((self.global_dir, GLOBAL_SCOPE))
+        for base, scope in bases:
+            folder = self._locate(base, name, folder_safe=invalid is None)
+            if folder is not None:
+                return folder, scope
+        if invalid is not None:
+            raise invalid
         raise ValueError(f"Unknown skill: {name}")
+
+    def _locate(self, base: Path, name: str, *, folder_safe: bool) -> Optional[Path]:
+        """The folder in ``base`` whose skill is called ``name``. ``name`` is only joined
+        onto ``base`` when it passed ``validate_name``; otherwise it is compared against
+        what each SKILL.md declares, never used as a path."""
+        direct = base / name / "SKILL.md" if folder_safe else None
+        if direct is not None and direct.is_file() and _parse_skill(direct).name == name:
+            return self._folder_of(base, name)
+        if name and base.is_dir():
+            declared = [
+                sub.name
+                for sub in sorted(base.iterdir())
+                if (sub / "SKILL.md").is_file() and _parse_skill(sub / "SKILL.md").name == name
+            ]
+            if declared:
+                # Two folders declaring one name: the last one is the one rows() and the
+                # loader keep, so it is the one the user is looking at.
+                return self._folder_of(base, declared[-1])
+        if direct is not None and direct.is_file():
+            # A folder called `name` that declares another name: still reachable by its
+            # folder name, after any skill that actually goes by `name`.
+            return self._folder_of(base, name)
+        return None
 
     def rows(self, workspace: Optional[str | Path] = None) -> list[dict[str, Any]]:
         """Enriched listing for the Settings screen: scope, source, enabled. Global first,
@@ -319,11 +392,65 @@ class SkillStore:
         return {"name": current.name, "scope": scope}
 
     def delete(self, name: str, workspace: Optional[str | Path] = None) -> None:
+        """Remove the skill's folder — all of it, or none of it.
+
+        The folder is renamed out of the scope dir first, then deleted. A bare ``rmtree``
+        stops at the first entry it cannot remove, and on Windows that is easy to hit: a
+        read-only file, a file open in another program, a shell whose working directory
+        is inside the skill. It raised ``PermissionError`` (an HTTP 500, which Settings
+        showed as nothing happening) after already deleting whatever sorted first,
+        leaving half a skill behind. The rename is the gate instead: Windows refuses it
+        while anything inside is held, before a single file is touched; once it succeeds
+        the skill is gone from every listing and the cleanup after it cannot undo that.
+        """
         folder, _scope = self.find(name, workspace)
         if folder.is_symlink():  # never follow a link out of the scope dir
             folder.unlink()
             return
-        shutil.rmtree(folder)
+        base = folder.parent
+        self._sweep_deleted(base)
+        try:
+            tomb = self._park_deleted(folder, base)
+        except OSError as exc:
+            raise _delete_refused(name, folder, exc) from exc
+        _make_deletable(tomb)
+        shutil.rmtree(tomb, ignore_errors=True)
+
+    def _park_deleted(self, folder: Path, base: Path) -> Path:
+        """Rename `folder` out of its scope dir and return where it went. The personal
+        state dir is preferred, so that nothing of ours is ever left inside a project
+        (``<workspace>/.coworker`` travels with the repo); a project on another volume
+        cannot be renamed across to it, and parks next to its scope dir instead."""
+        token = uuid.uuid4().hex
+        candidates = [
+            self._deleted_dir / token,
+            base.parent / f".{base.name}-deleted-{token}",
+        ]
+        for tomb in candidates[:-1]:
+            try:
+                tomb.parent.mkdir(parents=True, exist_ok=True)
+                os.rename(folder, tomb)
+                return tomb
+            except OSError as exc:
+                cross_volume = exc.errno == errno.EXDEV or getattr(exc, "winerror", None) == 17
+                if not cross_volume:
+                    raise
+        os.rename(folder, candidates[-1])
+        return candidates[-1]
+
+    def _sweep_deleted(self, base: Path) -> None:
+        """Reclaim what an earlier delete could not finish removing. Those leftovers sit
+        outside every scope dir, so they were never listed or loaded — this is disk only."""
+        try:
+            leftovers = [
+                *self._deleted_dir.glob("*"),
+                *base.parent.glob(f".{base.name}-deleted-*"),
+            ]
+        except OSError:
+            return
+        for tomb in leftovers:
+            _make_deletable(tomb)
+            shutil.rmtree(tomb, ignore_errors=True)
 
     def move(
         self,
@@ -336,7 +463,7 @@ class SkillStore:
         if from_scope == to_scope:
             return {"name": name, "scope": to_scope}
         target_base = self._base(to_scope, workspace)
-        target = self._folder_of(target_base, name)
+        target = self._folder_of(target_base, folder.name)
         if (target / "SKILL.md").is_file():
             raise ValueError(
                 f"A skill named '{name}' already exists in the target scope."
@@ -354,7 +481,11 @@ class SkillStore:
             return set()
 
     def set_enabled(self, name: str, enabled: bool) -> None:
-        name = validate_name(name)
+        # Keyed by the listed (frontmatter) name and stored as JSON, never used as a path
+        # — so it has to accept every name `rows()` can show, folder-safe or not.
+        name = (name or "").strip()
+        if not name:
+            raise ValueError("技能名不能为空。")
         with self._lock:
             disabled = self.disabled_names()
             if enabled:

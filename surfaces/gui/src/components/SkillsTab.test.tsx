@@ -142,6 +142,83 @@ describe("SkillsTab", () => {
     });
   });
 
+  // WebKit (the macOS app's webview) does not focus a <button> on click — it CLEARS focus on
+  // mousedown. The armed confirm button used to disarm on any blur, so on a Mac the press
+  // that should confirm swapped the button away before the click landed and a skill could
+  // never be deleted (user report 2026-10-13). fireEvent.click alone cannot see that; these
+  // replay the events WebKit actually sends.
+  it("the confirm button survives WebKit's mousedown blur and still deletes", async () => {
+    const calls = stubFetch([
+      { match: "/v1/skills", method: "GET", json: LIST },
+      { match: "/v1/skills/weekly-report", method: "DELETE", json: { ok: true } },
+    ]);
+    render(<SkillsTab />);
+    await screen.findByText("weekly-report");
+    fireEvent.click(screen.getByLabelText("Delete weekly-report"));
+    const confirm = await screen.findByText("Confirm delete");
+    // The press keeps focus where it is (default prevented)…
+    expect(fireEvent.mouseDown(confirm)).toBe(false);
+    fireEvent.pointerDown(confirm);
+    // …and a focus loss with nowhere to go (WebKit's) does not disarm.
+    fireEvent.blur(confirm, { relatedTarget: null });
+    expect(screen.getByText("Confirm delete")).toBeTruthy();
+    fireEvent.click(screen.getByText("Confirm delete"));
+    await waitFor(() => {
+      expect(calls.some((c) => c.method === "DELETE" && c.url.includes("weekly-report"))).toBe(true);
+    });
+  });
+
+  it("a press elsewhere, Escape, or tabbing away disarms the delete", async () => {
+    const calls = stubFetch([{ match: "/v1/skills", method: "GET", json: LIST }]);
+    render(<SkillsTab />);
+    await screen.findByText("weekly-report");
+    const arm = () => fireEvent.click(screen.getByLabelText("Delete weekly-report"));
+
+    arm();
+    fireEvent.pointerDown(screen.getByText("Monday status report"));
+    expect(screen.queryByText("Confirm delete")).toBeNull();
+
+    arm();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByText("Confirm delete")).toBeNull();
+
+    arm();
+    fireEvent.blur(screen.getByText("Confirm delete"), {
+      relatedTarget: screen.getAllByRole("switch")[0],
+    });
+    expect(screen.queryByText("Confirm delete")).toBeNull();
+    expect(calls.some((c) => c.method === "DELETE")).toBe(false);
+  });
+
+  it("a delete the server could not carry out shows why, and never the 'removed' notice", async () => {
+    // What a crashed handler looks like on the wire: HTTP 500 and a body with no `ok`.
+    const fn = vi.fn(async (url: string, init?: RequestInit) => {
+      const method = (init?.method || "GET").toUpperCase();
+      if (method === "DELETE" && url.includes("/v1/skills/weekly-report"))
+        return { ok: false, status: 500, json: async () => ({ error: "internal error" }) } as Response;
+      if (method === "DELETE")
+        return {
+          ok: true,
+          json: async () => ({ ok: false, error: "无法删除技能 greet：它的文件夹正被占用。" }),
+        } as Response;
+      return { ok: true, json: async () => LIST } as Response;
+    });
+    vi.stubGlobal("fetch", fn);
+    render(<SkillsTab />);
+    await screen.findByText("weekly-report");
+
+    fireEvent.click(screen.getByLabelText("Delete weekly-report"));
+    fireEvent.click(await screen.findByText("Confirm delete"));
+    expect((await screen.findByRole("alert")).textContent).toBe("Something went wrong.");
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByText("weekly-report")).toBeTruthy(); // still listed
+
+    fireEvent.click(screen.getByLabelText("Delete greet"));
+    fireEvent.click(await screen.findByText("Confirm delete"));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("正被占用"));
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
   it("the enabled switch PATCHes {enabled} and teaches the off rule + physics footnote", async () => {
     const calls = stubFetch([
       { match: "/v1/skills", method: "GET", json: LIST },

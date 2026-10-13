@@ -126,6 +126,26 @@ def test_delete_and_unknown(tmp_path):
     assert client.delete("/v1/skills/greet").json()["ok"] is False
 
 
+def test_delete_that_the_filesystem_refuses_is_an_error_body_not_a_500(tmp_path, monkeypatch):
+    """The API convention (module docstring) is `{"ok": False, "error": …}`. An OSError out
+    of the store used to escape as HTTP 500 `{"error": "internal error"}` — no `ok`, so
+    the Settings screen showed nothing and the skill simply would not go."""
+    import os
+
+    client, _m, _p = _client(tmp_path)
+    client.post("/v1/skills", json=GREET)
+
+    def held(src, dst):
+        raise PermissionError(13, "The process cannot access the file", str(src))
+
+    monkeypatch.setattr(os, "rename", held)
+    res = client.delete("/v1/skills/greet")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is False and "greet" in body["error"]
+    assert [s["name"] for s in client.get("/v1/skills").json()["skills"]] == ["greet"]
+
+
 def test_move_happy_and_collision(tmp_path):
     client, _m, _p = _client(tmp_path)
     ws = tmp_path / "proj"

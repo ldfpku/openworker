@@ -1,6 +1,5 @@
 import { isComposing } from "../ime";
-import { useRef, useState } from "react";
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import {
   createSkill,
@@ -114,6 +113,30 @@ export function SkillsTab({
     refresh();
   }, []);
 
+  // Disarming the two-step delete: a press anywhere but the confirm button, or Escape.
+  // Not `onBlur` alone — WebKit (the macOS app's webview) does not treat a <button> as
+  // mouse-focusable and clears focus on mousedown, so the autofocused confirm button
+  // blurred on the very press meant to confirm it, was swapped back to the trash icon
+  // before mouseup, and the click never landed: skills could not be deleted on a Mac
+  // (user report 2026-10-13). Chromium keeps focus on a clicked button, which is why
+  // Windows and the jsdom tests never saw it.
+  useEffect(() => {
+    if (!armedDelete) return;
+    const onDown = (e: Event) => {
+      const el = e.target instanceof Element ? e.target : null;
+      if (!el?.closest("[data-confirm-delete]")) setArmedDelete(null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !isComposing(e)) setArmedDelete(null);
+    };
+    document.addEventListener("pointerdown", onDown, true);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onDown, true);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [armedDelete]);
+
   const fail = (res: { ok?: boolean; error?: string }) => {
     setNotice(null);
     if (res.ok === false) {
@@ -178,9 +201,11 @@ export function SkillsTab({
     }
     setArmedDelete(null);
     const res = await deleteSkill(row.name);
+    // Refresh either way: a refused delete must leave the list showing what is really
+    // on disk, not what the click hoped for.
+    refresh();
     if (fail(res)) return;
     setNotice({ name: row.name, text: DELETE_NOTE, tone: "warn" });
-    refresh();
   };
 
   return (
@@ -450,13 +475,17 @@ export function SkillsTab({
             />
             {armedDelete === row.name ? (
               /* Armed: the same slot turns into a text button so the second click is informed.
-                 autoFocus keeps focus on the slot; blurring away disarms. */
+                 autoFocus keeps focus on the slot for keyboard users; tabbing away disarms
+                 (relatedTarget is the next stop). A blur with no relatedTarget is WebKit
+                 dropping focus on mousedown — the effect above owns pointer disarming. */
               <button
                 className={BTN_BORDERED + " text-danger"}
                 autoFocus
+                data-confirm-delete
                 aria-label={t("skills.delete_aria", { name: row.name })}
+                onMouseDown={(e) => e.preventDefault()}
                 onClick={() => remove(row)}
-                onBlur={() => setArmedDelete(null)}
+                onBlur={(e) => e.relatedTarget && setArmedDelete(null)}
               >
                 {t("skills.confirm_delete")}
               </button>

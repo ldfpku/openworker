@@ -8756,7 +8756,7 @@ class SessionManager:
                 scope=str(body.get("scope", "global") or "global"),
                 workspace=body.get("workspace") or None,
             )
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             return {"ok": False, "error": str(exc)}
         return {"ok": True, "skill": created}
 
@@ -8771,14 +8771,14 @@ class SessionManager:
                     instructions=body.get("instructions"),
                     workspace=body.get("workspace") or None,
                 )
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             return {"ok": False, "error": str(exc)}
         return {"ok": True}
 
     def delete_skill(self, name: str, workspace: Optional[str] = None) -> dict[str, Any]:
         try:
             self.skill_store.delete(name, workspace or None)
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             return {"ok": False, "error": str(exc)}
         return {"ok": True}
 
@@ -8795,14 +8795,14 @@ class SessionManager:
                 to_scope=str(body.get("scope", "")),
                 workspace=body.get("workspace") or None,
             )
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             return {"ok": False, "error": str(exc)}
         return {"ok": True, "skill": moved}
 
     def stage_skill_upload(self, data: bytes, filename: str = "") -> dict[str, Any]:
         try:
             preview = self.skill_store.stage_upload(data, filename)
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             # hygiene.ImportRefused subclasses ValueError; its message is written to be
             # shown verbatim (which limit, what the actual number was).
             return {"ok": False, "error": str(exc)}
@@ -8814,7 +8814,7 @@ class SessionManager:
         they cannot accidentally ship a __pycache__ or a .env."""
         try:
             preview = self.skill_store.stage_folder(path)
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             return {"ok": False, "error": str(exc)}
         return {"ok": True, **preview}
 
@@ -8828,7 +8828,7 @@ class SessionManager:
                 scope=str(body.get("scope", "global") or "global"),
                 workspace=body.get("workspace") or None,
             )
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             return {"ok": False, "error": str(exc)}
         return {"ok": True, "skill": saved}
 

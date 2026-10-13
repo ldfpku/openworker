@@ -1568,6 +1568,26 @@ export async function listSkills(workspace?: string): Promise<SkillRow[]> {
   return (await res.json()).skills ?? [];
 }
 
+// Every skill mutation answers `{ok, error?}`. Anything else — a crashed handler (HTTP 500,
+// whose body carries no `ok`), a body that is not JSON, a dropped connection — has to read
+// as a failure too: the Settings screen only shows an error for `ok === false`, so a 500 on
+// delete used to do nothing at all, with the row still sitting there (2026-10-13).
+async function skillResult<T extends { ok: boolean; error?: string }>(
+  request: Promise<Response>,
+): Promise<T> {
+  try {
+    const res = await request;
+    const body = await res.json().catch(() => null);
+    if (res.ok === false || !body || typeof body !== "object") {
+      const error = typeof body?.error === "string" && body.ok === false ? body.error : "";
+      return { ok: false, error } as T;
+    }
+    return body as T;
+  } catch {
+    return { ok: false, error: "" } as T;
+  }
+}
+
 export async function createSkill(body: {
   name: string;
   description: string;
@@ -1575,22 +1595,19 @@ export async function createSkill(body: {
   scope?: "global" | "project";
   workspace?: string;
 }): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(skillUrl(), jsonPost(body));
-  return res.json();
+  return skillResult(fetch(skillUrl(), jsonPost(body)));
 }
 
 export async function updateSkill(
   name: string,
   patch: { description?: string; instructions?: string; enabled?: boolean; workspace?: string },
 ): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(skillUrl(`/${encodeURIComponent(name)}`), jsonPost(patch, "PATCH"));
-  return res.json();
+  return skillResult(fetch(skillUrl(`/${encodeURIComponent(name)}`), jsonPost(patch, "PATCH")));
 }
 
 export async function revealSkill(name: string): Promise<{ ok: boolean; error?: string }> {
   // §6 "Show folder": the backend opens the skill's folder in the OS file manager.
-  const res = await fetch(skillUrl(`/${encodeURIComponent(name)}/reveal`), jsonPost({}));
-  return res.json();
+  return skillResult(fetch(skillUrl(`/${encodeURIComponent(name)}/reveal`), jsonPost({})));
 }
 
 export async function deleteSkill(
@@ -1598,8 +1615,7 @@ export async function deleteSkill(
   workspace?: string,
 ): Promise<{ ok: boolean; error?: string }> {
   const qs = workspace ? `?workspace=${encodeURIComponent(workspace)}` : "";
-  const res = await fetch(skillUrl(`/${encodeURIComponent(name)}${qs}`), { method: "DELETE" });
-  return res.json();
+  return skillResult(fetch(skillUrl(`/${encodeURIComponent(name)}${qs}`), { method: "DELETE" }));
 }
 
 export async function moveSkill(
@@ -1607,22 +1623,19 @@ export async function moveSkill(
   scope: "global" | "project",
   workspace?: string,
 ): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(skillUrl(`/${encodeURIComponent(name)}/move`), jsonPost({ scope, workspace }));
-  return res.json();
+  return skillResult(fetch(skillUrl(`/${encodeURIComponent(name)}/move`), jsonPost({ scope, workspace })));
 }
 
 export async function stageSkillUpload(
   dataB64: string,
   filename = "",
 ): Promise<SkillUploadPreview> {
-  const res = await fetch(skillUrl("/upload"), jsonPost({ data_b64: dataB64, filename }));
-  return res.json();
+  return skillResult(fetch(skillUrl("/upload"), jsonPost({ data_b64: dataB64, filename })));
 }
 
 /** Desktop-only: import a skill folder in place — no zip, so no chance to package junk. */
 export async function importSkillFolder(path: string): Promise<SkillUploadPreview> {
-  const res = await fetch(skillUrl("/import-folder"), jsonPost({ path }));
-  return res.json();
+  return skillResult(fetch(skillUrl("/import-folder"), jsonPost({ path })));
 }
 
 export async function confirmSkillUpload(
@@ -1630,8 +1643,7 @@ export async function confirmSkillUpload(
   scope: "global" | "project" = "global",
   workspace?: string,
 ): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(skillUrl("/upload/confirm"), jsonPost({ token, scope, workspace }));
-  return res.json();
+  return skillResult(fetch(skillUrl("/upload/confirm"), jsonPost({ token, scope, workspace })));
 }
 
 
