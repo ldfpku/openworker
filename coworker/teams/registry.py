@@ -23,6 +23,9 @@ class TeamWorker:
     actor: str  # the lead-given NAME — board actor id, assignee handle, @mention target
     persona: str
     session_id: str
+    # The model the worker's session was CREATED with — a note of how it was staffed.
+    # Nothing reads it to pick a model: the worker's operative model is its own session
+    # record (`SessionRecord.model`). "" = not recorded.
     model: str = ""
     reason: str = ""  # why the lead staffed it — surfaces in teammates' rosters
 
@@ -112,6 +115,22 @@ class TeamRegistry:
                 if worker.session_id == session_id:
                     return team, worker
         return None
+
+    def clear_worker_models(self, should_clear) -> list[tuple[str, str, str]]:
+        """Blank the recorded staffing model of every worker `should_clear(model)` says
+        yes to, and persist once. Returns `(team_id, actor, old_model)` per cleared
+        worker. The field is descriptive only (see `TeamWorker.model`), so this never
+        changes what a worker runs on — that is its session record's business."""
+        cleared: list[tuple[str, str, str]] = []
+        with self._lock:
+            for team in self._teams.values():
+                for worker in team.workers:
+                    if worker.model and should_clear(worker.model):
+                        cleared.append((team.team_id, worker.actor, worker.model))
+                        worker.model = ""
+            if cleared:
+                self._save()
+        return cleared
 
     def set_paused(self, team_id: str, paused: bool) -> None:
         with self._lock:

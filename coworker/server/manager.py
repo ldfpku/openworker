@@ -1201,6 +1201,15 @@ class SessionManager:
         engine.compaction_settings = self.compaction_settings
         if carry is not None and carry.get("model_pinned"):
             engine.model_pinned = True
+        # The lazy half of the gateway-list reconcile: a pull only walks sessions that
+        # are loaded, so a stored session (or a carried draft) still pinned to a model
+        # that has since left the list is caught here, the first time it is built again —
+        # whichever path builds it (a socket opening it, a durable resume, a channel
+        # delivery, a team wake, an automation's run session). Before the engine is
+        # shared, so no turn can be on it; persisted below, once this build has won.
+        model_switched = (
+            self._reconcile_engine_model(session_id, engine, at_boundary=True) is not None
+        )
         # Claim the cache slot atomically. `ensure_engine` already serialises every async
         # caller per session id, so this should never lose — but the build runs on a worker
         # thread now, and a plain `self._engines[session_id] = engine` would silently
@@ -1232,6 +1241,10 @@ class SessionManager:
             # so without this the file would keep the OLD persona's system prompt and a
             # restart would rebuild the session with the wrong instructions forever.
             self.session_store.save(replace(record, messages=[]), touch=False)
+            self.save(session_id, engine, touch=False)
+        elif model_switched and record is not None:
+            # In place, no Recents reorder: the stored row must stop naming the dead id
+            # (the sidebar reads it), and the switch marker belongs in the transcript.
             self.save(session_id, engine, touch=False)
         if is_new_session and carry is None:
             self._emit_session_created(session_id, agent_name)
@@ -3344,6 +3357,9 @@ class SessionManager:
             used.add(actor)
             worker_sid = uuid.uuid4().hex[:12]
             model = str(member.get("model") or record.model)
+            # Lead-supplied (or inherited from a record not yet reconciled): a worker
+            # must not be born on a gateway model that has left the server list.
+            model = self._session_model_target(model) or model
             self.session_store.save(
                 SessionRecord(
                     session_id=worker_sid,
@@ -4427,6 +4443,18 @@ class SessionManager:
         allowed = self._aigw_allowed()
         return allowed is not None and model[len("aigw:") :] in allowed
 
+    def _aigw_delisted(self, model: Optional[str]) -> bool:
+        """True only for a gateway id that a KNOWN list does not carry. The one test every
+        reconciliation below goes through, because its three "no" answers are exactly the
+        three things that must never be touched: another provider's id, any id while the
+        list is unknown (None — no pull has ever succeeded), and a listed id. Not the
+        negation of `_aigw_listed`, which is also false for every non-gateway id."""
+        model = model or ""
+        if not model.startswith("aigw:"):
+            return False
+        allowed = self._aigw_allowed()
+        return allowed is not None and model[len("aigw:") :] not in allowed
+
     def _aigw_default_gone(self) -> bool:
         """The default model is a gateway model that a successful pull says is no longer
         on this person's list. Deliberately NOT true while the list is unknown (None): a
@@ -4438,29 +4466,28 @@ class SessionManager:
         `model_notice: "default_model_gone"`, and the composer swaps its picker for the
         same chip it shows when no model is connected — the choice goes back to the
         person instead of being made for them."""
-        model = self.model or ""
-        allowed = self._aigw_allowed()
-        return (
-            model.startswith("aigw:")
-            and allowed is not None
-            and model[len("aigw:") :] not in allowed
-        )
+        return self._aigw_delisted(self.model)
 
     def _reconcile_aigw_selections(self) -> bool:
-        """Drop every locally saved `aigw:` pick the server list no longer carries. Runs
-        after each successful pull (`_store_model_catalog` is the one place they all end:
-        server start, the TTL refresh behind Settings ▸ Models, Refresh, the Test button,
-        and `set_provider` on sign-in). Returns True when prefs changed; the caller saves.
+        """Drop every `aigw:` pick saved in PREFS that the server list no longer carries.
+        Runs after each successful pull (`_store_model_catalog` is the one place they all
+        end: server start, the TTL refresh behind `get_settings` / Settings ▸ Models,
+        Refresh, the Test button, and `set_provider` on sign-in). Returns True when prefs
+        changed; the caller saves.
 
-        Touched: custom ids in prefs `models`, and — only to keep the file tidy, a hidden
-        id that is not offered hides nothing — `hidden_models`. Not touched: the default
-        model (`_aigw_default_gone` reports it instead of replacing it), and every other
-        place a model id is stored (a session's own model, an automation's, a team
-        member's, the compaction / auto-title overrides): those are facts or explicit
-        choices of their own, and a call on a model that left the list gets the guard's
-        own sentence. Other providers' ids are never looked at."""
-        allowed = self._aigw_allowed()
-        if allowed is None:
+        * `models` (custom ids) and `hidden_models` — the de-listed ids are removed
+          (`hidden_models` only to keep the file tidy: hiding what is not offered hides
+          nothing).
+        * `compaction_model` and `autotitle_model` — a de-listed override goes back to ""
+          = auto, the value both readers already treat as "no override" (compaction then
+          summarises on the session's own model, auto-titles on `_utility_model`).
+
+        NOT here: the default model, which is reported (`_aigw_default_gone`) and never
+        replaced. The other stores have their own passes — automations and the team
+        roster in `_reconcile_aigw_stores`, sessions in `_reconcile_engine_model`. Every
+        check is `_aigw_delisted`: other providers' ids are never looked at, and nothing
+        happens while the list is unknown."""
+        if self._aigw_allowed() is None:
             return False
         changed = False
         for key in ("models", "hidden_models"):
@@ -4468,10 +4495,7 @@ class SessionManager:
             if not isinstance(saved, list):
                 continue
             kept = [
-                m
-                for m in saved
-                if not (isinstance(m, str) and m.startswith("aigw:"))
-                or m[len("aigw:") :] in allowed
+                m for m in saved if not (isinstance(m, str) and self._aigw_delisted(m))
             ]
             if len(kept) == len(saved):
                 continue
@@ -4485,7 +4509,207 @@ class SessionManager:
                 self._prefs[key] = kept
             else:
                 self._prefs.pop(key, None)
+        for key in ("compaction_model", "autotitle_model"):
+            saved = self._prefs.get(key)
+            if isinstance(saved, str) and self._aigw_delisted(saved):
+                logger.info(
+                    "aigw: %s was %s, no longer on the server list — back to auto",
+                    key,
+                    saved,
+                )
+                self._prefs[key] = ""
+                changed = True
         return changed
+
+    def _reconcile_aigw_stores(self) -> bool:
+        """The same reconciliation for model ids kept outside prefs, each persisted by its
+        own store. Runs right after `_reconcile_aigw_selections`; True when anything
+        changed.
+
+        * An automation's model override (`ScheduledTask.model`) is cleared, so its next
+          run takes `task.model or self.model` — the default — in `_build_task_engine`.
+          Written with `TaskStore.set_model`, never `save()`: a reconcile must not
+          recompute a schedule that may be about to fire.
+        * A team worker's recorded staffing model (`TeamWorker.model`) is blanked. That
+          field is a note, not a setting — nothing reads it to choose a model; what a
+          worker actually runs on is its session record, which the session pass covers.
+
+        Not touched: the `model` column of the team board's event log and journal
+        (`teams.model.Actor.model`). Those rows are an append-only, hash-chained record
+        of who did what — rewriting one would break the chain — and the manager never
+        fills that field in anyway."""
+        if self._aigw_allowed() is None:
+            return False
+        changed = False
+        for task in self.task_store.list():
+            if not self._aigw_delisted(task.model):
+                continue
+            if self.task_store.set_model(task.id, None):
+                logger.info(
+                    "aigw: automation %s was pinned to %s, no longer on the server "
+                    "list — it now follows the default model",
+                    task.id,
+                    task.model,
+                )
+                changed = True
+        for team_id, actor, old in self.teams.clear_worker_models(self._aigw_delisted):
+            logger.info(
+                "aigw: team %s worker %s was staffed on %s, no longer on the server "
+                "list — cleared the note",
+                team_id,
+                actor,
+                old,
+            )
+            changed = True
+        return changed
+
+    # -- sessions pinned to a model that left the list ----------------------------
+    def model_pick_allowed(self, model: Optional[str]) -> bool:
+        """May a session be switched TO this model? False only for a gateway id a known
+        list does not carry. The socket's `set_model` / `user_message` handler asks before
+        applying a pick: the composer sends its visible model with every message, so a
+        GUI whose state is one event behind would otherwise re-pin the very id that was
+        just reconciled away — and send on it."""
+        return not self._aigw_delisted(model)
+
+    def _session_model_target(self, model: Optional[str]) -> Optional[str]:
+        """What a session on `model` should be moved to, or None to leave it alone.
+
+        Only a de-listed gateway model is ever moved, and only to the current default.
+        When the default is itself gone there is nothing to move to and nothing else is
+        picked (same rule as the default: no silent substitution) — the session keeps its
+        id and sits in the "choose a model" state `get_settings` already reports
+        (`model_ready` false + `model_notice`), where the composer shows no picker and
+        refuses to send. `set_default_model` runs this again the moment a usable default
+        exists."""
+        if not self._aigw_delisted(model) or self._aigw_default_gone():
+            return None
+        target = self.model or ""
+        return target if target and target != model else None
+
+    def _reconcile_engine_model(
+        self, session_id: str, engine: TurnEngine, *, at_boundary: bool = False
+    ) -> Optional[dict[str, Any]]:
+        """Move one live session off a de-listed gateway model, onto the default. Returns
+        the `model_changed` payload ({"model", "text"?}) for its viewers, or None when
+        nothing changed.
+
+        Never under a running turn: the loop reads `engine.model` per iteration, and a
+        turn that starts on one model and finishes on another is exactly what the
+        mid-session switch rules exist to prevent. A running session is skipped here and
+        picked up by `mark_idle`, its next turn boundary (`at_boundary=True` — the caller
+        vouches no turn is on this engine, e.g. it was built a moment ago).
+
+        `switch_model` writes the usual "Model switched to …" marker into a conversation
+        that has history, so the transcript shows where it happened. The hand-pick flag
+        goes too: the pick it protected no longer exists, and a draft should follow the
+        default again."""
+        if not at_boundary and self.is_running(session_id):
+            return None
+        target = self._session_model_target(getattr(engine, "model", None))
+        if target is None:
+            return None
+        old = engine.model
+        notice = engine.switch_model(target)
+        engine.model_pinned = False
+        logger.info(
+            "aigw: session %s was on %s, no longer on the server list — switched to "
+            "the default %s",
+            session_id,
+            old,
+            target,
+        )
+        data: dict[str, Any] = {"model": target}
+        if notice is not None:
+            data["text"] = notice
+        return data
+
+    def _persist_model_switch(self, session_id: str, engine: TurnEngine) -> None:
+        """Write a reconciled session's new model (and its marker) to its record. Same
+        rule as every other bookkeeping save: in place and without reordering Recents
+        (`touch=False`), and never for a draft that has no row yet — a setting must not
+        conjure a conversation into the sidebar; its first turn writes the row."""
+        try:
+            if (
+                not self.is_draft(engine.messages)
+                or self.session_store.load(session_id) is not None
+            ):
+                self.save(session_id, engine, touch=False)
+        except Exception:  # noqa: BLE001 - the switch itself already took effect
+            logger.exception("could not persist the model switch for %s", session_id)
+
+    def _reconcile_live_sessions(self) -> list[tuple[str, dict[str, Any]]]:
+        """One pass over every loaded session and every re-targeting draft: whatever is
+        on a de-listed gateway model and not mid-turn moves to the default, is persisted,
+        and is returned as `(session_id, model_changed payload)` for the caller to
+        broadcast. Stored sessions that are not loaded are NOT scanned — each is checked
+        when it is next built (`get_engine`), so a pull never rewrites the whole
+        conversation store."""
+        switched: list[tuple[str, dict[str, Any]]] = []
+        for session_id, engine in list(self._engines.items()):
+            data = self._reconcile_engine_model(session_id, engine)
+            if data is not None:
+                self._persist_model_switch(session_id, engine)
+                switched.append((session_id, data))
+        for session_id, carry in list(self._draft_carry.items()):
+            target = self._session_model_target(carry.get("model"))
+            if target is None:
+                continue
+            logger.info(
+                "aigw: re-targeting draft %s was on %s, no longer on the server list "
+                "— switched to the default %s",
+                session_id,
+                carry.get("model"),
+                target,
+            )
+            carry["model"] = target
+            carry.pop("model_pinned", None)
+        return switched
+
+    async def _reconcile_live_sessions_async(self) -> None:
+        """`_reconcile_live_sessions` on the event loop, then tell each session's viewers.
+        On the loop because that is where turns are claimed (`try_mark_running`): checked
+        from a pull's daemon thread, "idle" could turn into "running" between the check
+        and the switch."""
+        for session_id, data in self._reconcile_live_sessions():
+            await self.broadcast_session(
+                session_id, {"type": "model_changed", "data": data}
+            )
+
+    def _kick_session_reconcile(self) -> None:
+        """Run the live-session pass from wherever a list or default change just landed
+        (a pull's daemon thread, a REST worker thread). With a running server it is
+        handed to the loop; without one (tests, headless) there are no concurrent turns
+        to race and no sockets to tell, so it runs inline."""
+        loop = getattr(self, "_loop", None)
+        if loop is None:
+            self._reconcile_live_sessions()
+            return
+        coro = self._reconcile_live_sessions_async()
+        try:
+            asyncio.run_coroutine_threadsafe(coro, loop)
+        except Exception:  # noqa: BLE001 - a closed loop at shutdown is not an error
+            coro.close()
+            logger.debug("aigw: could not schedule the session reconcile", exc_info=True)
+
+    def _reconcile_session_at_boundary(self, session_id: str) -> None:
+        """`mark_idle`'s hook: the turn that kept this session out of the last pass has
+        ended, so apply the switch now and tell its viewers."""
+        engine = self._engines.get(session_id)
+        if engine is None:
+            return
+        data = self._reconcile_engine_model(session_id, engine)
+        if data is None:
+            return
+        self._persist_model_switch(session_id, engine)
+        loop = getattr(self, "_loop", None)
+        if loop is None:
+            return
+        coro = self.broadcast_session(session_id, {"type": "model_changed", "data": data})
+        try:
+            asyncio.run_coroutine_threadsafe(coro, loop)
+        except Exception:  # noqa: BLE001
+            coro.close()
 
     def _bind_provider_client(self, name: str, client: Any) -> None:
         """Router `on_build` hook: hand a freshly built provider client what only the
@@ -4666,7 +4890,9 @@ class SessionManager:
         failure rule above is load-bearing rather than cosmetic: a failed pull — a network
         outage, 503 `gate_unavailable`, even 502 `catalog_unavailable` — leaves the last
         successfully fetched list in force and never falls back to the matrix. A success
-        is also the moment local picks are reconciled against the new list."""
+        is also the moment everything that remembers a gateway model is reconciled
+        against the new list: prefs (`_reconcile_aigw_selections`), automations and the
+        team roster (`_reconcile_aigw_stores`), loaded sessions (`_kick_session_reconcile`)."""
         from datetime import datetime, timezone
 
         now = datetime.now(timezone.utc).isoformat()
@@ -4693,15 +4919,30 @@ class SessionManager:
                 entry["failed_at"] = now
                 self._model_catalog[name] = entry
             self._prefs["model_catalog"] = dict(self._model_catalog)
+        reconciled = False
         if gateway_pull:
             # Same prefs write as the catalog itself, so a crash between the two cannot
             # leave a new list next to picks it has already disowned.
-            self._reconcile_aigw_selections()
+            reconciled = self._reconcile_aigw_selections()
         try:
             self._save_prefs()
         except OSError:
             logger.debug("model catalog: failed to persist prefs", exc_info=True)
-        if gateway_pull and before != (self._aigw_allowed(), self._aigw_default_gone()):
+        if gateway_pull:
+            # Everything else that remembers a model id: automations and the team roster
+            # (their own stores), then loaded sessions. Contained — a store that cannot
+            # be written must not cost the person the list that just arrived.
+            try:
+                reconciled = self._reconcile_aigw_stores() or reconciled
+            except Exception:  # noqa: BLE001
+                logger.exception("aigw: reconciling automations / teams failed")
+            try:
+                self._kick_session_reconcile()
+            except Exception:  # noqa: BLE001 - inline when no loop runs; same containment
+                logger.exception("aigw: reconciling loaded sessions failed")
+        if gateway_pull and (
+            reconciled or before != (self._aigw_allowed(), self._aigw_default_gone())
+        ):
             self._announce_models_changed()
 
     def refresh_model_catalog(
@@ -5817,7 +6058,9 @@ class SessionManager:
         doesn't apply globally"). A draft whose model the person picked BY HAND in the
         composer keeps that pick (`model_pinned`, set by the socket's set_model) — the
         default is a fallback, not an override of an explicit choice. Sessions with
-        history are untouched: their model is a fact of the conversation.
+        history are untouched: their model is a fact of the conversation — unless that
+        model is a company-gateway one that has left the person's server list, in which
+        case the session moves to the new default (`_reconcile_live_sessions`).
         """
         model = (model or "").strip()
         if not model:
@@ -5842,6 +6085,9 @@ class SessionManager:
             ):
                 continue
             carry["model"] = model
+        # Sessions left on a de-listed gateway model because the default was gone too
+        # (nothing to move them to — `_session_model_target`) have somewhere to go now.
+        self._kick_session_reconcile()
         return {"ok": True, **self.get_settings()}
 
     def set_onboarded(self, value: bool = True) -> dict[str, Any]:
@@ -6657,7 +6903,9 @@ class SessionManager:
         engine = build_engine(
             agent=ag,
             workspace=task.workspace,
-            model=task.model or self.model,
+            # `_session_model_target`: a task object read just before a pull cleared its
+            # de-listed gateway override (`_reconcile_aigw_stores`) still must not run on it.
+            model=self._session_model_target(task.model) or task.model or self.model,
             mode=Mode.INTERACTIVE,
             approver=self._scheduled_approver(task, session_id),
             provider=self.provider,
@@ -7119,6 +7367,13 @@ class SessionManager:
             self._maybe_autotitle(session_id)
         except Exception:
             logger.exception("auto-title failed for %s", session_id)
+        # The turn boundary for a session whose gateway model left the server list while
+        # it was running: the pull skipped it then (a model is never swapped under a
+        # turn), so it moves to the default now. Contained like the hook above.
+        try:
+            self._reconcile_session_at_boundary(session_id)
+        except Exception:
+            logger.exception("model reconcile failed for %s", session_id)
         # Team sessions: a finished turn is the moment new board events exist (an
         # assign, a review transition) — kick the queue drain now instead of waiting
         # for the next scheduler tick. Cheap no-op for teamless sessions.

@@ -2605,6 +2605,17 @@ def create_app(manager: SessionManager) -> FastAPI:
             # old lock existed to prevent.
             if not model or manager.is_running(session_id):
                 return
+            if not manager.model_pick_allowed(model):
+                # A company-gateway model that is no longer on this person's server list.
+                # The composer sends its visible model with every message, so a client
+                # whose state is one event behind would re-pin the id the server has just
+                # moved this session away from — and the turn would go out on it. Refuse
+                # the pick BEFORE it pins anything, and say what the session is really on
+                # so the client corrects itself (same echo a real switch sends).
+                await manager.broadcast_session(
+                    session_id, {"type": "model_changed", "data": {"model": engine.model}}
+                )
+                return
             # An explicit pick from the composer: from here on a default-model change
             # in Settings leaves this draft alone (manager.set_default_model). Set BEFORE
             # the redundant-pick return below — deliberately re-picking the model you are

@@ -116,6 +116,29 @@ class TaskStore:
             self._conn.commit()
         return task
 
+    def set_model(self, task_id: str, model: Optional[str]) -> bool:
+        """Change ONLY a task's model override (None = follow the default model), leaving
+        its schedule exactly as stored. Deliberately not `save()`: that recomputes
+        `next_run` from now, and this is called from housekeeping that can land at any
+        moment (the gateway model-list reconcile) — a task that is due but not yet picked
+        up by the scheduler tick would have its pending fire recomputed away. Returns
+        False when the task no longer exists."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT data FROM scheduled_tasks WHERE id=?", (task_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            data = json.loads(row["data"])
+            data["model"] = model
+            data["updated_at"] = _epoch_now()
+            self._conn.execute(
+                "UPDATE scheduled_tasks SET data=? WHERE id=?",
+                (json.dumps(data), task_id),
+            )
+            self._conn.commit()
+        return True
+
     def get(self, task_id: str) -> Optional[ScheduledTask]:
         with self._lock:
             row = self._conn.execute(
