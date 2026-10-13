@@ -49,9 +49,15 @@ class Config:
     # like `allowed_commands`; user-global only, so a repo can't widen the agent's network reach.
     allowed_domains: list[str] = field(default_factory=list)
     # Auto-Approve mode's feature flag (spec §1.5): when true, sessions get an LLM reviewer
-    # that judges would-be approval cards in Mode.AUTO_APPROVE. Off by default; user-global
-    # only — a cloned repo must not be able to hand itself a looser reviewer.
-    auto_approve: bool = False
+    # that judges would-be approval cards in Mode.AUTO_APPROVE. User-global only — a cloned
+    # repo must not be able to hand itself a looser reviewer.
+    #
+    # On by default since 0.7.4 (owner decision 2026-10-13): with it off, the mode picker
+    # simply had no 自动审批 row, and users who had never found the Settings switch reported
+    # the option as missing. The flag only OFFERS the mode — nothing is reviewed, and no
+    # extra model call is made, until a user picks it for a session. An explicit choice
+    # still wins: the Settings toggle (prefs) or `auto_approve = false` in config.toml.
+    auto_approve: bool = True
     # Shadow evaluation (spec Part 6 step 3): the reviewer records what it WOULD have
     # decided on every approval card while the human still decides. Verdicts land in the
     # audit log next to the human's outcome and nothing else changes — this is how the ship

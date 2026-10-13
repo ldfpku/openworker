@@ -183,7 +183,7 @@
       "approved_scope": "你已批准 · {{scope}}",
       "approved_title": "你已批准",
       "reviewer_unsure": " —— 审查器不确定：{{note}}",
-      "reviewer_allowed_title": "已由自动批准审查器允许",
+      "reviewer_allowed_title": "已由自动审批审查器允许",
       "bypass_title": "未经批准即运行 —— 跳过批准模式",
       "auto_approved": "已自动批准",
       "bypassed": "已跳过批准"

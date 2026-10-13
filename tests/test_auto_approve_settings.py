@@ -1,6 +1,6 @@
 """Settings wiring for Auto-Approve (spec §1.5 / Part 6 step 3).
 
-Covers the prefs-backed feature flag + shadow toggle: default off, REST round-trip,
+Covers the prefs-backed feature flag + shadow toggle: defaults, REST round-trip,
 persistence across a manager restart, config.toml fallback, and the build-engine override
 so a flag flip takes effect on the next session build without a config edit.
 """
@@ -21,10 +21,30 @@ def client(tmp_path, monkeypatch):
     return TestClient(create_app(SessionManager(data_dir=tmp_path / "data")))
 
 
-def test_flags_default_off(client):
+def test_flag_defaults(client):
+    # Auto-approve is offered to everyone (owner decision 2026-10-13: with the flag off the
+    # mode picker had no 自动审批 row and users reported it missing). Shadow evaluation costs
+    # a model call on every approval card in every mode, so it stays opt-in.
     s = client.get("/v1/settings").json()
-    assert s["auto_approve"] is False
+    assert s["auto_approve"] is True
     assert s["auto_approve_shadow"] is False
+
+
+def test_turning_it_off_sticks(tmp_path, monkeypatch):
+    # The default being on must never override someone who switched it off — in Settings…
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    mgr = SessionManager(data_dir=tmp_path / "data")
+    mgr.set_auto_approve(False)
+    assert SessionManager(data_dir=tmp_path / "data").auto_approve() is False
+
+
+def test_config_toml_can_still_turn_it_off(tmp_path, monkeypatch):
+    # …or by hand in config.toml.
+    state = tmp_path / "state"
+    state.mkdir(parents=True)
+    (state / "config.toml").write_text("auto_approve = false\n")
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(state))
+    assert SessionManager(data_dir=tmp_path / "data").auto_approve() is False
 
 
 def test_set_auto_approve_roundtrip(client):
@@ -37,6 +57,7 @@ def test_set_auto_approve_roundtrip(client):
 
 
 def test_shadow_is_independent_of_the_live_flag(client):
+    client.post("/v1/settings/auto-approve", json={"auto_approve": False})
     client.post("/v1/settings/auto-approve-shadow", json={"auto_approve_shadow": True})
     s = client.get("/v1/settings").json()
     assert s["auto_approve"] is False  # untouched
@@ -73,7 +94,7 @@ def test_build_engine_override_beats_config(tmp_path, monkeypatch):
     from coworker.agent import build_engine
     from coworker.agents.chat import chat_agent
 
-    # config has it off by default; override to on → a reviewer is attached.
+    # Whatever the config default is, the caller's value decides: on → a reviewer is attached.
     engine = build_engine(agent=chat_agent(), auto_approve=True, auto_approve_shadow=False)
     assert engine.reviewer is not None
     engine2 = build_engine(agent=chat_agent(), auto_approve=False, auto_approve_shadow=False)
