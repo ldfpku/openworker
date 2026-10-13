@@ -54,6 +54,8 @@
     "show_more_n": "显示更多（{{n}}）",
     "no_project_convos": "此项目中暂无会话。",
     "archived_n": "已归档（{{n}}）",
+    "archived_just": "已归档「{{title}}」",
+    "archived_undo": "撤销",
     "show_less": "收起",
     "show_n_more": "再显示 {{n}} 条",
     "sign_out": "退出登录",
@@ -733,7 +735,8 @@
     "placeholder": "搜索会话",
     "no_results": "未找到会话。",
     "pinned": "置顶会话",
-    "recent": "最近会话"
+    "recent": "最近会话",
+    "archived": "已归档的会话"
   },
   "integrations": {
     "nav_title": "连接器",

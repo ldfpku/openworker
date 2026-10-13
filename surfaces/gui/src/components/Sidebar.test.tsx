@@ -169,6 +169,81 @@ describe("Chronological list row actions (⋮ menu)", () => {
   });
 });
 
+describe("Archived band (chronological layout)", () => {
+  // The default layout had no Archived section at all: archiving made a conversation vanish
+  // with nowhere on screen to find it again (owner report 2026-10-13).
+  const ARCHIVED: SessionInfo = {
+    session_id: "s-old-1",
+    title: "last quarter numbers",
+    workspace: "",
+    agent: "ops",
+    model: "m",
+    mode: "interactive",
+    updated_at: "2026-05-01",
+    messages: 4,
+    archived: true,
+  };
+  const flat = () =>
+    stubFetch([
+      { match: "/v1/personas", method: "GET", json: PERSONAS },
+      { match: "/v1/settings", method: "GET", json: { nav_layout: "flat" } },
+    ]);
+
+  it("lists archived conversations from every coworker under a collapsed disclosure", async () => {
+    flat();
+    render(<Sidebar {...baseProps} sessions={[...SESSIONS, ARCHIVED]} />);
+    await screen.findByText("incident watch");
+
+    // Collapsed: the count is visible, the row is not (and it is not in Recent).
+    const toggle = screen.getByRole("button", { name: "Archived (1)" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("last quarter numbers")).toBeNull();
+
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByText("last quarter numbers"));
+    expect(baseProps.onSelectSession).toHaveBeenCalledWith("s-old-1", "", "ops");
+
+    // Its ⋮ menu puts it back: the archive slot reads Unarchive.
+    const band = screen.getByTestId("archived-band");
+    fireEvent.click(band.querySelector('[data-testid="row-menu"]')!);
+    expect(screen.getByTestId("row-menu-archive").textContent).toContain("Unarchive");
+    fireEvent.click(screen.getByTestId("row-menu-archive"));
+    expect(baseProps.onArchiveSession).toHaveBeenCalledWith("s-old-1", false);
+  });
+
+  it("no archived conversations → no band", async () => {
+    flat();
+    render(<Sidebar {...baseProps} />);
+    await screen.findByText("incident watch");
+    expect(screen.queryByTestId("archived-band")).toBeNull();
+  });
+
+  it("archiving names where the conversation went and offers Undo", async () => {
+    flat();
+    const view = render(<Sidebar {...baseProps} />);
+    await screen.findByText("incident watch");
+    fireEvent.click(screen.getAllByTestId("row-menu")[0]);
+    fireEvent.click(screen.getByTestId("row-menu-archive"));
+    expect(baseProps.onArchiveSession).toHaveBeenCalledWith("s-ops-1", true);
+
+    // The app refetches; the session comes back archived.
+    view.rerender(
+      <Sidebar
+        {...baseProps}
+        sessions={SESSIONS.map((s) => (s.session_id === "s-ops-1" ? { ...s, archived: true } : s))}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Archived (1)" })).toBeTruthy();
+    expect(screen.getByTestId("archived-hint").textContent).toContain("incident watch");
+    // Still put away: the band does not unfold itself.
+    expect(screen.queryByTitle("incident watch")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("archived-undo"));
+    expect(baseProps.onArchiveSession).toHaveBeenLastCalledWith("s-ops-1", false);
+    expect(screen.queryByTestId("archived-hint")).toBeNull();
+  });
+});
+
 describe("From Slack group (§31)", () => {
   const SLACK_SESSION: SessionInfo = {
     session_id: "s-slack-1",

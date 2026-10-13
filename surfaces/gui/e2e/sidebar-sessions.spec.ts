@@ -44,6 +44,39 @@ test("archive via the row menu is reversible via the Archived disclosure", async
   await expect(page.getByTitle("Weekly plan 2")).toBeVisible();
 });
 
+test("chronological layout: an archived session is one click away, and search finds it", async ({ page }) => {
+  // The launch default. It used to have no Archived section at all — archiving here made
+  // the conversation disappear from the sidebar AND from search (owner report 2026-10-13).
+  await page.route("**/v1/settings", (r) => r.fulfill({ json: { nav_layout: "flat" } }));
+  await page.goto("/");
+  const row = page.getByTitle("Weekly plan 2");
+  await expect(row).toBeVisible();
+  await expect(page.getByTestId("archived-band")).toHaveCount(0);
+
+  await row.hover();
+  await row.getByTestId("row-menu").click();
+  await row.getByTestId("row-menu-archive").click();
+
+  // Gone from Recent; the band appears, says what just went into it, and stays folded.
+  await expect(page.getByTitle("Weekly plan 2")).toHaveCount(0);
+  const band = page.getByTestId("archived-band");
+  await expect(band.getByRole("button", { name: /Archived \(1\)/ })).toBeVisible();
+  await expect(page.getByTestId("archived-hint")).toContainText("Weekly plan 2");
+
+  // Search reaches it too, under its own heading.
+  await page.getByRole("button", { name: "Search", exact: true }).click();
+  await page.getByPlaceholder("Search chats").fill("Weekly plan 2");
+  await expect(page.getByTestId("search-archived")).toContainText("Weekly plan 2");
+  await page.keyboard.press("Escape");
+
+  // Unfold → the row is there; Undo on the hint brings it straight back.
+  await band.getByRole("button", { name: /Archived \(1\)/ }).click();
+  await expect(band.getByTitle("Weekly plan 2")).toBeVisible();
+  await page.getByTestId("archived-undo").click();
+  await expect(page.getByTestId("archived-band")).toHaveCount(0);
+  await expect(page.getByTitle("Weekly plan 2")).toBeVisible();
+});
+
 test("mention-spawned sessions list in Recent with the platform icon — no From Slack band (§31 rev)", async ({
   page,
 }) => {

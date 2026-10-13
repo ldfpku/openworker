@@ -10,7 +10,9 @@ import { sessionDisplayTitle } from "../sessionTitle";
 
 // Command-palette search (Codex-style): clicking Search opens this overlay over the whole app
 // rather than filtering the sidebar in place (which made the grouped list collapse). It searches
-// ALL sessions, split into Pinned + Recent, filters as you type, and supports ↑/↓ + Enter + ⌘1–9.
+// ALL sessions, split into Pinned + Recent + Archived, filters as you type, and supports ↑/↓ +
+// Enter + ⌘1–9. Archived conversations are included (last, under their own heading): search
+// is where people go when they cannot find something, and "I archived it" is the usual reason.
 
 const byRecent = (a: SessionInfo, b: SessionInfo) =>
   (b.updated_at || "").localeCompare(a.updated_at || "");
@@ -43,16 +45,17 @@ export function SearchModal({
       : shortPersonaName(personaOf(s.agent)?.name, s.agent);
 
   const q = query.trim().toLowerCase();
-  const real = sessions.filter((s) => !s.session_id.startsWith("__") && !s.archived);
+  const real = sessions.filter((s) => !s.session_id.startsWith("__"));
   const match = (s: SessionInfo) =>
     !q ||
     (s.title || s.session_id).toLowerCase().includes(q) ||
     tagFor(s).toLowerCase().includes(q);
 
   const filtered = real.filter(match);
-  const pinned = filtered.filter((s) => s.pinned).sort(byRecent);
-  const recent = filtered.filter((s) => !s.pinned).sort(byRecent);
-  const ordered = [...pinned, ...recent]; // flat order drives keyboard nav + ⌘N
+  const pinned = filtered.filter((s) => s.pinned && !s.archived).sort(byRecent);
+  const recent = filtered.filter((s) => !s.pinned && !s.archived).sort(byRecent);
+  const archived = filtered.filter((s) => s.archived).sort(byRecent);
+  const ordered = [...pinned, ...recent, ...archived]; // flat order drives keyboard nav + ⌘N
 
   // Reset the highlight whenever the result set changes.
   useEffect(() => {
@@ -151,6 +154,14 @@ export function SearchModal({
                     {t("search.recent")}
                   </div>
                   {recent.map((s, i) => row(s, pinned.length + i))}
+                </div>
+              )}
+              {archived.length > 0 && (
+                <div className="px-2 mt-1" data-testid="search-archived">
+                  <div className="px-2 py-1 text-[11px] uppercase tracking-[0.05em] text-faint font-semibold">
+                    {t("search.archived")}
+                  </div>
+                  {archived.map((s, i) => row(s, pinned.length + recent.length + i))}
                 </div>
               )}
             </>

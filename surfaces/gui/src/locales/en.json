@@ -54,6 +54,8 @@
     "show_more_n": "Show more ({{n}})",
     "no_project_convos": "No conversations in this project yet.",
     "archived_n": "Archived ({{n}})",
+    "archived_just": "Archived “{{title}}”",
+    "archived_undo": "Undo",
     "show_less": "Show less",
     "show_n_more": "Show {{n}} more",
     "sign_out": "Sign out",
@@ -755,7 +757,8 @@
     "placeholder": "Search chats",
     "no_results": "No chats found.",
     "pinned": "Pinned chats",
-    "recent": "Recent chats"
+    "recent": "Recent chats",
+    "archived": "Archived chats"
   },
   "integrations": {
     "nav_title": "Connectors",

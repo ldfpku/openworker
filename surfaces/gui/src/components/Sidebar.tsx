@@ -1,5 +1,5 @@
 import { isComposing } from "../ime";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 // Injected by vite from tauri.conf.json (see vite.config.ts). Same guarded-global pattern as
 // api.ts's __COWORKER_DEV_TOKEN__; the typeof check keeps non-vite consumers (vitest without
 // the define, any future SSR pass) from throwing on an undeclared identifier.
@@ -262,6 +262,23 @@ export function Sidebar(props: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rowMenu]);
   const [showArchived, setShowArchived] = useState(false);
+  // Where did it go? Archiving removes the row from the list the user is looking at, so for
+  // a few seconds the Archived band — the place it went — names the conversation and offers
+  // Undo, and is scrolled into view. The band itself stays collapsed: archiving is putting
+  // something away, and unfolding the whole archive on every tidy-up would undo that.
+  const [justArchived, setJustArchived] = useState<{ id: string; title: string } | null>(null);
+  const archivedBandRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!justArchived) return;
+    const timer = window.setTimeout(() => setJustArchived(null), 8000);
+    return () => window.clearTimeout(timer);
+  }, [justArchived]);
+  const justArchivedListed =
+    !!justArchived && props.sessions.some((s) => s.session_id === justArchived.id && s.archived);
+  useEffect(() => {
+    // Optional call: jsdom has no scrollIntoView.
+    if (justArchivedListed) archivedBandRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [justArchivedListed]);
   // Surfaced + enabled personas drive the surface list + family-aware behavior.
   // Refetched on the personas-changed event so an enable/install/delete in Settings
   // shows up here immediately (no page refresh).
@@ -432,6 +449,13 @@ export function Sidebar(props: Props) {
     .filter((s) => personaVisible(s.agent))
     .filter(matches)
     .sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""));
+  // The flat layout's Archived band: every archived conversation, across all coworkers
+  // (same rules as Recent — real sessions, no team workers, the coworker filter applies).
+  const archivedSessions = [...props.sessions]
+    .filter((s) => s.archived && !s.session_id.startsWith("__"))
+    .filter((s) => s.team?.role !== "worker")
+    .filter((s) => personaVisible(s.agent))
+    .sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""));
 
   // Row actions live behind ONE ⋮ kebab per row (FB-011: four hover icons read as clutter) —
   // the menu offers Rename · Pin/Unpin · Archive/Unarchive · Delete, with the two-step delete
@@ -489,9 +513,12 @@ export function Sidebar(props: Props) {
               {item("row-menu-pin", "pin", s.pinned ? t("sidebar.unpin") : t("sidebar.pin"), () =>
                 props.onTogglePin(s.session_id, !s.pinned),
               )}
-              {item("row-menu-archive", "archive", s.archived ? t("sidebar.unarchive") : t("sidebar.archive"), () =>
-                props.onArchiveSession(s.session_id, !s.archived),
-              )}
+              {item("row-menu-archive", "archive", s.archived ? t("sidebar.unarchive") : t("sidebar.archive"), () => {
+                props.onArchiveSession(s.session_id, !s.archived);
+                setJustArchived(s.archived ? null : { id: s.session_id, title: sessionDisplayTitle(s) });
+                // Grouped layout: the band lives in the conversation's own coworker group.
+                if (!s.archived) setOpenKey(s.agent);
+              })}
               <div className="h-px bg-line my-1 mx-2" />
               {confirmDelId === s.session_id ? (
                 <button
@@ -668,6 +695,51 @@ export function Sidebar(props: Props) {
             {rowActions(s, rawTitle)}
           </>
         )}
+      </div>
+    );
+  };
+
+  // The Archived band — the one place archived conversations live, in BOTH layouts. It used
+  // to exist only inside a coworker's accordion body, so in the chronological layout (the
+  // default) an archived conversation simply vanished: not in Recent, not in search, and
+  // nothing on screen to say where it went (owner report 2026-10-13). Collapsed by default;
+  // rows keep the full ⋮ menu, where the archive slot reads "Unarchive".
+  const archivedBand = (list: SessionInfo[], row: (s: SessionInfo) => ReactNode) => {
+    if (list.length === 0) return null;
+    const hint = justArchived && list.some((s) => s.session_id === justArchived.id) ? justArchived : null;
+    return (
+      <div className="mt-2 pt-1.5 border-t border-line" ref={archivedBandRef} data-testid="archived-band">
+        <button
+          className="w-full flex items-center gap-1.5 px-1.5 py-1 rounded text-[12px] text-faint hover:text-muted"
+          aria-expanded={showArchived}
+          onClick={() => setShowArchived((v) => !v)}
+        >
+          <Icon name={showArchived ? "chevronDown" : "chevronRight"} size={13} className="shrink-0" />
+          {t("sidebar.archived_n", { n: list.length })}
+        </button>
+        {hint && (
+          <div
+            className="flex items-center gap-2 px-1.5 py-1 text-[12px] text-muted"
+            role="status"
+            data-testid="archived-hint"
+          >
+            <Icon name="archive" size={12} className="shrink-0 text-faint" />
+            <span className="min-w-0 flex-1 truncate">
+              {t("sidebar.archived_just", { title: hint.title })}
+            </span>
+            <button
+              className="shrink-0 text-accent hover:underline"
+              data-testid="archived-undo"
+              onClick={() => {
+                props.onArchiveSession(hint.id, false);
+                setJustArchived(null);
+              }}
+            >
+              {t("sidebar.archived_undo")}
+            </button>
+          </div>
+        )}
+        {showArchived && <div className="space-y-0.5 mt-0.5">{list.map((s) => row(s))}</div>}
       </div>
     );
   };
@@ -985,20 +1057,7 @@ export function Sidebar(props: Props) {
           </div>
         )}
 
-        {archived.length > 0 && (
-          <div className="mt-2 pt-1.5 border-t border-line">
-            <button
-              className="w-full flex items-center gap-1.5 px-1.5 py-1 rounded text-[12px] text-faint hover:text-muted"
-              onClick={() => setShowArchived((v) => !v)}
-            >
-              <Icon name={showArchived ? "chevronDown" : "chevronRight"} size={13} className="shrink-0" />
-              {t("sidebar.archived_n", { n: archived.length })}
-            </button>
-            {showArchived && (
-              <div className="space-y-0.5 mt-0.5">{archived.filter(matches).map((s) => sessionRow(s))}</div>
-            )}
-          </div>
-        )}
+        {archivedBand(archived, (s) => sessionRow(s))}
       </div>
     );
   };
@@ -1144,6 +1203,7 @@ export function Sidebar(props: Props) {
                   )}
                 </>
               )}
+              {archivedBand(archivedSessions, cardRow)}
             </div>
             )}
           </div>
