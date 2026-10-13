@@ -184,16 +184,17 @@ def _make_deletable(folder: Path) -> None:
                 continue
 
 
-def _delete_refused(name: str, folder: Path, exc: OSError) -> ValueError:
-    """The message 设置 ▸ 技能 shows verbatim when a skill folder will not go."""
+def _delete_refused(name: str, folder: Path, exc: OSError, action: str = "删除") -> ValueError:
+    """The message the GUI shows verbatim when a skill folder will not go (设置 ▸ 技能 on
+    delete; the library's skill page on "restore the original", with `action` 替换)."""
     if isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in (5, 32):
         reason = (
             "它的文件夹或里面的文件正被占用——可能有会话还在使用这个技能，"
-            "或者文件夹、其中的文件正在别的程序里开着。请结束相关会话、关闭这些窗口后再删除。"
+            "或者文件夹、其中的文件正在别的程序里开着。请结束相关会话、关闭这些窗口后再试。"
         )
     else:
-        reason = f"系统拒绝了这次删除（{exc.strerror or exc}）。"
-    return ValueError(f"无法删除技能 {name}：{reason}技能未被改动。位置：{folder}")
+        reason = f"系统拒绝了这次操作（{exc.strerror or exc}）。"
+    return ValueError(f"无法{action}技能 {name}：{reason}技能未被改动。位置：{folder}")
 
 
 class SkillStore:
@@ -404,6 +405,13 @@ class SkillStore:
         the skill is gone from every listing and the cleanup after it cannot undo that.
         """
         folder, _scope = self.find(name, workspace)
+        self.remove_folder(folder, name)
+
+    def remove_folder(self, folder: Path, name: str, *, action: str = "删除") -> None:
+        """Take one skill folder away, all or nothing (the mechanics behind `delete`).
+        Public for the one other caller that clears a skill folder: the library's
+        "restore the original", which replaces an installed copy. `action` only words the
+        refusal. Raises ValueError, with the folder untouched, when the OS will not let go."""
         if folder.is_symlink():  # never follow a link out of the scope dir
             folder.unlink()
             return
@@ -412,7 +420,7 @@ class SkillStore:
         try:
             tomb = self._park_deleted(folder, base)
         except OSError as exc:
-            raise _delete_refused(name, folder, exc) from exc
+            raise _delete_refused(name, folder, exc, action) from exc
         _make_deletable(tomb)
         shutil.rmtree(tomb, ignore_errors=True)
 

@@ -437,16 +437,17 @@ def register_library_routes(
                         n for n in names if n == "SKILL.zh.md"
                     }
 
-                if dest.exists():
-                    if dest.is_symlink():
-                        dest.unlink()
-                    else:
-                        shutil.rmtree(dest)
+                if dest.exists() or dest.is_symlink():
+                    # Through the store, not a bare rmtree: that one stopped at the first
+                    # read-only or in-use file on Windows, AFTER deleting whatever sorted
+                    # before it — "restore the original" could leave half a skill. The
+                    # store takes the folder whole or refuses with it untouched.
+                    manager.skill_store.remove_folder(dest, name, action="替换")
                 shutil.copytree(src, dest, ignore=_ignore)
                 row["ok"] = True
                 if replace:
                     row["replaced"] = True
-            except OSError as e:
+            except (OSError, ValueError) as e:
                 row["ok"] = False
                 row["error"] = str(e)
             results.append(row)

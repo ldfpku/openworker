@@ -230,6 +230,48 @@ def test_install_skills_replace_restores_the_shipped_copy(tmp_path, pack_dir):
     assert "single-cell analysis toolkit" in md.read_text(encoding="utf-8")
 
 
+def test_replace_gets_past_a_read_only_file_in_the_installed_copy(tmp_path, pack_dir):
+    """Restore-the-original used a bare rmtree: on Windows a read-only file in the
+    installed copy stopped it with PermissionError, after the files sorting before it
+    were already gone."""
+    import os
+    import stat
+
+    client, manager = _client(tmp_path, pack_dir)
+    client.post("/v1/library/install-skills", json={"names": ["scanpy"]})
+    folder = manager.skill_store.global_dir / "scanpy"
+    extra = folder / "notes"
+    extra.mkdir()
+    pinned = extra / "mine.txt"
+    pinned.write_text("x", encoding="utf-8")
+    os.chmod(pinned, stat.S_IREAD)
+    if os.name != "nt":
+        os.chmod(extra, 0o555)
+    replaced = client.post("/v1/library/install-skills", json={"names": ["scanpy"], "replace": True}).json()["results"][0]
+    assert replaced["ok"] is True and replaced["replaced"] is True
+    assert not extra.exists()  # the shipped copy, nothing carried over
+    assert (folder / "SKILL.md").is_file()
+
+
+def test_replace_refused_leaves_the_installed_copy_whole(tmp_path, pack_dir, monkeypatch):
+    """A folder the OS will not release is refused before anything is touched: the row
+    says why, and the user's edited copy is still complete — not half-deleted."""
+    import os
+
+    client, manager = _client(tmp_path, pack_dir)
+    client.post("/v1/library/install-skills", json={"names": ["scanpy"]})
+    md = manager.skill_store.global_dir / "scanpy" / "SKILL.md"
+    md.write_text("---\nname: scanpy\ndescription: edited\n---\nedited body\n", encoding="utf-8")
+
+    def held(src, dst):
+        raise PermissionError(13, "The process cannot access the file", str(src))
+
+    monkeypatch.setattr(os, "rename", held)
+    row = client.post("/v1/library/install-skills", json={"names": ["scanpy"], "replace": True}).json()["results"][0]
+    assert row["ok"] is False and "无法替换技能 scanpy" in row["error"]
+    assert "edited body" in md.read_text(encoding="utf-8")
+
+
 # -- audit 2026-09-10 hardening ---------------------------------------------------------
 
 
