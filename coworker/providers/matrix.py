@@ -26,6 +26,13 @@ account's Unified Billing credits. Their ids are Cloudflare's own ``author/model
 kept verbatim rather than translated from the vendor spelling — the author segment is what
 selects the request wire. The gateway carries far more than these three labs; the narrow
 scope is an owner call, see the section comment.
+
+``aigw:`` rows are also the one place where this module is NOT the list. The company
+gateway's guard is a per-person allowlist (``GET /gate/models``), and that server list is
+the only source of gateway models: a row here never puts a model in anybody's picker, it
+only gives a model that IS on the person's list its vetted label, capabilities and context
+window (``SessionManager._matrix_ids_in_effect`` / ``_aigw_allowed``). No server list, no
+``aigw:`` models — whatever this table says.
 """
 
 from __future__ import annotations
@@ -276,8 +283,14 @@ MATRIX: dict[str, ModelEntry] = {
     # Scope is deliberately narrow: the three labs whose models people here actually ask
     # for, and only their text and vision models. The gateway carries a dozen more
     # authors plus Workers AI, and image/TTS/realtime models on top of that; carrying all
-    # of it turned the picker into a catalog nobody could navigate. Anything dropped is
-    # one matrix row away from coming back.
+    # of it turned the picker into a catalog nobody could navigate.
+    #
+    # What a row here means changed when the guard became an allowlist: it no longer
+    # OFFERS the model. Which gateway models a person sees is decided by the guard's
+    # `GET /gate/models` alone; these rows are the label / capabilities / context window
+    # for the listed ids we have verified, and the ids that are pre-ticked in the composer
+    # picker once they are on the person's list. A row for a model nobody's list carries
+    # is inert, not wrong.
     #
     # Every row below was called live on 2026-08-23 and answered 200 — with a tool
     # definition attached, and for the Google rows an inline image part as well;
@@ -420,7 +433,13 @@ def utility_model_for(model: str) -> str:
     over `_UTILITY_MODELS`; a bare id starting `gpt-` (no provider prefix) routes to the
     OpenAI default's cheap tier. Unknown namespaces — custom endpoints, resellers, anything
     not in the table — fall back to the session's own model rather than guessing a sibling
-    id that may not exist on that endpoint."""
+    id that may not exist on that endpoint.
+
+    Pure table lookup, on purpose. For `aigw:` the answer is only a CANDIDATE: the
+    gateway's guard lets a person call exactly the models on their own server list, and
+    that list lives in the SessionManager's catalog cache, not here — so the caller that
+    holds it (`SessionManager._utility_model`) keeps the sibling only when it is listed
+    and otherwise uses the session's own model."""
     best_prefix, best_target = "", ""
     for prefix, target in _UTILITY_MODELS:
         if len(prefix) > len(best_prefix) and model.startswith(prefix):

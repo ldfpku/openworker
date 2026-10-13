@@ -93,3 +93,69 @@ describe("Composer — the model picker's stand-in badge", () => {
     expect(openRow("Claude Fable 5").querySelector(".dd-badge")).toBeNull();
   });
 });
+
+// The default was a company-gateway model that has left this person's server list. The
+// server substitutes nothing (owner call 2026-10-13): it reports model_ready=false with
+// model_notice="default_model_gone", and the composer reuses its "No model" chip — the
+// dead id is not offered, the reason is on screen, and a send goes to Settings ▸ Models
+// with the draft kept.
+describe("Composer — the default model left the gateway's list", () => {
+  const gone = (extra: Partial<Parameters<typeof Composer>[0]> = {}) =>
+    props({
+      modelReady: false,
+      modelNotice: "default_model_gone",
+      models: ["aigw:anthropic/claude-haiku-4-5"],
+      ...extra,
+    });
+
+  it("asks for a choice instead of offering the dead id, and says why", () => {
+    stubFetch();
+    render(<Composer {...gone()} />);
+    expect(screen.getByTestId("model-default-gone").textContent).toBe(
+      "Your previous default model is no longer on your available list — please choose another.",
+    );
+    const chip = screen.getByText("Choose a model").closest("button")!;
+    expect(chip.getAttribute("title")).toContain("no longer on your available list");
+    // No picker, so the dead model cannot be picked (or sent on) from here.
+    expect(screen.queryByTitle(/Claude Fable 5/)).toBeNull();
+    expect(screen.queryByText("No model")).toBeNull();
+  });
+
+  it("routes the chip and a send to model setup, keeping the draft", () => {
+    stubFetch();
+    const onConnectModel = vi.fn();
+    const onSend = vi.fn();
+    render(<Composer {...gone({ onConnectModel, onSend })} />);
+    fireEvent.click(screen.getByText("Choose a model"));
+    expect(onConnectModel).toHaveBeenCalledTimes(1);
+    const box = screen.getByRole("textbox") as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: "draft to keep" } });
+    fireEvent.click(screen.getByLabelText("Send"));
+    expect(onSend).not.toHaveBeenCalled();
+    expect(onConnectModel).toHaveBeenCalledTimes(2);
+    expect(box.value).toBe("draft to keep");
+  });
+
+  it("keeps the plain 'No model' chip when nothing is connected at all", () => {
+    stubFetch();
+    render(<Composer {...props({ modelReady: false })} />);
+    expect(screen.getByText("No model")).toBeTruthy();
+    expect(screen.queryByTestId("model-default-gone")).toBeNull();
+    expect(screen.queryByText("Choose a model")).toBeNull();
+  });
+
+  it("shows the notice in Chinese with the agreed wording", async () => {
+    stubFetch();
+    const i18n = (await import("i18next")).default;
+    await i18n.changeLanguage("zh");
+    try {
+      render(<Composer {...gone()} />);
+      expect(screen.getByTestId("model-default-gone").textContent).toBe(
+        "原默认模型已不在可用清单，请重新选择",
+      );
+      expect(screen.getByText("选择模型")).toBeTruthy();
+    } finally {
+      await i18n.changeLanguage("en");
+    }
+  });
+});

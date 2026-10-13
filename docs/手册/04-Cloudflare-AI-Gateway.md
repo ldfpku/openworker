@@ -269,8 +269,8 @@ curl -s -o /dev/null -w "%{http_code}\n" https://gateway.smjtools.com/ -H "User-
 1. **设置 ▸ 模型 ▸ Cloudflare AI Gateway**
 2. 点卡片上的 **登录**。浏览器会弹出来走一次公司的 Access 登录，登完那个标签页会自己
    显示「登录成功」，回到应用就已经是「✓ 已登录」，常用的那款模型也自动进了选择器
-3. 想确认真能用，点已登录卡片上的 **测试**——它会真的调一次最便宜的模型
-   （不到一厘钱），所以测试通过就等于真能用
+3. 想确认真能用，点已登录卡片上的 **测试**——它会先取你本人的可用模型清单，再真的调一次
+   管理员指定的「测试用模型」（不到一厘钱），所以测试通过就等于真能用
 4. 在上方的模型选择器里挑一个 `· via Cloudflare` 结尾的模型
 
 登录之后就不用再管了：应用后台每 15 分钟悄悄续一次令牌，**两周**之内不会再问你。
@@ -301,6 +301,9 @@ cloudflared access token -app=https://gateway.smjtools.com
 ---
 
 ## 3 · 能用哪些模型
+
+> **你实际能选哪些，以登录后卡片里的清单为准**（第 5 节）：清单由管理员在 help 后台勾选、网关按人下发。
+> 下表是 2026-08-23 的实测记录，说明这些型号在这条路上跑得通，不代表它们都对你开放。
 
 下表每一行都在 2026-08-23 通过 `gateway.smjtools.com` 真调过，带工具定义，返回 200。
 
@@ -362,26 +365,30 @@ cloudflared access token -app=https://gateway.smjtools.com
 
 ## 5 · 不在列表里的模型
 
-这张卡**不能手填模型 id**。设置页里的清单由 gateway-guard 按人下发：登录后自动拉取，
-「测试」通过时也会更新一次；拉取失败时状态行写明原因，清单保留上次拉到的（从没拉到过就显示
-应用内置的那几个），点「重试」再拉。同事只能从清单里勾选、设默认。
+这张卡**不能手填模型 id**，本地也**没有自己的名单**：能选什么完全由 gateway-guard 按人下发的清单决定
+（`GET /gate/models`）。登录后自动拉取，「测试」时、启动时和定时刷新时都会再拉一次；拉取失败时状态行写明
+原因，清单沿用上次拉到的（从没拉到过就一个都不显示，不会退回应用内置的那几个），点「重试」再拉。
 
-清单是这样算出来的（细节见 smj-help-website 仓库 `docs/12-gateway-guard.md` 第 10 节）：
+**每次拉到新清单，本地已选的 Cloudflare 模型会自动对齐**：不在清单里的自动移除。如果被移除的正好是你的
+默认模型，应用不会替你换一个，而是提示「原默认模型已不在可用清单，请重新选择」。
 
-- **来源**：Cloudflare 自己的模型目录。第三方模型取网关计价目录里最近 365 天上架的，
-  Cloudflare 托管的取 Workers AI 目录。新型号进了目录，下次拉取时就会出现，不用发版。
-- **范围**：只列 help 后台设置项 `models.families` 里的厂商（目前六家）。
-- **按人剔除**：没有权限的人看不到受限模型（受限清单在 help /admin 里勾）。
-- **对谁都剔除**：help 后台设置项 `models.uncovered` 里的型号（2026-10-10 起）——统一计费不覆盖、
-  或厂商已下线的，谁的清单里都不列；硬发过去 guard 会回 403 `model_uncovered`（中文）。
+清单是这样算出来的（2026-10-13 起；细节见 smj-help-website 仓库 `docs/12-gateway-guard.md` 文首一节）：
 
-所以一个模型不在某人的清单里，通常是这四种原因之一：Cloudflare 目录里还没有它（或上架超过一年被筛掉了）、
-它的厂商不在 `models.families` 里、它受限而这个人没权限、它在 `models.uncovered` 里。
-要让它出现，改后三样；同事那边没有办法绕过。
+- **候选池**（对谁都一样）：OpenAI、Anthropic、Google 三家，加 Cloudflare 托管的智谱、通义千问、DeepSeek；
+  其中只收走统一计费（不需要另配 key）、未下线、上架不超过一年的型号。池外的型号对任何人都不开放。
+- **管理员、总经理**（help 后台「不受清单限制的角色」）：候选池里的都能用。
+- **其他人**：只能用管理员在 help 后台「平台配置 → 网关可用模型」里**勾选**的型号。勾中 = 可用；
+  新上架的型号默认不勾，要管理员勾了才会出现在你的清单里。
+- **「测试」按钮用的型号**也由后台指定（「测试用模型」下拉，只能选已勾选的型号），随清单一起下发；
+  后台没指定、或指定的型号已下线时，网关改用你清单里单价最低的一个。
+
+所以一个模型不在某人的清单里，原因只有两类：它不在候选池里（别家厂商、不走统一计费、已下线、上架超过
+一年，或 Cloudflare 目录里还没有它），或者它在候选池里但管理员没给这个人勾。同事那边没有办法绕过；硬发
+过去网关会回一句中文说明（403，见第 7 节）。
 Cloudflare 的完整目录在 <https://developers.cloudflare.com/ai/models/>。
 
-**目录里有不等于这条路上能用**——这正是 `models.uncovered` 存在的原因。判断的唯一可靠办法是看网关
-日志里的 `wholesale` 字段：
+**目录里有不等于这条路上能用**——候选池因此要靠一张实测的「不走统一计费 / 已下线」表
+（help 后台设置项 `models.uncovered`）来剔除。判断的唯一可靠办法是看网关日志里的 `wholesale` 字段：
 
 - `wholesale: true` —— 这次请求走了统一计费，能用。
 - `wholesale: false` —— 网关决定不替这个模型付钱，于是把请求裸转给厂商，
@@ -398,9 +405,9 @@ Anthropic `x-api-key header is required`（401）、Google `Missing or invalid A
 Anthropic 走 `/anthropic/v1/messages` **带 `anthropic-version` 头**，Google 走 `/compat`），
 再按网关日志判：`wholesale: false` 加 401/400 缺凭据 = 不覆盖；404 `does not exist` = 已下线；
 两者都进清单。429/402 「rate limit」是共享池忙，不是不覆盖，等几秒重试。2026-10-10 那一轮
-91 个第三方型号合计不到 0.01 美元。清单在 smj-help-website 的 guard 默认值
-（`workers/gateway-guard/src/gate.ts` 的 `DEFAULT_UNCOVERED`）与生产 D1 的 `models.uncovered`
-各一份，改哪一份见该仓库 `docs/12-gateway-guard.md` 第 11 节。
+91 个第三方型号合计不到 0.01 美元。清单只有生产 D1 的 `models.uncovered` 一份（2026-10-13 起 guard 代码里
+不再有内置名单），怎么改见 smj-help-website 仓库 `docs/12-gateway-guard.md` 第 11 节。在这张表里的型号不会
+出现在 help 后台的勾选器里，也不会出现在任何人的清单里。
 
 ### ⚠ 三种误读探测结果的方式
 
@@ -453,8 +460,13 @@ Anthropic 走 `/anthropic/v1/messages` **带 `anthropic-version` 头**，Google 
 | `403 Your request was blocked.` | 边缘的「阻止 AI 机器人」打的，不是 Access。见 1.5 |
 | 报「共享容量忙」 | 临时的，等几秒重试；天天撞就配 BYOK 独占一个池子 |
 | 报「共享容量忙，同档备选也忙」 | 动态路由已经自动重发过一次还是没成——等几秒重试。括号里的路由名拿去第 8 节排错 |
-| 模型报缺 Authorization / `Missing bearer or basic authentication` / `x-api-key header is required` | 这个模型不在统一计费覆盖里，见第 5 节；把它加进 help 后台的 `models.uncovered`，清单里就不再出现 |
+| 模型报缺 Authorization / `Missing bearer or basic authentication` / `x-api-key header is required` | 这个模型不在统一计费覆盖里，见第 5 节；管理员把它加进 `models.uncovered`，它就不再出现在任何清单里 |
 | 报「不在公司网关的统一计费覆盖内」（403 `model_uncovered`） | guard 已把这个型号列为发不出去的，换清单里的其他模型；确认覆盖范围变了再从 `models.uncovered` 里移除 |
+| 报「不在你的可用模型清单内」（403 `model_restricted`） | 这个型号管理员没给你勾。换清单里的模型，或请管理员在 help 后台「网关可用模型」里勾上 |
+| 报「不在公司网关的供应范围内」（403 `model_restricted`） | 候选池以外的厂商或型号，对所有人都不开放，换清单里的模型 |
+| 报「网关门禁配置暂时读不到」（503 `gate_unavailable`） | 网关读不到自己的配置库，临时的，等几秒重试；持续出现找管理员 |
+| 提示「原默认模型已不在可用清单，请重新选择」 | 管理员取消了那个型号的勾选，或它已下线。在模型选择器里另选一个 |
+| 清单是空的，测试报「管理员还没有在可用模型清单里勾选任何型号」 | 字面意思：help 后台的可用清单是空的，找管理员 |
 | 「用户洞察」是空的 | 流量没走自定义域，或者用的是 service token（它的身份是空的） |
 | 调用成功但日志里没有 | 走到账号的 `default` 网关去了——只有自己拿 `CLOUDFLARE_AIGW_BASE_URL` 覆盖过地址才会发生 |
 
@@ -479,7 +491,7 @@ Anthropic 走 `/anthropic/v1/messages` **带 `anthropic-version` 头**，Google 
 | 档位 | anthropic | openai | 备注 |
 | --- | --- | --- | --- |
 | 旗舰·长上下文 | `anthropic/claude-fable-5`（1M） | `openai/gpt-5.6-sol`（1.05M） | Fable 的对家本来想用 `gpt-6-astra`，见 8.6 |
-| 旗舰 | `anthropic/claude-opus-5`（1M） | `openai/gpt-5.6-sol`（1.05M） | 两个都在门禁的受限名单里 |
+| 旗舰 | `anthropic/claude-opus-5`（1M） | `openai/gpt-5.6-sol`（1.05M） | |
 | 高阶/均衡 | `anthropic/claude-sonnet-5`（1M） | `openai/gpt-5.6-terra`（400k） | |
 | 轻量 | `anthropic/claude-haiku-4-5`（200k） | `openai/gpt-5.6-luna`（1.05M） | **不建路由**，见 8.3 |
 
@@ -499,9 +511,10 @@ Start → 主选模型（retries 1、timeout 20000）→ 成功就 End，出错�
 **轻量档（Haiku / Luna）故意不建。** 限流只发生在顶级池；而且 Haiku 是「测试」按钮的探测
 模型和摘要模型，给它加一条路由会让「探测永远不失败」这件事更难讲清楚。
 
-**备选的受限等级不得高于主选。** gateway-guard 把最贵的几个模型限定给特定角色；如果 429
-能把一个人送到他本来没权限的模型上，那门禁就等于「挑个忙的时候再试一次」就能绕过。现在受限
-的只有 `claude-fable-5` 和 `gpt-5.6-sol`，而这两个只在它们自己也受限的主选下面出现。
+**主选和备选都得在本人的可用清单里，才会重发。** 限流时落到哪一端由网关决定；如果只要主选开放就
+放行，那门禁就等于「挑个忙的时候再试一次」就能用上没开放的型号。所以 gateway-guard 对 `dynamic/<路由名>`
+要求主选与备选**都**在可用清单里（管理员、总经理不受清单限制，候选池内的都行），客户端也只在备选在本人
+清单里时才重发、才显示「有备选」徽标——否则那次重发注定是 403。
 
 **这张表和 gateway-guard 的 `ROUTE_MODELS` 必须同日上线。** 门禁要能把
 `dynamic/<路由名>` 还原成「主选 + 备选」两个模型才能继续判断权限；两张表哪一张先走一步，

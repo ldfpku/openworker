@@ -72,9 +72,11 @@ def test_quota_errors_are_translated():
 
 
 def test_gateway_guard_restriction_surfaces_its_own_message():
-    # gateway-guard (the company gateway's model gate) answers 403 with code
-    # model_restricted and a Chinese message that is already the right thing to show —
-    # extract it verbatim instead of wrapping it in the "Error code: 403 - {...}" shell.
+    # gateway-guard (the company gateway's per-person allowlist) answers 403 with code
+    # model_restricted — a model that is not on the caller's list, one outside the vendor
+    # scope, or an unregistered dynamic route — and a Chinese message that is already the
+    # right thing to show: extract it verbatim instead of wrapping it in the
+    # "Error code: 403 - {...}" shell.
     exc = RuntimeError(
         "Error code: 403 - {'error': {'code': 'model_restricted', 'type': "
         "'model_restricted', 'status': 403, 'message': '模型 anthropic/claude-fable-5 "
@@ -138,7 +140,42 @@ def test_model_restricted_without_extractable_message_gets_a_fallback():
     msg = friendly_model_error(
         "aigw:openai/gpt-5.6-sol", RuntimeError("403 model_restricted")
     )
-    assert msg and "restricted by your administrator" in msg
+    assert msg and "isn't on your model list" in msg
+    assert "ask the administrator to add it" in msg
+
+
+_GUARD_GATE_503 = (
+    "Error code: 503 - {'error': {'code': 'gate_unavailable', 'type': 'gate_unavailable', "
+    "'status': 503, 'message': '网关的模型开通配置暂时读不到，请稍后重试；如持续出现请联系管理员。"
+    "[gateway-guard]'}}"
+)
+
+
+def test_gateway_guard_gate_unavailable_surfaces_its_own_message():
+    # 503 gate_unavailable: the guard could not read its own gate config just now. Its
+    # Chinese sentence is shown verbatim, like model_restricted / model_uncovered.
+    exc = _status_error(503, _GUARD_GATE_503.split(" - ", 1)[1])
+    msg = friendly_model_error("aigw:anthropic/claude-sonnet-5", exc)
+    assert msg == "网关的模型开通配置暂时读不到，请稍后重试；如持续出现请联系管理员。[gateway-guard]"
+    assert "Error code" not in msg
+    # The raw JSON body shape extracts too, whatever model id the call carried.
+    raw = RuntimeError('503 {"error": {"code": "gate_unavailable", "message": "稍后重试。[gateway-guard]"}}')
+    assert friendly_model_error("m", raw) == "稍后重试。[gateway-guard]"
+
+
+def test_gateway_guard_gate_unavailable_is_transient_unlike_the_other_refusals():
+    # Nothing is wrong with the model or the person's list — the guard asks to be retried
+    # (Retry-After). So unlike model_restricted / model_uncovered it earns the engine's
+    # automatic retry, and it is never the busy shared pool (no dynamic-route re-send).
+    exc = _status_error(503, _GUARD_GATE_503.split(" - ", 1)[1])
+    assert is_transient_model_error(exc)
+    assert not is_gateway_busy(exc)
+    assert not is_transient_model_error(_status_error(403, "{'code': 'model_restricted'}"))
+
+
+def test_gate_unavailable_without_extractable_message_gets_a_fallback():
+    msg = friendly_model_error("aigw:openai/gpt-5.6-terra", RuntimeError("503 gate_unavailable"))
+    assert msg and "couldn't check your model list" in msg
 
 
 _GUARD_UNCOVERED_403 = (
@@ -150,9 +187,9 @@ _GUARD_UNCOVERED_403 = (
 
 
 def test_gateway_guard_uncovered_surfaces_its_own_message():
-    # gateway-guard's "cannot be sent" list (models.uncovered, 2026-10-10): the Chinese
-    # message already says it is a billing-coverage gap — shown verbatim, no SDK shell,
-    # and never the "ask the administrator to open it up" advice of model_restricted.
+    # gateway-guard's "cannot be sent" refusal (403 model_uncovered): the Chinese message
+    # already says it is a billing-coverage gap — shown verbatim, no SDK shell, and never
+    # the "ask the administrator to add it" advice of model_restricted.
     exc = _status_error(403, _GUARD_UNCOVERED_403.split(" - ", 1)[1])
     msg = friendly_model_error("aigw:openai/gpt-6.1-sol-pro", exc)
     assert msg and msg.endswith("[gateway-guard]")

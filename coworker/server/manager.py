@@ -268,6 +268,12 @@ class SessionManager:
     # fast once fixed).
     MODEL_CATALOG_TTL = 6 * 3600.0
     MODEL_CATALOG_RETRY = 600.0
+    # The company gateway is the exception to "models rotate slowly": its catalog is this
+    # person's allowlist (`_aigw_allowed`), edited by an administrator at any time. A model
+    # they untick has to leave the picker within minutes, not at the next six-hour roll —
+    # and unlike the other catalogs it is re-checked from `get_settings`, so a GUI that
+    # never opens Settings ▸ Models still follows the list.
+    AIGW_CATALOG_TTL = 600.0
     MODEL_CATALOG_TIMEOUT = 10.0
     # Shared across every SessionManager instance (there's normally exactly one process):
     # prefs.json is a single file, so concurrent writers (the note-provider-use throttle,
@@ -358,7 +364,10 @@ class SessionManager:
         # shared by every engine and the `/v1/chat/completions` proxy.
         if self.provider is None:
             self.provider = ProviderRouter(
-                self.secrets, default_provider="openai", on_use=self._note_provider_use
+                self.secrets,
+                default_provider="openai",
+                on_use=self._note_provider_use,
+                on_build=self._bind_provider_client,
             )
         self.mcp = MCPManager(secrets=self.secrets)
         # OAuth MCP servers with a sign-in in flight / their last connect error —
@@ -4387,6 +4396,122 @@ class SessionManager:
         models = getattr(self, "_model_catalog", {}).get(name, {}).get("models")
         return models if isinstance(models, list) else []
 
+    # -- aigw: the guard's per-person allowlist (GET /gate/models) ----------------
+    # The company gateway's guard Worker is an allowlist: a person may call exactly the
+    # models their administrator ticked for them, and `GET /gate/models` returns that
+    # list. For `aigw` it is therefore the ONLY list — the curated matrix lends listed ids
+    # a label and a context window and never adds one of its own. The list is the `aigw`
+    # entry of the ordinary model-catalog cache: persisted in prefs (so it survives a
+    # restart), replaced only by a successful pull, and kept as-is by a failed one
+    # (`_store_model_catalog`) — "the last successfully fetched list" needs no second cache.
+    def _aigw_allowed(self) -> Optional[frozenset[str]]:
+        """Bare gateway ids ("author/model") this person may call, or None when no pull
+        has ever succeeded (fresh sign-in whose first pull has not landed, signed out, or
+        a guard that has only ever answered an error). None is "unknown", not "empty":
+        nothing under `aigw:` is offered then, but nothing already chosen is declared
+        dead either — see `_aigw_default_gone`.
+
+        The one place "is it on the list" is derived; the picker, the suggestions, the
+        default-model check, the auto-title sibling and the dynamic-route stand-in all
+        read it from here."""
+        models = self._catalog_models("aigw")
+        if not models:
+            return None
+        return frozenset(str(m.get("id") or "") for m in models if isinstance(m, dict))
+
+    def _aigw_listed(self, model: str) -> bool:
+        """True for a routed `aigw:` id that is on this person's server list. Any other
+        provider's id is none of the gateway's business and answers False."""
+        if not (model or "").startswith("aigw:"):
+            return False
+        allowed = self._aigw_allowed()
+        return allowed is not None and model[len("aigw:") :] in allowed
+
+    def _aigw_default_gone(self) -> bool:
+        """The default model is a gateway model that a successful pull says is no longer
+        on this person's list. Deliberately NOT true while the list is unknown (None): a
+        pull that has not landed yet says nothing about the default, and declaring it
+        dead on every sign-in until the first answer arrives would be a false alarm.
+
+        Nothing is substituted when this turns true (owner call 2026-10-13): the default
+        stays what the person chose, `get_settings` reports `model_ready: false` plus
+        `model_notice: "default_model_gone"`, and the composer swaps its picker for the
+        same chip it shows when no model is connected — the choice goes back to the
+        person instead of being made for them."""
+        model = self.model or ""
+        allowed = self._aigw_allowed()
+        return (
+            model.startswith("aigw:")
+            and allowed is not None
+            and model[len("aigw:") :] not in allowed
+        )
+
+    def _reconcile_aigw_selections(self) -> bool:
+        """Drop every locally saved `aigw:` pick the server list no longer carries. Runs
+        after each successful pull (`_store_model_catalog` is the one place they all end:
+        server start, the TTL refresh behind Settings ▸ Models, Refresh, the Test button,
+        and `set_provider` on sign-in). Returns True when prefs changed; the caller saves.
+
+        Touched: custom ids in prefs `models`, and — only to keep the file tidy, a hidden
+        id that is not offered hides nothing — `hidden_models`. Not touched: the default
+        model (`_aigw_default_gone` reports it instead of replacing it), and every other
+        place a model id is stored (a session's own model, an automation's, a team
+        member's, the compaction / auto-title overrides): those are facts or explicit
+        choices of their own, and a call on a model that left the list gets the guard's
+        own sentence. Other providers' ids are never looked at."""
+        allowed = self._aigw_allowed()
+        if allowed is None:
+            return False
+        changed = False
+        for key in ("models", "hidden_models"):
+            saved = self._prefs.get(key)
+            if not isinstance(saved, list):
+                continue
+            kept = [
+                m
+                for m in saved
+                if not (isinstance(m, str) and m.startswith("aigw:"))
+                or m[len("aigw:") :] in allowed
+            ]
+            if len(kept) == len(saved):
+                continue
+            logger.info(
+                "aigw: dropped %d saved model(s) no longer on the server list from %s",
+                len(saved) - len(kept),
+                key,
+            )
+            changed = True
+            if kept or key == "models":
+                self._prefs[key] = kept
+            else:
+                self._prefs.pop(key, None)
+        return changed
+
+    def _bind_provider_client(self, name: str, client: Any) -> None:
+        """Router `on_build` hook: hand a freshly built provider client what only the
+        manager holds. Today that is one thing — the gateway provider's reader for this
+        person's model list, which gates its dynamic-route re-send."""
+        if name == "aigw":
+            bind = getattr(client, "bind_allowed_models", None)
+            if callable(bind):
+                bind(self._aigw_allowed)
+
+    def _announce_models_changed(self) -> None:
+        """Tell open GUIs (the app-wide /ws/events stream) to re-read their settings: the
+        gateway list just changed under them, typically from a background pull nobody was
+        watching. Without it the composer keeps offering what it loaded at startup until
+        the person happens to visit Settings. Best-effort and thread-safe — pulls run on
+        daemon threads, and a manager with no running loop (tests, headless) just skips."""
+        loop = getattr(self, "_loop", None)
+        if loop is None:
+            return
+        coro = self.broadcast_event({"type": "models_changed"})
+        try:
+            asyncio.run_coroutine_threadsafe(coro, loop)
+        except Exception:  # noqa: BLE001 - a closed loop at shutdown is not an error
+            coro.close()
+            logger.debug("models_changed: could not notify event clients", exc_info=True)
+
     @staticmethod
     def _catalog_age(stamp: Any) -> Optional[float]:
         """Seconds since an ISO-8601 stamp, or None when absent/unparseable."""
@@ -4401,7 +4526,7 @@ class SessionManager:
 
     def _catalog_is_stale(self, name: str) -> bool:
         """No entry yet → stale. `fetched_at` is the last SUCCESSFUL pull and holds for
-        MODEL_CATALOG_TTL. `failed_at` is the latest failure since then and, while set,
+        MODEL_CATALOG_TTL (AIGW_CATALOG_TTL for the company gateway). `failed_at` is the latest failure since then and, while set,
         governs instead: retry on MODEL_CATALOG_RETRY, so a fixed key or a recovered
         outage is noticed within minutes while an outage isn't hammered on every settings
         load. Neither stamp parseable → stale."""
@@ -4412,7 +4537,8 @@ class SessionManager:
         if failed is not None:
             return failed > self.MODEL_CATALOG_RETRY
         fetched = self._catalog_age(entry.get("fetched_at"))
-        return fetched is None or fetched > self.MODEL_CATALOG_TTL
+        ttl = self.AIGW_CATALOG_TTL if name == "aigw" else self.MODEL_CATALOG_TTL
+        return fetched is None or fetched > ttl
 
     def _catalog_status(self, name: str) -> dict[str, Any]:
         """Settings-pane-facing summary of a provider's catalog state. `pending` = a
@@ -4534,10 +4660,18 @@ class SessionManager:
         `fetched_at`; a failure keeps whatever models were already cached (an outage
         shouldn't empty a picker that was working a minute ago) and records the error
         under its own `failed_at`; "unsupported" (a provider that lost catalog support,
-        or never had it) drops the entry entirely."""
+        or never had it) drops the entry entirely.
+
+        For `aigw` the cached models ARE the person's allowlist (`_aigw_allowed`), so the
+        failure rule above is load-bearing rather than cosmetic: a failed pull — a network
+        outage, 503 `gate_unavailable`, even 502 `catalog_unavailable` — leaves the last
+        successfully fetched list in force and never falls back to the matrix. A success
+        is also the moment local picks are reconciled against the new list."""
         from datetime import datetime, timezone
 
         now = datetime.now(timezone.utc).isoformat()
+        gateway_pull = name == "aigw" and bool(result.get("ok"))
+        before = (self._aigw_allowed(), self._aigw_default_gone()) if gateway_pull else None
         with self._catalog_lock:
             if result.get("unsupported"):
                 self._model_catalog.pop(name, None)
@@ -4559,10 +4693,16 @@ class SessionManager:
                 entry["failed_at"] = now
                 self._model_catalog[name] = entry
             self._prefs["model_catalog"] = dict(self._model_catalog)
+        if gateway_pull:
+            # Same prefs write as the catalog itself, so a crash between the two cannot
+            # leave a new list next to picks it has already disowned.
+            self._reconcile_aigw_selections()
         try:
             self._save_prefs()
         except OSError:
             logger.debug("model catalog: failed to persist prefs", exc_info=True)
+        if gateway_pull and before != (self._aigw_allowed(), self._aigw_default_gone()):
+            self._announce_models_changed()
 
     def refresh_model_catalog(
         self, name: str, fields: Optional[dict[str, Any]] = None
@@ -4776,7 +4916,12 @@ class SessionManager:
         Ollama → live `/api/tags` (best-effort); a catalog-supported provider with a live
         pull → curated matrix ids confirmed still live, topped up with everything else the
         catalog listed; everyone else → the curated matrix, topped up with the
-        compat-vendor extras the matrix doesn't vouch for."""
+        compat-vendor extras the matrix doesn't vouch for.
+
+        The company gateway (`aigw`) has no "everyone else" branch: with no server list
+        there is nothing to suggest — the matrix must not stand in for a list the guard
+        has not given this person (`_aigw_allowed`). The card's catalog status row says
+        why it is empty."""
         if name == "ollama":
             return [m.split(":", 1)[-1] for m in self._ollama_models()]
         from ..providers.matrix import models_for_provider
@@ -4784,24 +4929,14 @@ class SessionManager:
         live = [m["id"] for m in self._catalog_models(name)]
         if live:
             known = [m for m in models_for_provider(name) if m in live]
-            out = list(dict.fromkeys([*known, *live]))
-        else:
-            out = list(
-                dict.fromkeys(
-                    [*models_for_provider(name), *self.COMPAT_MODELS.get(name, [])]
-                )
-            )
+            return list(dict.fromkeys([*known, *live]))
         if name == "aigw":
-            # Mirror the picker filter (`_curated_models`): a gate-blocked model must
-            # not resurface as an "add model" suggestion either. Same variant-aware
-            # match as the guard's own 403 check, not bare equality — plus the guard's
-            # open-vendor scope (`families`; every suggestion here is an aigw id).
-            from ..providers.aigateway_provider import is_gated_model
-
-            blocked = self._aigw_blocked()
-            families = self._aigw_families()
-            out = [m for m in out if not is_gated_model(m, blocked, families)]
-        return out
+            return []
+        return list(
+            dict.fromkeys(
+                [*models_for_provider(name), *self.COMPAT_MODELS.get(name, [])]
+            )
+        )
 
     def set_provider(
         self, name: str, fields: Optional[dict[str, Any]]
@@ -5022,12 +5157,17 @@ class SessionManager:
         if error:
             return {"ok": False, "error": error}
         if name == "aigw":
-            # The gateway's Test stays a real sub-cent completion (the only probe that
-            # exercises Access + the /compat prefix rule + Unified Billing at once); the
-            # per-person model list is pulled only AFTER it passes (owner call 2026-09-23:
-            # the list comes with a passing Test). A failed list pull does not fail the
-            # Test — the credentials are good — its error lands in the catalog status row,
-            # where Refresh retries it.
+            # The gateway's Test is two requests inside `_verify_aigw`: it reads this
+            # person's list to learn which model it may probe with (`probe`), then runs a
+            # real sub-cent completion on it (the only probe that exercises Access + the
+            # /compat prefix rule + Unified Billing at once). A person with no list, or a
+            # guard that cannot read its config, fails the Test with the guard's own
+            # sentence. Only AFTER a pass is the list pulled into the catalog cache (owner
+            # call 2026-09-23: the list comes with a passing Test) — a second GET of the
+            # same endpoint, kept separate so `verify_provider_key` stays a plain
+            # {ok, error} probe. If that pull fails the Test still passes — the
+            # credentials are good — and its error lands in the catalog status row, where
+            # Refresh retries it; the previously fetched list stays in force.
             probe = verify_provider_key(
                 name, api_key=api_key, base_url=merged.get("base_url", ""), fields=merged
             )
@@ -5143,72 +5283,6 @@ class SessionManager:
             self._prefs.pop("dm_session", None)
         self._save_prefs()
 
-    # -- aigw per-user model gate (gateway-guard's /gate/policy) -----------------
-    # The company gateway's guard Worker restricts some models (e.g. the priciest
-    # flagships) to certain roles and enforces that server-side with a 403. This pair
-    # keeps those models out of the pickers up front. Purely cosmetic: an empty set
-    # (guard not deployed / signed out / fetch failed) just means no filtering.
-    _AIGW_GATE_TTL = 300.0  # seconds between background refreshes
-
-    def _aigw_blocked(self) -> frozenset[str]:
-        """Bare "author/model" ids the gateway refuses for this user (lowercase).
-        Serves the cached value and kicks a background refresh when stale — never
-        blocks get_settings (same reasoning as `_ollama_alive`'s cache)."""
-        cached = getattr(self, "_aigw_gate_cache", None)
-        if cached is None or time.monotonic() - cached[0] >= self._AIGW_GATE_TTL:
-            self._refresh_aigw_gate()
-        return cached[1] if cached else frozenset()
-
-    def _aigw_families(self) -> Optional[tuple[str, ...]]:
-        """Open vendor prefixes the gateway scopes this user to (`/gate/policy`
-        `families`), or None = no scope filtering (allowed role, older guard, signed out,
-        fetch failed). Same cache and refresh as `_aigw_blocked`; a cache written before
-        this field existed is a 2-tuple and reads as None."""
-        cached = getattr(self, "_aigw_gate_cache", None)
-        if cached is None or time.monotonic() - cached[0] >= self._AIGW_GATE_TTL:
-            self._refresh_aigw_gate()
-        return cached[2] if cached and len(cached) > 2 else None
-
-    def _refresh_aigw_gate(self) -> None:
-        """Start one daemon-thread fetch of /gate/policy; concurrent calls no-op."""
-        import threading
-
-        if getattr(self, "_aigw_gate_refreshing", False):
-            return
-        if not self._provider_configured("aigw"):
-            # Signed out: aigw models are culled by `_selectable` anyway; cache the
-            # empty set so we don't re-check the profile on every settings fetch.
-            self._aigw_gate_cache = (time.monotonic(), frozenset(), None)
-            return
-        self._aigw_gate_refreshing = True
-
-        def work() -> None:
-            try:
-                from .. import aigw_auth
-                from ..providers.aigateway_provider import (
-                    blocked_model_ids,
-                    fetch_gate_policy,
-                    gate_families,
-                )
-
-                fields = dict(self.secrets.get("provider:aigw") or {})
-                # Same injection as verify_provider: real calls use the OAuth session
-                # when one exists, so the gate lookup must too.
-                fields["oauth_token"] = aigw_auth.access_token(self.secrets) or ""
-                policy = fetch_gate_policy(fields)
-                blocked = blocked_model_ids(policy)
-                families = gate_families(policy)
-                self._aigw_gate_cache = (time.monotonic(), blocked, families)
-                if blocked:
-                    logger.debug("aigw gate: %d model(s) blocked for this user", len(blocked))
-            except Exception:  # noqa: BLE001 - cosmetic feature, never surface
-                logger.debug("aigw gate refresh failed", exc_info=True)
-                self._aigw_gate_cache = (time.monotonic(), frozenset(), None)
-            finally:
-                self._aigw_gate_refreshing = False
-
-        threading.Thread(target=work, name="aigw-gate-refresh", daemon=True).start()
-
     def _ollama_alive(self) -> bool:
         """Best-effort local-Ollama liveness, cached 30s (get_settings runs on every GUI
         fetch — no 2s probe inline). Keyless is not the same as PRESENT: `ollama:*` picker
@@ -5259,7 +5333,12 @@ class SessionManager:
         that provider. A matrix row only gets second-guessed when its provider actually
         supports a catalog AND a live pull for it has landed (`_catalog_models` non-empty)
         — no catalog yet (fresh install, offline, provider not catalog-supported) means
-        every matrix row for it is trusted as-is, same as before this feature existed."""
+        every matrix row for it is trusted as-is, same as before this feature existed.
+
+        Except the company gateway. Its catalog is an allowlist, not a liveness check, so
+        an `aigw:` row is NEVER trusted as-is: no successful pull → no `aigw:` row at all;
+        a pull → only the rows whose id is on it. The matrix decides how a listed gateway
+        model is labelled, never whether it is offered."""
         from ..providers.matrix import MATRIX
 
         out: list[str] = []
@@ -5267,6 +5346,8 @@ class SessionManager:
             prov = self._model_provider(mid)
             if prov in CATALOG_PROVIDERS:
                 live = self._catalog_models(prov)
+                if prov == "aigw" and not live:
+                    continue
                 if live:
                     bare = mid.split(":", 1)[1] if ":" in mid else mid
                     live_ids = {m["id"] for m in live}
@@ -5281,34 +5362,30 @@ class SessionManager:
         has no key) plus custom ids the user added, minus matrix models they removed.
         Deliberately NO built-in seed list — a fresh install offers nothing until a
         provider key exists, and then exactly that provider's matrix models appear. The
-        active default is always kept selectable.
-        """
+        active default is always kept selectable — with one exception, below.
+
+        Gateway ids get one more test: an `aigw:` id is offered only while it is on this
+        person's server list (`_aigw_allowed`). `_matrix_ids_in_effect` already applies
+        that to matrix rows; the filter here covers custom ids saved before the list last
+        changed (they are also dropped from prefs on the next successful pull, see
+        `_reconcile_aigw_selections`) and every `aigw:` id while no list exists at all. A
+        direct-provider id (`anthropic:claude-fable-5`, bare `gpt-5.6-sol`) is none of the
+        gateway's business and is never tested.
+
+        The exception to "the default stays selectable": a gateway default that a
+        successful pull says has left the list (`_aigw_default_gone`) is not put back —
+        offering it would only offer the guard's 403."""
         effective = self._matrix_ids_in_effect()
         user = self._prefs.get("models")
         user = user if isinstance(user, list) else []
         hidden = set(self._prefs.get("hidden_models") or [])
-        # Gateway-guard's per-user gate: blocked aigw models disappear from the picker
-        # (server-side 403 backs this up; hiding just spares the failed attempt), using
-        # the same variant-aware match the guard applies server-side — not bare
-        # equality. `is_blocked_model` itself strips the "aigw:" prefix, so `blocked`
-        # stays the bare ids `_aigw_blocked` already returns; a non-aigw id (e.g.
-        # "anthropic:claude-fable-5") never has that prefix to strip and so never
-        # matches. The active default stays selectable below, matching the
-        # hidden_models behaviour.
-        # The open-vendor scope (`families`, 2026-09-23) applies to aigw ids only: a
-        # bare "gpt-5.6-sol" is a direct-provider model and has no vendor prefix to test.
-        from ..providers.aigateway_provider import is_blocked_model, is_out_of_scope
-
-        blocked = self._aigw_blocked()
-        families = self._aigw_families()
         models = [
             m
             for m in [*effective, *user]
-            if m not in hidden
-            and not is_blocked_model(m, blocked)
-            and not (m.startswith("aigw:") and is_out_of_scope(m, families))
+            if m not in hidden and (not m.startswith("aigw:") or self._aigw_listed(m))
         ]
-        return list(dict.fromkeys([self.model, *models]))
+        head = [] if self._aigw_default_gone() else [self.model]
+        return list(dict.fromkeys([*head, *models]))
 
     def add_model(self, model: str) -> dict[str, Any]:
         """Add a model id (e.g. `gpt-4o`, `ollama:qwen2.5-coder:32b`) to the picker.
@@ -5319,6 +5396,15 @@ class SessionManager:
         model = (model or "").strip()
         if not model:
             return {"ok": False, "error": "empty model"}
+        if model.startswith("aigw:") and not self._aigw_listed(model):
+            # The gateway's list is the guard's, not the user's: an id that is not on it
+            # would be filtered straight back out of the picker and dropped from prefs by
+            # the next pull, so say no now instead of pretending it was added. (The GUI has
+            # no free-type row for this provider; this is the API's own answer.)
+            return {
+                "ok": False,
+                "error": "That model isn't on your model list for the company gateway.",
+            }
         hidden = [m for m in self._prefs.get("hidden_models") or [] if m != model]
         if hidden:
             self._prefs["hidden_models"] = hidden
@@ -5366,21 +5452,34 @@ class SessionManager:
         return labels, windows
 
     @staticmethod
-    def _model_fallbacks(labels: dict[str, str]) -> dict[str, str]:
+    def _model_fallbacks(
+        labels: dict[str, str], allowed: Optional[frozenset[str]]
+    ) -> dict[str, str]:
         """{routed id → the stand-in's display label} for AI Gateway models with a
         Dynamic Route, so the picker can say which models survive a busy shared pool.
 
-        Labels, not ids: this is display copy. Routes whose stand-in has no curated label
-        are dropped rather than shown as a raw `openai/gpt-5.6-sol` — a badge tooltip is
-        not the place to leak wire spellings. Returns {} when the rollback switch is off,
+        Only routes this person can actually use: the guard refuses a `dynamic/<route>`
+        call unless BOTH its primary and its stand-in are on the caller's list, so
+        `allowed` (`_aigw_allowed`) is put to the same `route_allowed` test the
+        provider's re-send uses — the badge must promise nothing the client would not do.
+
+        Labels, not ids: this is display copy. Routes whose stand-in has no label are
+        dropped rather than shown as a raw `openai/gpt-5.6-sol` — a badge tooltip is not
+        the place to leak wire spellings. Returns {} when the rollback switch is off,
         because the retry the badge describes would not happen.
         """
-        from ..providers.aigateway_provider import _ROUTES, dynamic_routing_enabled
+        from ..providers.aigateway_provider import (
+            _ROUTES,
+            dynamic_routing_enabled,
+            route_allowed,
+        )
 
         if not dynamic_routing_enabled():
             return {}
         out: dict[str, str] = {}
         for bare, route in _ROUTES.items():
+            if not route_allowed(bare, allowed):
+                continue
             label = labels.get(f"aigw:{route.fallback}")
             if label:
                 out[f"aigw:{bare}"] = label
@@ -5390,6 +5489,13 @@ class SessionManager:
         """Model-access + UI status. Never returns the key; `source` says where it comes from."""
         import os
 
+        # The gateway list is re-pulled from here once it is past its short TTL: this is
+        # the call every open GUI makes, so it is what keeps a long-running app in step
+        # with the administrator's ticks. Fire-and-forget — this answer still reads the
+        # cached list; if the pull changes it, `_store_model_catalog` pushes
+        # `models_changed` and the GUI asks again.
+        if self._catalog_wants_refresh("aigw", self._provider_configured("aigw")):
+            self.kick_catalog_refresh("aigw")
         env_key = bool(os.environ.get("OPENAI_API_KEY"))
         stored = bool((self.secrets.get("provider:openai") or {}).get("api_key"))
         # Only surface models whose provider is actually configured — the composer picker
@@ -5403,8 +5509,12 @@ class SessionManager:
                 return self._ollama_alive()
             return self._provider_configured(provider)
 
+        # A gateway default that has left this person's server list is the one default
+        # that is NOT kept selectable: nothing is substituted for it either — the picker
+        # goes to its "No model" state below and the notice says why.
+        default_gone = self._aigw_default_gone()
         selectable = [m for m in self._curated_models() if _selectable(m)]
-        if self.model not in selectable:
+        if self.model not in selectable and not default_gone:
             selectable.insert(0, self.model)
         from ..providers.matrix import model_context_windows, model_labels
 
@@ -5431,12 +5541,19 @@ class SessionManager:
             # gateway models that have a Dynamic Route appear, and only while the rollback
             # switch is on — the composer badge must promise nothing the client wouldn't
             # actually do. Empty on every non-gateway install.
-            "model_fallbacks": self._model_fallbacks(labels),
+            "model_fallbacks": self._model_fallbacks(labels, self._aigw_allowed()),
             "has_key": env_key or stored,
             # Provider-agnostic "can this default model actually run?" — true when the default
             # model's provider is configured (any provider, not just OpenAI). Drives the GUI's
-            # "No model connected" composer chip and the onboarding Skip warning.
-            "model_ready": self._provider_configured(self._model_provider(self.model)),
+            # "No model connected" composer chip and the onboarding Skip warning. Also
+            # false for a gateway default that is no longer on the person's server list:
+            # same chip, same "sends go to setup, the draft is kept" behaviour.
+            "model_ready": self._provider_configured(self._model_provider(self.model))
+            and not default_gone,
+            # Why `model_ready` is false when it is not simply "no provider connected". A
+            # stable code, never display text — the GUI owns the wording in both languages
+            # ("default_model_gone" → 「原默认模型已不在可用清单，请重新选择」). None otherwise.
+            "model_notice": "default_model_gone" if default_gone else None,
             "source": "env" if env_key else ("store" if stored else None),
             "onboarded": bool(self._prefs.get("onboarded")),
             "experimental_connectors": experimental_enabled(self.secrets),
@@ -7994,6 +8111,24 @@ class SessionManager:
             self._generate_autotitle(session_id, engine, openers, assistant),
         )
 
+    def _utility_model(self, model: str) -> str:
+        """`matrix.utility_model_for`, checked against what this person may call.
+
+        The matrix maps a gateway session to a fixed cheap sibling (Haiku / Luna /
+        Flash-Lite). Under the guard's allowlist that sibling is just another model the
+        administrator may or may not have ticked, and an unlisted one is a guaranteed 403
+        — i.e. a session that silently never gets a title. So for `aigw:` the sibling is
+        used only when it is on the server list; otherwise the session's own model (which
+        the person is evidently allowed to call) does the job. The check lives here, not
+        in `matrix.py`, because the list lives in this manager's catalog cache and the
+        matrix stays a pure table. Other providers are returned untouched."""
+        from ..providers.matrix import utility_model_for
+
+        sibling = utility_model_for(model)
+        if sibling != model and sibling.startswith("aigw:") and not self._aigw_listed(sibling):
+            return model
+        return sibling
+
     async def _generate_autotitle(
         self,
         session_id: str,
@@ -8004,18 +8139,18 @@ class SessionManager:
         """One cheap non-streaming completion, routed off the session's own model to a
         cheap same-provider sibling (utility_model_for) so an expensive pinned model never
         eats auto-title cost — pin "autotitle_model" (mirrors the "compaction_model" pref;
-        '' = auto-pick) overrides when set. Every failure (provider error, empty, absurdly
-        long) is swallowed — the title_from fallback stays; the small-talk sentinel leaves
-        auto_title unset so the turn-2 retry can run."""
+        '' = auto-pick) overrides when set. On the company gateway the sibling is only
+        used while it is on this person's server list (`_utility_model`); otherwise the
+        session's own model titles its own session. Every failure (provider error, empty,
+        absurdly long) is swallowed — the title_from fallback stays; the small-talk
+        sentinel leaves auto_title unset so the turn-2 retry can run."""
         try:
             # Inside the `try` on purpose: this runs as a fire-and-forget task whose
             # exception nobody retrieves, and a raise here used to skip the `finally`
             # too — stranding `_autotitle_inflight`, so the session was never titled again.
-            from ..providers.matrix import utility_model_for
-
             title_model = str(
                 self._prefs.get("autotitle_model") or ""
-            ) or utility_model_for(engine.model)
+            ) or self._utility_model(engine.model)
             turn = await asyncio.to_thread(
                 engine.provider.complete,
                 model=title_model,

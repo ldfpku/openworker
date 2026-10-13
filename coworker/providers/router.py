@@ -27,6 +27,7 @@ class ProviderRouter(ProviderClient):
         *,
         default_provider: str = "openai",
         on_use: Any = None,
+        on_build: Any = None,
     ) -> None:
         self._secrets = secrets
         self._default = default_provider
@@ -35,6 +36,12 @@ class ProviderRouter(ProviderClient):
         # Optional callable(provider_name) fired when a completion is dispatched — drives the
         # Settings pane's "Last used" line. Best-effort: its failures never break a model call.
         self._on_use = on_use
+        # Optional callable(provider_name, client) fired once per freshly built client,
+        # before it is cached. A builder only ever sees the SecretStore profile; this is
+        # how the owner of the router hands a client something that lives elsewhere (the
+        # SessionManager binds the AI Gateway's per-person model list this way). Best-effort
+        # like `on_use`: a failing hook leaves the client as built.
+        self._on_build = on_build
 
     def _note_use(self, model: str) -> None:
         if self._on_use is None:
@@ -66,6 +73,11 @@ class ProviderRouter(ProviderClient):
                 if self._secrets is not None:
                     profile = self._secrets.get(f"provider:{name}") or {}
                 client = build_provider_client(name, profile, self._secrets)
+                if self._on_build is not None:
+                    try:
+                        self._on_build(name, client)
+                    except Exception:
+                        pass
                 self._clients[name] = client
             return client
 

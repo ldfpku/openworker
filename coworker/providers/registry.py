@@ -27,7 +27,6 @@ from typing import Any, Callable, Optional
 
 from .aigateway_provider import (
     AIGatewayProvider,
-    PROBE_MODEL,
     access_headers,
     bearer_headers,
     normalise_base,
@@ -872,14 +871,71 @@ def detect_provider(api_key: str) -> Optional[str]:
     return None
 
 
-def _verify_aigw(fields: dict[str, Any], timeout: float) -> dict[str, Any]:
-    """One short generation through the gateway's own domain.
+def _guard_message(resp: Any) -> str:
+    """The company guard's own refusal text from a gateway response, or "".
 
-    There is no read-only probe worth running here. The thing most likely to be wrong is
-    the Access session — expired, or copied from a different app — and Access answers a
-    HEAD the same way it answers anything else. A real (sub-cent) completion exercises the
-    whole path at once: Access, the custom domain, the `/compat` prefix rule, and Unified
-    Billing. Same bet the Ark descriptor makes.
+    gateway-guard answers every refusal as `{"error": {"code", "message"}}` with a Chinese
+    `message` that ends in `[gateway-guard]` and is written to be shown as-is (502
+    `catalog_unavailable`, 503 `gate_unavailable`, 403 `model_restricted`, …). The tag is
+    what tells it apart from a vendor error the gateway merely relayed, which has the same
+    JSON shape and must keep going through the status-code reading instead.
+    """
+    try:
+        err = (resp.json() or {}).get("error") or {}
+    except Exception:  # noqa: BLE001 - non-JSON body (Access's HTML login page, plain text)
+        return ""
+    message = str(err.get("message") or "").strip() if isinstance(err, dict) else ""
+    return message if "[gateway-guard]" in message else ""
+
+
+def _aigw_probe_model(payload: Any) -> str:
+    """Which model the Test completion should call, read from a `GET /gate/models` body.
+
+    The guard names it itself (`probe`: an id guaranteed to be on this person's list).
+    When that key is missing or null, the first id of `models` is by construction on the
+    list too. Nothing usable → "" — the caller reports that; no id is ever invented here,
+    because any hard-coded one is a model somebody's list does not contain.
+    """
+    if not isinstance(payload, dict):
+        return ""
+    probe = payload.get("probe")
+    if isinstance(probe, str) and probe.strip():
+        return probe.strip()
+    models = payload.get("models")
+    for entry in models if isinstance(models, list) else []:
+        model_id = entry.get("id") if isinstance(entry, dict) else None
+        if isinstance(model_id, str) and model_id.strip():
+            return model_id.strip()
+    return ""
+
+
+_AIGW_STALE_SESSION = (
+    "Your Access session isn't valid — sign in again to refresh it. "
+    "(Sessions expire; this is the usual cause.)"
+)
+# The address is baked in, so this is never a typo on the user's side — it means the
+# custom-domain mapping (or the guard / gateway behind it) is broken.
+_AIGW_NOT_A_GATEWAY = (
+    "The built-in gateway address didn't answer as a gateway — tell your administrator "
+    "(the domain mapping may be broken)."
+)
+
+
+def _verify_aigw(fields: dict[str, Any], timeout: float) -> dict[str, Any]:
+    """Ask the guard which model to test with, then run one short generation on it.
+
+    Two requests, in this order:
+
+    1. `GET {base}/gate/models` — this person's model list. The guard is an allowlist, so
+       there is no model the Test could safely assume: the response's `probe` (or, failing
+       that, the first listed id) is the only id known to be callable by THIS person. A
+       person with nothing ticked gets 502 `catalog_unavailable`, an unreadable gate config
+       503 `gate_unavailable`; either way the guard's own Chinese sentence is the Test's
+       failure, verbatim — it says what is wrong better than anything composed here.
+    2. `POST {base}/compat/chat/completions` on that id. There is no read-only probe worth
+       running instead: a real (sub-cent) completion exercises the whole path at once —
+       Access, the custom domain, the `/compat` prefix rule, and Unified Billing. Same bet
+       the Ark descriptor makes.
 
     `cf-aig-skip-cache` matters more than it looks: the gateway caches responses, so
     without it a second Test press can replay the first one and report success against a
@@ -896,6 +952,41 @@ def _verify_aigw(fields: dict[str, Any], timeout: float) -> dict[str, Any]:
     oauth_token = str((fields or {}).get("oauth_token") or "").strip()
     if not oauth_token and not access_token:
         return {"ok": False, "error": "Sign in to the gateway first."}
+    # Static string on purpose: interpolating the exception class would defeat the GUI's
+    # word-for-word translation table, and ConnectError/ReadTimeout tells a colleague
+    # nothing their network status doesn't.
+    unreachable = {
+        "ok": False,
+        "error": "Couldn't reach the gateway — check your network and try again.",
+    }
+    listing, err = _catalog_request(
+        "aigw", key="", base_url=None, fields=fields, timeout=timeout
+    )
+    if listing is None:
+        logger.debug("aigw verify: model list unreachable: %s", err)
+        return unreachable
+    if listing.status_code >= 300:
+        if listing.status_code == 404 and not _guard_message(listing):
+            return {"ok": False, "error": _AIGW_NOT_A_GATEWAY}
+        return _map_probe_failure("aigw", _BY_NAME["aigw"], listing)
+    try:
+        payload = listing.json()
+    except Exception:  # noqa: BLE001 - a 200 that is not JSON is not the guard answering
+        payload = None
+    if not isinstance(payload, dict):
+        # Access can serve its login page with a 200; anything else that is not the
+        # guard's JSON means the address is not reaching the guard at all.
+        body = (getattr(listing, "text", "") or "").lower()
+        if "cloudflare access" in body:
+            return {"ok": False, "error": _AIGW_STALE_SESSION}
+        return {"ok": False, "error": _AIGW_NOT_A_GATEWAY}
+    probe_model = _aigw_probe_model(payload)
+    if not probe_model:
+        return {
+            "ok": False,
+            "error": "The gateway's list has no model to test with — ask your "
+            "administrator to open one for you.",
+        }
     headers = bearer_headers(oauth_token) if oauth_token else access_headers(access_token)
     headers["cf-aig-skip-cache"] = "true"
     try:
@@ -903,40 +994,31 @@ def _verify_aigw(fields: dict[str, Any], timeout: float) -> dict[str, Any]:
             wire_url(base_url, "chat") + "/chat/completions",
             headers=headers,
             json={
-                "model": PROBE_MODEL,
+                "model": probe_model,
                 "messages": [{"role": "user", "content": "Reply with OK."}],
                 "max_tokens": 16,
             },
             timeout=timeout,
         )
     except Exception as exc:
-        # Static string on purpose: interpolating the exception class would defeat the
-        # GUI's word-for-word translation table, and ConnectError/ReadTimeout tells a
-        # colleague nothing their network status doesn't.
         logger.debug("aigw verify: unreachable: %s", exc)
-        return {
-            "ok": False,
-            "error": "Couldn't reach the gateway — check your network and try again.",
-        }
+        return unreachable
     if resp.status_code < 300:
         return {"ok": True}
+    # The guard sits in front of this call too (403 `model_restricted`, 503
+    # `gate_unavailable`, 429 `quota_exceeded`, …) and its sentence is asked for first: a
+    # guard 403 read by status alone would be reported as a stale Access session, which
+    # the list request a few lines up has just disproved.
+    refusal = _guard_message(resp)
+    if refusal:
+        return {"ok": False, "error": refusal}
     body = (resp.text or "").lower()
     # Access answers an unauthenticated request with its own HTML login page, not JSON —
     # so a 302/403 here is nearly always a stale session rather than anything upstream.
     if resp.status_code in (301, 302, 401, 403) or "cloudflare access" in body:
-        return {
-            "ok": False,
-            "error": "Your Access session isn't valid — sign in again to refresh it. "
-            "(Sessions expire; this is the usual cause.)",
-        }
+        return {"ok": False, "error": _AIGW_STALE_SESSION}
     if resp.status_code == 404 or "could not route" in body:
-        # The address is baked in, so this is never a typo on the user's side any more —
-        # it means the custom-domain mapping (or the gateway behind it) is broken.
-        return {
-            "ok": False,
-            "error": "The built-in gateway address didn't answer as a gateway — tell "
-            "your administrator (the domain mapping may be broken).",
-        }
+        return {"ok": False, "error": _AIGW_NOT_A_GATEWAY}
     if "invalid provider" in body:
         return {
             "ok": False,
@@ -1166,10 +1248,11 @@ def _catalog_request(
             base = _normalize_ollama_url(base_url)
             resp = httpx.get(base.rstrip("/") + "/models", timeout=timeout)
         elif name == "aigw":
-            # The company guard answers with THIS person's usable models (open vendors,
-            # restricted ones dropped unless their role may use them) — not the gateway's
-            # raw pricing catalog, which lists long-retired models too. Same credential
-            # choice as `_verify_aigw`: the signed-in OAuth session beats a pasted one.
+            # The company guard answers with THIS person's model list — exactly the
+            # models their administrator ticked for them, the single source of truth for
+            # what they may call — not the gateway's raw pricing catalog, which lists
+            # long-retired models too. Same credential choice as `_verify_aigw`'s
+            # completion: the signed-in OAuth session beats a pasted one.
             gw_base, access_token = resolve_settings(fields or {})
             oauth_token = str((fields or {}).get("oauth_token") or "").strip()
             if not oauth_token and not access_token:
@@ -1207,16 +1290,19 @@ def _map_probe_failure(name: str, d: ProviderDescriptor, resp: Any) -> dict[str,
     (`status_code >= 300`) model-list/probe response. Shared by `verify_provider_key` and
     `list_provider_models`."""
     if name == "aigw":
+        # The guard's own refusal first, verbatim: its Chinese `message` is written for
+        # this pane — 502 `catalog_unavailable` (the administrator has ticked no model for
+        # this person, or the catalog could not be read), 503 `gate_unavailable` (the gate
+        # config is temporarily unreadable). Asked before the status code so a guard
+        # refusal that happens to be a 403 is not misread as a stale session.
+        refusal = _guard_message(resp)
+        if refusal:
+            return {"ok": False, "error": refusal}
         # Same reading as `_verify_aigw`: Access answers a stale session with a redirect or
-        # its own login page. Anything else from the guard carries a Chinese `message`
-        # written for this pane (e.g. 502 catalog_unavailable) — pass it through.
+        # its own login page.
         body = (getattr(resp, "text", "") or "").lower()
         if resp.status_code in (301, 302, 401, 403) or "cloudflare access" in body:
-            return {
-                "ok": False,
-                "error": "Your Access session isn't valid — sign in again to refresh it. "
-                "(Sessions expire; this is the usual cause.)",
-            }
+            return {"ok": False, "error": _AIGW_STALE_SESSION}
         try:
             err = (resp.json() or {}).get("error") or {}
             message = str(err.get("message") or "").strip() if isinstance(err, dict) else ""

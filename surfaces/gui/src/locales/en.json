@@ -149,6 +149,7 @@
     "starting_transcribe": "Transcribing…",
     "model": {
       "connect": "Connect a model",
+      "choose": "Choose a model",
       "none": "No model",
       "none_aria": "No model connected — connect a model",
       "loading": "Loading models…",
@@ -1356,6 +1357,7 @@
     "add_btn": "Add",
     "add_placeholder": "Add another model…",
     "catalog_error": "Couldn't fetch the model list ({{error}}) — showing the built-in list.",
+    "catalog_error_no_list": "Couldn't fetch your model list ({{error}}) — no models are available until it arrives.",
     "catalog_live": "Model list from the provider's API · updated {{when}}",
     "catalog_live_error": "Model list from the provider's API · updated {{when}} · the latest refresh failed ({{error}})",
     "catalog_pending": "Fetching the model list from the provider…",
@@ -1364,6 +1366,7 @@
     "catalog_retry": "Retry",
     "catalog_unsupported": "This provider has no model-list API — add models by id below.",
     "default_badge": "default",
+    "default_gone": "Your previous default model is no longer on your available list — please choose another.",
     "default_locked": "The default model is always shown — make another model default first",
     "filter_placeholder": "Filter models…",
     "key_set": "Key set",

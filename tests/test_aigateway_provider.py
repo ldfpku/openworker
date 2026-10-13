@@ -29,6 +29,7 @@ from coworker.providers.aigateway_provider import (
     fits_the_stand_in,
     normalise_base,
     resolve_settings,
+    route_allowed,
     route_for,
     upstream_model,
     wire_for,
@@ -363,20 +364,77 @@ def test_every_routed_model_and_stand_in_is_a_curated_gateway_row():
         assert route.name == "ow-" + bare.replace("/", "-").replace(".", "-")
 
 
-def test_a_stand_in_is_never_more_restricted_than_the_model_it_stands_in_for():
-    # The guard restricts the top tier to certain roles. If a 429 could hand someone the
-    # restricted model as a fallback, the gate would be bypassed by waiting for a busy
-    # moment — so a restricted stand-in is only ever paired with a restricted primary.
-    restricted = {"anthropic/claude-fable-5", "openai/gpt-5.6-sol"}
+def test_a_429_never_resends_to_a_stand_in_outside_the_persons_list():
+    # The guard is an allowlist and judges a `dynamic/<route>` call by BOTH of its ends:
+    # with the stand-in unticked the re-send is a guaranteed 403, and with it ticked a
+    # busy moment must still never hand someone a model their administrator did not open.
+    # So the provider asks the person's server list before re-sending — for every row.
     for bare, route in _ROUTES.items():
-        if route.fallback in restricted:
-            assert bare in restricted, f"{bare} could escalate into {route.fallback}"
+        wire = wire_for(bare)
+        for listed, resent in (
+            ({bare, route.fallback}, True),
+            ({bare}, False),  # stand-in not on the list
+            ({route.fallback}, False),  # (cannot 429 in practice; still never re-sent)
+            (set(), False),  # no successful pull yet
+            (None, False),
+        ):
+            chat = _Spy()
+            p = AIGatewayProvider(
+                base_url=BASE,
+                access_token=SESSION,
+                clients={wire: _Spy(error=_Busy()), "chat": chat},
+                allowed_models=lambda listed=listed: listed,
+            )
+            if resent:
+                assert p.complete(model=bare, messages=[]) == {"model": f"dynamic/{route.name}"}
+                assert [c["model"] for c in chat.calls] == [f"dynamic/{route.name}"]
+            else:
+                with pytest.raises(_Busy):
+                    p.complete(model=bare, messages=[])
+                assert chat.calls == [], (bare, listed)
+
+
+def test_a_streamed_429_obeys_the_same_list_gate():
+    chat = _Spy(chunks=["x"])
+    p = AIGatewayProvider(
+        base_url=BASE,
+        access_token=SESSION,
+        clients={"messages": _Spy(error=_Busy()), "chat": chat},
+        allowed_models=lambda: {"anthropic/claude-opus-5"},  # terra, the stand-in, is not on it
+    )
+    with pytest.raises(_Busy):
+        list(p.stream(model="anthropic/claude-opus-5", messages=[]))
+    assert chat.calls == []
+    p.bind_allowed_models(lambda: {"anthropic/claude-opus-5", "openai/gpt-5.6-terra"})
+    assert list(p.stream(model="anthropic/claude-opus-5", messages=[])) == ["x"]
+    assert chat.calls[0]["model"] == "dynamic/ow-anthropic-claude-opus-5"
+
+
+def test_an_unwired_provider_is_not_gated_and_a_broken_reader_means_no_resend():
+    # No reader at all (headless `agent.py`, these unit tests): nothing to ask, so the
+    # guard's own 403 stays the only judge and the re-send is attempted as before.
+    chat = _Spy()
+    p = AIGatewayProvider(
+        base_url=BASE, access_token=SESSION, clients={"messages": _Spy(error=_Busy()), "chat": chat}
+    )
+    assert p.complete(model="anthropic/claude-opus-5", messages=[])
+    assert len(chat.calls) == 1
+
+    def boom():
+        raise RuntimeError("catalog cache unreadable")
+
+    # A reader that fails is an unknown list — never a reason to send somewhere unvetted.
+    p.bind_allowed_models(boom)
+    with pytest.raises(_Busy):
+        p.complete(model="anthropic/claude-opus-5", messages=[])
+    assert len(chat.calls) == 1
+    assert route_allowed("anthropic/claude-opus-5", None) is False
 
 
 def test_the_utility_tier_is_deliberately_unrouted():
-    # Haiku and Luna are the probe/summariser models; the limiter has never fired there,
-    # and a route on the probe model would make "the probe never fails" harder to reason
-    # about. Adding one should be a decision, not a drift.
+    # Haiku and Luna are the cheap summariser (auto-title) siblings; the limiter has never
+    # fired there, and a route on them would put a second model behind what is meant to
+    # be the cheapest call. Adding one should be a decision, not a drift.
     assert route_for("anthropic/claude-haiku-4-5") is None
     assert route_for("openai/gpt-5.6-luna") is None
     assert route_for("google-ai-studio/gemini-3.6-flash") is None
@@ -564,8 +622,8 @@ def test_a_streamed_resend_also_renames_max_tokens():
 
 
 def test_only_a_busy_shared_pool_earns_a_resend():
-    # A bad id, a restricted model or an empty balance would fail identically on the
-    # stand-in; retrying those only buys a second round-trip and a second bill.
+    # A bad id, a model off the person's list or an empty balance would fail identically
+    # on the stand-in; retrying those only buys a second round-trip and a second bill.
     chat = _Spy()
     p = AIGatewayProvider(
         base_url=BASE,
@@ -829,16 +887,37 @@ def test_another_vendors_own_429_is_not_dressed_up_as_the_shared_pool():
     assert "Cloudflare" in (friendly_model_error("aigw:openai/gpt-5.6-sol", direct) or "")
 
 
+def _everything_routed() -> frozenset[str]:
+    """A person whose list carries every routed model and every stand-in."""
+    return frozenset(_ROUTES) | frozenset(r.fallback for r in _ROUTES.values())
+
+
 def test_the_picker_badge_map_is_labels_for_routed_models_only():
     from coworker.server.manager import SessionManager
 
     labels = {mid: e.label for mid, e in MATRIX.items()}
-    out = SessionManager._model_fallbacks(labels)
+    out = SessionManager._model_fallbacks(labels, _everything_routed())
     assert out["aigw:anthropic/claude-fable-5"] == "GPT-5.6 Sol · via Cloudflare"
     assert out["aigw:openai/gpt-5.6-sol"] == "Claude Opus 5 · via Cloudflare"
     assert set(out) == {f"aigw:{m}" for m in _ROUTES}
     # A stand-in the matrix has no label for is dropped rather than shown as a raw id.
-    assert SessionManager._model_fallbacks({}) == {}
+    assert SessionManager._model_fallbacks({}, _everything_routed()) == {}
+
+
+def test_the_picker_badge_map_only_covers_routes_on_the_persons_list():
+    # The badge says "survives a busy pool". The guard refuses the route unless BOTH ends
+    # are on the caller's list, so a badge for anything less would be a promise the
+    # re-send (same `route_allowed` test) does not keep.
+    from coworker.server.manager import SessionManager
+
+    labels = {mid: e.label for mid, e in MATRIX.items()}
+    some = frozenset({"anthropic/claude-opus-5", "openai/gpt-5.6-terra", "anthropic/claude-fable-5"})
+    assert SessionManager._model_fallbacks(labels, some) == {
+        "aigw:anthropic/claude-opus-5": "GPT-5.6 Terra · via Cloudflare"
+    }
+    # No list (never pulled) → no badge for anything.
+    assert SessionManager._model_fallbacks(labels, None) == {}
+    assert SessionManager._model_fallbacks(labels, frozenset()) == {}
 
 
 def test_the_picker_badge_map_respects_the_rollback_switch(monkeypatch):
@@ -846,7 +925,7 @@ def test_the_picker_badge_map_respects_the_rollback_switch(monkeypatch):
 
     monkeypatch.setenv(ENV_DYNAMIC_ROUTING, "off")
     labels = {mid: e.label for mid, e in MATRIX.items()}
-    assert SessionManager._model_fallbacks(labels) == {}
+    assert SessionManager._model_fallbacks(labels, _everything_routed()) == {}
 
 
 # -- model ids ----------------------------------------------------------------------
@@ -1074,34 +1153,188 @@ def test_test_button_asks_for_a_sign_in_not_an_address(monkeypatch):
     # be missing is a credential — and it must say so without a network round trip.
     monkeypatch.delenv("CLOUDFLARE_AIGW_BASE_URL", raising=False)
     monkeypatch.delenv("CLOUDFLARE_AIGW_ACCESS_TOKEN", raising=False)
-    monkeypatch.setattr(
-        "httpx.post",
-        lambda *a, **k: pytest.fail("verify should not call out without a credential"),
-    )
+    for verb in ("httpx.get", "httpx.post"):
+        monkeypatch.setattr(
+            verb,
+            lambda *a, **k: pytest.fail("verify should not call out without a credential"),
+        )
     out = verify_provider_key("aigw", fields={})
     assert out["ok"] is False and "Sign in" in out["error"]
     assert "address" not in out["error"]  # nothing to fill any more — never ask for it
 
 
+# -- the Test button: ask the guard which model to probe, then probe it ------------------
+
+
+class _Http:
+    """Offline stand-in for the Test's two requests. `listing` answers `GET /gate/models`,
+    `completion` answers the POST; every call is recorded in order."""
+
+    def __init__(self, monkeypatch, listing, completion=(200, {})):
+        self.calls: list[dict] = []
+        self._listing, self._completion = listing, completion
+        monkeypatch.setattr("httpx.get", self._get)
+        monkeypatch.setattr("httpx.post", self._post)
+
+    @staticmethod
+    def _resp(status, body):
+        import json as _json
+
+        class _Resp:
+            status_code = status
+            text = body if isinstance(body, str) else _json.dumps(body, ensure_ascii=False)
+
+            def json(self):
+                if isinstance(body, str):
+                    raise ValueError("not json")
+                return body
+
+        return _Resp()
+
+    def _get(self, url, headers=None, **kwargs):
+        self.calls.append({"verb": "GET", "url": url, "headers": dict(headers or {})})
+        if isinstance(self._listing, Exception):
+            raise self._listing
+        return self._resp(*self._listing)
+
+    def _post(self, url, headers=None, json=None, **kwargs):
+        self.calls.append(
+            {"verb": "POST", "url": url, "headers": dict(headers or {}), "json": json}
+        )
+        if isinstance(self._completion, Exception):
+            raise self._completion
+        return self._resp(*self._completion)
+
+    @property
+    def verbs(self) -> list[str]:
+        return [c["verb"] for c in self.calls]
+
+
+_SIGNED_IN = {"base_url": BASE, "access_token": "stale", "oauth_token": "fresh"}
+_LISTING = {
+    "email": "a@smjtools.com",
+    "role": "employee",
+    "exempt": False,
+    "models": [
+        {"id": "openai/gpt-5.6-terra", "family": "openai/", "context": None, "created": None},
+        {"id": "google-ai-studio/gemini-3.6-flash", "family": "google-ai-studio/"},
+    ],
+    "probe": "google-ai-studio/gemini-3.6-flash",
+}
+
+
+def test_test_probes_with_the_model_the_guard_names(monkeypatch):
+    # The guard is an allowlist, so no model can be assumed: the id comes from the
+    # person's own `/gate/models` answer, and nothing is hard-coded.
+    http = _Http(monkeypatch, (200, _LISTING))
+    assert verify_provider_key("aigw", fields=_SIGNED_IN) == {"ok": True}
+    assert http.verbs == ["GET", "POST"]
+    listing, completion = http.calls
+    assert listing["url"] == BASE + "/gate/models"
+    assert completion["url"] == BASE + "/compat/chat/completions"
+    assert completion["json"]["model"] == "google-ai-studio/gemini-3.6-flash"
+    assert completion["json"]["max_tokens"] == 16  # still a sub-cent call
+
+
+def test_the_probe_model_is_not_hard_coded_anywhere(monkeypatch):
+    import coworker.providers.aigateway_provider as provider_mod
+    import coworker.providers.registry as registry_mod
+
+    assert not hasattr(provider_mod, "PROBE_MODEL")
+    assert not hasattr(registry_mod, "PROBE_MODEL")
+    # Whatever id the guard names is the id that is called — even one no table here knows.
+    http = _Http(monkeypatch, (200, {"models": [], "probe": "workers-ai/@cf/zai-org/glm-9"}))
+    assert verify_provider_key("aigw", fields=_SIGNED_IN) == {"ok": True}
+    assert http.calls[1]["json"]["model"] == "workers-ai/@cf/zai-org/glm-9"
+
+
+@pytest.mark.parametrize("probe", [None, "", "   ", 7, "absent"])
+def test_without_a_probe_the_first_listed_model_is_used(monkeypatch, probe):
+    body = {k: v for k, v in _LISTING.items() if k != "probe"}
+    if probe != "absent":
+        body["probe"] = probe
+    http = _Http(monkeypatch, (200, body))
+    assert verify_provider_key("aigw", fields=_SIGNED_IN) == {"ok": True}
+    assert http.calls[1]["json"]["model"] == "openai/gpt-5.6-terra"
+
+
+def test_a_list_with_nothing_to_probe_fails_without_inventing_a_model(monkeypatch):
+    http = _Http(monkeypatch, (200, {"models": [], "probe": None}))
+    out = verify_provider_key("aigw", fields=_SIGNED_IN)
+    assert out["ok"] is False and "no model to test with" in out["error"]
+    assert http.verbs == ["GET"]  # no completion on a guessed id
+
+
+@pytest.mark.parametrize(
+    "status,code,message",
+    [
+        (502, "catalog_unavailable", "你的账号暂未开通任何模型，请联系管理员开通。[gateway-guard]"),
+        (503, "gate_unavailable", "网关配置暂时读不到，请稍后重试。[gateway-guard]"),
+    ],
+)
+def test_the_guards_refusal_of_the_list_is_the_tests_failure_verbatim(
+    monkeypatch, status, code, message
+):
+    http = _Http(
+        monkeypatch,
+        (status, {"error": {"code": code, "status": status, "message": message}}),
+    )
+    assert verify_provider_key("aigw", fields=_SIGNED_IN) == {"ok": False, "error": message}
+    assert http.verbs == ["GET"]  # nothing to probe with, so nothing is probed
+
+
+def test_a_guard_refusal_of_the_completion_is_shown_verbatim_too(monkeypatch):
+    # The guard fronts the completion as well. Its 403 must not be read as "your Access
+    # session is stale" — the list request just succeeded with the same credential.
+    message = "模型 google-ai-studio/gemini-3.6-flash 不在你的可用清单。[gateway-guard]"
+    for status, code in ((403, "model_restricted"), (503, "gate_unavailable")):
+        http = _Http(
+            monkeypatch,
+            (200, _LISTING),
+            (status, {"error": {"code": code, "status": status, "message": message}}),
+        )
+        assert verify_provider_key("aigw", fields=_SIGNED_IN) == {"ok": False, "error": message}
+        assert http.verbs == ["GET", "POST"]
+
+
+@pytest.mark.parametrize(
+    "listing,completion,needle",
+    [
+        # A stale Access session shows up on the very first request.
+        ((302, "<html>Cloudflare Access</html>"), (200, {}), "Access session isn't valid"),
+        ((200, "<html>Cloudflare Access login</html>"), (200, {}), "Access session isn't valid"),
+        # The address is not reaching the guard at all.
+        ((404, "not found"), (200, {}), "didn't answer as a gateway"),
+        ((200, "<html>hello</html>"), (200, {}), "didn't answer as a gateway"),
+        (RuntimeError("dns"), (200, {}), "Couldn't reach the gateway"),
+        # The list is fine; the completion is what fails — same readings as before.
+        ((200, _LISTING), RuntimeError("timeout"), "Couldn't reach the gateway"),
+        ((200, _LISTING), (402, {"error": "no credit"}), "out of AI Gateway credits"),
+        ((200, _LISTING), (429, "Rate limited"), "Rate limited right now"),
+        ((200, _LISTING), (400, {"errors": [{"message": "Invalid provider"}]}), "provider prefix"),
+        ((200, _LISTING), (500, "boom"), "HTTP 500"),
+        # A vendor error the gateway merely relayed has the guard's JSON shape but not
+        # its tag — it keeps the status-code reading instead of being shown raw.
+        ((200, _LISTING), (403, {"error": {"message": "forbidden"}}), "Access session isn't valid"),
+    ],
+)
+def test_other_test_failures_keep_their_plain_reading(monkeypatch, listing, completion, needle):
+    _Http(monkeypatch, listing, completion)
+    out = verify_provider_key("aigw", fields=_SIGNED_IN)
+    assert out["ok"] is False and needle in out["error"], out
+
+
 def test_test_exercises_the_credential_a_real_call_would_use(monkeypatch):
     # Test has to prefer the signed-in session exactly as the provider does. Probing with
     # a leftover pasted value would report success against a credential nothing else uses.
-    seen: dict = {}
-
-    class _Resp:
-        status_code = 200
-        text = "{}"
-
-    def fake_post(url, headers=None, **kwargs):
-        seen.update(headers or {})
-        return _Resp()
-
-    monkeypatch.setattr("httpx.post", fake_post)
-    out = verify_provider_key(
-        "aigw",
-        fields={"base_url": BASE, "access_token": "stale", "oauth_token": "fresh"},
-    )
+    http = _Http(monkeypatch, (200, _LISTING))
+    out = verify_provider_key("aigw", fields=_SIGNED_IN)
     assert out["ok"] is True
-    assert seen["Authorization"] == "Bearer fresh"
-    assert "cf-access-token" not in seen
-    assert seen["cf-aig-skip-cache"] == "true"
+    for call in http.calls:  # the list request and the completion alike
+        assert call["headers"]["Authorization"] == "Bearer fresh"
+        assert "cf-access-token" not in call["headers"]
+    assert http.calls[1]["headers"]["cf-aig-skip-cache"] == "true"
+    # A pasted session alone travels in Access's own header, on both requests.
+    http = _Http(monkeypatch, (200, _LISTING))
+    assert verify_provider_key("aigw", fields={"base_url": BASE, "access_token": "jwt"})["ok"]
+    assert [c["headers"].get("cf-access-token") for c in http.calls] == ["jwt", "jwt"]

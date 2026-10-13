@@ -983,6 +983,11 @@ export interface ModelSettings {
   models: string[];
   has_key: boolean;
   model_ready: boolean; // can the default model's provider actually run (any provider)?
+  // Why model_ready is false when it is not simply "no provider connected". A stable code
+  // the GUI words itself; today only "default_model_gone": the default is a company-gateway
+  // model that is no longer on this person's server list (nothing was substituted for it —
+  // they are asked to choose again). null/absent otherwise, and on older backends.
+  model_notice?: "default_model_gone" | null;
   source: "env" | "store" | null;
   onboarded: boolean;
   surfaces: SurfaceVisibility;
@@ -2001,7 +2006,7 @@ export interface ProviderField {
 
 // Live model-catalog status for a provider (absent on old servers — treat as "no catalog info").
 export interface ProviderCatalog {
-  supported: boolean; // false = this provider has no list-models API (ark, bedrock, vertex, aigw, openai-codex, ollama)
+  supported: boolean; // false = this provider has no list-models API (ark, bedrock, vertex, openai-codex, ollama)
   fetched_at: string | null; // ISO timestamp of the last SUCCESSFUL fetch, if any
   error: string | null; // the latest fetch failure since then, if any (can coexist with live)
   failed_at?: string | null; // ISO timestamp of that failure (absent on older servers)
@@ -2209,8 +2214,9 @@ export function announceAutomationsChanged() {
 }
 
 /** App-wide event stream (/ws/events): session-independent server pushes — today
- * automation_run_started (the UX-026 toast). Quietly reconnects while the app is
- * open; the returned cleanup stops it for good. */
+ * automation_run_started (the UX-026 toast) and models_changed (the company gateway's
+ * model list changed under a background refresh: re-read settings). Quietly reconnects
+ * while the app is open; the returned cleanup stops it for good. */
 export function connectEvents(
   onEvent: (msg: { type: string; data?: Record<string, unknown> }) => void
 ): () => void {

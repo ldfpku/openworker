@@ -147,6 +147,7 @@
     "starting_transcribe": "转写中…",
     "model": {
       "connect": "连接模型",
+      "choose": "选择模型",
       "none": "无模型",
       "none_aria": "未连接模型——请连接模型",
       "loading": "正在加载模型…",
@@ -1328,6 +1329,7 @@
     "add_btn": "添加",
     "add_placeholder": "添加其他模型…",
     "catalog_error": "拉取模型列表失败（{{error}}），正在显示内置列表。",
+    "catalog_error_no_list": "拉取可用模型清单失败（{{error}}），拿到清单之前没有可选模型。",
     "catalog_live": "模型列表来自提供商 API · {{when}}更新",
     "catalog_live_error": "模型列表来自提供商 API · {{when}}更新 · 最近一次刷新失败（{{error}}）",
     "catalog_pending": "正在从提供商获取模型列表…",
@@ -1336,6 +1338,7 @@
     "catalog_retry": "重试",
     "catalog_unsupported": "该提供商不提供模型列表接口，请在下方按 id 手动添加。",
     "default_badge": "默认",
+    "default_gone": "原默认模型已不在可用清单，请重新选择",
     "default_locked": "默认模型始终显示——请先将其他模型设为默认",
     "filter_placeholder": "筛选模型…",
     "key_set": "密钥已设置",

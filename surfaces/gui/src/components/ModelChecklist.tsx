@@ -31,6 +31,9 @@ const MODEL_FAMILIES: Record<string, { value: string; label: string }[]> = {
 // Except the company gateway (`aigw`): its list is the guard's per-person answer (models this
 // user may actually call), so there is no free-type row at all — owner call 2026-09-23, a
 // hand-typed id there could only ever be a model the gateway refuses or doesn't carry.
+// Since the guard became an allowlist that server list is also the ONLY list: there is no
+// built-in fallback behind it, so a pull that has never succeeded shows no models at all —
+// and the status row has to say that rather than "showing the built-in list".
 const NO_MANUAL_ADD = new Set(["aigw"]);
 export function ModelChecklist({
   provider,
@@ -40,6 +43,7 @@ export function ModelChecklist({
   defaultModel,
   labels,
   catalog,
+  defaultGone,
   onRefresh,
   onChanged,
 }: {
@@ -50,6 +54,9 @@ export function ModelChecklist({
   defaultModel: string;
   labels?: Record<string, string>; // curated display names (full id → label); raw id when absent
   catalog?: ProviderCatalog; // live model-catalog status; absent on old servers
+  // The default model was one of THIS provider's and has left its server list (settings'
+  // model_notice === "default_model_gone"): the row is gone, so say so above the list.
+  defaultGone?: boolean;
   onRefresh?: () => Promise<void>; // re-fetch this provider's live catalog
   onChanged: (next: { models: string[]; model: string }) => void;
 }) {
@@ -158,7 +165,12 @@ export function ModelChecklist({
           action: t(catalog.error ? "models.catalog_retry" : "models.catalog_refresh"),
         }
         : catalog.error
-          ? { text: t("models.catalog_error", { error: catalog.error }), action: t("models.catalog_retry") }
+          ? {
+            text: t(manualAdd ? "models.catalog_error" : "models.catalog_error_no_list", {
+              error: catalog.error,
+            }),
+            action: t("models.catalog_retry"),
+          }
           : { text: t("models.catalog_pending"), action: t("models.catalog_refresh") };
 
   return (
@@ -173,6 +185,11 @@ export function ModelChecklist({
       )}
       {catalog && !catalog.supported && (
         <div className="text-[12px] text-muted mb-1.5">{t("models.catalog_unsupported")}</div>
+      )}
+      {defaultGone && (
+        <div className="text-[12px] text-warnInk mb-1.5" role="alert" data-testid="mlist-default-gone">
+          {t("models.default_gone")}
+        </div>
       )}
       {showFilter && (
         <input

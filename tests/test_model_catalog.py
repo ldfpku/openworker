@@ -961,21 +961,27 @@ def test_list_provider_models_aigw_error_mapping(monkeypatch):
     _patch_get(monkeypatch, status=401, json_body={})
     res = list_provider_models("aigw", fields={"oauth_token": "t"})
     assert res["ok"] is False and "sign in again" in res["error"]
-    # The guard's own Chinese message (502 catalog_unavailable) passes through verbatim.
+    # The guard's own Chinese message passes through verbatim: 502 catalog_unavailable
+    # (nothing ticked for this person / catalog unreadable), 503 gate_unavailable (gate
+    # config temporarily unreadable) — and a guard refusal that is a 403 is still the
+    # guard's sentence, not a "stale session" guess.
     msg = "模型目录暂时取不到（网关目录返回 HTTP 500），请稍后重试。[gateway-guard]"
-    _patch_get(
-        monkeypatch,
-        status=502,
-        json_body={"error": {"code": "catalog_unavailable", "message": msg}},
-    )
-    assert list_provider_models("aigw", fields={"oauth_token": "t"}) == {
-        "ok": False,
-        "error": msg,
-    }
+    for status, code in ((502, "catalog_unavailable"), (503, "gate_unavailable"), (403, "x")):
+        _patch_get(
+            monkeypatch,
+            status=status,
+            json_body={"error": {"code": code, "message": msg}},
+        )
+        assert list_provider_models("aigw", fields={"oauth_token": "t"}) == {
+            "ok": False,
+            "error": msg,
+        }
 
 
 def test_verify_aigw_probes_first_then_pulls_and_caches_the_list(tmp_path, monkeypatch):
-    """Test stays a real completion; the per-person list is pulled only after it passes."""
+    """Test stays a real completion (on the model the guard names — see
+    test_aigateway_provider's Test-button section); the per-person list lands in the
+    catalog cache only after it passes."""
     import coworker.server.manager as manager_mod
 
     mgr = SessionManager(data_dir=tmp_path / "data")

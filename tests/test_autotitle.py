@@ -66,6 +66,17 @@ def _mgr(tmp_path, chat_turns, titles, model="gpt-5.6-sol"):
     return SessionManager(workspace=tmp_path, provider=provider, model=model), provider
 
 
+def _gateway_list(mgr: SessionManager, *ids: str) -> None:
+    """Give the manager a company-gateway server list (the `aigw` catalog cache), as if
+    `GET /gate/models` had answered with exactly these ids."""
+    mgr._model_catalog["aigw"] = {
+        "fetched_at": "2026-10-13T00:00:00+00:00",
+        "models": [{"id": i, "label": i, "context_window": None} for i in ids],
+        "error": None,
+        "failed_at": None,
+    }
+
+
 async def test_title_set_after_first_turn(tmp_path):
     mgr, provider = _mgr(tmp_path, [_text("sure")], ["Japan Trip Planning Help"])
     await _turn(mgr, "s1", "help me plan a trip to japan")
@@ -167,8 +178,27 @@ async def test_routes_to_cheap_sibling_not_the_session_model(tmp_path):
         ["Japan Trip Planning Help"],
         model="aigw:anthropic/claude-fable-5",
     )
+    _gateway_list(mgr, "anthropic/claude-fable-5", "anthropic/claude-haiku-4-5")
     await _turn(mgr, "s9", "help me plan a trip to japan")
     assert provider.title_requests[0]["model"] == "aigw:anthropic/claude-haiku-4-5"
+
+
+async def test_gateway_sibling_off_the_persons_list_falls_back_to_the_session_model(
+    tmp_path,
+):
+    """The company gateway only lets a person call the models on their own server list.
+    A cheap sibling the administrator has not ticked would be a guaranteed 403 — a
+    session that silently never gets a title — so the session's own model is used."""
+    mgr, provider = _mgr(
+        tmp_path,
+        [_text("sure")],
+        ["Japan Trip Planning Help"],
+        model="aigw:anthropic/claude-fable-5",
+    )
+    _gateway_list(mgr, "anthropic/claude-fable-5", "openai/gpt-5.6-luna")  # no Haiku
+    await _turn(mgr, "s9b", "help me plan a trip to japan")
+    assert provider.title_requests[0]["model"] == "aigw:anthropic/claude-fable-5"
+    assert mgr.session_store.load("s9b").title == "Japan Trip Planning Help"
 
 
 async def test_autotitle_model_pref_overrides_the_sibling(tmp_path):

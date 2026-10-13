@@ -1,373 +1,495 @@
-"""gateway-guard's per-user model gate, client side.
+"""gateway-guard's per-person model list, client side.
 
-The company gateway now fronts a guard Worker that restricts some models to certain
-roles (server-side 403). The client half is cosmetic: `fetch_gate_policy` reads
-`GET {base}/gate/policy`, and the manager hides the returned `blocked` ids from the
-composer picker and the "add model" suggestions. Every failure mode must degrade to
-"no filtering" — enforcement lives on the server, so a missed fetch can only ever be
-a cosmetic miss, never a hole.
+The company gateway's guard Worker is an ALLOWLIST: `GET {base}/gate/models` returns
+exactly the models this person's administrator ticked for them, and it is the single
+source of truth for what the app may offer under `aigw:`. (The old denylist — `/gate/policy`
+`blocked` / `uncovered` / `families` — is gone, and so is every helper that read it.)
+
+What these pin, all offline:
+
+* the curated matrix never offers a gateway model on its own — no server list, no `aigw:`
+  models; with a list, only what is on it (the matrix just labels those);
+* a failed refresh keeps the last successfully fetched list — it neither empties the picker
+  nor falls back to the matrix;
+* every successful pull reconciles local picks against the list (custom ids, hidden ids);
+* a default model that has left the list is NOT silently replaced: `model_ready` goes
+  false, `model_notice` says why, and the dead id is no longer offered;
+* the auto-title sibling is used only when it is on the list;
+* the dynamic-route "has a stand-in" badge needs both ends of the route on the list.
+
+Enforcement is server-side either way (the guard answers 403 `model_restricted`); the
+client's job is to not offer what it already knows will be refused.
 """
 
 from __future__ import annotations
 
+import asyncio
 import time
 
-import httpx
 import pytest
 
-from coworker.providers.aigateway_provider import (
-    DEFAULT_BASE_URL,
-    blocked_model_ids,
-    family_form,
-    fetch_gate_policy,
-    gate_families,
-    is_blocked_model,
-    is_gated_model,
-    is_out_of_scope,
-)
-from coworker.server.manager import SessionManager as Manager
+from coworker.providers.aigateway_provider import _ROUTES, route_allowed
+from coworker.providers.matrix import MATRIX
+from coworker.server.manager import SessionManager
+
+_AIGW_MATRIX = [m for m in MATRIX if m.startswith("aigw:")]
 
 
-class _Resp:
-    def __init__(self, status_code=200, payload=None, text=""):
-        self.status_code = status_code
-        self._payload = payload
-        self._text = text
-
-    def json(self):
-        if self._payload is None:
-            raise ValueError("not json")
-        return self._payload
+def _rows(*ids: str) -> list[dict]:
+    return [{"id": i, "label": f"{i} · via Cloudflare", "context_window": None} for i in ids]
 
 
-def _no_env(monkeypatch):
+def _mgr(tmp_path, monkeypatch, *listed: str, default: str = "gpt-5.6-sol") -> SessionManager:
+    """A real manager, signed in to the gateway with a pasted session, whose `aigw`
+    catalog already holds `listed` (as if a pull had succeeded earlier). No `listed` →
+    no pull has ever succeeded."""
     monkeypatch.delenv("CLOUDFLARE_AIGW_BASE_URL", raising=False)
     monkeypatch.delenv("CLOUDFLARE_AIGW_ACCESS_TOKEN", raising=False)
+    mgr = SessionManager(data_dir=tmp_path / "data")
+    # Merged into the profile, not put over it: the manager has just stamped the gateway
+    # generation there, and losing the stamp would make the next start "migrate" again —
+    # retiring this session and dropping the cached list with it.
+    profile = dict(mgr.secrets.get("provider:aigw") or {})
+    mgr.secrets.put("provider:aigw", {**profile, "access_token": "jwt"})
+    mgr.model = default
+    if listed:
+        mgr._model_catalog["aigw"] = {
+            "fetched_at": "2026-10-13T00:00:00+00:00",
+            "models": _rows(*listed),
+            "error": None,
+            "failed_at": None,
+        }
+    return mgr
 
 
-# -- fetch_gate_policy -------------------------------------------------------------------
-def test_no_credential_means_no_request_at_all(monkeypatch):
-    _no_env(monkeypatch)
-
-    def boom(*a, **k):  # pragma: no cover - the point is it must not run
-        raise AssertionError("network call without a credential")
-
-    monkeypatch.setattr(httpx, "get", boom)
-    assert fetch_gate_policy({}) is None
-
-
-def test_fetches_gate_policy_from_the_gateway_origin(monkeypatch):
-    _no_env(monkeypatch)
-    seen = {}
-
-    def fake_get(url, headers=None, timeout=None):
-        seen["url"] = url
-        seen["headers"] = headers
-        return _Resp(200, {"email": "a@x.com", "role": "employee", "active": True,
-                           "blocked": ["openai/gpt-5.6-sol"], "enforce": True})
-
-    monkeypatch.setattr(httpx, "get", fake_get)
-    data = fetch_gate_policy({"oauth_token": "tok-123"})
-    assert data and data["blocked"] == ["openai/gpt-5.6-sol"]
-    assert seen["url"] == DEFAULT_BASE_URL + "/gate/policy"
-    # OAuth rides the slot its protocol names, and the UA is ours (edge bot rules)
-    assert seen["headers"]["Authorization"] == "Bearer tok-123"
-    assert seen["headers"]["User-Agent"].startswith("openworker/")
-
-
-def test_every_failure_shape_degrades_to_none(monkeypatch):
-    _no_env(monkeypatch)
-    cases = [
-        _Resp(404, text="not found"),            # guard not deployed (bare custom domain)
-        _Resp(401, {"error": {}}),               # signed out
-        _Resp(200, None, text="<html>"),          # Access login page instead of JSON
-        _Resp(200, {"blocked": "oops"}),          # malformed shape
-    ]
-    for resp in cases:
-        monkeypatch.setattr(httpx, "get", lambda *a, _r=resp, **k: _r)
-        assert fetch_gate_policy({"access_token": "jwt"}) is None
-
-    def raising(*a, **k):
-        raise httpx.ConnectError("down")
-
-    monkeypatch.setattr(httpx, "get", raising)
-    assert fetch_gate_policy({"access_token": "jwt"}) is None
-
-
-def test_blocked_model_ids_normalizes_and_tolerates_junk():
-    assert blocked_model_ids(None) == frozenset()
-    assert blocked_model_ids({"blocked": "nope"}) == frozenset()
-    assert blocked_model_ids(
-        {"blocked": [" OpenAI/GPT-5.6-Sol ", "", 42, "anthropic/claude-fable-5"]}
-    ) == frozenset({"openai/gpt-5.6-sol", "anthropic/claude-fable-5"})
-
-
-def test_blocked_model_ids_folds_in_the_guards_uncovered_list():
-    # guard ≥ 2026-10-10 adds `uncovered` (not on Unified Billing / retired by the vendor,
-    # for everyone) next to `blocked` (restricted for this role). The picker hides both.
-    assert blocked_model_ids(
-        {"blocked": [], "uncovered": ["openai/gpt-6.1-sol-pro", " Anthropic/Claude-Haiku-5-5 ", ""]}
-    ) == frozenset({"openai/gpt-6.1-sol-pro", "anthropic/claude-haiku-5-5"})
-    assert blocked_model_ids({"blocked": ["openai/gpt-5.6-sol"], "uncovered": "nope"}) == frozenset(
-        {"openai/gpt-5.6-sol"}
+def _pull(monkeypatch, result: dict) -> None:
+    """What the next `/gate/models` pull answers (overrides conftest's offline stub)."""
+    monkeypatch.setattr(
+        SessionManager, "_fetch_model_catalog", lambda self, name, fields=None: dict(result)
     )
 
 
-# -- is_blocked_model ---------------------------------------------------------------------
-# Mirrors gateway-guard's own server-side match exactly: exact id, or the same base id
-# plus one optional dated/tagged suffix in a fixed shape. A miss here is only ever
-# cosmetic (the server still 403s), but it must not drift from the server's shape.
-_BLOCKED = frozenset({"anthropic/claude-fable-5", "openai/gpt-5.6-sol"})
+def _pull_ok(monkeypatch, *ids: str) -> None:
+    _pull(monkeypatch, {"ok": True, "models": _rows(*ids)})
 
 
-@pytest.mark.parametrize(
-    "model_id",
-    [
-        "anthropic/claude-fable-5",
-        "aigw:anthropic/claude-fable-5",
-        "anthropic/claude-fable-5-20260901",
-        "anthropic/claude-fable-5-latest",
-        "anthropic/claude-fable-5@20260901",
-        "anthropic/claude-fable-5:batch",
-        "anthropic/claude-fable-5:beta",
-        "anthropic/claude-fable-5-20260901:batch",
-        "openai/gpt-5.6-sol-20260709",
-        "openai/gpt-5.6-sol:batch",
-        # case / whitespace variants
-        " Anthropic/Claude-Fable-5 ",
-        "AIGW:ANTHROPIC/CLAUDE-FABLE-5-LATEST",
-    ],
-)
-def test_is_blocked_model_matches_known_variant_shapes(model_id):
-    assert is_blocked_model(model_id, _BLOCKED) is True
+# -- the list is re-pulled often, and without a visit to Settings -------------------------
 
 
-@pytest.mark.parametrize(
-    "model_id",
-    [
-        "anthropic/claude-fable-5-1",  # 5.1's hyphen spelling: a distinct major version
-        "anthropic/claude-fable-5.1",
-        "anthropic/claude-fable-50",
-        "anthropic/claude-fable-5-preview",
-        "anthropic/claude-fable-5-2026090",  # 7 digits, not a full YYYYMMDD date
-        "anthropic/claude-haiku-4-5",  # probe model, never restricted
-        "openai/gpt-5.6-terra",
-        "",
-    ],
-)
-def test_is_blocked_model_rejects_lookalikes(model_id):
-    assert is_blocked_model(model_id, _BLOCKED) is False
+def _stamp(mgr: SessionManager, seconds_ago: float) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    mgr._model_catalog["aigw"]["fetched_at"] = (
+        datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
+    ).isoformat()
 
 
-def test_is_blocked_model_empty_blocked_entry_matches_nothing():
-    assert is_blocked_model("anthropic/claude-fable-5", frozenset({""})) is False
-    assert is_blocked_model("anything-at-all", frozenset({"", " "})) is False
+def test_the_gateway_list_goes_stale_in_minutes_not_hours(tmp_path, monkeypatch):
+    """An administrator's untick has to reach the picker soon: the gateway catalog uses
+    its own short TTL, while every other provider's roster keeps the six-hour one."""
+    mgr = _mgr(tmp_path, monkeypatch, "anthropic/claude-sonnet-5")
+    _stamp(mgr, SessionManager.AIGW_CATALOG_TTL - 60)
+    assert not mgr._catalog_is_stale("aigw")
+    _stamp(mgr, SessionManager.AIGW_CATALOG_TTL + 60)
+    assert mgr._catalog_is_stale("aigw")
+    assert SessionManager.AIGW_CATALOG_TTL < SessionManager.MODEL_CATALOG_TTL
+    mgr._model_catalog["gemini"] = dict(mgr._model_catalog["aigw"])
+    assert not mgr._catalog_is_stale("gemini")  # same age, ordinary TTL
 
 
-def test_is_blocked_model_strips_the_aigw_prefix_but_only_that_one():
-    # A bare id and its "aigw:"-prefixed spelling are the same model to the gate.
-    assert is_blocked_model("aigw:openai/gpt-5.6-sol", _BLOCKED) is True
-    assert is_blocked_model("openai/gpt-5.6-sol", _BLOCKED) is True
-    # A direct-provider id never carries "aigw:" and must not accidentally match a
-    # differently-shaped blocked entry.
-    assert is_blocked_model("anthropic:claude-fable-5", _BLOCKED) is False
+def test_get_settings_repulls_a_stale_gateway_list(tmp_path, monkeypatch):
+    """`get_settings` is the call every open GUI makes; it is what keeps a long-running
+    app following the list without anyone opening Settings ▸ Models. Fresh list → no
+    pull; stale list → exactly one background pull is started."""
+    mgr = _mgr(tmp_path, monkeypatch, "anthropic/claude-sonnet-5")
+    kicked: list[str] = []
+    monkeypatch.setattr(SessionManager, "kick_catalog_refresh", lambda self, name: kicked.append(name))
+    _stamp(mgr, 30)
+    mgr.get_settings()
+    assert kicked == []
+    _stamp(mgr, SessionManager.AIGW_CATALOG_TTL + 60)
+    mgr.get_settings()
+    assert kicked == ["aigw"]
 
 
-# -- manager-side filtering --------------------------------------------------------------
-def _bare_manager(blocked: set[str]) -> Manager:
-    """A Manager shell with just the attributes the model-list paths touch — the cache is
-    fresh, so `_aigw_blocked` serves it without kicking a background refresh."""
-    m = object.__new__(Manager)
-    m._prefs = {}
-    m.model = "aigw:anthropic/claude-sonnet-5"
-    m._aigw_gate_cache = (time.monotonic(), frozenset(blocked))
-    return m
+def test_a_signed_out_gateway_is_never_pulled_from_get_settings(tmp_path, monkeypatch):
+    monkeypatch.delenv("CLOUDFLARE_AIGW_BASE_URL", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_AIGW_ACCESS_TOKEN", raising=False)
+    mgr = SessionManager(data_dir=tmp_path / "data")
+    kicked: list[str] = []
+    monkeypatch.setattr(SessionManager, "kick_catalog_refresh", lambda self, name: kicked.append(name))
+    mgr.get_settings()
+    assert kicked == []
 
 
-def test_curated_models_hide_gate_blocked_aigw_models():
-    m = _bare_manager({"anthropic/claude-fable-5", "openai/gpt-5.6-sol"})
-    models = Manager._curated_models(m)
-    assert "aigw:anthropic/claude-fable-5" not in models
-    assert "aigw:openai/gpt-5.6-sol" not in models
-    # unblocked stablemates stay
-    assert "aigw:anthropic/claude-sonnet-5" in models
-    assert "aigw:openai/gpt-5.6-terra" in models
+# -- the server list is the only list ----------------------------------------------------
+def test_the_dead_gate_policy_helpers_are_gone():
+    # Removed with the denylist, not shimmed: nothing may quietly keep depending on
+    # `/gate/policy` keys the guard no longer sends.
+    import coworker.providers.aigateway_provider as provider_mod
+
+    for name in (
+        "fetch_gate_policy",
+        "blocked_model_ids",
+        "is_blocked_model",
+        "gate_families",
+        "is_out_of_scope",
+        "is_gated_model",
+        "family_form",
+        "PROBE_MODEL",
+    ):
+        assert not hasattr(provider_mod, name), name
+    for name in ("_refresh_aigw_gate", "_aigw_blocked", "_aigw_families"):
+        assert not hasattr(SessionManager, name), name
 
 
-def test_gate_only_touches_aigw_ids_not_direct_provider_models():
-    # The same flagship reached directly (own API key) is none of the gateway's business
-    m = _bare_manager({"openai/gpt-5.6-sol", "anthropic/claude-fable-5"})
-    models = Manager._curated_models(m)
+def test_the_matrix_never_offers_a_gateway_model_without_a_server_list(tmp_path, monkeypatch):
+    mgr = _mgr(tmp_path, monkeypatch)  # signed in, but no pull has ever succeeded
+    assert mgr._aigw_allowed() is None
+    assert not any(m.startswith("aigw:") for m in mgr._matrix_ids_in_effect())
+    assert not any(m.startswith("aigw:") for m in mgr._curated_models())
+    assert not any(m.startswith("aigw:") for m in mgr.get_settings()["models"])
+    # …and the Cloudflare card has nothing to suggest either — no matrix stand-in.
+    assert mgr._suggested_models("aigw") == []
+    # Every other provider still trusts its matrix rows with no catalog, as before.
+    assert "anthropic:claude-fable-5" in mgr._matrix_ids_in_effect()
+    assert "glm-5.2" in mgr._suggested_models("zai")
+
+
+def test_with_a_server_list_only_listed_models_are_offered(tmp_path, monkeypatch):
+    mgr = _mgr(
+        tmp_path,
+        monkeypatch,
+        "anthropic/claude-sonnet-5",  # a curated row
+        "openai/gpt-6-luna",  # on the list, unknown to the matrix
+    )
+    offered = [m for m in mgr.get_settings()["models"] if m.startswith("aigw:")]
+    # The one matrix row that is on the list — and none of the others the matrix carries.
+    assert offered == ["aigw:anthropic/claude-sonnet-5"]
+    assert len(_AIGW_MATRIX) > 1
+    # The card lists the whole server list (matrix-known ids first), nothing else.
+    assert mgr._suggested_models("aigw") == ["anthropic/claude-sonnet-5", "openai/gpt-6-luna"]
+    # The matrix's part is the label: its vetted name wins for the id it knows, and the
+    # id it does not know keeps the label the catalog gave it.
+    labels = mgr.get_settings()["model_labels"]
+    assert labels["aigw:anthropic/claude-sonnet-5"] == MATRIX["aigw:anthropic/claude-sonnet-5"].label
+    assert labels["aigw:openai/gpt-6-luna"] == "openai/gpt-6-luna · via Cloudflare"
+
+
+def test_the_list_only_judges_gateway_ids(tmp_path, monkeypatch):
+    # The same flagship reached directly (own API key) is none of the gateway's business.
+    mgr = _mgr(tmp_path, monkeypatch, "anthropic/claude-sonnet-5")
+    models = mgr._curated_models()
     assert "gpt-5.6-sol" in models
     assert "anthropic:claude-fable-5" in models
+    assert "aigw:anthropic/claude-fable-5" not in models
 
 
-def test_active_default_stays_selectable_even_when_blocked():
-    # Matches the hidden_models invariant: the active default is always in the list
-    # (the guard's server-side 403 still applies if it is actually used).
-    m = _bare_manager({"anthropic/claude-fable-5"})
-    m.model = "aigw:anthropic/claude-fable-5"
-    assert Manager._curated_models(m)[0] == "aigw:anthropic/claude-fable-5"
+def test_a_ticked_non_matrix_model_stays_only_while_it_is_listed(tmp_path, monkeypatch):
+    mgr = _mgr(tmp_path, monkeypatch, "anthropic/claude-sonnet-5", "openai/gpt-6-luna")
+    assert mgr.add_model("aigw:openai/gpt-6-luna")["ok"] is True
+    assert "aigw:openai/gpt-6-luna" in mgr.get_settings()["models"]
+    # An id that is not on the list is refused outright rather than stored and filtered.
+    res = mgr.add_model("aigw:grok/grok-4.7")
+    assert res["ok"] is False and "model list" in res["error"]
+    assert "aigw:grok/grok-4.7" not in (mgr._prefs.get("models") or [])
 
 
-def test_suggested_models_hide_blocked_for_aigw():
-    m = _bare_manager({"openai/gpt-5.6-sol"})
-    sugg = Manager._suggested_models(m, "aigw")
-    assert "openai/gpt-5.6-sol" not in sugg
-    assert "anthropic/claude-sonnet-5" in sugg
-
-
-def test_empty_gate_filters_nothing():
-    m = _bare_manager(set())
-    models = Manager._curated_models(m)
-    assert "aigw:anthropic/claude-fable-5" in models
-    assert "aigw:openai/gpt-5.6-sol" in models
-
-
-def test_curated_models_hide_gate_blocked_aigw_model_variants():
-    # A user-added custom id that is a dated/tagged variant of a blocked base id must be
-    # hidden too — the picker filter now matches the same shape the guard does server-
-    # side, not just bare equality. 5.1's hyphen spelling is a distinct model and stays.
-    m = _bare_manager({"anthropic/claude-fable-5"})
-    m._prefs = {
-        "models": [
-            "aigw:anthropic/claude-fable-5-20260901",
-            "aigw:anthropic/claude-fable-5:batch",
-            "aigw:anthropic/claude-fable-5-1",
-        ]
-    }
-    models = Manager._curated_models(m)
-    assert "aigw:anthropic/claude-fable-5-20260901" not in models
-    assert "aigw:anthropic/claude-fable-5:batch" not in models
-    assert "aigw:anthropic/claude-fable-5-1" in models
-
-
-def test_suggested_models_hide_blocked_variants_for_aigw():
-    m = _bare_manager({"openai/gpt-5.6-sol"})
-    # Instance override of the class-level suggestion table — real matrix ids never
-    # carry a date/tag suffix, so inject some to exercise the variant match.
-    m.COMPAT_MODELS = {
-        "aigw": [
-            "openai/gpt-5.6-sol-20260709",
-            "openai/gpt-5.6-sol:batch",
-            "openai/gpt-5.6-terra",
-        ]
-    }
-    sugg = Manager._suggested_models(m, "aigw")
-    assert "openai/gpt-5.6-sol-20260709" not in sugg
-    assert "openai/gpt-5.6-sol:batch" not in sugg
-    assert "openai/gpt-5.6-terra" in sugg
-
-
-# -- open-vendor scope (`families`, guard 2026-09-23) -------------------------------------
-# The guard's second layer: a model under none of the open vendor prefixes gets the same
-# 403 as a restricted one unless the caller's role is allowed. `/gate/policy` reports the
-# prefixes as `families` (null for allowed roles). These cases are the guard's own smoke
-# examples (smj-help-website test/gateway-guard.smoke.mjs §13), so the two sides can't drift.
-_FAMILIES = (
-    "openai/", "anthropic/", "google-ai-studio/",
-    "workers-ai/@cf/zai-org/", "workers-ai/@cf/qwen/", "workers-ai/@cf/deepseek-ai/",
-)
-
-
-def test_gate_families_parses_like_the_guard():
-    assert gate_families(None) is None
-    assert gate_families({"blocked": []}) is None  # older guard: key missing → no scope filter
-    assert gate_families({"blocked": [], "families": None}) is None  # allowed role
-    assert gate_families({"families": "openai/"}) is None  # malformed → no filter
-    assert gate_families(
-        {"families": [" OpenAI/ ", "anthropic", "/", 7, "workers-ai/@cf/qwen/"]}
-    ) == ("openai/", "workers-ai/@cf/qwen/")
-    assert gate_families({"families": []}) == ()  # explicit [] = nothing open
-
-
-def test_family_form_prefixes_bare_cf_ids_only():
-    assert family_form(" @CF/qwen/QwQ-32b ") == "workers-ai/@cf/qwen/qwq-32b"
-    assert family_form("workers-ai/@cf/qwen/qwq-32b") == "workers-ai/@cf/qwen/qwq-32b"
-    assert family_form("openai/gpt-5.6-sol") == "openai/gpt-5.6-sol"
-
-
-@pytest.mark.parametrize(
-    "model_id",
-    [
-        "openai/gpt-5.6-sol",
-        "aigw:anthropic/claude-haiku-4-5",  # probe model: always in scope
-        "google-ai-studio/gemini-3.8-flash",
-        "workers-ai/@cf/zai-org/glm-5.3",
-        "@cf/qwen/qwq-32b",  # bare @cf gains workers-ai/ first
-        "workers-ai/@cf/deepseek-ai/deepseek-v4-flash-0731",
-        "dynamic/ow-anthropic-claude-sonnet-5",  # route names are judged by expansion
-        " Anthropic/Claude-Sonnet-5 ",
-    ],
-)
-def test_in_scope_models(model_id):
-    assert is_out_of_scope(model_id, _FAMILIES) is False
-
-
-@pytest.mark.parametrize(
-    "model_id",
-    [
-        "grok/grok-4.7",
-        "aigw:grok/grok-4.7",
-        "workers-ai/@cf/moonshotai/kimi-k2.6",
-        "@cf/meta/llama-3.2-1b-instruct",
-        "gpt-4o-mini",  # no vendor prefix at all
-        "openai/",  # a bare prefix with nothing after it
-        "openrouter/anthropic/claude-fable-5",
-        "openai-evil/gpt-5",
-    ],
-)
-def test_out_of_scope_models(model_id):
-    assert is_out_of_scope(model_id, _FAMILIES) is True
-
-
-def test_no_families_means_no_scope_filter_and_empty_means_nothing_open():
-    assert is_out_of_scope("grok/grok-4.7", None) is False
-    assert is_out_of_scope("openai/gpt-5.6-terra", ()) is True
-
-
-def test_is_gated_model_is_either_layer():
-    blocked = frozenset({"openai/gpt-5.6-sol"})
-    assert is_gated_model("aigw:openai/gpt-5.6-sol-20260709", blocked, _FAMILIES) is True
-    assert is_gated_model("aigw:grok/grok-4.7", blocked, _FAMILIES) is True
-    assert is_gated_model("aigw:openai/gpt-5.6-terra", blocked, _FAMILIES) is False
-    assert is_gated_model("aigw:grok/grok-4.7", blocked, None) is False
-
-
-def _scoped_manager(families, blocked=()):
-    m = _bare_manager(set(blocked))
-    m._aigw_gate_cache = (time.monotonic(), frozenset(blocked), families)
-    return m
-
-
-def test_curated_models_hide_out_of_scope_aigw_models_only():
-    m = _scoped_manager(_FAMILIES)
-    m._prefs = {"models": ["aigw:grok/grok-4.7", "aigw:workers-ai/@cf/meta/llama-4-scout", "grok-4.7",
-                           "aigw:workers-ai/@cf/qwen/qwq-32b"]}
-    models = Manager._curated_models(m)
+def test_a_stale_custom_id_is_not_offered_even_before_reconciliation(tmp_path, monkeypatch):
+    # Saved by an older version, or before the administrator unticked it: the filter in
+    # `_curated_models` covers the window until the next successful pull tidies prefs.
+    mgr = _mgr(tmp_path, monkeypatch, "anthropic/claude-sonnet-5")
+    mgr._prefs["models"] = ["aigw:grok/grok-4.7", "zai:glm-9"]
+    models = mgr._curated_models()
     assert "aigw:grok/grok-4.7" not in models
-    assert "aigw:workers-ai/@cf/meta/llama-4-scout" not in models
-    assert "aigw:workers-ai/@cf/qwen/qwq-32b" in models
-    # direct-provider ids have no gateway vendor prefix to test and are none of its business
-    assert "grok-4.7" in models
-    # every curated-matrix aigw model sits inside the six open vendors
-    assert "aigw:anthropic/claude-sonnet-5" in models
-    assert "aigw:openai/gpt-5.6-terra" in models
+    assert "zai:glm-9" in models
 
 
-def test_allowed_role_or_old_cache_shape_filters_nothing_by_scope():
-    m = _scoped_manager(None)
-    m._prefs = {"models": ["aigw:grok/grok-4.7"]}
-    assert "aigw:grok/grok-4.7" in Manager._curated_models(m)
-    m = _bare_manager(set())  # pre-families 2-tuple cache
-    m._prefs = {"models": ["aigw:grok/grok-4.7"]}
-    assert "aigw:grok/grok-4.7" in Manager._curated_models(m)
+# -- a failed refresh keeps the last list --------------------------------------------------
+@pytest.mark.parametrize(
+    "error",
+    [
+        "Couldn't reach Cloudflare AI Gateway (ConnectError).",
+        "网关配置暂时读不到，请稍后重试。[gateway-guard]",  # 503 gate_unavailable
+        "你的账号暂未开通任何模型，请联系管理员。[gateway-guard]",  # 502 catalog_unavailable
+    ],
+)
+def test_a_failed_refresh_keeps_the_last_fetched_list(tmp_path, monkeypatch, error):
+    mgr = _mgr(tmp_path, monkeypatch)
+    _pull_ok(monkeypatch, "anthropic/claude-sonnet-5", "openai/gpt-5.6-terra")
+    assert mgr.refresh_model_catalog("aigw")["ok"] is True
+    before = mgr.get_settings()["models"]
+    assert "aigw:openai/gpt-5.6-terra" in before
+
+    _pull(monkeypatch, {"ok": False, "error": error})
+    res = mgr.refresh_model_catalog("aigw")
+    assert res["ok"] is False and res["error"] == error
+    # Same list, not an empty one and not the matrix's.
+    assert mgr._aigw_allowed() == frozenset({"anthropic/claude-sonnet-5", "openai/gpt-5.6-terra"})
+    assert mgr.get_settings()["models"] == before
+    assert "aigw:anthropic/claude-fable-5" not in mgr.get_settings()["models"]
+    # The status row dates the last list that arrived and shows the guard's sentence verbatim.
+    status = mgr._catalog_status("aigw")
+    assert status["live"] is True and status["error"] == error and status["fetched_at"]
+
+    # …and it is still the list after a restart.
+    reborn = SessionManager(data_dir=tmp_path / "data")
+    assert reborn._aigw_allowed() == frozenset({"anthropic/claude-sonnet-5", "openai/gpt-5.6-terra"})
 
 
-def test_suggested_models_hide_out_of_scope_for_aigw():
-    m = _scoped_manager(_FAMILIES)
-    m.COMPAT_MODELS = {"aigw": ["grok/grok-4.7", "openai/gpt-5.6-terra", "@cf/meta/llama-3.2-1b-instruct"]}
-    sugg = Manager._suggested_models(m, "aigw")
-    assert "grok/grok-4.7" not in sugg
-    assert "@cf/meta/llama-3.2-1b-instruct" not in sugg
-    assert "openai/gpt-5.6-terra" in sugg
+def test_a_first_pull_that_fails_offers_nothing(tmp_path, monkeypatch):
+    mgr = _mgr(tmp_path, monkeypatch)
+    _pull(monkeypatch, {"ok": False, "error": "offline"})
+    mgr.refresh_model_catalog("aigw")
+    assert mgr._aigw_allowed() is None
+    assert not any(m.startswith("aigw:") for m in mgr.get_settings()["models"])
+    assert mgr._catalog_status("aigw")["error"] == "offline"
+
+
+def test_signing_in_does_not_auto_add_the_recommended_model_without_a_list(tmp_path, monkeypatch):
+    # `set_provider` used to fall back to the matrix when the pull failed; for the gateway
+    # that would be the matrix adding a model on its own.
+    mgr = _mgr(tmp_path, monkeypatch)
+    _pull(monkeypatch, {"ok": False, "error": "offline"})
+    assert mgr.set_provider("aigw", {})["ok"] is True
+    assert not any(m.startswith("aigw:") for m in mgr.get_settings()["models"])
+    # With a list that carries it, the same sign-in lands it in the composer as before.
+    _pull_ok(monkeypatch, "anthropic/claude-sonnet-5")
+    mgr.set_provider("aigw", {})
+    assert "aigw:anthropic/claude-sonnet-5" in mgr.get_settings()["models"]
+
+
+# -- reconciliation ------------------------------------------------------------------------
+def test_a_successful_pull_drops_local_picks_that_left_the_list(tmp_path, monkeypatch):
+    mgr = _mgr(tmp_path, monkeypatch, "anthropic/claude-sonnet-5", "openai/gpt-6-luna")
+    mgr._prefs["models"] = [
+        "aigw:openai/gpt-6-luna",  # still listed after the pull below
+        "aigw:workers-ai/@cf/zai-org/glm-5.3",  # no longer listed
+        "zai:glm-9",  # another provider's custom id: never looked at
+        "my-own-finetune",
+    ]
+    mgr._prefs["hidden_models"] = [
+        "aigw:anthropic/claude-sonnet-5",  # still listed → still hidden
+        "aigw:anthropic/claude-fable-5",  # gone from the list → tidied away
+        "anthropic:claude-haiku-4-5",
+    ]
+    _pull_ok(monkeypatch, "anthropic/claude-sonnet-5", "openai/gpt-6-luna")
+    assert mgr.refresh_model_catalog("aigw")["ok"] is True
+
+    assert mgr._prefs["models"] == ["aigw:openai/gpt-6-luna", "zai:glm-9", "my-own-finetune"]
+    assert mgr._prefs["hidden_models"] == [
+        "aigw:anthropic/claude-sonnet-5",
+        "anthropic:claude-haiku-4-5",
+    ]
+    # Persisted with the list itself, not only in memory.
+    reborn = SessionManager(data_dir=tmp_path / "data")
+    assert reborn._prefs["models"] == ["aigw:openai/gpt-6-luna", "zai:glm-9", "my-own-finetune"]
+
+
+def test_reconciliation_runs_on_every_path_that_lands_a_pull(tmp_path, monkeypatch):
+    import coworker.server.manager as manager_mod
+
+    stale = "aigw:grok/grok-4.7"
+
+    def fresh(name: str) -> SessionManager:
+        mgr = _mgr(tmp_path / name, monkeypatch)
+        mgr._prefs["models"] = [stale]
+        return mgr
+
+    _pull_ok(monkeypatch, "anthropic/claude-sonnet-5")
+
+    # 1. Settings ▸ Models "Refresh" (and `set_provider` on sign-in, which calls the same).
+    mgr = fresh("refresh")
+    mgr.refresh_model_catalog("aigw")
+    assert stale not in mgr._prefs["models"]
+
+    # 2. The background pull: server start (`warm_model_catalogs`) and the TTL refresh
+    #    behind `get_providers` both go through `kick_catalog_refresh`.
+    mgr = fresh("kick")
+    assert "aigw" in mgr.warm_model_catalogs()
+    for _ in range(200):
+        if "aigw" not in mgr._catalog_inflight and mgr._aigw_allowed() is not None:
+            break
+        time.sleep(0.01)
+    assert stale not in mgr._prefs["models"]
+
+    # 3. The Test button.
+    mgr = fresh("test")
+    monkeypatch.setattr(manager_mod, "verify_provider_key", lambda name, **k: {"ok": True})
+    monkeypatch.setattr(
+        manager_mod,
+        "list_provider_models",
+        lambda name, **k: {"ok": True, "models": _rows("anthropic/claude-sonnet-5")},
+    )
+    assert mgr.verify_provider("aigw", {}) == {"ok": True}
+    assert stale not in mgr._prefs["models"]
+
+
+def test_a_failed_pull_reconciles_nothing(tmp_path, monkeypatch):
+    mgr = _mgr(tmp_path, monkeypatch, "anthropic/claude-sonnet-5")
+    mgr._prefs["models"] = ["aigw:grok/grok-4.7"]
+    _pull(monkeypatch, {"ok": False, "error": "offline"})
+    mgr.refresh_model_catalog("aigw")
+    assert mgr._prefs["models"] == ["aigw:grok/grok-4.7"]  # untouched, merely not offered
+
+
+# -- the default model left the list ---------------------------------------------------------
+def test_a_dead_default_is_reported_not_silently_replaced(tmp_path, monkeypatch):
+    mgr = _mgr(
+        tmp_path,
+        monkeypatch,
+        "anthropic/claude-fable-5",
+        "anthropic/claude-sonnet-5",
+        default="aigw:anthropic/claude-fable-5",
+    )
+    mgr._prefs["default_model"] = "aigw:anthropic/claude-fable-5"
+    ok = mgr.get_settings()
+    assert ok["model_ready"] is True and ok["model_notice"] is None
+    assert ok["models"][0] == "aigw:anthropic/claude-fable-5"
+
+    _pull_ok(monkeypatch, "anthropic/claude-sonnet-5")  # the administrator unticked Fable
+    mgr.refresh_model_catalog("aigw")
+
+    after = mgr.get_settings()
+    # No substitution: the default is still what the person chose, in memory and on disk…
+    assert mgr.model == "aigw:anthropic/claude-fable-5"
+    assert mgr._prefs["default_model"] == "aigw:anthropic/claude-fable-5"
+    assert after["model"] == "aigw:anthropic/claude-fable-5"
+    # …but it is no longer offered, and the composer is told to ask for a choice.
+    assert "aigw:anthropic/claude-fable-5" not in after["models"]
+    assert after["model_ready"] is False
+    assert after["model_notice"] == "default_model_gone"
+    assert "aigw:anthropic/claude-sonnet-5" in after["models"]  # what there is to choose from
+
+    # Choosing clears the state.
+    picked = mgr.set_default_model("aigw:anthropic/claude-sonnet-5")
+    assert picked["model_ready"] is True and picked["model_notice"] is None
+
+
+def test_a_dead_default_comes_back_if_the_administrator_reticks_it(tmp_path, monkeypatch):
+    mgr = _mgr(
+        tmp_path, monkeypatch, "anthropic/claude-sonnet-5", default="aigw:anthropic/claude-fable-5"
+    )
+    assert mgr.get_settings()["model_notice"] == "default_model_gone"
+    _pull_ok(monkeypatch, "anthropic/claude-sonnet-5", "anthropic/claude-fable-5")
+    mgr.refresh_model_catalog("aigw")
+    back = mgr.get_settings()
+    assert back["model_ready"] is True and back["model_notice"] is None
+    assert back["models"][0] == "aigw:anthropic/claude-fable-5"
+
+
+def test_an_unknown_list_does_not_declare_the_default_dead(tmp_path, monkeypatch):
+    # Signed in, first pull not landed yet (or only ever failed): nothing is known, so no
+    # alarm — the notice is for "a successful refresh says it is gone", nothing weaker.
+    mgr = _mgr(tmp_path, monkeypatch, default="aigw:anthropic/claude-fable-5")
+    s = mgr.get_settings()
+    assert s["model_notice"] is None and s["model_ready"] is True
+    # The default stays; no OTHER gateway model is offered without a list.
+    assert [m for m in s["models"] if m.startswith("aigw:")] == ["aigw:anthropic/claude-fable-5"]
+
+
+def test_only_a_gateway_default_can_be_gone(tmp_path, monkeypatch):
+    mgr = _mgr(tmp_path, monkeypatch, "anthropic/claude-sonnet-5", default="anthropic:claude-fable-5")
+    s = mgr.get_settings()
+    assert s["model_notice"] is None
+    assert s["models"][0] == "anthropic:claude-fable-5"
+
+
+async def test_a_changed_list_tells_open_guis_to_reload_their_settings(tmp_path, monkeypatch):
+    # Pulls mostly land on background threads (server start, the TTL refresh) while the
+    # composer sits on whatever it loaded at startup. A list that actually changed — or a
+    # default that just went dead — is pushed on the app-wide event stream; an identical
+    # list is not, so an idle app does not reload settings on every refresh.
+    mgr = _mgr(
+        tmp_path,
+        monkeypatch,
+        "anthropic/claude-fable-5",
+        "anthropic/claude-sonnet-5",
+        default="aigw:anthropic/claude-fable-5",
+    )
+    mgr._loop = asyncio.get_running_loop()
+    events: list[dict] = []
+
+    async def client(message: dict) -> None:
+        events.append(message)
+
+    mgr.register_event_client(client)
+
+    async def pull(*ids: str) -> None:
+        _pull_ok(monkeypatch, *ids)
+        await asyncio.to_thread(mgr.refresh_model_catalog, "aigw")  # off the loop, as in prod
+        await asyncio.sleep(0.05)
+
+    await pull("anthropic/claude-fable-5", "anthropic/claude-sonnet-5")  # same list
+    assert events == []
+    await pull("anthropic/claude-sonnet-5")  # Fable unticked → the default is gone
+    assert events == [{"type": "models_changed"}]
+    assert mgr.get_settings()["model_notice"] == "default_model_gone"
+    await pull("anthropic/claude-sonnet-5")
+    assert len(events) == 1
+
+
+# -- the auto-title sibling ----------------------------------------------------------------
+def test_the_utility_sibling_is_used_only_when_it_is_listed(tmp_path, monkeypatch):
+    mgr = _mgr(tmp_path, monkeypatch, "anthropic/claude-fable-5", "anthropic/claude-haiku-4-5")
+    assert mgr._utility_model("aigw:anthropic/claude-fable-5") == "aigw:anthropic/claude-haiku-4-5"
+
+    # Haiku unticked: the session's own model titles its own session.
+    mgr = _mgr(tmp_path / "b", monkeypatch, "anthropic/claude-fable-5", "openai/gpt-5.6-sol")
+    assert mgr._utility_model("aigw:anthropic/claude-fable-5") == "aigw:anthropic/claude-fable-5"
+    assert mgr._utility_model("aigw:openai/gpt-5.6-sol") == "aigw:openai/gpt-5.6-sol"
+
+    # No list at all: the sibling is not known to be allowed either.
+    mgr = _mgr(tmp_path / "c", monkeypatch)
+    assert mgr._utility_model("aigw:anthropic/claude-fable-5") == "aigw:anthropic/claude-fable-5"
+
+    # Other providers are not the gateway's business — their sibling stands.
+    assert mgr._utility_model("anthropic:claude-opus-4-8") == "anthropic:claude-haiku-4-5"
+    assert mgr._utility_model("gpt-5.6-sol") == "gpt-5.6-luna"
+    assert mgr._utility_model("together:zai-org/GLM-5.2") == "together:zai-org/GLM-5.2"
+
+
+# -- dynamic-route stand-ins -----------------------------------------------------------------
+def test_route_allowed_needs_both_ends_on_the_list():
+    opus, terra = "anthropic/claude-opus-5", "openai/gpt-5.6-terra"
+    assert _ROUTES[opus].fallback == terra
+    assert route_allowed(opus, {opus, terra}) is True
+    assert route_allowed(f"aigw:{opus}", {opus, terra}) is True  # routed spelling too
+    assert route_allowed(opus, {opus}) is False  # stand-in not ticked
+    assert route_allowed(opus, {terra}) is False  # primary not ticked
+    assert route_allowed(opus, None) is False  # no list
+    assert route_allowed(opus, frozenset()) is False
+    assert route_allowed("anthropic/claude-haiku-4-5", {"anthropic/claude-haiku-4-5"}) is False  # unrouted
+
+
+def test_the_stand_in_badge_only_shows_for_routes_this_person_can_use(tmp_path, monkeypatch):
+    monkeypatch.delenv("CLOUDFLARE_AIGW_DYNAMIC_ROUTING", raising=False)
+    mgr = _mgr(
+        tmp_path,
+        monkeypatch,
+        "anthropic/claude-opus-5",
+        "anthropic/claude-sonnet-5",
+        "anthropic/claude-fable-5",
+        "openai/gpt-5.6-terra",
+    )
+    badges = mgr.get_settings()["model_fallbacks"]
+    # opus → terra and sonnet → terra: both ends listed.
+    assert badges["aigw:anthropic/claude-opus-5"] == "GPT-5.6 Terra · via Cloudflare"
+    assert "aigw:anthropic/claude-sonnet-5" in badges
+    # fable → gpt-5.6-sol: the stand-in is not on this person's list, so no promise.
+    assert "aigw:anthropic/claude-fable-5" not in badges
+    # No list → no badges at all.
+    assert _mgr(tmp_path / "b", monkeypatch).get_settings()["model_fallbacks"] == {}
+
+
+def test_the_manager_hands_the_gateway_provider_its_list_reader(tmp_path, monkeypatch):
+    # The provider is built from a SecretStore profile and cannot see the catalog cache;
+    # the router's `on_build` hook is how the list reaches its re-send gate.
+    mgr = _mgr(tmp_path, monkeypatch, "anthropic/claude-opus-5")
+    client = mgr.provider._client_for("aigw:anthropic/claude-opus-5")
+    assert client._allowed_models() == frozenset({"anthropic/claude-opus-5"})
+    assert client._route_allowed("anthropic/claude-opus-5") is False  # terra not listed
+    _pull_ok(monkeypatch, "anthropic/claude-opus-5", "openai/gpt-5.6-terra")
+    mgr.refresh_model_catalog("aigw")
+    # Read at retry time, so a refreshed list applies without rebuilding the provider.
+    assert client._route_allowed("anthropic/claude-opus-5") is True

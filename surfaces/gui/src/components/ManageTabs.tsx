@@ -171,12 +171,20 @@ export function ModelsTab() {
             defaultModel={settings.model}
             labels={settings.model_labels}
             catalog={info?.catalog}
+            defaultGone={
+              settings.model_notice === "default_model_gone" && settings.model.startsWith(`${ps.sel}:`)
+            }
             onRefresh={async () => {
               await refreshProviderModels(ps.sel!);
               await ps.refreshProviders();
               refreshSettings();
             }}
-            onChanged={(next) => setSettings((s) => (s ? { ...s, models: next.models, model: next.model } : s))}
+            // A plain tick only touches the list; a new default can also clear the
+            // "default is gone" state, which lives in fields this callback does not carry.
+            onChanged={(next) => {
+              setSettings((s) => (s ? { ...s, models: next.models, model: next.model } : s));
+              if (settings.model_notice) refreshSettings();
+            }}
           />
         </div>
       ) : (
@@ -237,6 +245,13 @@ function ComposerPickerCard({
       <p className="text-[12px] text-muted mb-2.5 leading-relaxed">
         {t("manage.composer_picker_help")}
       </p>
+      {settings.model_notice === "default_model_gone" && (
+        // No row below carries the "default" badge in this state — the old default left
+        // the company gateway's list and nothing was picked in its place.
+        <p className="text-[12px] text-warnInk mb-2.5" role="alert" data-testid="composer-picker-default-gone">
+          {t("models.default_gone")}
+        </p>
+      )}
       <div className="mlist">
         {sortModelIds(settings.models).map((id) => {
           const isDefault = id === settings.model;

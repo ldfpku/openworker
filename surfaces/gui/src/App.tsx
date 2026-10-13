@@ -316,6 +316,9 @@ export function App() {
   // composer's "No model connected" chip. Default true so we don't flash the chip before settings
   // load; corrected by loadSettings.
   const [modelReady, setModelReady] = useState(true);
+  // Why it is not ready, when the server has a more specific reason than "nothing is
+  // connected" — today only "default_model_gone" (see ModelSettings.model_notice).
+  const [modelNotice, setModelNotice] = useState<string | null>(null);
   const [surface, setSurface] = useState<
     | "session" | "scheduled" | "integrations" | "audit" | "inbox" | "persona" | "settings"
     | "library" | "help"
@@ -749,6 +752,7 @@ export function App() {
         setModelFallbacks(s.model_fallbacks || {});
         setContextBar(s.context_bar === true);
         setModelReady(s.model_ready);
+        setModelNotice(s.model_notice ?? null);
         if (s.surfaces) setSurfaces(s.surfaces);
         // A new default model applies to the draft we are (or will be) composing in —
         // unless its model was picked by hand. Sessions with history keep theirs.
@@ -1715,6 +1719,14 @@ export function App() {
   } | null>(null);
   useEffect(() => {
     const stop = connectEvents((msg) => {
+      // The company gateway's model list changed under a background refresh (server start,
+      // the periodic pull): re-read settings so the picker stops offering what is no longer
+      // there — and shows the "choose again" notice at once if the default was among it —
+      // instead of waiting for the next visit to Settings.
+      if (msg.type === "models_changed") {
+        loadSettings();
+        return;
+      }
       if (msg.type !== "automation_run_started") return;
       const d = (msg.data ?? {}) as Record<string, string>;
       setRunToast({
@@ -2508,6 +2520,7 @@ export function App() {
               gateOpen={!unattended && (!!pendingTeam || !!pendingItemsReq)}
               connected={connected}
               modelReady={modelReady}
+              modelNotice={modelNotice}
               onConnectModel={openModelSetup}
               onOpenMemory={() => openSettings("memory")}
               onConfigureVoiceInput={() => openSettings("voice")}

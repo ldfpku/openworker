@@ -126,6 +126,11 @@ interface Props {
   // False when the default model's provider has no key — the composer shows a "connect a model"
   // banner and routes sends to setup (preserving the draft) instead of dropping them.
   modelReady?: boolean;
+  // Set alongside modelReady === false when the reason is more specific than "nothing is
+  // connected": "default_model_gone" = the default was a company-gateway model that has
+  // left this person's list. Same chip, same routing to Settings ▸ Models — but it says
+  // "choose a model" and why, instead of "connect a model".
+  modelNotice?: string | null;
   onConnectModel?: () => void;
   onConfigureVoiceInput?: () => void;
   onSend: (text: string, attachments?: Attachment[], skill?: string) => void;
@@ -583,6 +588,8 @@ export function Composer(props: Props) {
   };
 
   const needsModel = props.modelReady === false;
+  // The default left the gateway's list: nothing to connect, something to choose.
+  const defaultGone = needsModel && props.modelNotice === "default_model_gone";
 
   const submit = () => {
     // While the "/" popup is open the draft is a query, not a message — never send it.
@@ -831,6 +838,16 @@ export function Composer(props: Props) {
   return (
     <div className="composer-wrap px-6 pb-5 pt-4" data-tour="composer">
       {props.approvalSlot}
+
+      {defaultGone && (
+        <div
+          className="max-w-3xl mx-auto mb-2 px-1 text-[12px] text-warnInk"
+          role="alert"
+          data-testid="model-default-gone"
+        >
+          {t("models.default_gone")}
+        </div>
+      )}
 
       {dictationError && (
         <div className="max-w-3xl mx-auto mb-2 px-1 text-[12px] text-red-600" role="alert">
@@ -1124,10 +1141,12 @@ export function Composer(props: Props) {
                 <button
                   className="pill model-warn chip"
                   onClick={() => props.onConnectModel?.()}
-                  title={t("composer.model.connect")}
-                  aria-label={t("composer.model.none_aria")}
+                  title={defaultGone ? t("models.default_gone") : t("composer.model.connect")}
+                  aria-label={defaultGone ? t("models.default_gone") : t("composer.model.none_aria")}
                 >
-                  <span className="pill-label">{t("composer.model.none")}</span>
+                  <span className="pill-label">
+                    {defaultGone ? t("composer.model.choose") : t("composer.model.none")}
+                  </span>
                   <span className="model-warn-ico" aria-hidden>⚠</span>
                 </button>
               ) : modelsLoaded ? (
@@ -1199,7 +1218,13 @@ export function Composer(props: Props) {
               }
               onClick={submit}
               disabled={!props.connected || !!dictation?.recording || !!dictationBusy}
-              title={needsModel ? t("composer.connect_to_send") : undefined}
+              title={
+                defaultGone
+                  ? t("models.default_gone")
+                  : needsModel
+                    ? t("composer.connect_to_send")
+                    : undefined
+              }
               aria-label={t("common.send")}
             >
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

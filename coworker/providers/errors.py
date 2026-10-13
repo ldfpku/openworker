@@ -86,21 +86,35 @@ def is_gateway_busy(exc: Exception) -> bool:
     status = getattr(exc, "status_code", None)
     return status == 429 or "429" in text
 
-# The company gateway's guard Worker (gateway-guard) refuses restricted models with
+# The company gateway's guard Worker (gateway-guard) is an allowlist: each person may call
+# exactly the models their administrator ticked for them (`GET /gate/models` is that
+# list). Anything else is refused with
 # {"error": {"code": "model_restricted", "message": "<Chinese sentence ending in
-# [gateway-guard]>"}}. That message is already the right thing to show verbatim — it names
-# the model, the roles that may use it, and who to ask — so extract it instead of wrapping
-# it in the "Error code: 403 - {...}" shell. The code was chosen on the guard side to miss
-# every marker above (a message matching `permission_error` etc. would get swallowed here).
+# [gateway-guard]>"}} — a model that is not on the caller's list, one outside the open
+# vendor scope, or a `dynamic/<route>` the guard has not registered. That message is
+# already the right thing to show verbatim — it names the model and who to ask — so
+# extract it instead of wrapping it in the "Error code: 403 - {...}" shell. The code was
+# chosen on the guard side to miss every marker above (a message matching
+# `permission_error` etc. would get swallowed here).
 _RESTRICTED = "model_restricted"
 
-# The same guard's "cannot be sent at all" list (smj-help-website `models.uncovered`,
-# 2026-10-10): models the pricing catalog lists but Unified Billing does not cover, or the
-# vendor has retired. Answered 403 with code model_uncovered and a Chinese message that
-# already says it is a billing-coverage gap, not a permission — shown verbatim, like
-# model_restricted. Kept as a separate code on purpose: "ask the administrator to open it
-# up" is the wrong advice here, no role change makes the vendor accept a keyless call.
+# The same guard's "cannot be sent at all" refusal: a model the pricing catalog lists but
+# Unified Billing does not cover, or the vendor has retired. Answered 403 with code
+# model_uncovered and a Chinese message that already says it is a billing-coverage gap,
+# not a permission — shown verbatim, like model_restricted. Kept as a separate code on
+# purpose: "ask the administrator to add it to your list" is the wrong advice here, no
+# list change makes the vendor accept a keyless call.
 _UNCOVERED = "model_uncovered"
+
+# And its "I cannot tell right now" refusal: **503** with code gate_unavailable, a
+# Retry-After header and a Chinese message, answered when the guard could not read its
+# own gate config (the per-person lists) at that moment. Shown verbatim like the two
+# above — but unlike them it is TRANSIENT: nothing is wrong with the model or the
+# person's list, so it is deliberately absent from the permanent-first test in
+# `is_transient_model_error`. The 503 status earns the engine's automatic retry and
+# `retry_after_seconds` reads the guard's own delay; the message below is what people see
+# only once those retries are spent.
+_GATE_UNAVAILABLE = "gate_unavailable"
 
 # What the vendor itself says when the gateway forwarded a call WITHOUT credentials —
 # i.e. Unified Billing did not apply (`wholesale: false` in the gateway log) and the
@@ -334,8 +348,8 @@ def friendly_model_error(model: str, exc: Exception) -> Optional[str]:
         if m:
             return m.group(1)
         return (
-            f"{model} is restricted by your administrator — pick a different model, "
-            "or ask the administrator to open it up."
+            f"{model} isn't on your model list for the company gateway — pick a "
+            "different model, or ask the administrator to add it."
         )
     if _UNCOVERED in text:
         m = _MESSAGE_RE.search(raw)
@@ -345,12 +359,21 @@ def friendly_model_error(model: str, exc: Exception) -> Optional[str]:
             f"{model} isn't covered by the company gateway's credits (or the vendor has "
             "retired it) — pick a different model from the list."
         )
+    if _GATE_UNAVAILABLE in text:
+        m = _MESSAGE_RE.search(raw)
+        if m:
+            return m.group(1)
+        return (
+            "The company gateway couldn't check your model list just now — try again in "
+            "a moment."
+        )
     if model.lower().startswith("aigw:") and any(
         marker in text for marker in _VENDOR_NO_CREDENTIAL
     ):
-        # An older guard (or a model that only just lost coverage) let the call through
-        # bare: the vendor's "no key" refusal is really "not on Unified Billing". Nothing
-        # the user can enter fixes it — the company gateway holds no per-person keys.
+        # A model that only just lost coverage (the guard's coverage list lags the vendor)
+        # went through bare: the vendor's "no key" refusal is really "not on Unified
+        # Billing". Nothing the user can enter fixes it — the company gateway holds no
+        # per-person keys.
         return (
             f"{model} isn't covered by the company gateway's credits — the gateway sent "
             "the call without a key and the vendor refused it. Pick a different model "

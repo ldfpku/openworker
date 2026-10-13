@@ -61,8 +61,7 @@ from __future__ import annotations
 
 import logging
 import os
-import re
-from typing import Any, Callable, Iterable, NamedTuple, Optional
+from typing import Any, Callable, Collection, NamedTuple, Optional
 
 from ..compaction import estimate_tokens
 from .base import ModelCapabilities, ProviderClient
@@ -86,10 +85,6 @@ ENV_DYNAMIC_ROUTING = "CLOUDFLARE_AIGW_DYNAMIC_ROUTING"
 # `gateway.ai.cloudflare.com/v1/{account}/...` form, carries no account id — that stays
 # out of this public fork.
 DEFAULT_BASE_URL = "https://gateway.smjtools.com"
-
-# The Test button's probe. Cheap, and on the wire most likely to be misconfigured
-# (`/compat`, where the provider prefix has to survive).
-PROBE_MODEL = "anthropic/claude-haiku-4-5"
 
 # Access takes the session in this header; `cloudflared access token` prints exactly what
 # goes in it. Not `Authorization` — that slot belongs to the upstream vendor.
@@ -231,13 +226,14 @@ class _Route(NamedTuple):
 # routing every request through the graph and losing the provider-native wires.
 #
 # Two rules the table has to keep:
-#   * **Same tier, and never up.** A fallback must not be a model the guard restricts more
-#     tightly than the primary, or a 429 would quietly hand someone a model they are not
-#     cleared for. Today's restricted set is exactly {claude-fable-5, gpt-5.6-sol}, and
-#     each of those is only ever a fallback for a peer that is itself restricted.
-#   * **It mirrors gateway-guard's `ROUTE_MODELS`.** The guard has to resolve
-#     `dynamic/<name>` back to BOTH endpoints to keep the gate honest; the two tables ship
-#     together or the gate is bypassable.
+#   * **Same tier, and only inside the person's own list.** The guard is an allowlist
+#     now: it resolves `dynamic/<name>` back to BOTH endpoints and refuses the call (403
+#     `model_restricted`) unless the primary AND the stand-in are on the caller's model
+#     list. A table row therefore promises nothing by itself — `route_allowed` is asked
+#     per person before a re-send is attempted or a "has a stand-in" badge is shown, so a
+#     429 can never hand someone a model their administrator did not tick for them.
+#   * **It mirrors gateway-guard's `ROUTE_MODELS`.** A route the guard has not registered
+#     is refused outright, so the two tables ship together.
 #
 # Not routed: the utility tier (haiku / luna — the limiter never fires there) and every
 # `google-ai-studio/*` id, which reaches `/compat` unchanged.
@@ -286,6 +282,24 @@ def fallback_for(model: str) -> Optional[str]:
     return entry.fallback if entry else None
 
 
+def route_allowed(model: str, allowed: Optional[Collection[str]]) -> bool:
+    """Would the guard let THIS person use the model's dynamic route?
+
+    `allowed` is the person's server list — the bare gateway ids the last successful
+    `GET /gate/models` returned (`SessionManager._aigw_allowed`). The guard requires both
+    ends of a route to be on it, so that is the test, and it is the one test behind both
+    the re-send (`AIGatewayProvider._retry_route`) and the picker badge
+    (`SessionManager._model_fallbacks`): a badge must promise nothing the re-send would
+    not do. No list (None, or empty — never pulled) means nothing is known to be allowed,
+    so the answer is no; the 429 simply stands, which is the error that really happened.
+    """
+    entry = _ROUTES.get(_bare_gateway_id(model))
+    if entry is None or not allowed:
+        return False
+    listed = {str(m).strip().lower() for m in allowed}
+    return _bare_gateway_id(model) in listed and entry.fallback in listed
+
+
 def dynamic_routing_enabled() -> bool:
     """False only when the env switch says so — absent means on."""
     raw = os.environ.get(ENV_DYNAMIC_ROUTING, "").strip().lower()
@@ -328,163 +342,6 @@ def fits_the_stand_in(route: _Route, messages: list[dict[str, Any]]) -> bool:
     return estimate_tokens(messages) <= int(window * _STAND_IN_HEADROOM)
 
 
-def fetch_gate_policy(
-    fields: dict[str, Any], timeout: float = 5.0
-) -> Optional[dict[str, Any]]:
-    """Best-effort read of the guard Worker's per-user gate: `GET {base}/gate/policy`.
-
-    The company gateway's guard (gateway-guard, smj-help-website repo) restricts some
-    models to certain roles and answers this endpoint with
-    `{"email", "role", "active", "blocked": ["author/model", ...], "enforce"}` for the
-    signed-in caller. The picker uses `blocked` to hide those models up front instead of
-    letting people select one and hit the guard's 403.
-
-    Returns the parsed dict on a well-shaped 200, else None — the guard may not be
-    deployed yet (this endpoint 404s on the bare AI Gateway custom domain), the user may
-    be signed out, or the network may be down. None means "don't filter"; enforcement is
-    server-side either way, so this can never be a security hole, only a cosmetic miss.
-
-    `fields` is the stored provider profile plus an optional `oauth_token` the caller
-    injects — the same contract as the Test probe (`registry._verify_aigw`).
-    """
-    import httpx
-
-    base_url, access_token = resolve_settings(fields or {})
-    oauth_token = str((fields or {}).get("oauth_token") or "").strip()
-    if not oauth_token and not access_token:
-        return None
-    headers = bearer_headers(oauth_token) if oauth_token else access_headers(access_token)
-    try:
-        resp = httpx.get(
-            normalise_base(base_url) + "/gate/policy", headers=headers, timeout=timeout
-        )
-    except Exception:  # noqa: BLE001 - cosmetic feature, never let it surface
-        logger.debug("aigw: gate policy fetch failed", exc_info=True)
-        return None
-    if resp.status_code != 200:
-        return None
-    try:
-        data = resp.json()
-    except Exception:  # noqa: BLE001
-        return None
-    if not isinstance(data, dict) or not isinstance(data.get("blocked"), list):
-        return None
-    return data
-
-
-def blocked_model_ids(policy: Optional[dict[str, Any]]) -> frozenset[str]:
-    """`fetch_gate_policy` result → normalized bare ids ("author/model", lowercase).
-    None / malformed → empty set (no filtering).
-
-    Two lists fold into one here: `blocked` (restricted for this person's role) and
-    `uncovered` (guard ≥ 2026-10-10: models the gateway cannot send for anyone — not on
-    Unified Billing, or retired by the vendor). The picker hides both for the same
-    reason: selecting one only buys a 403. An older guard sends no `uncovered` key.
-    """
-    if not policy:
-        return frozenset()
-    blocked = policy.get("blocked")
-    if not isinstance(blocked, list):
-        return frozenset()
-    uncovered = policy.get("uncovered")
-    ids = list(blocked) + (list(uncovered) if isinstance(uncovered, list) else [])
-    return frozenset(
-        str(m).strip().lower() for m in ids if isinstance(m, str) and str(m).strip()
-    )
-
-
-# A blocked base id also covers its dated/tagged variants — the same shape
-# gateway-guard's canonicalModels() strips server-side before its own equality check.
-# Keep this pattern text-identical to that one.
-_VARIANT_SUFFIX_RE = re.compile(r"^(?:-\d{8}|-latest|@\d{8})?(?::batch|:beta)?$")
-
-
-def is_blocked_model(model_id: str, blocked: Iterable[str]) -> bool:
-    """True when `model_id` — a bare "author/model" id, or one prefixed "aigw:" — is
-    exactly one of `blocked`'s entries, or a known dated/tagged variant of one: same
-    base id followed by an optional `-YYYYMMDD` / `-latest` / `@YYYYMMDD` date suffix
-    and an optional `:batch` / `:beta` tag suffix, in that order. Mirrors the server's
-    matching exactly so the picker hides what the gateway would 403 on anyway — a miss
-    here is only ever cosmetic, enforcement stays server-side.
-
-    Deliberately NOT a regex built from `r`: `r` is untrusted-shaped free text from the
-    gate policy response, so it is compared with plain string ops (`==`, `startswith`)
-    and only the fixed, pre-compiled suffix pattern above is ever matched against.
-    """
-    m = str(model_id or "").strip().lower()
-    if m.startswith("aigw:"):
-        m = m[len("aigw:") :]
-    if not m:
-        return False
-    for r in blocked:
-        r = str(r or "").strip().lower()
-        if not r:
-            continue  # an empty blocked entry must never match everything
-        if m == r:
-            return True
-        if m.startswith(r) and _VARIANT_SUFFIX_RE.match(m[len(r) :]):
-            return True
-    return False
-
-
-def gate_families(policy: Optional[dict[str, Any]]) -> Optional[tuple[str, ...]]:
-    """`fetch_gate_policy` result → the open vendor prefixes for this user, or None.
-
-    Since 2026-09-23 the guard also enforces an "open vendors" scope (`models.families`
-    in smj-help-website): a model outside every listed prefix gets the same 403 as a
-    restricted one unless the caller's role is allowed. `/gate/policy` reports it as
-    `families`: a list of lowercase prefixes ending in "/" for a scoped user, `null` for
-    an allowed role. None here means "don't filter by scope" — key missing (older guard),
-    null, or malformed. Entries are normalised exactly as the guard's parseGateConfig
-    does (trim + lowercase, keep only length > 1 and ending in "/"); an explicit `[]`
-    stays an empty tuple = nothing is open.
-    """
-    if not policy:
-        return None
-    fams = policy.get("families")
-    if not isinstance(fams, list):
-        return None
-    out = []
-    for f in fams:
-        if not isinstance(f, str):
-            continue
-        f = f.strip().lower()
-        if len(f) > 1 and f.endswith("/"):
-            out.append(f)
-    return tuple(out)
-
-
-def family_form(model_id: str) -> str:
-    """Bare "@cf/…" → "workers-ai/@cf/…" (the guard's `familyForm`); else unchanged."""
-    m = str(model_id or "").strip().lower()
-    return "workers-ai/" + m if m.startswith("@cf/") else m
-
-
-def is_out_of_scope(model_id: str, families: Optional[Iterable[str]]) -> bool:
-    """True when `model_id` (bare or "aigw:"-prefixed) sits under none of `families`.
-    Mirrors gateway-guard's `outOfScope` for a single id: bare `@cf/` gains the
-    `workers-ai/` prefix first, `dynamic/<route>` names are skipped (the guard judges the
-    route's expanded models instead), and a prefix only counts when something follows
-    it. `families is None` → never out of scope (no filtering). Cosmetic like the rest of
-    the gate: enforcement stays server-side."""
-    if families is None:
-        return False
-    m = str(model_id or "").strip().lower()
-    if m.startswith("aigw:"):
-        m = m[len("aigw:") :]
-    m = family_form(m)
-    if not m or m.startswith("dynamic/"):
-        return False
-    return not any(m.startswith(f) and len(m) > len(f) for f in families)
-
-
-def is_gated_model(
-    model_id: str, blocked: Iterable[str], families: Optional[Iterable[str]]
-) -> bool:
-    """Either gate layer would 403 this model for the current user."""
-    return is_blocked_model(model_id, blocked) or is_out_of_scope(model_id, families)
-
-
 class AIGatewayProvider(ProviderClient):
     """Routes each model to the sub-client whose wire the gateway expects for it."""
 
@@ -496,6 +353,7 @@ class AIGatewayProvider(ProviderClient):
         token_provider: Optional[Callable[[], str]] = None,
         thinking_budget: Optional[int] = None,
         clients: Optional[dict[str, ProviderClient]] = None,
+        allowed_models: Optional[Callable[[], Optional[Collection[str]]]] = None,
     ):
         # Sub-clients are built lazily per wire (they are cheap wrappers whose own SDK
         # clients stay lazy too), so a missing setting surfaces on the first real call with
@@ -511,6 +369,30 @@ class AIGatewayProvider(ProviderClient):
         # Injected sub-clients belong to the caller (tests): never evict them on rotation.
         self._injected = set(self._clients)
         self._built_with: Optional[str] = None
+        # Reader for this person's server model list (bare gateway ids), asked at retry
+        # time so a refreshed list takes effect without rebuilding the provider. The list
+        # lives in the SessionManager's catalog cache, which a provider built from a
+        # profile cannot see — the manager binds it after the router builds this object
+        # (`bind_allowed_models`). None = nobody wired a list (a headless `agent.py` run,
+        # unit tests): the dynamic-route re-send is then not gated here and the guard's
+        # own 403 stays the only judge.
+        self._allowed_models = allowed_models
+
+    def bind_allowed_models(
+        self, reader: Optional[Callable[[], Optional[Collection[str]]]]
+    ) -> None:
+        """Attach (or detach) the reader for this person's server model list."""
+        self._allowed_models = reader
+
+    def _route_allowed(self, model: str) -> bool:
+        if self._allowed_models is None:
+            return True
+        try:
+            allowed = self._allowed_models()
+        except Exception:  # noqa: BLE001 - an unreadable list is an unknown list
+            logger.debug("aigw: allowed-models reader failed", exc_info=True)
+            allowed = None
+        return route_allowed(model, allowed)
 
     def _credential(self) -> tuple[str, str]:
         """`(kind, value)` for this moment — `bearer` for an OAuth session, `session` for
@@ -626,13 +508,16 @@ class AIGatewayProvider(ProviderClient):
     ) -> Optional[_Route]:
         """The route to re-send this failed call on, or None to let the error stand.
 
-        Two gates, both of which mean "a second request would fail too, so don't pay for
+        Three gates, all of which mean "a second request would fail too, so don't pay for
         it":
 
         * Only "the shared pool is busy right now" earns a re-send (`is_gateway_busy`
           covers both spellings — the 429 `Wholesale Rate limited` body and the older 402
-          `wholesale rate limit exceeded`). A bad id, a restricted model, an
+          `wholesale rate limit exceeded`). A bad id, a model off the person's list, an
           out-of-credits account would all fail identically on the stand-in.
+        * Both ends of the route have to be on this person's server list
+          (`route_allowed`) — the guard refuses a `dynamic/<route>` call otherwise, so the
+          re-send would be a guaranteed 403.
         * The turn has to fit the stand-in's context window (`fits_the_stand_in`) — the
           two 1M Claude tiers fail over to a 400k model.
         """
@@ -640,6 +525,14 @@ class AIGatewayProvider(ProviderClient):
             return None
         route = _ROUTES.get(_bare_gateway_id(model))
         if route is None:
+            return None
+        if not self._route_allowed(model):
+            logger.info(
+                "aigw: %s is rate-limited, and its stand-in %s is not on this person's "
+                "model list — letting the 429 stand rather than re-sending into a 403",
+                model,
+                route.fallback,
+            )
             return None
         if not fits_the_stand_in(route, messages):
             logger.warning(

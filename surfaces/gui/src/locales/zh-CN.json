@@ -1466,6 +1466,7 @@
   "The default model is always shown — make another model default first": "默认模型始终显示——请先将其他模型设为默认",
   "The free test number can message up to 5 verified recipients without business verification.": "免费测试号码无需商业验证即可向最多 5 位已验证的收件人发送消息。",
   "The gallery is unreachable right now — try again in a moment.": "画廊暂时无法访问——请稍后重试。",
+  "The gateway's list has no model to test with — ask your administrator to open one for you.": "网关返回的可用清单里没有可供测试的模型——请管理员为你开通。",
   "The gateway is reachable but rejected the model's provider prefix. This is an app bug, not a setting — please report it.": "网关能连上，但它不认这个模型的提供商前缀。这是应用的 bug，不是设置问题——请反馈给我们。",
   "The local voice model failed its checksum. Repair the download in Settings.": "本地语音模型校验和不匹配。请在设置中修复下载。",
   "The local voice model is already downloading.": "本地语音模型已在下载中。",

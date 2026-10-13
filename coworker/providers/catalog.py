@@ -18,7 +18,8 @@ from typing import Any, Optional
 #: vertex, ollama, ark, ark-agent-plan-cn, and the oauth providers) either has no
 #: such API, or one this module doesn't (yet) speak. `aigw` reads the company guard's
 #: `GET /gate/models` — the per-person list of models this user may actually call
-#: (owner call 2026-09-23: no hand-typed ids for the gateway, the list comes from it).
+#: (owner call 2026-09-23: no hand-typed ids for the gateway, the list comes from it;
+#: since the guard became an allowlist it is the ONLY source of `aigw:` models).
 CATALOG_PROVIDERS = frozenset(
     {
         "aigw",
@@ -291,11 +292,14 @@ def aigw_model_label(model_id: str) -> str:
 
 def parse_aigw(payload: Any) -> list[CatalogModel]:
     """gateway-guard `GET /gate/models`: `{"models": [{"id": "anthropic/claude-opus-5",
-    "family": "anthropic/", "context": null, "created": "2026-07-24"}, ...]}` — already
-    filtered per person on the server (open vendors only, restricted models dropped for
-    roles that can't use them, retired catalog rows dropped). Ids are the gateway form the
-    provider sends as-is. Non-chat rows (deep-research, computer-use, …) still get the same
-    client-side cull as every other catalog."""
+    "family": "anthropic/", "context": null, "created": "2026-07-24"}, ...],
+    "probe": "anthropic/claude-haiku-4-5", ...}` — the allowlist itself: exactly the models
+    this person's administrator ticked for them, and the single source of truth for what
+    the picker may offer under `aigw:` (the curated matrix only lends these ids a label
+    and a context window; it never adds one). `probe` is read separately by the Test
+    button (`registry._aigw_probe_model`). Ids are the gateway form the provider sends
+    as-is. Non-chat rows (deep-research, computer-use, …) still get the same client-side
+    cull as every other catalog."""
     out: list[CatalogModel] = []
     seen: set[str] = set()
     if not isinstance(payload, dict):

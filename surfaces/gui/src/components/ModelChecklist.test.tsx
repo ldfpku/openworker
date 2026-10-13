@@ -323,4 +323,55 @@ describe("ModelChecklist — catalog hygiene", () => {
     // …and the status row (Refresh / Retry) is the way to re-pull the list.
     expect(screen.getByTestId("mlist-catalog-status")).toBeTruthy();
   });
+
+  // The gateway's server list is the ONLY list (the guard is an allowlist): with no
+  // successful pull there are no models at all, so the status row must not claim a
+  // built-in list is being shown — and it carries the guard's own sentence verbatim.
+  it("says no models are available, not 'showing the built-in list', when the gateway has no list", () => {
+    const guard = "你的账号暂未开通任何模型，请联系管理员开通。[gateway-guard]";
+    render(
+      <ModelChecklist
+        provider="aigw"
+        knownProviders={[...KNOWN, "aigw"]}
+        suggested={[]}
+        curated={["gpt-5.5"]}
+        defaultModel="gpt-5.5"
+        catalog={{ supported: true, live: false, fetched_at: null, error: guard, count: 0 }}
+        onRefresh={async () => {}}
+        onChanged={() => {}}
+      />,
+    );
+    const status = screen.getByTestId("mlist-catalog-status").textContent || "";
+    expect(status).toContain(guard);
+    expect(status).toContain("no models are available until it arrives");
+    expect(status).not.toContain("built-in list");
+    expect(screen.queryAllByTitle(/^aigw:/)).toHaveLength(0);
+    expect(screen.getByText("Retry")).toBeTruthy();
+  });
+
+  it("says the old default left the list when told so, and only then", () => {
+    const catalog: ProviderCatalog = { supported: true, live: true, fetched_at: "2026-10-13T05:00:00Z", error: null, count: 1 };
+    const list = (defaultGone: boolean) => (
+      <ModelChecklist
+        provider="aigw"
+        knownProviders={[...KNOWN, "aigw"]}
+        suggested={["anthropic/claude-sonnet-5"]}
+        curated={["aigw:anthropic/claude-sonnet-5"]}
+        defaultModel="aigw:anthropic/claude-fable-5"
+        catalog={catalog}
+        defaultGone={defaultGone}
+        onRefresh={async () => {}}
+        onChanged={() => {}}
+      />
+    );
+    const { rerender } = render(list(true));
+    expect(screen.getByTestId("mlist-default-gone").textContent).toBe(
+      "Your previous default model is no longer on your available list — please choose another.",
+    );
+    // The dead id is not a row; what is left can be made the default.
+    expect(screen.queryByTitle("aigw:anthropic/claude-fable-5")).toBeNull();
+    expect(screen.getByText("Make default")).toBeTruthy();
+    rerender(list(false));
+    expect(screen.queryByTestId("mlist-default-gone")).toBeNull();
+  });
 });
