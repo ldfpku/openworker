@@ -526,6 +526,8 @@
       "turn_aborted_filtered": "The provider blocked this response under its content policy.",
       "turn_truncated_no_finish": "The response may be incomplete: it was cut off before the provider signalled the end of the stream.",
       "turn_truncated_length": "The response may be incomplete: the model hit its output length limit.",
+      "continuation": "Reply cut off at the output-token limit with no action; asking the model to continue.",
+      "truncated": "Stopped: the reply was cut off at the output-token limit with no action {{n}} times in a row. Retry, or ask for a smaller step.",
       "turn_aborted_retried": " Automatic retry didn't help ({{n}} retries).",
       "turn_retry_no_finish": "The model's response was cut off; retrying ({{attempt}}/{{max}})…",
       "turn_retry_empty": "The model returned an empty response; retrying ({{attempt}}/{{max}})…",

@@ -63,6 +63,7 @@ import {
   turnAbortedText,
   turnRetryText,
   turnTruncatedText,
+  truncatedText,
 } from "./modeNotice";
 import { answerSupersededNotice, promptResolvedNotice } from "./promptResolved";
 import { itemsFromMessages } from "./itemsFromMessages";
@@ -1167,6 +1168,14 @@ export function App() {
                 }),
               },
             ]);
+          // OPE-171: the reply kept hitting the output-token limit with no action; the
+          // engine stopped rather than report a cut-off reply as the answer. Localized
+          // from the structured counter, same mapping the persisted replay uses.
+          else if (d.status === "truncated")
+            setItems((p) => [
+              ...p,
+              { kind: "notice", tone: "warn", text: truncatedText(d.continuations, String(d.text || "")) },
+            ]);
           break;
         case "mode_notice":
           // Server-authored + persisted (owner ruling 2026-08-24): the Auto-Approve
@@ -1233,6 +1242,12 @@ export function App() {
             },
           ]);
           announceMemoryChanged(); // Settings ▸ Memory, if open, is now stale
+          break;
+        case "continuation":
+          // OPE-171: a reply cut off at the output limit with no tool call — the engine
+          // nudged the model and is going round again; one quiet line so the pause and
+          // the extra model call are explained.
+          setItems((p) => [...p, { kind: "notice", tone: "info", text: t("app.notice.continuation") }]);
           break;
         case "compacting":
           setCompacting(true);

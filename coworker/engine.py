@@ -93,9 +93,25 @@ _TURN_TRUNCATED_TEXT = {
     ),
     "length": "The response may be incomplete: the model hit its output length limit.",
 }
+# OPE-171: a reply cut off at the output-token limit (finish_reason "length") that
+# carries no tool call is not an answer — typically thinking consumed the whole budget
+# and nothing else came back. The engine nudges the model to act instead of ending the
+# turn as "completed" (or, with no text at all, aborting it), at most this many times in
+# a row; then the turn ends as "truncated" so callers can tell "finished" from "gave up".
+MAX_TRUNCATION_CONTINUATIONS = 2
+TRUNCATION_NUDGE = (
+    "Your previous reply hit the output-token limit before you took an action or "
+    "finished. Do not repeat the long reasoning. Decide the next concrete step and "
+    "call a tool now, or give the final answer briefly."
+)
+# What the provider sees in place of the cut-off reply: its partial thinking block has
+# no signature (Anthropic rejects it on replay) and its content is empty or a fragment;
+# the transcript keeps the original, the outbound view sends this.
+TRUNCATION_STUB = "(reply cut off at the output-token limit before any action)"
 # Notice kinds `retry()` will re-run. An aborted turn is exactly as retriable as a
-# provider failure — nothing was answered and nothing was done.
-_RETRIABLE_NOTICE_KINDS = frozenset({"error", "turn_aborted"})
+# provider failure — nothing was answered and nothing was done; a turn that gave up
+# after repeated cut-offs (`truncated`) likewise — a fresh attempt usually acts.
+_RETRIABLE_NOTICE_KINDS = frozenset({"error", "turn_aborted", "truncated"})
 # Notice kinds the retry guard looks THROUGH when it searches for that tail: bookkeeping
 # written after a turn failed that says nothing about the failed turn itself.
 # - `model_switch`: switching models and THEN retrying is the intended recovery path.
@@ -882,6 +898,8 @@ class TurnEngine:
         # Whether the latest assistant turn hit the output-token limit — decides which
         # diagnosis a mangled (unparseable-args) tool call gets answered with.
         self._turn_truncated = False
+        # Consecutive length-truncated, action-free replies nudged this turn (OPE-171).
+        self._continuations = 0
         # Automatic retry of a model call that delivered nothing. `retry_sleep` is the
         # seam tests replace so a backoff never really waits; the default IS a wait on the
         # cancel event, which is what makes Stop bite DURING the pause and not after it.
@@ -1397,6 +1415,66 @@ class TurnEngine:
             elapsed,
         )
 
+    def _continue_after_cutoff(
+        self, turn: AssistantTurn, iterations: int, elapsed: float
+    ) -> tuple[list[Event], bool]:
+        """OPE-171: the reply just persisted was cut off at the output-token limit with no
+        tool call. Up to MAX_TRUNCATION_CONTINUATIONS times in a row the model is asked
+        to act (a user-role nudge, a CONTINUATION event) and the loop goes round again;
+        past that the turn ends as "truncated" — never "completed" — with a retriable
+        `truncated` notice. Returns (events to emit, whether the turn must end)."""
+        if self._continuations < MAX_TRUNCATION_CONTINUATIONS:
+            self._continuations += 1
+            self._log_abnormal_turn(
+                "turn_continuation", "length", turn, iterations, elapsed
+            )
+            self.messages.append(
+                {
+                    "role": "user",
+                    "content": TRUNCATION_NUDGE,
+                    "ts": time.time(),
+                    "_display": {
+                        "kind": "continuation",
+                        "reason": "length",
+                        "attempt": self._continuations,
+                    },
+                }
+            )
+            event = Event(
+                EventType.CONTINUATION,
+                {
+                    "reason": "length",
+                    "attempt": self._continuations,
+                    "remaining": MAX_TRUNCATION_CONTINUATIONS - self._continuations,
+                    "iterations": iterations,
+                    "text": (
+                        "Reply cut off at the output-token limit with no "
+                        f"action; asking the model to continue "
+                        f"({self._continuations} of "
+                        f"{MAX_TRUNCATION_CONTINUATIONS})."
+                    ),
+                },
+            )
+            return [event], False
+        self._log_abnormal_turn("turn_truncated", "length", turn, iterations, elapsed)
+        text = (
+            f"{self.model}'s reply was cut off at the output-token limit with "
+            f"no action {self._continuations + 1} times in a row, so the turn "
+            "was stopped rather than reported as complete. Retry, or ask for a "
+            "smaller step."
+        )
+        self._append_notice("truncated", text, continuations=self._continuations)
+        event = Event(
+            EventType.TURN_END,
+            {
+                "status": "truncated",
+                "iterations": iterations,
+                "continuations": self._continuations,
+                "text": text,
+            },
+        )
+        return [event], True
+
     async def retry(self) -> AsyncIterator[Event]:
         """Re-run the model loop after a provider error — no new user message; the failed
         turn's input is already the tail of history. Guarded on the tail being an error
@@ -1470,6 +1548,7 @@ class TurnEngine:
 
     async def _loop(self) -> AsyncIterator[Event]:
         iterations = 0
+        self._continuations = 0
         spent = 0  # billed tokens this turn: prompt-side + output, accumulated per round
         # Automatic retries: `attempt` counts them for the round-trip being made right
         # now (reset the moment a round delivers something), `retries_used` for the whole
@@ -1661,6 +1740,12 @@ class TurnEngine:
                 spent += turn.usage.context_tokens + turn.usage.output
 
             self._turn_truncated = turn.finish_reason == "length"
+            # OPE-171: cut off at the output limit with nothing actionable — neither an
+            # answer nor an abort, but a reply to nudge past (`_continue_after_cutoff`).
+            # The counter resets on any reply that was not cut.
+            cut_off = not turn.tool_calls and _is_length_finish(turn.finish_reason)
+            if not _is_length_finish(turn.finish_reason):
+                self._continuations = 0
             _sanitize_mangled_calls(turn)
             if turn.finish_reason is not None:
                 # This model DOES report finish reasons, so from here on its silence means
@@ -1677,7 +1762,9 @@ class TurnEngine:
             # log). Handled BEFORE anything is persisted, so a RETRIED attempt re-sends
             # the history the dead attempt was given — byte-identical unless steering
             # arrived meanwhile, which is deliberately injected into the re-send.
-            if not turn.tool_calls and not (turn.text or "").strip():
+            # A length cut-off is not aborted here (OPE-171): it is persisted below and
+            # the model is asked to act, so "length" never reaches `_TURN_ABORTED_TEXT`.
+            if not turn.tool_calls and not (turn.text or "").strip() and not cut_off:
                 reason = _abort_reason(turn, trust_truncated=self._trusts_truncation())
                 if self._may_retry(reason, attempt, retries_used, elapsed):
                     shown_max = min(
@@ -1756,8 +1843,10 @@ class TurnEngine:
             # Membership in _TURN_TRUNCATED_TEXT IS the "was it cut?" test — `_abort_reason`
             # answers "length"/"no_finish" only on a real cut signal and plain "empty"
             # (absent from that table) for every ordinary ending.
+            # A reply the engine is about to nudge past (OPE-171) gets the CONTINUATION
+            # line instead — "may be incomplete" would be wrong, since the turn goes on.
             cut_reason = _abort_reason(turn, trust_truncated=self._trusts_truncation())
-            if cut_reason in _TURN_TRUNCATED_TEXT:
+            if cut_reason in _TURN_TRUNCATED_TEXT and not cut_off:
                 message = _TURN_TRUNCATED_TEXT[cut_reason]
                 self._log_abnormal_turn(
                     "turn_truncated", cut_reason, turn, iterations, elapsed
@@ -1768,8 +1857,19 @@ class TurnEngine:
                 )
 
             if not turn.tool_calls:
+                if cut_off and self.messages[-1].get("role") == "assistant":
+                    # OPE-171: the cut-off reply just persisted is replayed as a stub from
+                    # now on, whatever happens next (see `_outbound_messages`).
+                    self.messages[-1]["replay"] = "stub"
                 if self._steering:
                     self._inject_steering()
+                    continue
+                if cut_off:
+                    events, stop = self._continue_after_cutoff(turn, iterations, elapsed)
+                    for event in events:
+                        yield event
+                    if stop:
+                        return
                     continue
                 # The model tried to call a tool and the syntax never parsed — salvage already
                 # had its go. Ending as "completed" here would present a half-written call as
@@ -3770,6 +3870,7 @@ class TurnEngine:
             "finish_reason",
             "truncated",
             "aborted",
+            "replay",
         )
         # Auto-compaction (OPE-27): everything before the boundary is represented by the
         # compacted block. Outbound-only — the canonical history stays intact — and the
@@ -3779,7 +3880,10 @@ class TurnEngine:
         )
         out = [
             (
-                {k: v for k, v in msg.items() if k not in _SIDECARS}
+                # OPE-171: a length-truncated, action-free reply is replayed as a stub.
+                {"role": "assistant", "content": TRUNCATION_STUB}
+                if msg.get("replay") == "stub"
+                else {k: v for k, v in msg.items() if k not in _SIDECARS}
                 if any(s in msg for s in _SIDECARS)
                 else msg
             )

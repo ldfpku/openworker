@@ -181,6 +181,30 @@ describe("itemsFromMessages mcp failure", () => {
   });
 });
 
+describe("itemsFromMessages truncated", () => {
+  it("replays the persisted truncated marker as a retriable warning (OPE-171)", () => {
+    const items = itemsFromMessages([
+      { role: "user", content: "go", ts: 1752969700 },
+      { role: "assistant", content: "", finish_reason: "length", replay: "stub", ts: 1752969710 },
+      { role: "notice", kind: "truncated", text: "cut off 3 times", continuations: 2, ts: 1752969720 },
+    ] as any);
+    const notice = items[items.length - 1] as any;
+    expect(notice.kind).toBe("notice");
+    expect(notice.tone).toBe("warn");
+    // Localized from the structured counter (cut 3 times = 2 nudges + 1), not the raw text.
+    expect(notice.text).toBe(i18n.t("app.notice.truncated", { n: 3 }));
+    expect(notice.text).toContain("3");
+    expect(notice.retriable).toBe(true);
+  });
+
+  it("falls back to the server text when the counter is missing", () => {
+    const items = itemsFromMessages([
+      { role: "notice", kind: "truncated", text: "cut off 3 times" },
+    ] as any);
+    expect((items[0] as any).text).toBe("cut off 3 times");
+  });
+});
+
 describe("itemsFromMessages answer_superseded", () => {
   // Persisted by the server when a durable resume found the answered call overtaken by a later
   // message (manager `_note_superseded_answer`). Without its own arm it fell into the catch-all

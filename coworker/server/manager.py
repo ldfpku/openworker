@@ -9625,11 +9625,11 @@ def _last_assistant_text(messages: list[dict[str, Any]]) -> Optional[str]:
 # finalized (they went to the WS, which never touches the automation TaskRun), so the
 # messages are what is left to read; a scheduled run sees its events but reads the same
 # messages, so both paths judge a turn alike. Never the engine's private `_cancel` flag.
-_RUN_FAILED_NOTICE_KINDS = frozenset({"error", "turn_aborted"})
+_RUN_FAILED_NOTICE_KINDS = frozenset({"error", "turn_aborted", "truncated"})
 
 # Notices that record something about the session, not how the turn ended — every
-# `_append_notice` kind in coworker/ except the four the verdict is read from
-# ("interrupted", "error", "turn_aborted", "turn_truncated"). The first five come from
+# `_append_notice` kind in coworker/ except the five the verdict is read from
+# ("interrupted", "error", "turn_aborted", "truncated", "turn_truncated"). The first five come from
 # the session's own handlers (connect, set_mode, set_model, add_root), so they can land
 # AFTER the run's turn has ended and before the run is judged — EXCEPT `project_presence`
 # (`add_root`), which is ALSO reachable from inside the turn loop: `add_root` is what the

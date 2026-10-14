@@ -43,6 +43,9 @@ export type EventType =
   | "compacting"
   | "preflight"
   | "compacted"
+  // OPE-171: a reply cut off at the output-token limit with no tool call; the engine
+  // nudged the model to act and is going round again.
+  | "continuation"
   | "turn_done";
 
 export interface WsEvent {

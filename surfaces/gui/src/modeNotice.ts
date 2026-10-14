@@ -189,3 +189,12 @@ export function turnRetryText(
 export function turnTruncatedText(reason: unknown, raw: string): string {
   return byReason(TURN_TRUNCATED_KEYS, reason, raw);
 }
+
+/** OPE-171: the turn gave up after `continuations` nudges past output-limit cut-offs
+ *  (engine `truncated` notice / TURN_END "truncated"). Localized from the counter — the
+ *  reply was cut `continuations + 1` times in a row; an absent counter falls back to the
+ *  server's English text. */
+export function truncatedText(continuations: unknown, raw: string): string {
+  const n = Number(continuations);
+  return Number.isFinite(n) ? i18n.t("app.notice.truncated", { n: n + 1 }) : raw;
+}

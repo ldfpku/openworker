@@ -762,12 +762,20 @@ def test_empty_turn_reason_separates_the_length_limit_from_a_real_empty_answer(t
     if the notice says which. `length` means "ask for less"; `empty` means the model
     genuinely answered with nothing (and `no_finish` above means it never got to)."""
     # Out of output budget: the provider said so, so `truncated` never enters into it.
-    engine, _ = _engine(tmp_path, [AssistantTurn(text="", finish_reason="length")])
+    # OPE-171: this is no longer an abort — the reply is kept and the model is asked to
+    # act (tests/test_truncation_continuation.py); once it keeps happening the turn ends
+    # as "truncated", still never as "completed".
+    engine, _ = _engine(
+        tmp_path, [AssistantTurn(text="", finish_reason="length")], loop=True
+    )
     events = _collect(engine, "write the summary")
-    err = next(ev for ev in events if ev.type == EventType.ERROR)
-    assert err.data["reason"] == "length"
-    assert "length limit" in err.data["error"]
-    assert engine.messages[-1]["reason"] == "length"
+    assert EventType.ERROR not in _types(events)
+    cont = next(ev for ev in events if ev.type == EventType.CONTINUATION)
+    assert cont.data["reason"] == "length"
+    end = next(ev for ev in events if ev.type == EventType.TURN_END)
+    assert end.data["status"] == "truncated"
+    assert engine.messages[-1]["kind"] == "truncated"
+    assert "output-token limit" in engine.messages[-1]["text"]
 
     # A clean stop that produced nothing at all.
     engine, _ = _engine(tmp_path, [AssistantTurn(text="   ", finish_reason="stop")])
@@ -802,14 +810,28 @@ def test_cut_off_answer_keeps_its_text_and_only_warns(tmp_path):
     assert engine._tail_is_retriable_error() is False
 
 
-def test_cut_off_answer_names_the_length_limit_when_the_provider_does(tmp_path):
-    engine, _ = _engine(
-        tmp_path, [AssistantTurn(text="Here are the first three", finish_reason="length")]
+def test_cut_off_answer_at_the_length_limit_is_continued_not_warned(tmp_path):
+    """OPE-171: a length cut-off with no tool call is not a finished answer, so instead of
+    the "may be incomplete" warning the engine nudges the model to act and the turn goes
+    on. The cut text stays in the transcript (the user has read it) but is replayed to
+    the provider as a stub."""
+    engine, provider = _engine(
+        tmp_path,
+        [
+            AssistantTurn(text="Here are the first three", finish_reason="length"),
+            _text_turn("findings: a, b, c"),
+        ],
     )
     events = _collect(engine, "summarize the findings")
-    warn = next(ev for ev in events if ev.type == EventType.TURN_TRUNCATED)
-    assert warn.data["reason"] == "length"
-    assert "output length limit" in engine.messages[-1]["text"]
+    assert EventType.TURN_TRUNCATED not in _types(events)
+    cont = next(ev for ev in events if ev.type == EventType.CONTINUATION)
+    assert cont.data["reason"] == "length" and cont.data["attempt"] == 1
+    assert provider.calls == 2
+    assert next(ev for ev in events if ev.type == EventType.TURN_END).data["status"] == (
+        "completed"
+    )
+    cut = next(m for m in engine.messages if m.get("finish_reason") == "length")
+    assert cut["content"] == "Here are the first three" and cut["replay"] == "stub"
 
 
 def test_ordinary_turns_gain_no_new_notice_and_no_new_event(tmp_path):
@@ -962,15 +984,23 @@ def test_a_permanent_failure_is_never_retried(tmp_path):
 
 def test_hitting_the_length_limit_is_never_retried(tmp_path):
     """Re-running the same prompt meets the same ceiling — the budget would buy nothing
-    but two more waits before the identical sentence."""
+    but two more waits before the identical sentence. OPE-171 nudges instead (a NEW
+    prompt: the cut reply as a stub plus a request to act), bounded by
+    MAX_TRUNCATION_CONTINUATIONS — the retry budget is never touched."""
+    from coworker.engine import MAX_TRUNCATION_CONTINUATIONS
+
     engine, provider = _engine(
         tmp_path, [AssistantTurn(text="", finish_reason="length")], loop=True, retries=2
     )
     events = _collect(engine, "write the summary")
 
-    assert provider.calls == 1
-    assert _retry_notices(engine) == []
-    assert next(ev for ev in events if ev.type == EventType.ERROR).data["reason"] == "length"
+    assert provider.calls == MAX_TRUNCATION_CONTINUATIONS + 1
+    assert _retry_notices(engine) == [] and engine.slept == []
+    assert EventType.ERROR not in _types(events)
+    assert _types(events).count(EventType.CONTINUATION) == MAX_TRUNCATION_CONTINUATIONS
+    assert next(ev for ev in events if ev.type == EventType.TURN_END).data["status"] == (
+        "truncated"
+    )
 
 
 def test_stop_during_the_backoff_cancels_instead_of_retrying(tmp_path):
