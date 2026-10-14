@@ -6050,8 +6050,12 @@ class SessionManager:
         except (TypeError, ValueError):
             threshold_pct = DEFAULT_THRESHOLD_PCT
         try:
+            # OPE-186: config.toml / COWORKER_COMPACTION_CAP_TOKENS is the default the
+            # Settings pref overrides (read only while no pref is saved).
             cap_tokens = int(
-                self._prefs.get("compaction_cap_tokens") or DEFAULT_CAP_TOKENS
+                self._prefs.get("compaction_cap_tokens")
+                or load_config().compaction_cap_tokens
+                or DEFAULT_CAP_TOKENS
             )
         except (TypeError, ValueError):
             cap_tokens = DEFAULT_CAP_TOKENS

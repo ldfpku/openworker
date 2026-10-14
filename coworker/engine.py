@@ -736,12 +736,20 @@ class TurnEngine:
         # Called (thread-safe, best-effort) when the user stops the turn — e.g. the
         # executor's kill for a running shell command.
         interrupt_hooks: Optional[list[Callable[[], None]]] = None,
+        # OPE-186 change 3: where each compaction writes the verbatim transcript of the
+        # compacted turns (None = nowhere; the compacted block then names no file). Named
+        # as upstream names it — there the same folder also holds bounded tool results,
+        # which this fork does not port (it keeps `_clip_tool_result`).
+        tool_result_spill_dir: Optional[Path] = None,
     ) -> None:
         self.provider = provider
         self.registry = registry
         self.permissions = permissions
         self.model = model
         self.approver = approver or _deny_all
+        self._tool_result_spill_dir = (
+            Path(tool_result_spill_dir) if tool_result_spill_dir is not None else None
+        )
         self.max_iterations = max_iterations
         self.max_turn_tokens = max_turn_tokens
         self.model_settings = dict(model_settings or {})
@@ -1823,6 +1831,29 @@ class TurnEngine:
             cap_tokens=int(cfg["cap_tokens"]),
         )
 
+    def _write_compaction_transcript(self, state: _compaction.CompactionState) -> None:
+        """OPE-186 change 3: keep the compacted turns readable. The verbatim transcript
+        up to the boundary goes to a file in the spill folder, and the compacted block
+        tells the model where it is, so a detail the summary dropped costs one read
+        instead of being lost. No folder configured, or an unwritable one ⇒ no file and
+        no mention (`state.transcript_path` stays empty)."""
+        if self._tool_result_spill_dir is None:
+            return
+        try:
+            self._tool_result_spill_dir.mkdir(parents=True, exist_ok=True)
+            path = (
+                self._tool_result_spill_dir
+                / f"compacted-transcript-upto-{state.boundary_index:04d}.md"
+            )
+            path.write_text(
+                _compaction.render_transcript(self.messages, state.boundary_index),
+                encoding="utf-8",
+                errors="replace",
+            )
+            state.transcript_path = str(path)
+        except OSError:
+            pass
+
     async def _compact_now(self, *, force: bool = False) -> Optional[str]:
         """Run the compaction policy. Callers gate on `_compaction_due()` (or `force`,
         the overflow path). Returns the user-facing notice text when the outbound view
@@ -1890,6 +1921,7 @@ class TurnEngine:
                 except Exception:
                     continue
         if state is not None:
+            self._write_compaction_transcript(state)
             self.compaction_state = state
             self._last_context_tokens = None  # stale once the outbound view shrank
             return "Context compacted — earlier turns were summarized"

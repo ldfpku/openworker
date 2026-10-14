@@ -283,6 +283,14 @@ def _hold_back_hint(held_back: list[str]) -> str:
     )
 
 
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        Path(path).resolve().relative_to(Path(root).resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
 def build_engine(
     *,
     agent: Agent,
@@ -342,6 +350,9 @@ def build_engine(
     # Persona-carried skill folders (OPE-58): the bundle's skills/ dir joins the loader so
     # its skills are readable by load_skill, not just listed by the filter.
     extra_skill_dirs: Optional[list[str | Path]] = None,
+    # OPE-186: where the compaction transcript is spilled (None = the session's scratch
+    # root if there is one, else a per-process temp directory).
+    tool_result_spill_dir: Optional[str | Path] = None,
 ) -> TurnEngine:
     ws = Path(workspace).expanduser().resolve() if workspace else None
     if agent.requires_folder and ws is None:
@@ -356,6 +367,30 @@ def build_engine(
         root_list = [RootDir(path=ws, writable=True)]
     else:
         root_list = []
+
+    # OPE-186 change 3: the compaction transcript is written to a spill folder the model
+    # can read. Prefer the session's scratch root (already one of the agent's folders).
+    # Otherwise the folder joins the session's directories read-only, BEFORE the tools are
+    # built, so read_file can open it (upstream's first trial spilled under the run's log
+    # folder and read_file answered "path escapes the session's directories"). The
+    # workspace itself is never written to, so a repository or task tree stays clean.
+    # (Upstream also spills bounded tool results here; this fork keeps `_clip_tool_result`.)
+    if tool_result_spill_dir is not None:
+        spill_dir: Optional[Path] = Path(tool_result_spill_dir).expanduser().resolve()
+    else:
+        scratch = next((r.path for r in root_list if r.label == "scratch"), None)
+        if scratch is not None:
+            spill_dir = Path(scratch) / "tool-output"
+        else:
+            import os
+            import tempfile
+
+            spill_dir = (
+                Path(tempfile.gettempdir()) / "openworker" / f"tool-output-{os.getpid()}"
+            ).resolve()
+    # Registered, not created: the folder appears on disk only when something is spilled.
+    if root_list and not any(_is_within(spill_dir, r.path) for r in root_list):
+        root_list.append(RootDir(path=spill_dir, writable=False, label="tool-output"))
 
     workspace_trusted = bool(ws and WorkspaceTrustStore().is_trusted(ws))
     config = load_config(ws, workspace_trusted=workspace_trusted)
@@ -773,6 +808,7 @@ def build_engine(
         model=model,
         instructions=instructions,
         approver=approver,
+        tool_result_spill_dir=spill_dir,
         # Stop kills the in-flight foreground shell command, not just the loop.
         interrupt_hooks=[executor.interrupt_now] if executor is not None else None,
         max_iterations=(
@@ -790,6 +826,13 @@ def build_engine(
         team_approver=team_approver,
         items_approver=items_approver,
     )
+    # OPE-186 change 3: a configured compaction cap makes the summariser fire earlier
+    # than the built-in 250,000-token cap. The window still comes from the model matrix.
+    # Server sessions replace this getter with the manager's (Settings pref), which falls
+    # back to the same config value — so config.toml / env is the default the pref overrides.
+    if config.compaction_cap_tokens:
+        _cap_tokens = int(config.compaction_cap_tokens)
+        engine.compaction_settings = lambda: {"cap_tokens": _cap_tokens}
     engine.executor = executor  # type: ignore[attr-defined]
     engine.todo = todo  # type: ignore[attr-defined]
     engine.agent_name = agent.name  # type: ignore[attr-defined]

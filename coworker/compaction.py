@@ -98,6 +98,10 @@ class CompactionState:
     created_at: float = 0.0
     model_used: str = ""
     trimmed: bool = False  # True when this state came from the no-summary trim fallback
+    # OPE-186 change 3: where the verbatim transcript of the compacted turns was written
+    # (empty when the engine had nowhere to write it). Named in the compacted block so the
+    # model can read back anything the summary dropped.
+    transcript_path: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -109,6 +113,7 @@ class CompactionState:
             "created_at": self.created_at,
             "model_used": self.model_used,
             "trimmed": self.trimmed,
+            "transcript_path": self.transcript_path,
         }
 
     @classmethod
@@ -124,6 +129,7 @@ class CompactionState:
             created_at=float(raw.get("created_at", 0.0)),
             model_used=str(raw.get("model_used", "")),
             trimmed=bool(raw.get("trimmed", False)),
+            transcript_path=str(raw.get("transcript_path", "") or ""),
         )
 
 
@@ -517,8 +523,52 @@ def compacted_block(state: CompactionState) -> str:
                 "their intent is covered by the summary above)"
             ]
         parts += [f"- {u}" for u in state.user_messages]
+    if state.transcript_path:
+        parts += [
+            "",
+            "The verbatim transcript of the compacted turns (every message, tool call and "
+            f"tool result, without your private reasoning) is saved at {state.transcript_path}. "
+            "If a detail you need is missing from the summary, read that file (read_file, "
+            "or run_shell with grep / sed -n) instead of guessing.",
+        ]
     parts += ["", CONTINUATION_CONTRACT, "</compacted-history>"]
     return "\n".join(parts)
+
+
+def render_transcript(messages: list[dict[str, Any]], upto: int) -> str:
+    """The canonical messages before index `upto`, rendered as readable Markdown for the
+    transcript file: role, the assistant's visible text and tool calls (name + arguments),
+    every tool result in full, notices. Private reasoning sidecars are left out: they are
+    the model's own thinking, not session facts, and they are the bulkiest part."""
+    lines = [
+        "# Compacted transcript",
+        "",
+        f"Messages 0 to {max(0, upto - 1)} of this session, verbatim, written when they were "
+        "summarised into the compacted history block.",
+        "",
+    ]
+    for i, m in enumerate(messages[:upto]):
+        role = str(m.get("role") or "")
+        if role == "system":
+            continue
+        if role == "notice":
+            lines += [f"## [{i}] notice: {m.get('kind', '')}", "", str(m.get("content") or ""), ""]
+            continue
+        lines.append(f"## [{i}] {role}")
+        content = m.get("content")
+        if isinstance(content, str) and content:
+            lines += ["", content]
+        elif content:
+            lines += ["", json.dumps(content, default=str, ensure_ascii=False)]
+        for tc in m.get("tool_calls") or []:
+            fn = tc.get("function") if isinstance(tc, dict) else None
+            name = (fn or {}).get("name") if fn else (tc.get("name") if isinstance(tc, dict) else "")
+            args = (fn or {}).get("arguments") if fn else (tc.get("arguments") if isinstance(tc, dict) else "")
+            if not isinstance(args, str):
+                args = json.dumps(args, default=str, ensure_ascii=False)
+            lines += ["", f"tool call: {name}", "```", str(args), "```"]
+        lines.append("")
+    return "\n".join(lines)
 
 
 def apply_to_outbound(
