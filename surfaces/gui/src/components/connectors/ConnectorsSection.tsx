@@ -20,6 +20,7 @@ import {
   DmHowItWorks,
   DmRouteBlock,
   ListeningSessionsBlock,
+  TelegramApprovalOwnersBlock,
   UnauthorizedBlock,
 } from "../ManageTabs";
 import { AccountsDetail } from "./AccountsDetail";
@@ -226,6 +227,7 @@ function GenericDetail({
               leaving both to Inbox ▸ Configure where nobody thinks to look (WeChat). */}
           {!c.channels && <DmHowItWorks c={c} />}
           <AllowlistBlock c={c} onChanged={onChanged} />
+          {c.name === "telegram" && <TelegramApprovalOwnersBlock c={c} onChanged={onChanged} />}
           <UnauthorizedBlock c={c} onChanged={onChanged} />
           {!c.channels && <DmRouteBlock c={c} />}
           {/* Channel subscriptions are a chat-platform concept — GitHub is two_way via the
