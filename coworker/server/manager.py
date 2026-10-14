@@ -6434,6 +6434,57 @@ class SessionManager:
                 return False
         return bool(actor_id) and actor_id in self.slack_approval_owner_ids(owner_team)
 
+    # Protected item kinds: resolving one runs a consequential action / grants a filesystem
+    # root / commits a plan, so only an authorized owner may resolve it — never a bare
+    # allow-listed chat member. Questions and free-text answers are NOT protected.
+    _PROTECTED_ITEM_KINDS = {"approval", "directory", "plan"}
+
+    def _actor_owns_protected_item(
+        self,
+        item,
+        *,
+        platform: str,
+        actor_id: str,
+        chat_id: str,
+        team_id: Optional[str],
+        chat_type: str = "dm",
+        target: str = "",
+    ) -> bool:
+        """Authorize a protected-item resolution over ANY transport.
+
+        The owner check used to run only on the Slack lane, so a Telegram reply (or button)
+        resolved protected approval/directory/plan items with no owner or channel-binding
+        validation at all — and items mirrored to Slack were resolvable from Telegram,
+        bypassing Slack's enforcement. This gates every transport:
+
+        - WeChat has no inbox binding and no owner list: the §31 mention-thread map IS the
+          binding, so the DM peer must own the item's session (`_weixin_actor_owns_item`);
+        - cross-transport is refused: an item bound to one channel can only be resolved from
+          that same channel (an in-app-only item is not remotely resolvable at all);
+        - Slack defers to the existing owner + bound-channel check;
+        - no other transport (e.g. Telegram) has an approval-owner model, so it cannot
+          resolve protected items remotely — they stay pending for in-app resolution.
+        """
+        if platform == "weixin":
+            return self._weixin_actor_owns_item(item, chat_type=chat_type, target=target)
+        binding = self.inbox_routing.binding_for(item.inbox)
+        if binding.channel and binding.channel != platform:
+            return False
+        if platform == "slack":
+            return self._slack_actor_owns_item(
+                item, actor_id=actor_id, chat_id=chat_id, team_id=team_id
+            )
+        return False
+
+    def _weixin_actor_owns_item(self, item, *, chat_type: str, target: str) -> bool:
+        """A WeChat peer owns a prompt only through its session: DM only (anyone in a group
+        could otherwise approve on the owner's behalf), and the peer's mention-thread
+        binding must point at the item's session — the same rule the numbered-card path
+        (`_resolve_weixin_prompt_reply`) enforces."""
+        if chat_type in ("channel", "group"):
+            return False
+        return self.mention_sessions.get(target or "") == item.session_id
+
     def set_inbox_binding(
         self, name: str, *, channel: Optional[str], target: str
     ) -> dict[str, Any]:
@@ -7311,15 +7362,11 @@ class SessionManager:
         item = self.inbox.get(item_id)
         if item is None:
             return
-        protected_kinds = {"approval", "directory", "plan"}
-        if (
-            getattr(event, "platform", "") == "slack"
-            and item.kind in protected_kinds
-        ):
-            actor_id = str(getattr(event, "user_id", "") or "")
-            if not self._slack_actor_owns_item(
+        if item.kind in self._PROTECTED_ITEM_KINDS:
+            if not self._actor_owns_protected_item(
                 item,
-                actor_id=actor_id,
+                platform=str(getattr(event, "platform", "") or ""),
+                actor_id=str(getattr(event, "user_id", "") or ""),
                 chat_id=getattr(event, "chat_id", "") or "",
                 team_id=getattr(event, "team_id", None),
             ):
@@ -7368,13 +7415,15 @@ class SessionManager:
             if item is None:
                 return False
             platform = getattr(event.source, "platform", "")
-            if platform == "slack" and item.kind in {"approval", "directory", "plan"}:
-                actor_id = str(getattr(event.source, "user_id", "") or "")
-                if not self._slack_actor_owns_item(
+            if item.kind in self._PROTECTED_ITEM_KINDS:
+                if not self._actor_owns_protected_item(
                     item,
-                    actor_id=actor_id,
+                    platform=str(platform or ""),
+                    actor_id=str(getattr(event.source, "user_id", "") or ""),
                     chat_id=getattr(event.source, "chat_id", "") or "",
                     team_id=getattr(event.source, "team_id", None),
+                    chat_type=getattr(event.source, "chat_type", "dm") or "dm",
+                    target=getattr(event.source, "target", "") or "",
                 ):
                     return False
             if platform == "weixin":
