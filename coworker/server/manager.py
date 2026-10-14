@@ -287,6 +287,10 @@ def folder_present(path: str) -> bool:
     return p.is_dir()
 
 
+# Where the keyless Ollama probes look when no profile is saved (see `_ollama_alive`).
+_OLLAMA_PROBE_DEFAULT = "http://127.0.0.1:11434"
+
+
 class SessionManager:
     # Live model-catalog cache (`_model_catalog`, prefs key "model_catalog"): how long a
     # successful fetch stands before it's considered stale enough to re-pull (models
@@ -5624,13 +5628,17 @@ class SessionManager:
         if cached and now - cached[0] < 30:
             return cached[1]
         profile = self.secrets.get("provider:ollama") or {}
-        base = (profile.get("base_url") or "http://localhost:11434").strip().rstrip("/")
+        # 127.0.0.1, not localhost: on Windows without Ollama a "localhost" connect is not
+        # refused but retried over IPv6 first and times out (measured 2.3 s at a 0.8 s
+        # timeout, 2026-10-14), and this probe sits on every Settings fetch for the
+        # gateway-only majority. A saved profile's own base_url still wins.
+        base = (profile.get("base_url") or _OLLAMA_PROBE_DEFAULT).strip().rstrip("/")
         if base.endswith("/v1"):
             base = base[: -len("/v1")]
         try:
             import httpx
 
-            alive = httpx.get(base + "/api/tags", timeout=0.8).status_code == 200
+            alive = httpx.get(base + "/api/tags", timeout=0.4).status_code == 200
         except Exception:
             alive = False
         self._ollama_alive_cache = (now, alive)
@@ -5649,7 +5657,7 @@ class SessionManager:
         if not self._ollama_alive():
             return []
         profile = self.secrets.get("provider:ollama") or {}
-        base = (profile.get("base_url") or "http://localhost:11434").strip().rstrip("/")
+        base = (profile.get("base_url") or _OLLAMA_PROBE_DEFAULT).strip().rstrip("/")
         if base.endswith("/v1"):
             base = base[: -len("/v1")]
         try:
