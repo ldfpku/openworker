@@ -43,7 +43,7 @@ def test_unknown_bump_is_rejected():
 def test_bump_preserves_config_format(tmp_path):
     path = tmp_path / "tauri.conf.json"
     text = '{\n  "version": "0.7.9",\n  "productName": "OpenWorker"\n}\n'
-    path.write_text(text, encoding="utf-8")
+    path.write_bytes(text.encode("utf-8"))  # LF fixture on every platform
     assert _MODULE.bump_config(path, "patch") == "0.8.1"
     assert path.read_text(encoding="utf-8") == text.replace("0.7.9", "0.8.1")
     assert json.loads(path.read_text(encoding="utf-8"))["productName"] == "OpenWorker"
