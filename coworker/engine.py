@@ -1803,6 +1803,12 @@ class TurnEngine:
             from .providers.matrix import model_context_windows
 
             cfg["context_window"] = model_context_windows().get(self.model)
+            if not cfg["context_window"]:
+                # Ollama's window is the num_ctx we send (providers/ollama_context.py),
+                # not the 128k guess — compact before that window context-shifts.
+                from .providers.ollama_context import context_window_for
+
+                cfg["context_window"] = context_window_for(self.model)
         cfg.setdefault("threshold_pct", _compaction.DEFAULT_THRESHOLD_PCT)
         cfg.setdefault("cap_tokens", _compaction.DEFAULT_CAP_TOKENS)
         return cfg
