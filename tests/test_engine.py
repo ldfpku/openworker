@@ -708,6 +708,22 @@ def test_ordinary_text_answer_still_completes(tmp_path):
     assert next(ev for ev in events if ev.type == EventType.TURN_END).data["status"] == "completed"
 
 
+def test_a_finished_answer_with_a_stray_tool_tag_is_kept(tmp_path):
+    """Seen live (upstream 72b487ec, qwen3-coder:30b on Ollama): the answer was complete,
+    ended in `<tool_call>`, and was retried as a failed call; the second answer was worse.
+    The tag goes, the answer stays — in the event, in history, and without an error.
+    (Upstream covers this in tests/test_headless_run.py, which this fork does not carry.)"""
+    engine, _ = _engine(tmp_path, [_text_turn("The output is 100.<tool_call>")])
+    events = _collect(engine, "Square ten.")
+    assert EventType.ERROR not in _types(events)
+    assert next(ev for ev in events if ev.type == EventType.TURN_END).data["status"] == "completed"
+    shown = next(ev for ev in events if ev.type == EventType.ASSISTANT_MESSAGE)
+    assert shown.data["text"] == "The output is 100."
+    assert [m["content"] for m in engine.messages if m.get("role") == "assistant"] == [
+        "The output is 100."
+    ]
+
+
 # -- turns that ended badly (owner report 2026-09-18) -------------------------------
 
 

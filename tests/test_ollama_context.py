@@ -11,8 +11,10 @@ import pytest
 from coworker.compaction import is_context_overflow
 from coworker.engine import TurnEngine
 from coworker.providers import ollama_context
+from coworker.providers import local_machine
 from coworker.providers.ollama_context import (
     DEFAULT_OLLAMA_NUM_CTX,
+    resolve_num_ctx,
     OllamaContextTransport,
     context_length_from_show,
     context_window_for,
@@ -103,12 +105,11 @@ class _Inner(httpx.BaseTransport):
         return [r for r in self.requests if r.url.path.endswith("/api/chat")]
 
 
-def _chat_request(model: str = "gemma4:e4b", base: str = "http://127.0.0.1:11434/v1"):
-    return httpx.Request(
-        "POST",
-        f"{base}/chat/completions",
-        json={"model": model, "messages": [{"role": "user", "content": "hi"}]},
-    )
+def _chat_request(model: str = "gemma4:e4b", base: str = "http://127.0.0.1:11434/v1", stream: bool = False):
+    body = {"model": model, "messages": [{"role": "user", "content": "hi"}]}
+    if stream:
+        body["stream"] = True
+    return httpx.Request("POST", f"{base}/chat/completions", json=body)
 
 
 def _done(model: str = "gemma4:e4b") -> httpx.Response:
@@ -133,45 +134,105 @@ def test_context_length_prefers_modelfile_num_ctx_then_trained_length():
     assert context_length_from_show({}) is None
 
 
-def test_transport_reads_the_trained_window_from_api_show_once_per_model():
+BIG = 512 * local_machine.GB  # a machine with memory to spare: the top tier, 128K
+
+
+def test_transport_reads_the_window_from_api_show_once_per_model():
     inner = _Inner(_done(), show=httpx.Response(200, json=GEMMA_SHOW))
-    transport = OllamaContextTransport(inner=inner)
+    transport = OllamaContextTransport(inner=inner, memory_bytes=BIG)
     transport.handle_request(_chat_request())
     transport.handle_request(_chat_request())
     shows = [r for r in inner.requests if r.url.path == "/api/show"]
     assert len(shows) == 1
     assert json.loads(shows[0].content) == {"model": "gemma4:e4b"}
+    # The trained window is 262K; the default never goes above the top tier.
     for chat in inner.chat_requests():
-        assert json.loads(chat.content)["options"]["num_ctx"] == 262144
+        assert json.loads(chat.content)["options"]["num_ctx"] == 131072
     # The engine sizes compaction against the window actually in use.
-    assert context_window_for("ollama:gemma4:e4b") == 262144
+    assert context_window_for("ollama:gemma4:e4b") == 131072
 
 
-def test_env_override_caps_the_trained_window(monkeypatch):
+def test_the_window_follows_the_memory_models_load_into():
+    # Seen live: a 30B model at its full 262K window took 46 GB; the model's own maximum
+    # is the wrong default on a laptop. The machine's memory picks the tier.
+    assert resolve_num_ctx(GEMMA_SHOW, memory_bytes=8 * local_machine.GB) == 16384
+    assert resolve_num_ctx(GEMMA_SHOW, memory_bytes=24 * local_machine.GB) == 32768
+    assert resolve_num_ctx(GEMMA_SHOW, memory_bytes=48 * local_machine.GB) == 65536
+    assert resolve_num_ctx(GEMMA_SHOW, memory_bytes=96 * local_machine.GB) == 131072
+    # Never above what the model was trained for.
+    small = {"model_info": {"general.architecture": "llama", "llama.context_length": 8192}}
+    assert resolve_num_ctx(small, memory_bytes=96 * local_machine.GB) == 8192
+    # A Modelfile pin is the user's choice and wins over the machine rule.
+    pinned = {**GEMMA_SHOW, "parameters": "num_ctx 200000\nstop <eos>"}
+    assert resolve_num_ctx(pinned, memory_bytes=8 * local_machine.GB) == 200000
+    # Unknown memory: the trained window, as before.
+    assert resolve_num_ctx(GEMMA_SHOW, memory_bytes=None) in (262144, 131072, 65536, 32768, 16384)
+
+
+def test_recommended_context_tiers():
+    GB = local_machine.GB
+    assert local_machine.recommended_context(1_000_000, 15 * GB) == 16384
+    assert local_machine.recommended_context(1_000_000, 16 * GB) == 32768
+    assert local_machine.recommended_context(1_000_000, 64 * GB) == 131072
+    assert local_machine.recommended_context(4096, 64 * GB) == 4096  # the model's own limit
+    assert local_machine.recommended_context(1_000_000, None) is None
+
+
+def test_native_calls_keep_the_authorization_header_and_the_timeout():
+    inner = _Inner(_done(), show=httpx.Response(200, json=GEMMA_SHOW))
+    request = _chat_request()
+    request.headers["authorization"] = "Bearer secret-proxy-token"
+    request.extensions["timeout"] = {"connect": 10.0, "read": 600.0, "write": 10.0, "pool": 10.0}
+    OllamaContextTransport(inner=inner, memory_bytes=BIG).handle_request(request)
+    for sent in inner.requests:
+        assert sent.headers.get("authorization") == "Bearer secret-proxy-token"
+        assert sent.extensions.get("timeout", {}).get("read") == 600.0
+    # The SDK's placeholder key for a keyless Ollama is not forwarded.
+    inner = _Inner(_done(), show=httpx.Response(200, json=GEMMA_SHOW))
+    request = _chat_request()
+    request.headers["authorization"] = "Bearer ollama"
+    OllamaContextTransport(inner=inner, memory_bytes=BIG).handle_request(request)
+    assert all("authorization" not in r.headers for r in inner.requests)
+
+
+def test_an_error_line_mid_stream_becomes_an_error_chunk():
+    lines = [
+        {"model": "gemma4:e4b", "message": {"role": "assistant", "content": "Hel"}, "done": False},
+        {"error": "model runner has unexpectedly stopped"},
+    ]
+    body = "\n".join(json.dumps(line) for line in lines) + "\n"
+    inner = _Inner(httpx.Response(200, content=body.encode()), show=httpx.Response(200, json=GEMMA_SHOW))
+    response = OllamaContextTransport(inner=inner, memory_bytes=BIG).handle_request(_chat_request(stream=True))
+    events = [json.loads(e[len("data: "):]) for e in response.read().decode().split("\n\n") if e.startswith("data: {")]
+    assert events[0]["choices"][0]["delta"]["content"] == "Hel"
+    assert events[-1] == {"error": {"message": "model runner has unexpectedly stopped", "type": "server_error"}}
+
+
+def test_env_override_caps_the_window(monkeypatch):
     monkeypatch.setenv("OPENWORKER_OLLAMA_NUM_CTX", "32768")
     inner = _Inner(_done(), show=httpx.Response(200, json=GEMMA_SHOW))
-    OllamaContextTransport(inner=inner).handle_request(_chat_request())
+    OllamaContextTransport(inner=inner, memory_bytes=BIG).handle_request(_chat_request())
     assert json.loads(inner.chat_requests()[0].content)["options"]["num_ctx"] == 32768
     assert context_window_for("ollama:gemma4:e4b") == 32768
     # A cap above the trained window changes nothing.
     monkeypatch.setenv("OPENWORKER_OLLAMA_NUM_CTX", "1000000")
     small = {"model_info": {"general.architecture": "llama", "llama.context_length": 8192}}
     inner = _Inner(_done(), show=httpx.Response(200, json=small))
-    OllamaContextTransport(inner=inner).handle_request(_chat_request(model="llama3.2"))
+    OllamaContextTransport(inner=inner, memory_bytes=BIG).handle_request(_chat_request(model="llama3.2"))
     assert json.loads(inner.chat_requests()[0].content)["options"]["num_ctx"] == 8192
 
 
-def test_unreachable_api_show_falls_back_to_the_default_and_retries_later():
+def test_unreachable_api_show_falls_back_to_the_machine_rule_and_retries_later():
     inner = _Inner(_done(), show=None)
-    transport = OllamaContextTransport(inner=inner)
+    transport = OllamaContextTransport(inner=inner, memory_bytes=24 * local_machine.GB)
     transport.handle_request(_chat_request())
-    assert json.loads(inner.chat_requests()[0].content)["options"]["num_ctx"] == (
-        DEFAULT_OLLAMA_NUM_CTX
-    )
-    # Now the server answers; the cached failure must not stick.
-    inner.show = httpx.Response(200, json=GEMMA_SHOW)
+    assert json.loads(inner.chat_requests()[0].content)["options"]["num_ctx"] == 32768
+    # Now the server answers; the cached failure must not stick, and a model trained
+    # for less than the tier gets its own limit.
+    small = {"model_info": {"general.architecture": "llama", "llama.context_length": 8192}}
+    inner.show = httpx.Response(200, json=small)
     transport.handle_request(_chat_request())
-    assert json.loads(inner.chat_requests()[1].content)["options"]["num_ctx"] == 262144
+    assert json.loads(inner.chat_requests()[1].content)["options"]["num_ctx"] == 8192
 
 
 def test_native_endpoints_keep_a_reverse_proxy_prefix():
@@ -289,14 +350,14 @@ def test_ollama_compaction_window_matches_the_requested_context():
         model="ollama:gemma4:e4b",
         compaction_settings=None,
     )
-    # Before the first chat call resolves the model: the default.
+    # Before the first chat call resolves the model: the machine rule.
     cfg = TurnEngine._compaction_config(engine)
-    assert cfg["context_window"] == DEFAULT_OLLAMA_NUM_CTX
+    assert cfg["context_window"] == resolve_num_ctx(None)
     assert context_window_for("gpt-5.5") is None
     # After: exactly the window the transport sent.
     inner = _Inner(_done(), show=httpx.Response(200, json=GEMMA_SHOW))
-    OllamaContextTransport(inner=inner).handle_request(_chat_request())
-    assert TurnEngine._compaction_config(engine)["context_window"] == 262144
+    OllamaContextTransport(inner=inner, memory_bytes=BIG).handle_request(_chat_request())
+    assert TurnEngine._compaction_config(engine)["context_window"] == 131072
 
 
 def test_ollama_context_overflow_is_recognized():

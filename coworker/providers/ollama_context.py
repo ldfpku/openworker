@@ -8,12 +8,13 @@ minus a few tokens — 2,051 — keeping only the tail. The system prompt and th
 tools sit at the front, so the model never sees them.
 
 The native `/api/chat` endpoint accepts `options.num_ctx`. This transport rewrites
-chat-completions calls onto that endpoint and asks for the window the model was
-trained with, read once per model from `/api/show` (`model_info["<arch>.context_length"]`,
-or a `num_ctx` the Modelfile pins). `OPENWORKER_OLLAMA_NUM_CTX` caps that on machines
-that cannot hold the full KV cache. `shift` is off: once the prompt no longer fits,
-Ollama must error instead of silently discarding the front of the prompt again; the
-engine treats that error as a compaction trigger.
+chat-completions calls onto that endpoint and asks for a window chosen for this machine
+(local_machine.py: 16K to 128K by the memory models load into), never above the window
+the model was trained with, read once per model from `/api/show`
+(`model_info["<arch>.context_length"]`). A `num_ctx` the Modelfile pins is the user's
+choice and wins. `OPENWORKER_OLLAMA_NUM_CTX` caps either. `shift` is off: once the prompt
+no longer fits, Ollama must error instead of silently discarding the front of the prompt
+again; the engine treats that error as a compaction trigger.
 """
 
 from __future__ import annotations
@@ -25,6 +26,8 @@ import time
 from typing import Any, Iterator, Optional
 
 import httpx
+
+from . import local_machine
 
 # Used when `/api/show` is unreachable or does not report a context length. 128k is
 # the trained window of most current local models (Gemma 4, Qwen 3, Llama 3.x).
@@ -56,16 +59,22 @@ def apply_cap(value: int) -> int:
     return min(value, cap) if cap else value
 
 
-def context_length_from_show(show: dict[str, Any]) -> Optional[int]:
-    """The window a model should run at, from an `/api/show` response.
-
-    A `num_ctx` pinned in the Modelfile wins (the user chose it deliberately); otherwise
-    the trained length under `model_info["<architecture>.context_length"]`."""
+def pinned_num_ctx(show: dict[str, Any]) -> Optional[int]:
+    """A `num_ctx` the Modelfile pins: the user chose it deliberately, so it wins."""
     params = show.get("parameters")
     if isinstance(params, str):
         match = _MODELFILE_NUM_CTX.search(params)
         if match and int(match.group(1)) >= MIN_OLLAMA_NUM_CTX:
             return int(match.group(1))
+    return None
+
+
+def context_length_from_show(show: dict[str, Any]) -> Optional[int]:
+    """The window a model can run at, from an `/api/show` response: a pinned `num_ctx`,
+    else the trained length under `model_info["<architecture>.context_length"]`."""
+    pinned = pinned_num_ctx(show)
+    if pinned:
+        return pinned
     info = show.get("model_info")
     if not isinstance(info, dict):
         return None
@@ -79,10 +88,20 @@ def context_length_from_show(show: dict[str, Any]) -> Optional[int]:
     return keyed if isinstance(keyed, int) and keyed >= MIN_OLLAMA_NUM_CTX else None
 
 
-def resolve_num_ctx(show: Optional[dict[str, Any]]) -> int:
-    """Trained window (or the default when unknown), capped by the env override."""
+def resolve_num_ctx(
+    show: Optional[dict[str, Any]], memory_bytes: Optional[int] = None
+) -> int:
+    """The window to send: the Modelfile's pin if any, else the machine's recommended
+    size held under the trained window (or the default when unknown). The env override
+    caps either. `memory_bytes` stands in for the machine's memory in tests."""
+    if show:
+        pinned = pinned_num_ctx(show)
+        if pinned:
+            return apply_cap(pinned)
     trained = context_length_from_show(show) if show else None
-    return apply_cap(trained or DEFAULT_OLLAMA_NUM_CTX)
+    memory = memory_bytes if memory_bytes is not None else local_machine.model_memory_bytes()
+    fitted = local_machine.recommended_context(trained or DEFAULT_OLLAMA_NUM_CTX, memory)
+    return apply_cap(fitted or trained or DEFAULT_OLLAMA_NUM_CTX)
 
 
 def context_window_for(model: str) -> Optional[int]:
@@ -93,7 +112,7 @@ def context_window_for(model: str) -> Optional[int]:
     vendor, _, bare = model.partition(":")
     if vendor != "ollama":
         return None
-    return _resolved.get(bare) or apply_cap(DEFAULT_OLLAMA_NUM_CTX)
+    return _resolved.get(bare) or resolve_num_ctx(None)
 
 
 def ollama_http_client() -> httpx.Client:
@@ -121,9 +140,13 @@ class OllamaContextTransport(httpx.BaseTransport):
     window is looked up per model from `/api/show` on first use and cached."""
 
     def __init__(
-        self, num_ctx: Optional[int] = None, inner: Optional[httpx.BaseTransport] = None
+        self,
+        num_ctx: Optional[int] = None,
+        inner: Optional[httpx.BaseTransport] = None,
+        memory_bytes: Optional[int] = None,
     ) -> None:
         self.num_ctx = num_ctx
+        self.memory_bytes = memory_bytes  # tests: the machine's memory, stood in for
         self._inner = inner if inner is not None else httpx.HTTPTransport()
         self._by_model: dict[str, int] = {}
 
@@ -135,12 +158,16 @@ class OllamaContextTransport(httpx.BaseTransport):
         except (UnicodeDecodeError, json.JSONDecodeError):
             return self._inner.handle_request(request)
         model = str(body.get("model") or "")
-        native = to_native_chat(body, self._num_ctx_for(model, request.url))
+        native = to_native_chat(body, self._num_ctx_for(model, request))
+        # The native call keeps what the caller set on the original: its Authorization
+        # header (a proxy or a hosted Ollama asks for one) and its timeout, which lives in
+        # the request's extensions.
         native_request = httpx.Request(
             "POST",
             _native_url(request.url, "/api/chat"),
-            headers={"content-type": "application/json"},
+            headers=_forwarded_headers(request),
             content=json.dumps(native),
+            extensions=dict(request.extensions),
         )
         response = self._inner.handle_request(native_request)
         if body.get("stream") and response.status_code == 200:
@@ -168,6 +195,15 @@ class OllamaContextTransport(httpx.BaseTransport):
                         native = json.loads(line)
                     except json.JSONDecodeError:
                         continue
+                    error = native.get("error")
+                    if error and not native.get("message"):
+                        # Ollama reports a failure mid-stream as its own line (the
+                        # model unloaded, the prompt outgrew the window). Hand it to
+                        # the SDK as an error chunk, which it raises; dropping it ended
+                        # the turn as if the reply were complete.
+                        payload = {"error": {"message": str(error), "type": "server_error"}}
+                        yield f"data: {json.dumps(payload)}\n\n".encode()
+                        break
                     calls = (native.get("message") or {}).get("tool_calls") or []
                     if calls:
                         saw_tools = True
@@ -184,27 +220,28 @@ class OllamaContextTransport(httpx.BaseTransport):
             stream=_ByteChunks(chunks()),
         )
 
-    def _num_ctx_for(self, model: str, url: httpx.URL) -> int:
+    def _num_ctx_for(self, model: str, request: httpx.Request) -> int:
         if self.num_ctx is not None:
             return self.num_ctx
         cached = self._by_model.get(model)
         if cached:
             return cached
-        show = self._show(model, url)
-        value = resolve_num_ctx(show)
+        show = self._show(model, request)
+        value = resolve_num_ctx(show, self.memory_bytes)
         if show is not None:
             self._by_model[model] = value
             _resolved[model] = value
         return value
 
-    def _show(self, model: str, url: httpx.URL) -> Optional[dict[str, Any]]:
+    def _show(self, model: str, original: httpx.Request) -> Optional[dict[str, Any]]:
         """`/api/show` for `model`, or None when the server cannot answer. A failed
         lookup is not cached: the chat call that follows will surface the real error."""
         request = httpx.Request(
             "POST",
-            _native_url(url, "/api/show"),
-            headers={"content-type": "application/json"},
+            _native_url(original.url, "/api/show"),
+            headers=_forwarded_headers(original),
             content=json.dumps({"model": model}),
+            extensions=dict(original.extensions),
         )
         try:
             response = self._inner.handle_request(request)
@@ -223,6 +260,14 @@ class OllamaContextTransport(httpx.BaseTransport):
 
     def close(self) -> None:
         self._inner.close()
+
+
+def _forwarded_headers(request: httpx.Request) -> dict[str, str]:
+    headers = {"content-type": "application/json"}
+    auth = request.headers.get("authorization")
+    if auth and auth.strip().lower() != "bearer ollama":  # the SDK's placeholder key
+        headers["authorization"] = auth
+    return headers
 
 
 def _native_url(url: httpx.URL, endpoint: str) -> httpx.URL:

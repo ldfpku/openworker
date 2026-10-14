@@ -293,6 +293,22 @@ def test_salvage_truncated_xml_prefers_a_complete_call_and_filters_unknown_names
     assert _salvage_tool_calls_from_text("<function=rm_rf>\n<parameter=p>/", _TODO_TOOLS) == []
 
 
+def test_a_stray_tool_tag_at_the_end_of_a_finished_answer_is_dropped():
+    from coworker.providers.openai_provider import strip_dangling_tool_tag
+
+    # Seen live on qwen3-coder:30b: a complete answer, then `<tool_call>` and nothing.
+    assert strip_dangling_tool_tag("10 squared is 100<tool_call>") == ("10 squared is 100", True)
+    assert strip_dangling_tool_tag("Done.\n\n</tool_call>\n") == ("Done.", True)
+    # A tag with anything after it is a call that did not parse: left alone.
+    leaked = 'Sure.<tool_call>{"name": "todo_write"'
+    assert strip_dangling_tool_tag(leaked) == (leaked, False)
+    assert looks_like_unparsed_tool_call(leaked, _TODO_TOOLS) is True
+    # Nothing to drop, or nothing left: unchanged.
+    assert strip_dangling_tool_tag("Plain answer.") == ("Plain answer.", False)
+    assert strip_dangling_tool_tag("<tool_call>") == ("<tool_call>", False)
+    assert strip_dangling_tool_tag(None) == (None, False)
+
+
 def test_looks_like_unparsed_tool_call_ignores_code_and_needs_tools():
     """Distinguishes a leaked call from a model *explaining* tool syntax — the latter is a real
     answer and must not be turned into an error."""

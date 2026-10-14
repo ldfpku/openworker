@@ -537,6 +537,23 @@ _LEAKED_TOOL_SYNTAX = (
 _FENCED = re.compile(r"```.*?```|~~~.*?~~~|`[^`\n]*`", re.DOTALL)
 
 
+# A finished answer with one stray tool tag at its very end and nothing after it. Seen
+# live on qwen3-coder:30b (Ollama 0.35.1): a complete, correct answer ended in `<tool_call>`
+# and was thrown away as a failed call, and the retry gave a weaker second answer.
+_DANGLING_TOOL_TAG = re.compile(r"\s*</?tool_call>\s*$", re.IGNORECASE)
+
+
+def strip_dangling_tool_tag(text: Optional[str]) -> tuple[Optional[str], bool]:
+    """(text without a trailing empty tool tag, whether one was removed). Only the tag
+    at the end goes; a tag with anything after it is a call that did not parse."""
+    if not text:
+        return text, False
+    stripped = _DANGLING_TOOL_TAG.sub("", text, count=1)
+    if stripped == text or not stripped.strip():
+        return text, False
+    return stripped.rstrip(), True
+
+
 def looks_like_unparsed_tool_call(
     text: Optional[str], tools: Optional[list[dict[str, Any]]] = None
 ) -> bool:

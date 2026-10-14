@@ -47,7 +47,7 @@ from .providers.errors import (
     is_transient_model_error,
     retry_after_seconds,
 )
-from .providers.openai_provider import looks_like_unparsed_tool_call
+from .providers.openai_provider import looks_like_unparsed_tool_call, strip_dangling_tool_tag
 from .risk import RiskClass, classify
 from .taskutil import spawn_retained
 from .tools import ToolRegistry
@@ -1650,6 +1650,14 @@ class TurnEngine:
 
             self._turn_truncated = turn.finish_reason == "length"
             _sanitize_mangled_calls(turn)
+            if not turn.tool_calls:
+                # One stray `<tool_call>` at the very end of an otherwise finished
+                # answer is noise, not a call: drop it and keep the answer.
+                cleaned, dangling = strip_dangling_tool_tag(turn.text)
+                if dangling and not looks_like_unparsed_tool_call(
+                    cleaned, self.registry.schemas() or None
+                ):
+                    turn.text = cleaned
             if turn.finish_reason is not None:
                 # This model DOES report finish reasons, so from here on its silence means
                 # something — see `_abort_reason`. Keyed by model id, so switching to one
