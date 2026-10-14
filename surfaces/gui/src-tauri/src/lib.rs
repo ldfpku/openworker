@@ -66,6 +66,20 @@ fn free_port() -> u16 {
         .unwrap_or(8765)
 }
 
+/// The OS version ("26.0.1" on macOS), so the page can lay out the top strip for the
+/// traffic lights of that version: macOS 26 draws them at its own position and ignores
+/// the one the shell asks for (seen 2026-09-29). Empty when unknown.
+fn os_version() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        // new_command, not Command::new: every spawn goes through it (R6 window-flash guard).
+        if let Ok(out) = new_command("/usr/bin/sw_vers").arg("-productVersion").output() {
+            return String::from_utf8_lossy(&out.stdout).trim().to_string();
+        }
+    }
+    String::new()
+}
+
 fn launch_token() -> String {
     format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
 }
@@ -827,8 +841,9 @@ pub fn run() {
     let ws = format!("ws://127.0.0.1:{port}");
     // Debug-format yields a quoted JS string literal.
     let inject = format!(
-        "window.__COWORKER_HTTP__={http:?};window.__COWORKER_WS__={ws:?};window.__COWORKER_API_TOKEN__={api_token:?};window.__OCW_PLATFORM__={:?};",
-        std::env::consts::OS
+        "window.__COWORKER_HTTP__={http:?};window.__COWORKER_WS__={ws:?};window.__COWORKER_API_TOKEN__={api_token:?};window.__OCW_PLATFORM__={:?};window.__OCW_OS_VERSION__={:?};",
+        std::env::consts::OS,
+        os_version()
     );
 
     tauri::Builder::default()

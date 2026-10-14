@@ -29,7 +29,7 @@ from .inbox import (
     KIND_QUESTION,
     KIND_TOOL,
 )
-from .tools.ask import option_label
+from .tools.ask import PREFLIGHT_SKIP, SKIP_SENTINEL, option_label
 
 
 @dataclass
@@ -66,6 +66,7 @@ WX_KIND_TITLES = {
 }
 WX_LABEL_ALLOW = "同意"
 WX_LABEL_DENY = "拒绝"
+WX_LABEL_SKIP = "跳过"
 WX_PATH_HINT = "也可直接回复一个绝对路径"
 WX_NO_PATH_HINT = "请直接回复要授权的绝对路径"
 WX_SUGGESTED_PATH = "建议路径：{path}（{access}）"
@@ -107,7 +108,8 @@ def choices_for(item) -> list[Choice]:
 
     The resolution strings are the shapes the CONSUMERS parse, not the card's wording:
       * approval — "allow" / "deny" (`SessionManager.approval_outcome`)
-      * question — the chosen option's label (what the agent receives verbatim)
+      * question — the chosen option's label (what the agent receives verbatim), then a
+        Skip carrying the sentinel `answer_result` turns into a null answer (OPE-153)
       * directory — `{"granted": …, "path": …, "writable": …}` (`inbox_directory_requester`
         and the WS `directory_requester`)
       * plan — `{"approved": true, "mode": "interactive"}` / `{"approved": false}`
@@ -127,9 +129,19 @@ def choices_for(item) -> list[Choice]:
         # options as item.options.
         if _grouped(item):
             return []
-        return [
-            Choice(option_label(opt), option_label(opt))
-            for opt in (getattr(item, "options", None) or [])
+        options = getattr(item, "options", None) or []
+        if not options:
+            # A free-text question stays a plain-text mirror (the reply IS the answer); a lone
+            # Skip would flip it onto the interactive path and cost it that hint.
+            return []
+        # Skip trails the options (OPE-153) so the channel has the same way out the card has:
+        # without it, a reader whose answer isn't on the list can only pick a wrong option or
+        # leave the agent suspended. It grants nobody new authority — anyone who can click an
+        # option here could already decide the question — it only adds declining to what they
+        # can already do. Its own intent ("skip", not "deny") keeps 拒绝/no replies from
+        # answering a question, and lets the WeChat card and receipt word it as 跳过.
+        return [Choice(option_label(opt), option_label(opt)) for opt in options] + [
+            Choice("Skip", _skip_resolution(item), "skip")
         ]
     if kind == KIND_DIRECTORY:
         data = getattr(item, "data", None) or {}
@@ -169,11 +181,24 @@ def choices_for(item) -> list[Choice]:
     return []
 
 
+def _skip_resolution(item) -> str:
+    """The resolution that declines a question without answering it: the engine's own
+    pre-flight card (data.preflight) reads PREFLIGHT_SKIP as "proceed on defaults" — the same
+    button the app shows on it; any other question takes the OPE-153 sentinel, which
+    `answer_result` turns into a null answer plus the no-re-ask note."""
+    data = getattr(item, "data", None) or {}
+    return PREFLIGHT_SKIP if data.get("preflight") else SKIP_SENTINEL
+
+
 def deny_resolution(item) -> str:
-    """The resolution that declines this item — what an expired prompt falls back to."""
+    """The resolution that declines this item — what an expired prompt falls back to. A
+    question has nothing to deny: it is skipped instead (grouped and free-text ones too),
+    so the agent gets a null answer rather than the literal text "deny" as the reply."""
     for choice in choices_for(item):
         if choice.intent == "deny":
             return choice.resolution
+    if getattr(item, "kind", "") == KIND_QUESTION:
+        return _skip_resolution(item)
     return "deny"
 
 
@@ -206,6 +231,8 @@ def outcome_text(item, resolution: str) -> str:
                 return WX_LABEL_ALLOW
             if choice.intent == "deny":
                 return WX_LABEL_DENY
+            if choice.intent == "skip":
+                return WX_LABEL_SKIP
             # An ask_user option answers with its own words; that IS the outcome.
             return choice.label
     intent = _structured_intent(resolution)
@@ -213,6 +240,8 @@ def outcome_text(item, resolution: str) -> str:
         return WX_LABEL_ALLOW
     if intent == "deny":
         return WX_LABEL_DENY
+    if resolution in (SKIP_SENTINEL, PREFLIGHT_SKIP):
+        return WX_LABEL_SKIP  # skipped in the app (a free-text question offers no choices)
     return resolution or WX_LABEL_DENY
 
 
@@ -255,7 +284,7 @@ def weixin_prompt(item, minutes: int) -> str:
     else:
         choices = choices_for(item)
         for n, choice in enumerate(choices, 1):
-            label = {"allow": WX_LABEL_ALLOW, "deny": WX_LABEL_DENY}.get(
+            label = {"allow": WX_LABEL_ALLOW, "deny": WX_LABEL_DENY, "skip": WX_LABEL_SKIP}.get(
                 choice.intent or "", choice.label
             )
             lines.append(f"{n} {label}")

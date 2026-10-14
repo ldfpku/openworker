@@ -80,7 +80,7 @@ import {
 import { addTurnUsage, emptyUsage, formatTokens, usageFromMessages } from "./usage";
 import { streamMode } from "./streamGate";
 import { InboxItemCard } from "./components/InboxItemCard";
-import { chooseFolder, isTauri, platformOS, startWindowDrag } from "./tauri";
+import { chooseFolder, isTauri, macosMajor, platformOS, startWindowDrag } from "./tauri";
 import { Icon } from "./components/Icon";
 import { IconButton } from "./components/IconButton";
 import { Sidebar } from "./components/Sidebar";
@@ -509,6 +509,9 @@ export function App() {
   // Auto-Approve metering (§1.7): live reviewer counts for the composer badge. Polled with
   // the session inbox; null until the first fetch (badge hidden).
   const [composerPrefill, setComposerPrefill] = useState<{ text: string; attachments?: Attachment[]; nonce: number }>();
+  // A reply typed in the composer while a live ask_user question is open: handed to the
+  // question card, which answers its current step with it (see `send`).
+  const [composerAnswer, setComposerAnswer] = useState<{ text: string; nonce: number }>();
   // Settings/Inbox/Library are other `surface`s and unmount the composer, whose draft is local
   // state. The unsent draft is kept here instead, keyed by session, and restored on remount
   // (owner ask 2026-09-02).
@@ -1498,6 +1501,16 @@ export function App() {
       respondItemsReq(false, text);
       return;
     }
+    // The same for an open ask_user question: what the user types in the composer is
+    // the answer. Before this, Enter did nothing while a question was up, and a
+    // question sent with allow_text false left no other place to type (owner-hit
+    // 2026-10-06). The card answers its CURRENT step with it, so a grouped card (the
+    // 开工前核对 card is one) advances instead of resolving with the text misfiled
+    // under its first question.
+    if (!unattended && pendingQuestion?.kind === "question" && !attachments?.length && !skill) {
+      setComposerAnswer((p) => ({ text, nonce: (p?.nonce ?? 0) + 1 }));
+      return;
+    }
     // Force-run shows exactly what the user typed: "/name rest". Must match the server's
     // `display` sidecar formula so the turn_start dedupe recognizes the local echo.
     const shown = skill ? `/${skill}${text ? ` ${text}` : ""}` : text;
@@ -1561,6 +1574,7 @@ export function App() {
     setReviewerPaused(false); // an answered question resets the reviewer's streak
     setItems((p) => resolveLastQuestion(p, answer));
     dropSessionInbox("question");
+    setComposerAnswer(undefined); // a typed reply belongs to the card it was typed at
     sessionRef.current?.respondQuestion(answer);
   };
   const prefillComposer = (text: string, attachments?: Attachment[]) =>
@@ -2004,6 +2018,12 @@ export function App() {
   // compensations (traffic-light insets, lowered top strips) must not apply there —
   // they rendered as misalignments under Windows' native bar (caught 2026-07-21).
   const overlay = (desktop && platformOS() === "macos") || simOverlay;
+  // macOS 26 draws the traffic lights ~9px higher than macOS 15 does for this window, so
+  // the wordmark, the reveal button and the topbar cluster move up with them (`?overlay=26`
+  // previews it in the browser).
+  const lightsHigh =
+    overlay && (macosMajor() >= 26 || new URLSearchParams(window.location.search).get("overlay") === "26");
+  const overlayClass = overlay ? " tauri-overlay" + (lightsHigh ? " macos-26" : "") : "";
   const beginWindowDrag = (event: PointerEvent) => {
     if (!desktop || event.button !== 0) return;
     startWindowDrag();
@@ -2011,7 +2031,7 @@ export function App() {
 
   if (booting || !uiReady) {
     return (
-      <div className={"app boot-splash" + (overlay ? " tauri-overlay" : "")}>
+      <div className={"app boot-splash" + overlayClass}>
         {/* overlay (not desktop): ?overlay=1 previews the splash's top-left in the browser
             too — the wordmark/traffic-light alignment is exactly what it exists to tune. */}
         {overlay && (
@@ -2043,7 +2063,7 @@ export function App() {
     <div
       className={
         "app" +
-        (overlay ? " tauri-overlay" : "") +
+        overlayClass +
         (navCollapsed ? " nav-collapsed" : "") +
         (navCollapsed && navPeek ? " nav-peek" : "")
       }
@@ -2546,7 +2566,8 @@ export function App() {
               modelPrices={modelPrices}
               modelTiers={modelTiers}
               running={running}
-              gateOpen={!unattended && (!!pendingTeam || !!pendingItemsReq)}
+              gateOpen={!unattended && (!!pendingTeam || !!pendingItemsReq || !!pendingQuestion)}
+              gateKind={!unattended && pendingQuestion && !pendingTeam && !pendingItemsReq ? "question" : "proposal"}
               connected={connected}
               modelReady={modelReady}
               modelNotice={modelNotice}
@@ -2623,6 +2644,7 @@ export function App() {
                       ...(pendingQuestion.preflight ? { data: { preflight: true } } : {}),
                     }}
                     onResolve={(_id, answer) => answerQuestion(answer)}
+                    answerText={composerAnswer}
                     compact
                   />
                 ) : sessionInbox[0] ? (

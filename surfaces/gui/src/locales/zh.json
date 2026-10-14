@@ -153,6 +153,7 @@
       "loading": "正在加载模型…",
       "loading_title": "正在从服务器获取模型列表"
     },
+    "placeholder_question": "输入你的回答——也可以直接选上面的选项",
     "placeholder_gate": "回复以调整方案——也可以直接用上面的按钮",
     "attach_this_message": "本条消息",
     "attach_this_session": "本次会话",
@@ -887,6 +888,9 @@
     "step_of": "{{step}} / {{total}}",
     "preflight_title": "开工前核对",
     "preflight_skip": "跳过，按默认口径直接做",
+    "skip": "跳过",
+    "skip_question": "跳过此问题",
+    "skip_all": "全部跳过",
     "kind": {
       "approval": "审批",
       "question": "问题",

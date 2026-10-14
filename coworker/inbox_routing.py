@@ -145,6 +145,9 @@ _ALLOW_WORDS = frozenset(
 _DENY_WORDS = frozenset(
     {"deny", "denied", "reject", "rejected", "no", "拒绝", "不行", "取消", "否"}
 )
+# The WeChat card words a question's Skip choice as 跳过 (interactions.WX_LABEL_SKIP), so a
+# typed 跳过 has to land on it rather than ride in as the free-text answer "跳过".
+_SKIP_WORDS = frozenset({"skip", "跳过"})
 _ALLOW_EMOJI = ("👍", "✅")
 _DENY_EMOJI = ("👎", "❌")
 # CJK punctuation included: "同意。" and "拒绝！" have to trim to the bare word the way
@@ -153,7 +156,7 @@ _TOKEN_TRIM = ".,!?:;'\"()" + "。，！？：；、“”‘’（）"
 
 
 def _reply_intent(text: str) -> Optional[str]:
-    """Allow/deny intent from the first word (or emoji) of a reply, else None."""
+    """Allow/deny/skip intent from the first word (or emoji) of a reply, else None."""
     first = text.split()[0] if text.split() else ""
     if first.startswith(_ALLOW_EMOJI):  # startswith: tolerate skin-tone modifiers
         return "allow"
@@ -164,6 +167,8 @@ def _reply_intent(text: str) -> Optional[str]:
         return "allow"
     if word in _DENY_WORDS:
         return "deny"
+    if word in _SKIP_WORDS:
+        return "skip"
     return None
 
 

@@ -1789,6 +1789,10 @@ export async function setSessionSkill(
 // Resolution sentinel of the 开工前核对 card's 「跳过，按默认口径直接做」 button — mirrors
 // coworker/tools/ask.py PREFLIGHT_SKIP; the engine reads it as "proceed on defaults".
 export const PREFLIGHT_SKIP = "__preflight_skip__";
+// The resolution a question card sends when the user declines to answer (OPE-153). Mirrors
+// SKIP_SENTINEL in coworker/tools/ask.py, which turns it back into a null answer — keep the
+// two constants in step. Distinct from PREFLIGHT_SKIP: that one means "proceed on defaults".
+export const SKIP = "__ocw_skip__";
 
 export interface InboxItem {
   id: string;
