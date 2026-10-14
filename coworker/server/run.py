@@ -148,6 +148,11 @@ def main(argv=None) -> None:
         choices=["discuss", "plan", "interactive", "auto", "bypass-approvals", "auto-approve"],
     )
     parser.add_argument("--host", default=cfg.host)
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="build the application and exit without serving (packaging checks)",
+    )
     parser.add_argument("--port", type=int, default=cfg.port)
     args = parser.parse_args(argv)
 
@@ -155,6 +160,14 @@ def main(argv=None) -> None:
     # target this process, not config.port. The desktop shell runs the sidecar on
     # a random free port (to coexist with a hand-run server on 8765), so the
     # managed-connect redirect must follow the real port, not the 8765 default.
+    if args.check:
+        # Every import and the application wiring, nothing bound, nothing written: a
+        # frozen build that cannot load its libraries fails here (the 0.3.0 and 0.3.1
+        # Intel apps shipped with a sidecar that could not).
+        build_app(args.cwd, args.model, args.mode)
+        print("ok")
+        return
+
     os.environ["COWORKER_PORT"] = str(args.port)
     generated_token_path = _ensure_api_token(args.port)
     try:

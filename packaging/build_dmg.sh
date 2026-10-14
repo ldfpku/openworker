@@ -157,6 +157,10 @@ if [ -n "$(find "$GUI/src-tauri/binaries/sidecar" -type d -name "*.framework" | 
   exit 1
 fi
 chmod +x "$GUI/src-tauri/binaries/sidecar/openworker-server"
+# Start it once, against an empty state folder: a sidecar that cannot load its libraries
+# must fail the build here, not on the user's Mac (the 0.3.0 and 0.3.1 Intel apps shipped
+# with a sidecar that could not; `--help` alone did not reach the broken import).
+COWORKER_STATE_DIR="$(mktemp -d)" "$GUI/src-tauri/binaries/sidecar/openworker-server" --check
 
 # Sign the sidecar's Mach-O files BEFORE tauri build: `tauri build` signs the .app (sealing
 # resources into its signature) but does NOT sign nested binaries inside resources — unsigned
