@@ -257,3 +257,41 @@ describe("InboxItemCard — skipping a question (OPE-153)", () => {
     );
   });
 });
+
+// A reply typed in the composer while a live question is open (`answerText`) answers the
+// step on screen — a grouped card advances rather than resolving with the text misfiled
+// under its first question — and a nonce already present at mount is never replayed.
+describe("InboxItemCard — a composer-typed answer goes to the current step", () => {
+  const grouped = () =>
+    base({
+      title: "Chart style?",
+      header: "Chart style",
+      questions: [
+        { question: "Chart style?", header: "Chart style", options: ["Bar", "Line"], allow_text: false },
+        { question: "Which palette?", header: "Palette", options: ["Warm", "Cool"], allow_text: false },
+      ],
+    });
+
+  it("answers a lone question with the typed text", () => {
+    const onResolve = vi.fn();
+    const { rerender } = render(<InboxItemCard item={base({ options: ["a", "b"] })} onResolve={onResolve} />);
+    rerender(<InboxItemCard item={base({ options: ["a", "b"] })} onResolve={onResolve} answerText={{ text: "sepia", nonce: 1 }} />);
+    expect(onResolve).toHaveBeenCalledWith("i1", "sepia");
+  });
+
+  it("advances a grouped card and keeps the typed text for that step", () => {
+    const onResolve = vi.fn();
+    const { rerender } = render(<InboxItemCard item={grouped()} onResolve={onResolve} />);
+    rerender(<InboxItemCard item={grouped()} onResolve={onResolve} answerText={{ text: "Pie", nonce: 1 }} />);
+    expect(onResolve).not.toHaveBeenCalled();
+    expect(screen.getByTestId("question-stepper").textContent).toContain("2");
+    fireEvent.click(screen.getByRole("button", { name: "Cool" }));
+    expect(onResolve).toHaveBeenCalledWith("i1", JSON.stringify({ "Chart style": "Pie", Palette: "Cool" }));
+  });
+
+  it("ignores a nonce that was already there when the card mounted", () => {
+    const onResolve = vi.fn();
+    render(<InboxItemCard item={base({ options: ["a", "b"] })} onResolve={onResolve} answerText={{ text: "stale", nonce: 3 }} />);
+    expect(onResolve).not.toHaveBeenCalled();
+  });
+});

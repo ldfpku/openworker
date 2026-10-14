@@ -155,6 +155,7 @@
       "loading": "Loading models…",
       "loading_title": "Fetching the model list from the server"
     },
+    "placeholder_question": "Type your answer — or pick an option above",
     "placeholder_gate": "Reply to adjust the proposal — or use the buttons above",
     "attach_this_message": "This message",
     "attach_this_session": "This session",

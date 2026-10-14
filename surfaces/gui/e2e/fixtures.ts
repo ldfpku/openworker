@@ -3,6 +3,15 @@ import { test as base, expect, type Page } from "@playwright/test";
 // The app-wide /ws/events socket each page opened (UX-026 toast et al.) — specs
 // push server events through it via sendAppEvent below.
 const eventSockets = new WeakMap<Page, { send: (data: string) => void }>();
+const sessionSockets = new WeakMap<Page, { send: (data: string) => void }>();
+
+/** Simulate a session event caused by another viewer/API client. */
+export async function sendSessionEvent(page: Page, obj: unknown): Promise<void> {
+  for (let i = 0; i < 50 && !sessionSockets.get(page); i++) await page.waitForTimeout(100);
+  const ws = sessionSockets.get(page);
+  if (!ws) throw new Error("the app never opened its session socket");
+  ws.send(JSON.stringify(obj));
+}
 
 /** Push an app-wide event exactly as the server would over /ws/events. Waits for
  * the GUI to have connected its socket first. */
@@ -714,6 +723,7 @@ export async function mockApi(page: import("@playwright/test").Page) {
   });
 
   await page.routeWebSocket(/\/ws\/session\//, (ws) => {
+    sessionSockets.set(page, ws);
     const send = (type: string, data: Record<string, unknown> = {}) =>
       ws.send(JSON.stringify({ type, data }));
     // The page's session id, from the socket URL — team approval stamps THIS session
@@ -1041,6 +1051,10 @@ export async function mockApi(page: import("@playwright/test").Page) {
           // The decision echoes back so specs can pin what rode the wire (e.g. always_task).
           send("assistant_message", { text: `Done via ${pendingTool} [decision=${msg.decision}]` });
         }
+        send("turn_done");
+      } else if (msg.type === "question_response") {
+        // ask_user answered (card or composer): echo it so specs can see what arrived.
+        send("assistant_message", { text: `Got your answer: ${msg.answer}` });
         send("turn_done");
       } else if (msg.type === "items_response") {
         if (msg.approved) {

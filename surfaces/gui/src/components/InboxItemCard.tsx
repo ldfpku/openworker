@@ -1,5 +1,5 @@
 import { isComposing } from "../ime";
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { InboxItem } from "../api";
 import type { QuestionOption } from "../types";
@@ -223,14 +223,23 @@ function QuestionBlock({ spec, onAnswer }: { spec: QSpec; onAnswer: (a: string |
 
 // -- the question card (single, or grouped as a stepper) ----------------------
 
+// A typed answer handed in from outside the card — the composer, while a live question is
+// open. `nonce` makes each send distinct; the text answers the CURRENT step.
+export interface TypedAnswer {
+  text: string;
+  nonce: number;
+}
+
 function QuestionCard({
   item,
   onResolve,
   chip,
+  answerText,
 }: {
   item: InboxItem;
   onResolve: (id: string, resolution: string) => void;
   chip?: ReactNode;
+  answerText?: TypedAnswer;
 }) {
   const { t } = useTranslation();
   const specs = specsFor(item);
@@ -261,6 +270,18 @@ function QuestionCard({
     if (step + 1 < specs.length) setStep(step + 1);
     else onResolve(item.id, JSON.stringify(all));
   };
+
+  // The composer's typed reply answers the step on screen (upstream sends it as the whole
+  // resolution, which the server files under the FIRST question — wrong for a grouped card
+  // such as 开工前核对 once the user is past step 1). Only a nonce newer than the one present
+  // when this card mounted counts, so a send meant for an earlier card never replays here.
+  const consumedNonce = useRef(answerText?.nonce ?? 0);
+  useEffect(() => {
+    if (!answerText || answerText.nonce <= consumedNonce.current) return;
+    consumedNonce.current = answerText.nonce;
+    submit(answerText.text);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [answerText?.nonce]);
 
   // Skipping ONE question is just answering it with the sentinel — the stepper advances (or the
   // card resolves on the last step) exactly as a real answer would.
@@ -372,11 +393,13 @@ export function InboxItemCard({
   onResolve,
   chip,
   compact,
+  answerText,
 }: {
   item: InboxItem;
   onResolve: (id: string, resolution: string) => void;
   chip?: ReactNode; // optional "go to session" affordance (shown in the Inbox list, not inline)
   compact?: boolean;
+  answerText?: TypedAnswer; // a reply typed in the composer while a live question is open
 }) {
   const { t } = useTranslation();
   const isQuestion = item.kind === "question";
@@ -459,7 +482,7 @@ export function InboxItemCard({
           </button>
         </div>
       ) : isQuestion ? (
-        <QuestionCard item={item} onResolve={onResolve} chip={chip} />
+        <QuestionCard item={item} onResolve={onResolve} chip={chip} answerText={answerText} />
       ) : item.kind === "directory" ? (
         <div className="flex items-center gap-2 mt-2.5">
           <button

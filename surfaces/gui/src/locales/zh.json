@@ -153,6 +153,7 @@
       "loading": "正在加载模型…",
       "loading_title": "正在从服务器获取模型列表"
     },
+    "placeholder_question": "输入你的回答——也可以直接选上面的选项",
     "placeholder_gate": "回复以调整方案——也可以直接用上面的按钮",
     "attach_this_message": "本条消息",
     "attach_this_session": "本次会话",
