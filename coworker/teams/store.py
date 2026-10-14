@@ -644,6 +644,15 @@ class TeamStore:
                 return
         raise BoardNotFoundError("attachment not found")
 
+    def require_attachment_write(self, space: str, actor: Actor, item_id: int) -> None:
+        """Check before reading/copying a capture; attach_ref rechecks at publication."""
+        if isinstance(item_id, bool) or not isinstance(item_id, int) or item_id <= 0:
+            raise BoardError("item must be a positive integer")
+        with self._lock:
+            self._item(space, item_id)
+            if actor.role == Role.WORKER and item_id not in self._worker_slice(space, actor.id):
+                raise AuthorityError("worker may only attach to its assigned items and items linked to them")
+
     def attach_ref(
         self,
         space: str,
@@ -667,14 +676,8 @@ class TeamStore:
             raise BoardError(f"not an attachment ref: {ref!r}")
         stored = validate_stored_name(stored)
         with self._lock:
+            self.require_attachment_write(space, actor, item_id)
             item = self._item(space, item_id)
-            if actor.role == Role.WORKER and item_id not in self._worker_slice(
-                space, actor.id
-            ):
-                raise AuthorityError(
-                    f"worker {actor.id} may only comment on its assigned items"
-                    " and items linked to them"
-                )
             return self.append_event(
                 space,
                 ITEM_COMMENTED,

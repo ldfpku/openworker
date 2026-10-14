@@ -1130,6 +1130,9 @@ def create_app(manager: SessionManager) -> FastAPI:
         body = body or {}
 
         def run(actor):
+            manager.team_store.require_attachment_write(
+                str(body.get("space", "")), actor, int(body.get("id", 0))
+            )
             raw = str(body.get("data_b64", ""))
             # Cheap pre-decode bound: base64 is ~4/3 of the payload, so anything
             # multiples over the cap is refused before allocating the decode.

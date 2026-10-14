@@ -3166,6 +3166,9 @@ class SessionManager:
             space=space,
             actor=actor,
             attachments=self.attachment_store,
+            # Resolve live grants at call time, including scratch and directories
+            # added or revoked since this engine was built. No engine => no access.
+            roots=lambda: getattr(self._engines.get(session_id), "roots", []),
         ) + journal_tools(
             self.journal_store, actor=actor, space=space
         )

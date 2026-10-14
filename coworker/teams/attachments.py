@@ -8,8 +8,8 @@ state dir, bridged into the board as a normal comment event carrying an
 
 Content addressing buys three things: dedupe for free (the same screenshot attached
 twice stores once), immutability by construction (the ref can never dangle onto
-changed bytes), and location independence — on a hosted board the same ref resolves
-to object storage instead of this directory.
+changed bytes), and independence from agent workspaces. Boards and their attachment
+store stay on this machine; cross-machine sync is not implemented.
 
 Scope is images-only and ~10MB to start; the allowlist is the policy choke point
 when that widens.
@@ -18,7 +18,11 @@ when that widens.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import stat
+import tempfile
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -51,6 +55,10 @@ _STORED_NAME = re.compile(r"[0-9a-f]{64}\.[a-z0-9]{1,5}")
 class AttachmentStore:
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root).expanduser()
+        # Windows refuses to rename onto, or read, a file another thread is mid-publish
+        # on, so concurrent puts in this process are serialized; the staging below still
+        # keeps a crashed or foreign writer from exposing partial bytes.
+        self._lock = threading.Lock()
 
     def put(self, data: bytes, filename: str) -> str:
         """Store one attachment; returns its `attachment://` ref. Idempotent —
@@ -59,24 +67,76 @@ class AttachmentStore:
         stored = f"{hashlib.sha256(data).hexdigest()}.{ext}"
         self.root.mkdir(parents=True, exist_ok=True)
         target = self.root / stored
-        if not target.exists():
-            tmp = target.with_suffix(target.suffix + ".tmp")
-            tmp.write_bytes(data)
-            tmp.replace(target)
+        with self._lock:
+            self._publish(target, data)
         safe_name = Path(filename).name.replace("#", "_")
         return f"{ATTACHMENT_SCHEME}{stored}#{safe_name}"
+
+    def _publish(self, target: Path, data: bytes) -> None:
+        if target.exists():
+            if target.is_symlink() or target.stat().st_size != len(data) or target.read_bytes() != data:
+                raise BoardError("stored attachment failed integrity verification")
+        else:
+            # Unique staging files: concurrent identical captures must not share
+            # a .tmp name. Only complete, flushed bytes become visible to readers.
+            tmp = None
+            try:
+                with tempfile.NamedTemporaryFile(dir=self.root, prefix=".attachment-", delete=False) as file:
+                    tmp = Path(file.name)
+                    file.write(data)
+                    file.flush()
+                    os.fsync(file.fileno())
+                tmp.replace(target)
+                if target.read_bytes() != data:
+                    raise BoardError("stored attachment failed integrity verification")
+            finally:
+                if tmp is not None:
+                    tmp.unlink(missing_ok=True)
 
     def path_for(self, stored: str) -> Path:
         """Resolve a stored name (`<sha256>.<ext>`) to its file. The strict name
         check is the traversal guard — nothing else reaches the filesystem."""
         stored = validate_stored_name(stored)
         path = self.root / stored
-        if not path.exists():
+        if path.is_symlink() or not path.is_file():
             raise BoardNotFoundError("attachment not found")
         return path
 
     def mime_for(self, stored: str) -> str:
         return _IMAGE_TYPES.get(stored.rsplit(".", 1)[-1], "application/octet-stream")
+
+
+def read_image_file(path: str | Path, *, roots=None) -> tuple[bytes, str]:
+    """Read a bounded regular file. Agent callers MUST supply current granted roots.
+
+    None is reserved for operator CLI/MCP callers with their own filesystem access;
+    an empty agent root list fails closed. Relative agent paths use the primary root.
+    """
+    from ..roots import normalize_roots
+
+    allowed = normalize_roots(roots) if roots is not None else None
+    source = Path(path).expanduser()
+    if allowed is not None:
+        if not allowed:
+            raise BoardError("no session directory is available for attachments")
+        if not source.is_absolute():
+            source = allowed[0].path / source
+    source = source.resolve()
+    if allowed is not None and not any(source.is_relative_to(r.path) for r in allowed):
+        raise BoardError("attachment is outside the session's directories")
+    # O_NONBLOCK prevents special files such as FIFOs from hanging the tool;
+    # O_NOFOLLOW rejects a leaf swapped to a symlink after resolution.
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    fd = os.open(source, flags)
+    with os.fdopen(fd, "rb") as file:
+        info = os.fstat(file.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise BoardError("attachment must be a regular file")
+        if info.st_size > MAX_ATTACHMENT_BYTES:
+            raise BoardError("attachment exceeds 10MB")
+        data = file.read(MAX_ATTACHMENT_BYTES + 1)
+    _validate(data, source.name)
+    return data, source.name
 
 
 def stored_name(ref: str) -> Optional[str]:

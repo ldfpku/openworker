@@ -104,17 +104,18 @@ def build(dialect, *, space: str):
         """Attach a screenshot or image (png/jpg/gif/webp, ≤10MB) from a local
         file to a work item — so the lead/reviewer can SEE what you did. Give it
         a caption saying what the image shows. Great with review hand-offs."""
-        from pathlib import Path as _Path
+        from .attachments import read_image_file
 
-        source = _Path(path).expanduser()
-        if not source.is_file():
-            return {"error": f"no such file: {path}"}
+        try:
+            data, name = read_image_file(path)
+        except (BoardError, ValueError, OSError) as error:
+            return {"error": str(error)}
         return _safe(
             dialect.attach,
             space,
             item,
-            source.read_bytes(),
-            source.name,
+            data,
+            name,
             caption=caption,
         )
 
