@@ -53,9 +53,15 @@ class SkillLoader:
         so an edit landing inside one filesystem mtime tick must not read as "unchanged"."""
         stamps: list[tuple[str, float, int]] = []
         for directory in self._dirs:
-            if not directory.is_dir():
+            # Runs before `_discover` on every turn, so the same EACCES guard applies here:
+            # an unreadable dir is "no skills here", never an abort (upstream 24d51407).
+            try:
+                if not directory.is_dir():
+                    continue
+                entries = sorted(directory.iterdir())
+            except OSError:
                 continue
-            for sub in sorted(directory.iterdir()):
+            for sub in entries:
                 md = sub / "SKILL.md"
                 try:
                     st = md.stat()
@@ -87,13 +93,34 @@ class SkillLoader:
             self._fingerprint = fingerprint
 
     def _discover(self, directory: Path, into: dict[str, Skill]) -> None:
-        if not directory.is_dir():
+        """Read one skill dir, best-effort.
+
+        Every filesystem call here is guarded, because `rescan()` runs on EVERY TURN to
+        rebuild the live skill menu: a dir that is merely unreadable must degrade to "no
+        skills here", never abort the run. Seen in the wild with an agent running headless
+        as an unprivileged user — a root-owned `.coworker/` appeared in the workspace
+        mid-session and `is_dir()` raised EACCES (pathlib ignores ENOENT/ENOTDIR/EBADF/
+        ELOOP but propagates EACCES). Long sessions died outright, some ~100 turns deep,
+        over an OPTIONAL dir that was empty anyway.
+
+        Per-skill parsing is guarded separately so one unreadable or malformed folder
+        costs only that skill, not the rest of the dir.
+        """
+        try:
+            if not directory.is_dir():
+                return
+            entries = sorted(directory.iterdir())
+        except OSError:
             return
-        for sub in sorted(directory.iterdir()):
-            md = sub / "SKILL.md"
-            if md.is_file():
+        for sub in entries:
+            try:
+                md = sub / "SKILL.md"
+                if not md.is_file():
+                    continue
                 skill = _parse_skill(md)
-                into[skill.name] = skill
+            except (OSError, UnicodeDecodeError, ValueError):
+                continue
+            into[skill.name] = skill
 
     def names(self) -> list[str]:
         return list(self._skills)
