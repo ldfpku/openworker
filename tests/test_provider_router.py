@@ -394,6 +394,8 @@ def test_manager_curated_models(tmp_path, monkeypatch):
     # test_settings.py::test_ollama_models_gated_on_liveness). Unpinned, the ollama
     # assertions below pass only where Ollama happens to run — green on a dev box, red in CI.
     monkeypatch.setattr(SessionManager, "_ollama_alive", lambda self: True)
+    # Same for the live `/api/tags` list get_settings merges in while Ollama answers.
+    monkeypatch.setattr(SessionManager, "_ollama_models", lambda self: [])
 
     mgr = SessionManager(data_dir=tmp_path)
     # no provider keys → nothing but the always-selectable default
@@ -452,6 +454,9 @@ def test_set_provider_skips_recommended_when_not_pulled(tmp_path, monkeypatch):
 
     mgr = SessionManager(data_dir=tmp_path)
     monkeypatch.setattr(mgr, "_suggested_models", lambda name: [])  # nothing pulled
+    # The picker also lists what a live Ollama has pulled; on a developer's machine that
+    # is a real list, so stand it in too or the test depends on the machine.
+    monkeypatch.setattr(mgr, "_ollama_models", lambda: [])
     mgr.set_provider("ollama", {"base_url": "http://localhost:11434"})
     assert "ollama:qwen3-coder:30b" not in mgr.get_settings()["models"]
 

@@ -5260,19 +5260,25 @@ class SessionManager:
         # the curated list so it shows up in the composer right after configuring the provider.
         rec = d.recommended_model
         added: Optional[str] = None
+        suggested: list[str] = []
         if rec:
             if pulled is not None and pulled.get("ok"):
                 rec_available = rec in {m["id"] for m in self._catalog_models(name)}
             else:
-                rec_available = rec in self._suggested_models(name)
+                suggested = self._suggested_models(name)
+                rec_available = rec in suggested
             if rec_available:
                 # OpenAI models stay bare (the router's default); others carry their prefix.
                 added = rec if name == "openai" else f"{name}:{rec}"
+            elif name == "ollama" and suggested:
+                # Ollama offers whatever the user pulled — the recommended model may not be one.
+                added = f"ollama:{suggested[0]}"
+            if added:
                 self.add_model(added)
         # First working provider wins the default: if the current default model belongs to a
         # provider with no usable config (the fresh-install gpt-5.6-sol case), switch the default to
         # this provider's model. A default that already works is never stolen.
-        if added and not self._provider_configured(self._model_provider(self.model)):
+        if added and not self.model_selectable(self.model):
             self.set_default_model(added)
         return {
             "ok": True,
@@ -5506,6 +5512,14 @@ class SessionManager:
             return False
         return descriptor_configured(d, self.secrets.get(f"provider:{name}") or {})
 
+    def model_selectable(self, model: str) -> bool:
+        """Can this machine run `model` right now? Its provider has a key — or, for the
+        keyless Ollama, a local Ollama answers (cached liveness probe)."""
+        provider = self._model_provider(model)
+        if provider == "ollama":
+            return self._ollama_alive()
+        return self._provider_configured(provider)
+
     # -- settings / prefs (model API key, default model, onboarding) -------------
     def _prefs_path(self) -> Path:
         return self._data_base / "prefs.json"
@@ -5599,11 +5613,17 @@ class SessionManager:
 
     def _ollama_models(self) -> list[str]:
         """Live list of models pulled into the configured Ollama server (via its native
-        `/api/tags`), as `ollama:<name>` so they're directly selectable. Empty if Ollama isn't
-        configured or unreachable — best-effort, never raises."""
-        profile = self.secrets.get("provider:ollama")
-        if not profile:
+        `/api/tags`), as `ollama:<name>` so they're directly selectable. Empty if Ollama is
+        unreachable — best-effort, never raises. No stored profile → the default localhost
+        endpoint, same as `_ollama_alive` (keyless Ollama needs no saved form).
+
+        Gated on the cached liveness probe: `get_providers` asks for every provider's
+        suggestions on each Settings open, and on a Windows machine without Ollama a
+        connect to localhost:11434 is not refused but times out (measured 4.6s per call
+        at the 2s timeout here) — one cached 0.8s probe per 30s instead."""
+        if not self._ollama_alive():
             return []
+        profile = self.secrets.get("provider:ollama") or {}
         base = (profile.get("base_url") or "http://localhost:11434").strip().rstrip("/")
         if base.endswith("/v1"):
             base = base[: -len("/v1")]
@@ -5830,18 +5850,15 @@ class SessionManager:
         # reflects exactly what's connected. The active default is always kept selectable
         # (it's hidden behind the "No model" state until a provider is connected anyway).
         # Ollama is keyless, so "configured" is meaningless there — its models show only
-        # while a local Ollama answers (cached liveness probe).
-        def _selectable(m: str) -> bool:
-            provider = self._model_provider(m)
-            if provider == "ollama":
-                return self._ollama_alive()
-            return self._provider_configured(provider)
-
+        # while a local Ollama answers (cached liveness probe, `model_selectable`).
         # A gateway default that has left this person's server list is the one default
         # that is NOT kept selectable: nothing is substituted for it either — the picker
         # goes to its "No model" state below and the notice says why.
         default_gone = self._aigw_default_gone()
-        selectable = [m for m in self._curated_models() if _selectable(m)]
+        selectable = [m for m in self._curated_models() if self.model_selectable(m)]
+        # Pulled Ollama models are offered live while Ollama answers — no need to add each one.
+        if self._ollama_alive():
+            selectable = list(dict.fromkeys([*selectable, *self._ollama_models()]))
         if self.model not in selectable and not default_gone:
             selectable.insert(0, self.model)
         from ..providers.matrix import model_context_windows, model_labels
@@ -5881,12 +5898,12 @@ class SessionManager:
             "model_tiers": model_tiers,
             "has_key": env_key or stored,
             # Provider-agnostic "can this default model actually run?" — true when the default
-            # model's provider is configured (any provider, not just OpenAI). Drives the GUI's
+            # model's provider is configured (any provider, not just OpenAI), or for an
+            # `ollama:*` default, when a local Ollama answers. Drives the GUI's
             # "No model connected" composer chip and the onboarding Skip warning. Also
             # false for a gateway default that is no longer on the person's server list:
             # same chip, same "sends go to setup, the draft is kept" behaviour.
-            "model_ready": self._provider_configured(self._model_provider(self.model))
-            and not default_gone,
+            "model_ready": self.model_selectable(self.model) and not default_gone,
             # Why `model_ready` is false when it is not simply "no provider connected". A
             # stable code, never display text — the GUI owns the wording in both languages
             # ("default_model_gone" → 「原默认模型已不在可用清单，请重新选择」). None otherwise.
