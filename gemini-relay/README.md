@@ -17,7 +17,8 @@
 >
 > 名册仍由 help.smjtools.com/admin 的用户表派生（help 的 `RELAY_ROSTER` 绑定指向上面这个 KV）。
 > Google 模型同时保留在公司 AI Gateway 里（工作邮箱登录、统一计费、不需要个人 key）；这张卡用的是
-> 每人自己的 Google AI Studio key，不走统一计费。
+> 管理员发给每个人的 Gemini API key（公司的 Google 账号签发，每人一把），不走统一计费。
+> 名册 KV 里没有任何登录令牌（迁移时只复制了名单），所以恢复后**每个人都要在卡片里重新登录一次**。
 
 本目录是这套中转的设计、部署、接入、排错和安全评估。下文写于 DF 时期，凡出现旧账号的域名服务器、
 `smj-cf.cloudflareaccess.com` 或旧 ID 的地方，以上表为准。

@@ -3,9 +3,10 @@
 	"name": "gemini-relay",
 	// Deployed on the ZY account since the 2026-10-14 restore. The account id is deliberately
 	// NOT written here (this repository is public): deploy with CLOUDFLARE_ACCOUNT_ID and
-	// CLOUDFLARE_API_TOKEN set for ZY in that command's environment only. A deploy under the
-	// machine's own wrangler login (bound to the old DF account) fails on the bindings below
-	// instead of landing there, which is the intent.
+	// CLOUDFLARE_API_TOKEN set for ZY in that command's environment only. (KV and D1 ids are
+	// account-scoped, so a deploy under the machine's own wrangler login — bound to the old
+	// DF account — should be refused for the bindings below rather than land there; that
+	// path was reasoned, not tried.)
 	"main": "src/index.ts",
 	"compatibility_date": "2026-08-01",
 	// workers.dev is DNS-poisoned in mainland China and would expose a second, uncontrolled
