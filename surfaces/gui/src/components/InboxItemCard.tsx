@@ -13,6 +13,7 @@ import {
   TitleText,
 } from "./ApprovalCard";
 import { BTN_ACCENT, BTN_BORDERED, BTN_OUTLINE, BTN_QUIET } from "./buttons";
+import { PREFLIGHT_SKIP } from "../api";
 
 // One Inbox item, rendered identically in the Inbox list and inline in its own session view
 // (answer-in-context). Resolving either place hits the same item id — first responder wins.
@@ -92,7 +93,9 @@ function specsFor(item: InboxItem): QSpec[] {
 
 // -- one question (options + free-text escape) --------------------------------
 
-function QuestionBlock({ spec, onAnswer }: { spec: QSpec; onAnswer: (a: string) => void }) {
+// A multi-select answers with the ARRAY of labels (the server turns it into a list) — joining
+// with ", " made a label containing a comma unsplittable on the way back (fixed 2026-10-14).
+function QuestionBlock({ spec, onAnswer }: { spec: QSpec; onAnswer: (a: string | string[]) => void }) {
   const { t } = useTranslation();
   const [selected, setSelected] = useState<string[]>([]);
   const [text, setText] = useState("");
@@ -191,7 +194,7 @@ function QuestionBlock({ spec, onAnswer }: { spec: QSpec; onAnswer: (a: string) 
           <button
             className={BTN_ACCENT}
             disabled={!selected.length}
-            onClick={() => onAnswer(selected.join(", "))}
+            onClick={() => onAnswer(selected)}
           >
             {selected.length ? t("inbox.send_count", { count: selected.length }) : t("common.send")}
           </button>
@@ -236,16 +239,21 @@ function QuestionCard({
   // chrome, plain-answer resolution), and reserve the stepper for 2+ questions.
   const grouped = specs.length > 1;
   const [step, setStep] = useState(0);
-  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [answers, setAnswers] = useState<Record<string, string | string[]>>({});
   const spec = specs[Math.min(step, specs.length - 1)];
   const next = step + 1 < specs.length ? specs[step + 1] : null;
+  // The engine's own 开工前核对 card (coworker/guidance.py): wears its title and offers
+  // 「跳过，按默认口径直接做」 on every step. Flagged by the server (data.preflight, derived
+  // from the tool-call id), never by the question text.
+  const preflight = !!item.data?.preflight;
   // The answer map is keyed by header (falling back to the question text) — the same key the
-  // server's answer_result() hands the agent.
+  // server's answer_result() hands the agent. A multi-select value stays an array: nested in
+  // the grouped JSON, or JSON-encoded as the whole resolution for a lone question.
   const keyFor = (s: QSpec) => s.header || s.question;
 
-  const submit = (a: string) => {
+  const submit = (a: string | string[]) => {
     if (!grouped) {
-      onResolve(item.id, a);
+      onResolve(item.id, Array.isArray(a) ? JSON.stringify(a) : a);
       return;
     }
     const all = { ...answers, [keyFor(spec)]: a };
@@ -258,6 +266,14 @@ function QuestionCard({
     <>
       {/* Stepper chips (grouped): "Chart style · 1 of 2 · Distribution ›" — ‹ steps back. */}
       <div className={SEC + " flex items-center gap-1.5"} data-testid={grouped ? "question-stepper" : undefined}>
+        {preflight && (
+          <>
+            <span className="text-accent" data-testid="preflight-title">
+              {t("inbox.preflight_title")}
+            </span>
+            <span>·</span>
+          </>
+        )}
         {grouped && step > 0 && (
           <button
             className="text-faint hover:text-ink leading-none text-[13px]"
@@ -301,6 +317,17 @@ function QuestionCard({
       {chip}
       {/* key={step} resets selection/text/hover state when the stepper advances */}
       <QuestionBlock key={step} spec={spec} onAnswer={submit} />
+      {preflight && (
+        <div className="mt-2">
+          <button
+            className={BTN_QUIET + " px-0"}
+            data-testid="preflight-skip"
+            onClick={() => onResolve(item.id, PREFLIGHT_SKIP)}
+          >
+            {t("inbox.preflight_skip")}
+          </button>
+        </div>
+      )}
     </>
   );
 }

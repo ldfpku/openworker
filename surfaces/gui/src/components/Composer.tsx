@@ -139,7 +139,13 @@ interface Props {
   modelNotice?: string | null;
   onConnectModel?: () => void;
   onConfigureVoiceInput?: () => void;
-  onSend: (text: string, attachments?: Attachment[], skill?: string) => void;
+  // `opts.preflight` = the 核对 button: the server forces the 开工前核对 check on this turn.
+  onSend: (
+    text: string,
+    attachments?: Attachment[],
+    skill?: string,
+    opts?: { preflight?: boolean },
+  ) => void;
   // Feeds the "/" force-run popup (SKILLS-SPEC §4.1 #3): the popup lists this session's
   // effective skill menu. Absent (e.g. tests without sessions) → the popup never opens.
   sessionId?: string;
@@ -597,7 +603,7 @@ export function Composer(props: Props) {
   // The default left the gateway's list: nothing to connect, something to choose.
   const defaultGone = needsModel && props.modelNotice === "default_model_gone";
 
-  const submit = () => {
+  const submitWith = (opts?: { preflight?: boolean }) => {
     // While the "/" popup is open the draft is a query, not a message — never send it.
     if (slashQuery !== null) return;
     // The visible "/name " prefix is UI state, not message text — strip it for the send;
@@ -616,12 +622,18 @@ export function Composer(props: Props) {
       props.onConnectModel?.();
       return;
     }
-    props.onSend(body, attachments, skill);
+    // Three-arg call when nothing is forced, so existing callers/tests see no extra arg.
+    if (opts) props.onSend(body, attachments, skill, opts);
+    else props.onSend(body, attachments, skill);
     setText("");
     setAttachments([]);
     setPendingSkill(null);
     resetEnhance();
   };
+  // Param-less so it can sit on onClick/onKeyDown without receiving the event as `opts`.
+  const submit = () => submitWith();
+  const canSubmit =
+    !!text.trim() && !(props.running && !props.gateOpen) && !dictation?.recording && !dictationBusy;
 
   // Composer "Enhance prompt" button — idle → busy → enhanced, per props.model, without
   // touching a session (POST /v1/prompt/enhance is session-agnostic, so it works on a draft
@@ -1126,6 +1138,23 @@ export function Composer(props: Props) {
                     : t("composer.enhance.enhance")
               }
               onClick={() => void toggleEnhance()}
+            />
+          )}
+
+          {/* 开工前核对 — sends the draft with the pre-flight check forced for this turn
+              (coworker/guidance.py). The automatic check only runs on a session's first
+              task message; this button is how the user asks for it on any later message
+              (or when the automatic one is off in Settings). Same size config as the
+              enhance button beside it. */}
+          {!dictation?.recording && (
+            <IconButton
+              small
+              size={16}
+              icon="checklist"
+              disabled={!canSubmit || needsModel}
+              label={t("composer.preflight_send")}
+              data-testid="composer-preflight"
+              onClick={() => submitWith({ preflight: true })}
             />
           )}
 

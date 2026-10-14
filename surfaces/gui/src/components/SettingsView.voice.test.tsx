@@ -16,6 +16,7 @@ vi.mock("../api", () => ({
   setAutoApprove: vi.fn(async () => ({ ok: true })),
   setAutoApproveShadow: vi.fn(async () => ({ ok: true })),
   setCompactionSettings: vi.fn(async () => ({ ok: true })),
+  setGuidanceSettings: vi.fn(async () => ({ ok: true })),
   setContextBar: vi.fn(async () => ({ ok: true })),
   setOnboarded: vi.fn(async () => ({ ok: true, onboarded: false })),
   setPdfSettings: vi.fn(async () => ({ ok: true })),

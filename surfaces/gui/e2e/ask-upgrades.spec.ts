@@ -151,3 +151,52 @@ test("grouped questions step through the header chips and resolve as one answer 
   );
   await expect(page.getByText("Nothing pending.")).toBeVisible();
 });
+
+// 开工前核对 (coworker/guidance.py): the engine's own pre-flight card wears its title and the
+// skip button (server flag data.preflight), and a multi-select resolves as a JSON array so a
+// label containing a comma survives the round trip.
+const PREFLIGHT_ITEM = {
+  ...BASE,
+  id: "inb-question-preflight",
+  session_id: "ops-1",
+  kind: "question",
+  title: "成果主要给谁看？",
+  header: "给谁看",
+  options: [{ label: "生产部长", recommended: true }],
+  allow_text: true,
+  multi: false,
+  data: { preflight: true },
+  questions: [
+    { question: "成果主要给谁看？", header: "给谁看", options: [{ label: "生产部长", recommended: true }], allow_text: true, multi: false },
+    { question: "依据哪些资料来做？", header: "依据在哪", options: ["检验记录, 机加", "不良品处理单"], allow_text: true, multi: true },
+  ],
+};
+
+test("the pre-flight card shows its title, resolves multi-select as a JSON array, and can be skipped", async ({
+  page,
+}) => {
+  await seedInbox(page, [PREFLIGHT_ITEM]);
+  await openInbox(page, "成果主要给谁看？");
+  await expect(page.getByTestId("preflight-title")).toHaveText("Pre-flight check");
+  await expect(page.getByTestId("preflight-skip")).toBeVisible();
+
+  await page.getByRole("button", { name: /生产部长/ }).click();
+  await expect(page.getByText("依据哪些资料来做？")).toBeVisible();
+  await page.getByRole("button", { name: "检验记录, 机加" }).click();
+  await page.getByRole("button", { name: "不良品处理单" }).click();
+  const resolved = page.waitForRequest((r) => r.url().includes("/resolve") && r.method() === "POST");
+  await page.getByRole("button", { name: /Send \(2\)/ }).click();
+  expect(JSON.parse((await resolved).postDataJSON().resolution)).toEqual({
+    给谁看: "生产部长",
+    依据在哪: ["检验记录, 机加", "不良品处理单"],
+  });
+});
+
+test("the pre-flight skip button resolves with the skip sentinel", async ({ page }) => {
+  await seedInbox(page, [PREFLIGHT_ITEM]);
+  await openInbox(page, "成果主要给谁看？");
+  const resolved = page.waitForRequest((r) => r.url().includes("/resolve") && r.method() === "POST");
+  await page.getByTestId("preflight-skip").click();
+  expect((await resolved).postDataJSON().resolution).toBe("__preflight_skip__");
+  await expect(page.getByText("成果主要给谁看？")).not.toBeVisible();
+});

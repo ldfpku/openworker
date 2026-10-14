@@ -18,6 +18,7 @@ from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
 from coworker.providers.base import SYSTEM_CONTEXT_OPEN
 from coworker.server import SessionManager, create_app
 from coworker.testing.autotitle import autotitle_reply, is_autotitle_call
+from coworker.testing.guidance import diagnosis_reply, is_diagnosis_call
 
 
 class ScriptedProvider(ProviderClient):
@@ -40,6 +41,8 @@ class ScriptedProvider(ProviderClient):
     def complete(self, *, model, messages, tools=None, **settings):
         if is_autotitle_call(messages):
             return autotitle_reply()
+        if is_diagnosis_call(messages):  # 开工前核对, same divert as the title call
+            return diagnosis_reply()
         self.seen.append(messages)
         return self._turns.pop(0)
 

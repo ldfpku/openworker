@@ -373,3 +373,32 @@ describe("Composer — enhance prompt", () => {
     }
   });
 });
+
+// 开工前核对 — the checklist button beside the enhance button sends the draft with the
+// pre-flight check forced for this turn (coworker/guidance.py); the server reads the flag.
+describe("Composer — pre-flight (check the brief) button", () => {
+  const preflightBtn = () => screen.getByRole("button", { name: "Check the brief, then start" });
+
+  it("is disabled on an empty draft and sends the draft with the preflight flag", () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const onSend = vi.fn();
+    render(<Composer {...props({ onSend })} />);
+    expect((preflightBtn() as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(box(), { target: { value: "帮我做个质量周报" } });
+    expect((preflightBtn() as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(preflightBtn());
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(onSend.mock.calls[0][0]).toBe("帮我做个质量周报");
+    expect(onSend.mock.calls[0][3]).toEqual({ preflight: true });
+    expect(box().value).toBe("");
+  });
+
+  it("sits beside the enhance button at the same glyph size", () => {
+    vi.stubGlobal("fetch", vi.fn());
+    render(<Composer {...props()} />);
+    const a = enhanceBtn().querySelector("svg")!;
+    const b = preflightBtn().querySelector("svg")!;
+    expect(b.getAttribute("width")).toBe(a.getAttribute("width"));
+    expect(b.getAttribute("height")).toBe(a.getAttribute("height"));
+  });
+});

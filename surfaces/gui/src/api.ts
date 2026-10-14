@@ -1118,6 +1118,10 @@ export interface ModelSettings {
   compaction_threshold_pct?: number; // default 0.8, 0.10–0.95
   compaction_cap_tokens?: number; // default 250000
   compaction_model?: string;
+  // 开工前核对 (coworker/guidance.py): on/off (default on) + the diagnosis-model pin
+  // ("" → the session model's cheap sibling). Optional for an older backend.
+  guidance_enabled?: boolean;
+  guidance_model?: string;
 }
 
 export interface PdfSettings {
@@ -1149,6 +1153,23 @@ export async function setCompactionSettings(
   patch: Partial<CompactionSettings>,
 ): Promise<{ ok: boolean; error?: string }> {
   const res = await fetch(`${httpBase()}/v1/settings/compaction`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  return res.json();
+}
+
+export interface GuidanceSettings {
+  guidance_enabled: boolean;
+  guidance_model: string;
+}
+
+/** Persist the 开工前核对 (pre-flight) overrides: on/off + the diagnosis-model pin. */
+export async function setGuidanceSettings(
+  patch: Partial<GuidanceSettings>,
+): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/settings/guidance`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
@@ -1765,10 +1786,14 @@ export async function setSessionSkill(
 }
 
 // -- Inbox + Unattended -------------------------------------------------------
+// Resolution sentinel of the 开工前核对 card's 「跳过，按默认口径直接做」 button — mirrors
+// coworker/tools/ask.py PREFLIGHT_SKIP; the engine reads it as "proceed on defaults".
+export const PREFLIGHT_SKIP = "__preflight_skip__";
+
 export interface InboxItem {
   id: string;
   session_id: string;
-  kind: "approval" | "question" | "notification" | "directory" | "plan";
+  kind: "approval" | "question" | "notification" | "directory" | "plan" | "tool";
   title: string;
   body: string;
   state: "pending" | "resolved";
@@ -2701,7 +2726,13 @@ export class Session {
    * exactly what the user sees — immune to set_model races across reconnects (a new cowork
    * session always reconnects once to adopt its scratch dir, which could drop a queued
    * set_model and leave the engine on a stale/resumed model; found 2026-07-04). */
-  userMessage(text: string, attachments?: unknown[], model?: string, skill?: string) {
+  userMessage(
+    text: string,
+    attachments?: unknown[],
+    model?: string,
+    skill?: string,
+    preflight?: boolean,
+  ) {
     this.send({
       type: "user_message",
       text,
@@ -2710,6 +2741,8 @@ export class Session {
       // Force-run (SKILLS-SPEC §4.1): the composer's /skill pick rides as its own field;
       // the server validates it against the session's effective menu and frames the turn.
       ...(skill ? { skill } : {}),
+      // 开工前核对: the composer's 核对 button forces the pre-flight check on this turn.
+      ...(preflight ? { preflight: true } : {}),
     });
   }
 

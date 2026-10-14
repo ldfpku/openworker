@@ -24,6 +24,7 @@ from coworker.automation import (
     compute_next_run,
 )
 from coworker.automation.tools import scheduling_tools
+from coworker.testing.guidance import diagnosis_reply, is_diagnosis_call
 
 
 def _task(**kw) -> ScheduledTask:
@@ -1447,6 +1448,8 @@ def test_manual_run_stop_then_mode_switch_is_still_canceled(tmp_path, monkeypatc
         def complete(self, *, model, messages, tools=None, **settings):
             if messages and "title chat sessions" in str(messages[0].get("content", "")):
                 return AssistantTurn(text="small-talk", finish_reason="stop")
+            if is_diagnosis_call(messages):  # 开工前核对, same divert as the title call
+                return diagnosis_reply()
             self.engine.request_interrupt()
             return AssistantTurn(text="ignored", finish_reason="stop")
 
@@ -1490,6 +1493,8 @@ def _stopping_provider():
         def complete(self, *, model, messages, tools=None, **settings):
             if messages and "title chat sessions" in str(messages[0].get("content", "")):
                 return AssistantTurn(text="small-talk", finish_reason="stop")
+            if is_diagnosis_call(messages):  # 开工前核对, same divert as the title call
+                return diagnosis_reply()
             self.engine.request_interrupt()
             return AssistantTurn(text="ignored", finish_reason="stop")
 
@@ -1689,6 +1694,8 @@ def test_manual_run_crash_over_ws_is_error(tmp_path, monkeypatch, crash_at_round
         def complete(self, *, model, messages, tools=None, **settings):
             if messages and "title chat sessions" in str(messages[0].get("content", "")):
                 return AssistantTurn(text="small-talk", finish_reason="stop")
+            if is_diagnosis_call(messages):  # 开工前核对, same divert as the title call
+                return diagnosis_reply()
             self.calls += 1
             if self.calls == 1:
                 call = ToolCall(id="call_1", name="read_file", arguments={"path": "a.txt"})
@@ -1781,6 +1788,8 @@ def _scenario_provider(scenario):
         def complete(self, *, model, messages, tools=None, **settings):
             if messages and "title chat sessions" in str(messages[0].get("content", "")):
                 return AssistantTurn(text="small-talk", finish_reason="stop")
+            if is_diagnosis_call(messages):  # 开工前核对, same divert as the title call
+                return diagnosis_reply()
             if scenario == "provider_error":
                 # Not transient (no status, no transient marker): no automatic retry.
                 raise ValueError("the endpoint rejected the request")

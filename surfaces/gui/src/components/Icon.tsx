@@ -3,6 +3,7 @@
 
 export type IconName =
   | "sparkle"
+  | "checklist"
   | "logo"
   | "sidebar"
   | "sidebarRight"
@@ -391,6 +392,16 @@ export function Icon({
           <rect x="3" y="4.5" width="18" height="15" rx="2.2" />
           <path d="M7.2 9.6l3.2 2.4-3.2 2.4" />
           <path d="M12.5 15h4.3" />
+        </svg>
+      );
+    case "checklist":
+      // Clipboard with a tick — the composer's 开工前核对 (check the brief) button. Spans
+      // y3–21 like sparkle/mic so the three toolbar glyphs read the same size.
+      return (
+        <svg {...s}>
+          <path d="M9.5 3h5a1.2 1.2 0 0 1 1.2 1.2V6H8.3V4.2A1.2 1.2 0 0 1 9.5 3z" />
+          <path d="M8.3 4.8H6.8A1.8 1.8 0 0 0 5 6.6v12.6A1.8 1.8 0 0 0 6.8 21h10.4a1.8 1.8 0 0 0 1.8-1.8V6.6a1.8 1.8 0 0 0-1.8-1.8h-1.5" />
+          <path d="M8.8 13.6l2.3 2.3 4.3-4.8" />
         </svg>
       );
     case "globe":

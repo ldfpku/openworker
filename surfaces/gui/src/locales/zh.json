@@ -168,6 +168,7 @@
       "failed": "增强提示词失败，请重试。",
       "timed_out": "增强提示词超时，请换个更快的模型或稍后重试。"
     },
+    "preflight_send": "先核对任务要素再开工",
     "fallback_badge": "有备选",
     "fallback_badge_tip": "共享额度繁忙时自动改用 {{model}}"
   },
@@ -516,6 +517,7 @@
     "waiting_for_agent": "正在等待代理…",
     "waiting_for_agent_elapsed": "正在等待代理… 已等待 {{duration}}",
     "compacting_context": "正在压缩上下文…",
+    "preflighting": "正在核对任务要素…",
     "allow_anyway_message": "我已审阅被拦截的 {{name}} 操作 —— 请按原样执行。",
     "temp_folder_failed": "无法创建临时文件夹。",
     "temp_folder_created": "已创建临时文件夹",
@@ -883,6 +885,8 @@
     "question_n": "问题 {{n}}",
     "question_label": "问题",
     "step_of": "{{step}} / {{total}}",
+    "preflight_title": "开工前核对",
+    "preflight_skip": "跳过，按默认口径直接做",
     "kind": {
       "approval": "审批",
       "question": "问题",

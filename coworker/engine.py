@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 from . import compaction as _compaction
+from . import guidance as _guidance
 from . import provenance
 from . import session_facts
 from . import toolchain as _toolchain
@@ -787,6 +788,13 @@ class TurnEngine:
         self.compaction_state: Optional[_compaction.CompactionState] = None
         self.compaction_settings: Optional[Callable[[], dict[str, Any]]] = None
         self.is_attended: Optional[Callable[[], bool]] = None
+        # 开工前核对 (coworker/guidance.py) — both set post-construction by the manager, same
+        # as compaction. `guidance_config` is a live getter ({enabled, model, timeout,
+        # recommend, installed_skills}; Settings changes apply without a rebuild);
+        # `guidance_context` returns the prompt-side knowledge the diagnosis reads
+        # (memories, user rules, roots, skills catalog). Either None ⇒ no pre-flight.
+        self.guidance_config: Optional[Callable[[], dict[str, Any]]] = None
+        self.guidance_context: Optional[Callable[[], dict[str, Any]]] = None
         # Session facts (spec Part 0 / §2.4) — the known world frozen at session start, plus
         # the per-turn ingestion record. Set post-construction by the surface, same as
         # compaction above, so the constructor footprint stays put. None ⇒ nothing recorded
@@ -995,8 +1003,11 @@ class TurnEngine:
         *,
         source: Optional[dict[str, Any]] = None,
         display: Optional[str] = None,
+        preflight: Optional[bool] = None,
     ) -> AsyncIterator[Event]:
         # `user_input` is a string, or OpenAI content-parts (text + image_url) for attachments.
+        # `preflight`: None = the automatic 开工前核对 gate (first task message of an attended
+        # session); True = the composer's 核对 button forced it for this turn; False = off.
         # `source` (a MessageSource dict) is a display-only sidecar for connector messages: it
         # rides on the persisted user message + the TURN_START event, but is stripped before the
         # message reaches a provider (see `_outbound_messages`). `content` stays the framed text.
@@ -1027,8 +1038,163 @@ class TurnEngine:
         if display is not None:
             data["display"] = display
         yield Event(EventType.TURN_START, data)
+        async for event in self._preflight(
+            user_input, message, source=source, display=display, forced=preflight
+        ):
+            yield event
         async for event in self._loop():
             yield event
+
+    # -- 开工前核对 (pre-flight) --------------------------------------------------------
+    # How many user messages into a session the automatic check may still run: a session
+    # that opened with a greeting gets its check on the first real task, but a long chat
+    # that never looked like a task stops paying for the diagnosis call.
+    PREFLIGHT_MAX_USER_MESSAGES = 3
+
+    def _preflight_due(self, *, source, display, forced, text: str) -> bool:
+        if forced is False:
+            return False
+        if self.guidance_config is None or self.guidance_context is None:
+            return False
+        if self.question_asker is None:
+            return False
+        # Attended only (the compaction-failure prompt's rule): automations, channel turns
+        # and durable-resume rebuilds never set `is_attended`, and a grouped card can't be
+        # answered from a messaging channel anyway (interactions.py).
+        if not (self.is_attended and self.is_attended()):
+            return False
+        if source is not None or not text.strip() or self._cancel.is_set():
+            return False
+        if forced:
+            return True
+        # Automatic gate: not a /skill force-run (the skill's own 「需要的输入」 section
+        # governs those), once per session, and only early in it.
+        if display is not None:
+            return False
+        users = [m for m in self.messages if m.get("role") == "user"]
+        if len(users) > self.PREFLIGHT_MAX_USER_MESSAGES:
+            return False
+        return not any(
+            isinstance(m.get("_preflight"), dict) and m["_preflight"].get("state") == "done"
+            for m in users
+        )
+
+    async def _preflight(
+        self,
+        user_input: Any,
+        message: dict[str, Any],
+        *,
+        source: Optional[dict[str, Any]],
+        display: Optional[str],
+        forced: Optional[bool],
+    ) -> AsyncIterator[Event]:
+        """One cheap diagnosis call, then — if the brief is incomplete — a synthetic
+        `ask_user` round-trip persisted exactly like a model-authored one (assistant
+        tool_call + tool result), so the transcript, a durable resume and the model's own
+        view all agree. Any failure means no guidance: the turn proceeds untouched."""
+        text = _user_text(user_input)
+        if not self._preflight_due(source=source, display=display, forced=forced, text=text):
+            return
+        try:
+            cfg = (self.guidance_config() if self.guidance_config else None) or {}
+        except Exception:
+            logger.warning("pre-flight skipped: config unavailable", exc_info=True)
+            return
+        if not forced and not cfg.get("enabled", True):
+            return
+        yield Event(EventType.PREFLIGHT, {"forced": bool(forced)})
+        users = [m for m in self.messages if m.get("role") == "user"]
+        try:
+            ctx = (self.guidance_context() if self.guidance_context else None) or {}
+            recommend = cfg.get("recommend")
+            candidates = recommend(text) if callable(recommend) else {}
+            installed = {str(n) for n in (cfg.get("installed_skills") or ())}
+            inputs = _guidance.build_inputs(
+                user_text=text,
+                prior_user_texts=[_user_text(m.get("content")) for m in users[:-1]][-3:],
+                attachment_names=_attachment_names(user_input),
+                memories=str(ctx.get("memories") or ""),
+                rules=str(ctx.get("rules") or ""),
+                roots=list(ctx.get("roots") or []),
+                skills_catalog=str(ctx.get("skills_catalog") or ""),
+                candidates=candidates,
+            )
+            timeout = float(cfg.get("timeout") or _guidance.DEFAULT_TIMEOUT)
+            model = str(cfg.get("model") or self.model)
+            diagnosis = await self._interruptible(
+                asyncio.wait_for(
+                    asyncio.to_thread(
+                        _guidance.diagnose, self.provider, model, inputs, timeout=timeout
+                    ),
+                    timeout + 5,
+                ),
+                interrupted=None,
+            )
+        except Exception:
+            logger.warning("pre-flight skipped: diagnosis failed", exc_info=True)
+            return
+        if diagnosis is None:  # interrupted, timed out, or an unusable reply
+            return
+        if not diagnosis.get("is_task"):
+            message["_preflight"] = {"state": "not-task"}
+            return
+        by_id = {
+            str(s.get("id") or s.get("name")): s for s in candidates.get("skills") or []
+        }
+        installed_matches = [
+            {"name": n, "description": str(by_id.get(n, {}).get("description") or "")}
+            for n in diagnosis.get("matched_skills") or []
+            if n in installed or by_id.get(n, {}).get("installed")
+        ]
+        questions = _guidance.decide(diagnosis, installed_matches=installed_matches)
+        meta = _guidance.brief_meta(diagnosis, candidates, installed=installed)
+        if not questions:
+            # Nothing to ask; the recommendations still ride into THIS turn's
+            # <system-context> through the sidecar (`_preflight_brief`).
+            message["_preflight"] = {
+                "state": "done",
+                "brief": _guidance.render_brief(meta, {"answers": {}}),
+            }
+            return
+        message["_preflight"] = {"state": "done"}
+        call_id = f"{PREFLIGHT_ID_PREFIX}{len(users)}"
+        args = _guidance.ask_args(questions, meta)
+        self.messages.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "ts": time.time(),
+                "tool_calls": [
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": "ask_user",
+                            "arguments": json.dumps(args, ensure_ascii=False),
+                        },
+                    }
+                ],
+            }
+        )
+        # Through the regular dispatcher so TOOL_PROPOSED/TOOL_FINISHED fire (the GUI
+        # builds its tool row on tool_proposed) and the asker persists the pending call —
+        # a crash here resumes like any other suspended ask_user.
+        async for event in self._handle_tool_calls(
+            [ToolCall(id=call_id, name="ask_user", arguments=args)]
+        ):
+            yield event
+
+    def _preflight_brief(self) -> str:
+        """The brief a question-less pre-flight left on the LATEST user message, for this
+        turn's <system-context>; gone the moment the next user message arrives."""
+        for msg in reversed(self.messages):
+            if msg.get("role") != "user":
+                continue
+            marker = msg.get("_preflight")
+            if isinstance(marker, dict) and marker.get("brief"):
+                return str(marker["brief"])
+            return ""
+        return ""
 
     def switch_model(self, model: str) -> Optional[str]:
         """Rebind the session's model mid-conversation (roadmap item 3). History is
@@ -1692,7 +1858,14 @@ class TurnEngine:
             except Exception:
                 failed = True
         if failed and self.question_asker is not None and self.is_attended and self.is_attended():
+            # A stable id makes the Inbox item idempotent across a durable resume (a
+            # resumed session must not re-prompt an already-answered card); the attempt
+            # suffix keeps each RETRY a fresh item — a fixed id would hit the resolved
+            # "Retry" answer at once and spin.
+            anchor = sum(1 for m in self.messages if m.get("role") == "user")
+            attempt = 0
             while True:
+                attempt += 1
                 answer = await self._interruptible(
                     self.question_asker(
                         {
@@ -1704,7 +1877,7 @@ class TurnEngine:
                             "allow_text": False,
                             "header": "Compaction",
                         },
-                        None,
+                        f"compaction:{anchor}:{attempt}",
                     ),
                     interrupted=None,
                 )
@@ -3437,7 +3610,16 @@ class TurnEngine:
                 "error": "no response",
             }
 
-        status = "ok" if (result.get("answer") or result.get("answers")) else "denied"
+        if str(tool_call.id or "").startswith(PREFLIGHT_ID_PREFIX):
+            # The engine's own 开工前核对 card — recognized by the call id, never by the
+            # arguments: those are replayed to the model every turn, and a model imitating
+            # them must not be able to make its own ask_user render as a pre-flight.
+            result = _guidance.finish_preflight(args, result)
+        status = (
+            "ok"
+            if (result.get("answer") or result.get("answers") or result.get("skipped"))
+            else "denied"
+        )
         if status == "ok":
             self._note_ask_replies(result, question)
         self.messages.append(_tool_result_message(tool_call, result))
@@ -3473,9 +3655,9 @@ class TurnEngine:
         anchor = sum(1 for m in self.messages if m.get("role") == "user")
         answers = result.get("answers")
         values = (
-            [str(v) for v in answers.values()]
+            [_answer_as_text(v) for v in answers.values()]
             if isinstance(answers, dict)
-            else [str(result.get("answer") or "")]
+            else [_answer_as_text(result.get("answer") or "")]
         )
         q = (question or "").strip()
         for text in values:
@@ -3523,6 +3705,7 @@ class TurnEngine:
         _SIDECARS = (
             "source",
             "_display",
+            "_preflight",
             "ts",
             "t0",
             "reasoning",
@@ -3650,9 +3833,11 @@ class TurnEngine:
         context = (
             self.context_provider() if self.context_provider is not None else ""
         ) or ""
-        if not context:
+        brief = self._preflight_brief()
+        parts = [p for p in (context, brief) if p]
+        if not parts:
             return out
-        block = f"{SYSTEM_CONTEXT_OPEN}\n{context}\n</system-context>"
+        block = f"{SYSTEM_CONTEXT_OPEN}\n" + "\n\n".join(parts) + "\n</system-context>"
         out.append({"role": "user", "content": block})
         return out
 
@@ -3915,6 +4100,49 @@ def _clip_tool_result(content: str) -> str:
         "a line range, a smaller path) if you need what was dropped.]\n\n"
         + content[-tail:]
     )
+
+
+# Tool-call id prefix of the engine's own 开工前核对 ask_user (`_preflight`). Provider-assigned
+# ids never look like this, and the id is persisted, so it is the one signal that survives a
+# durable resume and cannot be forged from the model side.
+PREFLIGHT_ID_PREFIX = "preflight:"
+
+
+def _user_text(content: Any) -> str:
+    """The typed text of a user message: the string itself, or the text parts of an
+    OpenAI content-parts list (attachments contribute nothing)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            str(p.get("text") or "")
+            for p in content
+            if isinstance(p, dict) and p.get("type") == "text"
+        )
+    return ""
+
+
+def _attachment_names(content: Any) -> list[str]:
+    """Attachment names/kinds riding a content-parts user message, for the diagnosis."""
+    if not isinstance(content, list):
+        return []
+    names: list[str] = []
+    for p in content:
+        if not isinstance(p, dict):
+            continue
+        if p.get("type") == "file":
+            names.append(str((p.get("file") or {}).get("filename") or "attachment.pdf"))
+        elif p.get("type") == "image_url":
+            names.append("image")
+    return names
+
+
+def _answer_as_text(value: Any) -> str:
+    """An ask_user answer as one line — multi-select answers are lists since the comma
+    fix (tools/ask.py `_answer_value`)."""
+    if isinstance(value, list):
+        return ", ".join(str(v) for v in value)
+    return str(value or "")
 
 
 def _tool_result_message(tool_call: ToolCall, result: Any) -> dict[str, Any]:

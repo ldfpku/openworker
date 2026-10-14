@@ -28,6 +28,11 @@ from aisuite.agents import ToolMetadata, tool
 # How many questions one grouped call may carry (stepper chips get unreadable past this).
 MAX_GROUPED_QUESTIONS = 4
 
+# Resolution sentinel for the engine's own pre-flight card (coworker/guidance.py): the user
+# pressed 「跳过，按默认口径直接做」. Only a pre-flight item (data.preflight) renders that
+# button, so a model-authored ask_user never sees this value.
+PREFLIGHT_SKIP = "__preflight_skip__"
+
 # An option is a plain string OR a rich object. `label` is what the user picks (and what comes
 # back as the answer); `description` renders under it; `recommended` adds the green tag (put the
 # recommended option first); `preview` is monospace text shown in the side pane (code, config,
@@ -122,10 +127,11 @@ def ask_user_tool() -> object:
         open a PR?") — propose the action instead: the approval flow shows the user the exact
         command/arguments and does the asking, which is stronger consent than a chat yes.
 
-        Single form returns `{"answer": "..."}` — the chosen option label(s) or the typed text.
-        Grouped form (`questions`) returns `{"answers": {"<header or question>": "..."}}` — one
-        entry per question. Don't ask what you can reasonably decide yourself; reserve this for
-        choices that are actually the user's to make.
+        Single form returns `{"answer": "..."}` — the chosen option label or the typed text;
+        a `multi` question returns a list of the chosen labels. Grouped form (`questions`)
+        returns `{"answers": {"<header or question>": "..."}}` — one entry per question (a
+        list for `multi` entries). Don't ask what you can reasonably decide yourself; reserve
+        this for choices that are actually the user's to make.
         """
         # Real handling lives in the engine (it needs the out-of-band Inbox round-trip). This body
         # only runs if no question_asker is wired (e.g. a headless surface).
@@ -192,14 +198,19 @@ def normalize_questions(raw) -> list[dict]:
     return out
 
 
-def question_item_fields(args: dict) -> dict | None:
+def question_item_fields(args: dict, *, preflight: bool = False) -> dict | None:
     """`InboxStore.add_question` kwargs from raw ask_user args, or None when nothing was asked.
     A grouped call surfaces its FIRST question as title/options too, so legacy surfaces (channel
-    mirrors, old persisted-item readers) degrade to a sensible single question."""
+    mirrors, old persisted-item readers) degrade to a sensible single question.
+
+    `preflight` marks the engine's own 开工前核对 card (`data.preflight`), which is what makes
+    the GUI render the title and the skip button. Callers derive it from the tool-call id
+    (`preflight:` prefix), never from the arguments: the arguments are replayed to the model
+    every turn and a model imitating them must not be able to summon the card."""
     grouped = normalize_questions(args.get("questions"))
     if grouped:
         first = grouped[0]
-        return {
+        fields = {
             "title": first["question"],
             "options": first["options"],
             "allow_text": first["allow_text"],
@@ -207,40 +218,67 @@ def question_item_fields(args: dict) -> dict | None:
             "header": first["header"],
             "questions": grouped,
         }
-    question = str(args.get("question", "")).strip()
-    if not question:
-        return None
-    return {
-        "title": question,
-        # Strings pass through untouched (simple asks keep rendering as today's pills);
-        # rich objects are canonicalized so downstream never meets a half-filled dict.
-        "options": [
-            o if isinstance(o, str) else normalize_option(o)
-            for o in args.get("options") or []
-        ],
-        "allow_text": bool(args.get("allow_text", True)),
-        "multi": bool(args.get("multi", False)),
-        "header": str(args.get("header", "")),
-        "questions": [],
-    }
+    else:
+        question = str(args.get("question", "")).strip()
+        if not question:
+            return None
+        fields = {
+            "title": question,
+            # Strings pass through untouched (simple asks keep rendering as today's pills);
+            # rich objects are canonicalized so downstream never meets a half-filled dict.
+            "options": [
+                o if isinstance(o, str) else normalize_option(o)
+                for o in args.get("options") or []
+            ],
+            "allow_text": bool(args.get("allow_text", True)),
+            "multi": bool(args.get("multi", False)),
+            "header": str(args.get("header", "")),
+            "questions": [],
+        }
+    if preflight:
+        fields["data"] = {"preflight": True}
+    return fields
+
+
+def _answer_value(value) -> str | list[str]:
+    """One answer as the model should see it. A multi-select answer arrives as a JSON array
+    (the GUI sends `["a","b"]`, nested or as the whole resolution) and becomes a list of
+    labels — joining with ", " used to make a label containing a comma unsplittable. Any
+    other value stays a plain string, so legacy "a, b" resolutions and channel replies are
+    untouched."""
+    if isinstance(value, list):
+        return [str(v) for v in value]
+    text = str(value)
+    if text.startswith("["):
+        try:
+            parsed = json.loads(text)
+        except (ValueError, TypeError):
+            parsed = None
+        if isinstance(parsed, list):
+            return [str(v) for v in parsed]
+    return text
 
 
 def answer_result(item_questions: list, resolution: str | None) -> dict:
     """Shape the ask_user tool result from an Inbox item's resolution string. Grouped items
     resolve with a JSON object string keyed by header-or-question → `{"answers": {...}}`;
-    everything else returns the plain `{"answer": str}` shape."""
+    everything else returns the plain `{"answer": str}` shape. Multi-select values come back
+    as lists (see `_answer_value`); the pre-flight skip sentinel returns no answers at all,
+    flagged `skipped` so the engine treats it as "proceed on defaults", not a refusal."""
+    if resolution == PREFLIGHT_SKIP:
+        return {"answers": {}, "skipped": True}
     if item_questions:
         try:
             parsed = json.loads(resolution or "")
         except (ValueError, TypeError):
             parsed = None
         if isinstance(parsed, dict):
-            return {"answers": {str(k): str(v) for k, v in parsed.items()}}
+            return {"answers": {str(k): _answer_value(v) for k, v in parsed.items()}}
         if resolution:
             # Answered from a text-only surface (e.g. a mirrored channel): attribute the lone
             # answer to the first question rather than losing it.
             first = item_questions[0] if isinstance(item_questions[0], dict) else {}
             key = str(first.get("header") or first.get("question") or "answer")
-            return {"answers": {key: str(resolution)}}
+            return {"answers": {key: _answer_value(resolution)}}
         return {"answer": ""}
-    return {"answer": resolution or ""}
+    return {"answer": _answer_value(resolution) if resolution else ""}

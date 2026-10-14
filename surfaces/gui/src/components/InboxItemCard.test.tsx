@@ -142,3 +142,59 @@ describe("InboxItemCard — parked directory/plan prompts wear translated dress"
     expect(screen.getByText("Create this team?")).toBeTruthy();
   });
 });
+
+describe("InboxItemCard — 开工前核对 (pre-flight) card", () => {
+  const preflightItem = () =>
+    base({
+      title: "成果主要给谁看？",
+      header: "给谁看",
+      data: { preflight: true },
+      questions: [
+        { question: "成果主要给谁看？", header: "给谁看", options: [{ label: "生产部长", recommended: true }] },
+        { question: "依据哪些资料来做？", header: "依据在哪", multi: true, options: ["检验记录, 机加", "处理单"] },
+      ],
+    });
+
+  it("wears the pre-flight title and resolves with the skip sentinel", async () => {
+    await i18n.changeLanguage("zh");
+    const onResolve = vi.fn();
+    render(<InboxItemCard item={preflightItem()} onResolve={onResolve} />);
+    expect(screen.getByTestId("preflight-title").textContent).toBe("开工前核对");
+    fireEvent.click(screen.getByTestId("preflight-skip"));
+    expect(onResolve).toHaveBeenCalledWith("i1", "__preflight_skip__");
+  });
+
+  it("shows no title or skip button on an ordinary question", () => {
+    const item = preflightItem();
+    delete item.data;
+    render(<InboxItemCard item={item} onResolve={vi.fn()} />);
+    expect(screen.queryByTestId("preflight-title")).toBeNull();
+    expect(screen.queryByTestId("preflight-skip")).toBeNull();
+  });
+
+  it("keeps a comma inside a multi-select label by resolving with a JSON array", () => {
+    const onResolve = vi.fn();
+    render(<InboxItemCard item={preflightItem()} onResolve={onResolve} />);
+    fireEvent.click(screen.getByText("生产部长")); // step 1 → advances to the multi step
+    fireEvent.click(screen.getByText("检验记录, 机加"));
+    fireEvent.click(screen.getByText("处理单"));
+    fireEvent.click(screen.getByText(/\(2\)/));
+    expect(onResolve).toHaveBeenCalledTimes(1);
+    const resolution = JSON.parse(onResolve.mock.calls[0][1]);
+    expect(resolution).toEqual({ 给谁看: "生产部长", 依据在哪: ["检验记录, 机加", "处理单"] });
+  });
+
+  it("resolves a lone multi-select question with the array JSON-encoded", () => {
+    const onResolve = vi.fn();
+    const item = base({
+      title: "Sources?",
+      multi: true,
+      options: ["a, b", "c"],
+      questions: [{ question: "Sources?", multi: true, options: ["a, b", "c"] }],
+    });
+    render(<InboxItemCard item={item} onResolve={onResolve} />);
+    fireEvent.click(screen.getByText("a, b"));
+    fireEvent.click(screen.getByText(/\(1\)/));
+    expect(onResolve).toHaveBeenCalledWith("i1", JSON.stringify(["a, b"]));
+  });
+});

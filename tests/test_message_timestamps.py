@@ -22,6 +22,7 @@ from coworker.providers import (
 )
 from coworker.server import SessionManager, create_app
 from coworker.testing.autotitle import autotitle_reply, is_autotitle_call
+from coworker.testing.guidance import diagnosis_reply, is_diagnosis_call
 from coworker.tools import ToolRegistry
 
 
@@ -40,6 +41,8 @@ class CapturingProvider(ProviderClient):
         # real chat call to IndexError on an empty `_turns`.
         if is_autotitle_call(messages):
             return autotitle_reply()
+        if is_diagnosis_call(messages):  # 开工前核对, same divert as the title call
+            return diagnosis_reply()
         self.calls.append([dict(m) for m in messages])
         return self._turns.pop(0)
 

@@ -230,7 +230,7 @@ from ..attachments import (
     MAX_TEXT_CHARS,
     build_user_content,
 )
-from ..engine import ApprovalOutcome
+from ..engine import PREFLIGHT_ID_PREFIX, ApprovalOutcome
 from ..inbox import VIS_INBOX, VIS_INLINE, args_preview
 from ..library import register_library_routes
 from ..permissions import Mode
@@ -2246,6 +2246,14 @@ def create_app(manager: SessionManager) -> FastAPI:
             model=b.get("compaction_model"),
         )
 
+    @app.post("/v1/settings/guidance")
+    def settings_set_guidance(body: dict) -> dict[str, Any]:
+        # 开工前核对 (coworker/guidance.py): on/off + the diagnosis-model pin.
+        b = body or {}
+        return manager.set_guidance_settings(
+            enabled=b.get("guidance_enabled"), model=b.get("guidance_model")
+        )
+
     @app.post("/v1/attachments/inspect-pdf")
     def attachments_inspect_pdf(body: dict) -> dict[str, Any]:
         # Attach-time page/size probe for the composer's threshold check. Local only.
@@ -2402,7 +2410,9 @@ def create_app(manager: SessionManager) -> FastAPI:
             # ask_user (engine does NOT emit the event — we do, only when attended).
             from ..tools.ask import answer_result, question_item_fields
 
-            fields = question_item_fields(args)
+            fields = question_item_fields(
+                args, preflight=str(tool_call_id or "").startswith(PREFLIGHT_ID_PREFIX)
+            )
             if fields is None:  # engine guards too; belt-and-braces
                 return {"answer": "", "error": "no question"}
             item = manager.inbox.add_question(
@@ -2426,6 +2436,8 @@ def create_app(manager: SessionManager) -> FastAPI:
                                 "multi": item.multi,
                                 "header": item.header,
                                 "questions": item.questions,
+                                # 开工前核对: the card wears its title + the skip button.
+                                "preflight": bool((item.data or {}).get("preflight")),
                             },
                         }
                     )
@@ -2876,14 +2888,16 @@ def create_app(manager: SessionManager) -> FastAPI:
             "iteration_end",
         }
 
-        async def run_turn(content, *, retry: bool = False, display=None) -> None:
+        async def run_turn(
+            content, *, retry: bool = False, display=None, preflight=None
+        ) -> None:
             # The receive loop atomically claims this session before scheduling the task.
             # Keeping the claim outside prevents two back-to-back frames from both starting.
             try:
                 events = (
                     engine.retry()
                     if retry
-                    else engine.run(content, display=display)
+                    else engine.run(content, display=display, preflight=preflight)
                 )
                 async for event in events:
                     # Broadcast to every socket viewing this session (this socket included — it's a
@@ -3028,13 +3042,17 @@ def create_app(manager: SessionManager) -> FastAPI:
             # or flush an in-progress assistant stream in the GUI.
             await ws.send_json({"type": "input_rejected", "data": {"error": reason}})
 
-        async def claim_turn(*, retry: bool = False, content=None, display=None) -> None:
+        async def claim_turn(
+            *, retry: bool = False, content=None, display=None, preflight=None
+        ) -> None:
             if not manager.try_mark_running(session_id):
                 await reject_input(
                     "This session is already running a turn. Wait for it to finish or stop it."
                 )
                 return
-            manager.spawn_turn_task(run_turn(content, retry=retry, display=display))
+            manager.spawn_turn_task(
+                run_turn(content, retry=retry, display=display, preflight=preflight)
+            )
 
         try:
             while True:
@@ -3316,10 +3334,19 @@ def create_app(manager: SessionManager) -> FastAPI:
                             f'load_skill("{skill}") and follow its instructions.'
                             + (f"\n\n{text}" if text else "")
                         )
+                    # 开工前核对 (coworker/guidance.py): the composer's 核对 button sends
+                    # `preflight: true` to force the check on this turn; absent → the
+                    # engine's automatic gate (first task message of the session).
+                    preflight = message.get("preflight")
+                    if preflight is not None and not isinstance(preflight, bool):
+                        await reject_input("Invalid preflight: expected a boolean.")
+                        continue
                     await _apply_model(model, echo=False)
                     if text or attachments:
                         content = build_user_content(text, attachments)
-                        await claim_turn(content=content, display=display)
+                        await claim_turn(
+                            content=content, display=display, preflight=preflight
+                        )
                 else:
                     await reject_input(f"Unknown WebSocket message type: {kind}.")
         except WebSocketDisconnect:

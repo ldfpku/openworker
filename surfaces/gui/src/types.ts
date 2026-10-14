@@ -41,6 +41,7 @@ export type EventType =
   | "answer_superseded"
   | "memory_saved"
   | "compacting"
+  | "preflight"
   | "compacted"
   | "turn_done";
 
@@ -244,6 +245,8 @@ export type Item =
       multi?: boolean;
       header?: string;
       questions?: GroupedQuestion[];
+      // The engine's own 开工前核对 card (title + the skip button), never a model ask.
+      preflight?: boolean;
       resolved?: string;
     }
   | {

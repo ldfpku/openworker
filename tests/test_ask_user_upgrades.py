@@ -262,3 +262,38 @@ def test_grouped_ask_round_trip_through_manager(tmp_path):
     payload = json.loads(tool_msgs[-1]["content"])
     assert payload == {"answers": {"Chart": "Bar", "Distribution": "Stacked"}}
     assert mgr.inbox.pending(sid) == []
+
+
+# -- multi-select answers are lists; the pre-flight skip sentinel --------------------
+
+
+def test_answer_result_turns_json_arrays_into_lists_and_keeps_legacy_strings():
+    from coworker.tools.ask import PREFLIGHT_SKIP
+
+    grouped = [{"question": "Sources?", "header": "依据在哪", "multi": True}, {"question": "Who?", "header": "给谁看"}]
+    out = answer_result(grouped, json.dumps({"依据在哪": ["检验记录, 机加", "处理单"], "给谁看": "部长"}))
+    assert out == {"answers": {"依据在哪": ["检验记录, 机加", "处理单"], "给谁看": "部长"}}
+    # a lone multi question resolves with the whole array JSON-encoded
+    assert answer_result([], json.dumps(["a, b", "c"])) == {"answer": ["a, b", "c"]}
+    assert answer_result(grouped, json.dumps({"依据在哪": json.dumps(["x", "y"])}))["answers"]["依据在哪"] == ["x", "y"]
+    # legacy comma-joined strings and plain text are untouched
+    assert answer_result([], "a, b") == {"answer": "a, b"}
+    assert answer_result(grouped, "plain reply") == {"answers": {"依据在哪": "plain reply"}}
+    assert answer_result([], "[not json") == {"answer": "[not json"}
+    # the skip sentinel: no answers, flagged, whatever the item shape
+    assert answer_result(grouped, PREFLIGHT_SKIP) == {"answers": {}, "skipped": True}
+    assert answer_result([], PREFLIGHT_SKIP) == {"answers": {}, "skipped": True}
+
+
+def test_question_item_fields_marks_preflight_only_when_told(tmp_path):
+    args = {"questions": [{"question": "交付什么？", "header": "要什么", "options": ["Word"]}]}
+    assert "data" not in question_item_fields(args)
+    assert "data" not in question_item_fields({**args, "preflight": True})  # args never decide
+    fields = question_item_fields(args, preflight=True)
+    assert fields["data"] == {"preflight": True}
+    single = question_item_fields({"question": "Env?", "options": ["a"]}, preflight=True)
+    assert single["data"] == {"preflight": True}
+    store = InboxStore(tmp_path / "inbox.json")
+    item = store.add_question("s1", tool_call_id="preflight:1", **fields)
+    assert item.data == {"preflight": True}
+    assert store.add_question("s1", tool_call_id="preflight:1", **fields).id == item.id  # idempotent

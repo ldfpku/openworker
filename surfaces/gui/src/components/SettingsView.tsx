@@ -9,12 +9,14 @@ import {
   setAutoApproveShadow,
   setCompactionSettings,
   setContextBar,
+  setGuidanceSettings,
   setOnboarded,
   setPdfSettings,
   setScratchBase,
   setSessionsPeek,
   setWorkspaceTrusted,
   type CompactionSettings,
+  type GuidanceSettings,
   type ModelSettings,
   type PdfSettings,
   type WorkspaceCommandTrust,
@@ -145,6 +147,7 @@ export function SettingsView({
               />
               <TokenSavingsCard />
               <CompactionCard />
+              <GuidanceCard />
             </section>
           ) : tab === "skills" ? (
             <SkillsTab onCreateSkill={onCreateSkill} />
@@ -1005,6 +1008,75 @@ function CompactionCard() {
       </div>
       <div className={FIELD_HELP}>
         {t("The summary is written by this model. The default follows whatever model the session is using.")}
+      </div>
+    </div>
+  );
+}
+
+// -- 开工前核对 (coworker/guidance.py) ----------------------------------------------
+// One cheap diagnosis call before a session's first task message; missing elements of the
+// brief come back as one multiple-choice card. Two knobs: on/off and the diagnosis model.
+function GuidanceCard() {
+  const { t } = useTranslation();
+  const [cfg, setCfg] = useState<GuidanceSettings | null>(null);
+  const [models, setModels] = useState<string[]>([]);
+  const [labels, setLabels] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    getSettings()
+      .then((s) => {
+        setCfg({
+          guidance_enabled: s.guidance_enabled !== false,
+          guidance_model: s.guidance_model ?? "",
+        });
+        setModels(s.models || []);
+        setLabels(s.model_labels || {});
+      })
+      .catch(() => setCfg({ guidance_enabled: true, guidance_model: "" }));
+  }, []);
+
+  const save = async (patch: Partial<GuidanceSettings>) => {
+    setCfg((p) => (p ? { ...p, ...patch } : p));
+    await setGuidanceSettings(patch);
+  };
+
+  if (!cfg) return null;
+  const modelLabel = (id: string) => labels[id]?.split(" · ")[0] || id;
+  return (
+    <div className={CARD + " p-4 mb-4"} data-testid="guidance-card">
+      <div className={FIELD_LABEL}>{t("Pre-flight check")}</div>
+      <div className={FIELD_HELP}>
+        {t("Before a session's first task, the coworker checks the brief — what to deliver, for whom, from which sources, by what rules — and asks only for what is missing, in one multiple-choice card. You can skip the card at any time, and the checklist button beside the composer runs the check on any later message.")}
+      </div>
+
+      <label className="mt-3 flex items-center gap-2.5">
+        <input
+          type="checkbox"
+          checked={cfg.guidance_enabled}
+          data-testid="guidance-enabled"
+          onChange={(e) => save({ guidance_enabled: e.target.checked })}
+        />
+        <span className="text-[13px] text-ink">{t("Check the brief before starting")}</span>
+      </label>
+
+      <div className="mt-3 flex items-center gap-2.5">
+        <span className="text-[13px] text-ink">{t("Diagnosis model")}</span>
+        <select
+          value={cfg.guidance_model}
+          data-testid="guidance-model"
+          className="px-2 py-1.5 rounded-lg border border-line bg-paper text-[13px] text-ink outline-none focus:border-accent"
+          onChange={(e) => save({ guidance_model: e.target.value })}
+        >
+          <option value="">{t("Cheap sibling of the session model (default)")}</option>
+          {sortModelIds(models).map((m) => (
+            <option key={m} value={m}>
+              {modelLabel(m)}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className={FIELD_HELP}>
+        {t("One short, cheap call per session; the questions reuse what memory and your rules already say.")}
       </div>
     </div>
   );

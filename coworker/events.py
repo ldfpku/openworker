@@ -44,6 +44,7 @@ class EventType(str, Enum):
     ERROR = "error"
     INTERRUPTED = "interrupted"
     COMPACTING = "compacting"  # compaction started — surfaces show a transient signal
+    PREFLIGHT = "preflight"  # 开工前核对 diagnosis running — surfaces show a transient signal
     COMPACTED = "compacted"  # outbound history was compacted (summary or trim)
 
 

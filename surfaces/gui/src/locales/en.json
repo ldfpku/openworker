@@ -170,6 +170,7 @@
       "failed": "Couldn't enhance the prompt. Please try again.",
       "timed_out": "That model took too long to answer. Pick a faster one, or try again later."
     },
+    "preflight_send": "Check the brief, then start",
     "fallback_badge": "Has stand-in",
     "fallback_badge_tip": "Switches to {{model}} automatically when the shared quota is busy"
   },
@@ -534,6 +535,7 @@
     "waiting_for_agent": "Waiting for agent...",
     "waiting_for_agent_elapsed": "Waiting for the agent… {{duration}}",
     "compacting_context": "Compacting context…",
+    "preflighting": "Checking the brief…",
     "allow_anyway_message": "I reviewed the blocked {{name}} action — go ahead with it exactly as proposed.",
     "temp_folder_failed": "Could not create a temporary folder.",
     "temp_folder_created": "Temporary folder created",
@@ -906,6 +908,8 @@
     "question_n": "Question {{n}}",
     "question_label": "question",
     "step_of": "{{step}} of {{total}}",
+    "preflight_title": "Pre-flight check",
+    "preflight_skip": "Skip — go ahead on defaults",
     "kind": {
       "approval": "Approval",
       "question": "Question",

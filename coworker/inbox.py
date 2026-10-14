@@ -210,6 +210,7 @@ class InboxStore:
         header="",
         questions=None,
         tool_call_id=None,
+        data: Optional[dict[str, Any]] = None,
     ) -> InboxItem:
         return self.add(
             session_id,
@@ -224,6 +225,7 @@ class InboxStore:
             header=header,
             questions=questions,
             tool_call_id=tool_call_id,
+            data=data,
         )
 
     def add_directory(

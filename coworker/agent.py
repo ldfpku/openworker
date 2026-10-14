@@ -138,6 +138,23 @@ type their own direction). A picked option is a clear brief: start on it. Keep i
 and skip all of this when the user already gave you a task."""
 
 
+# 开工前核对 (coworker/guidance.py): the engine checks the first task message of a session
+# and may put a <task-brief> in the first turn's context (or in a tool result the user
+# answered). This tells the model what that block means — and asks it to keep doing the
+# same job itself for later tasks in the same session.
+_TASK_GUIDANCE = """\
+开工前核对：收到带 <task-brief> 的上下文或工具结果时，它是引擎在你开工前与用户核对过的任务要素。\
+标「已确认」的内容是用户的决定，优先级高于你自己的推断；标「默认口径」的要素按公司与行业常规处理，\
+开工时先用一行列出你的前置假设，不要再追问。brief 指定了技能就先 load_skill 再开工；提到未安装的技能或\
+专家只需提一句（用户可在专家库安装、或新开会话选用），不要替用户安装。用户确认的稳定事实——某个部门\
+固定的受众、固定的交付格式、常用的口径——用 remember(scope="workspace") 记下来，下次就不用再问。
+
+后续回合：同一会话里用户明显开始一件**新**任务，而「要什么 / 给谁看 / 依据在哪」有缺失、或定量核算\
+缺公式与口径时，先发一张 ask_user 分组提问卡（最多 4 题，每题给 2–4 个选项并把记忆里能推断的默认项标为\
+recommended，保留自由输入），问清再开工。追问类消息（「改一下格式」「再来一版」「这里不对」）绝不问，\
+直接改。"""
+
+
 def _enabled_connector_tools(secrets: SecretStore) -> tuple[set[str], set[str]]:
     connectors = {c["name"]: c for c in connector_list(secrets)}
     enabled_connectors = {
@@ -571,6 +588,7 @@ def build_engine(
             return bool(memory_saving_enabled())
         return not memory_off
 
+    memories_block = ""
     if memory_store is not None:
         # Always the full toolset: the registry is fixed at build, so a session born
         # while saving was off must still be able to save the moment it's turned on.
@@ -595,7 +613,10 @@ def build_engine(
             remembered += memory_store.list(scope=Scope.WORKSPACE, workspace=mem_ws)
         block = render_memory_block(remembered)
         if block:
+            memories_block = block
             instructions = f"{instructions}\n\n{block}"
+
+    instructions = f"{instructions}\n\n{_TASK_GUIDANCE}"
 
     # Persona dirs come FIRST so a user's global/workspace copy of the same name shadows
     # the bundle's (later dirs overwrite earlier in the loader).
@@ -832,6 +853,19 @@ def build_engine(
         "workspace": str(ws) if ws else "",
     }
     engine.skill_loader = skill_loader  # type: ignore[attr-defined]
+
+    def guidance_context() -> dict[str, Any]:
+        # What the 开工前核对 diagnosis reads (coworker/guidance.py): the same session-fixed
+        # knowledge the system prompt carries, plus the live roots and skill menu.
+        allowed = skill_filter() if callable(skill_filter) else skill_filter
+        return {
+            "memories": memories_block,
+            "rules": rules_block,
+            "roots": [str(r.path) for r in root_list],
+            "skills_catalog": skill_catalog_text(skill_loader, allowed=allowed),
+        }
+
+    engine.guidance_context = guidance_context
     _engine_box.append(engine)  # late-bind for the countermand + the explorer Stop relay
     return engine
 

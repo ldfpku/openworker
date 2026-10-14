@@ -226,6 +226,7 @@ export function App() {
     text: string;
     attachments?: Attachment[];
     skill?: string;
+    preflight?: boolean;
   } | null>(null);
   // Bumped to force a socket rebuild on the SAME session id (Save as project… moves the
   // folder server-side; the engine rebinds on reconnect) — and the setup row's
@@ -274,6 +275,9 @@ export function App() {
   // cleared by whatever the engine emits next — the summarizer call is otherwise a
   // multi-second silent stall mid-turn.
   const [compacting, setCompacting] = useState(false);
+  // Transient "Checking the brief…" indicator: set by the `preflight` event (coworker/
+  // guidance.py), cleared by whatever engine event follows (tool_proposed, assistant text).
+  const [preflighting, setPreflighting] = useState(false);
   const [items, setItems] = useState<Item[]>([]);
   const [streaming, setStreamingState] = useState("");
   // Ref mirror of `streaming`: the WS handler closure is built once per socket and can't read
@@ -602,6 +606,7 @@ export function App() {
     text: string;
     attachments?: Attachment[];
     skill?: string;
+    preflight?: boolean;
     model?: string;
     notice?: string; // e.g. "Temporary folder created · git initialized", shown after the message
   } | null>(null);
@@ -878,6 +883,7 @@ export function App() {
       // Any engine event after `compacting` means the summarizer finished (compacted /
       // silent no-op / failure prompt) — the transient must never outlive it.
       if (ev.type !== "compacting") setCompacting(false);
+      if (ev.type !== "preflight") setPreflighting(false);
       switch (ev.type) {
         case "ready":
           setConnected(true);
@@ -1059,6 +1065,7 @@ export function App() {
               multi: !!d.multi,
               header: d.header || "",
               questions: d.questions || [],
+              preflight: !!d.preflight,
             },
           ]);
           break;
@@ -1230,6 +1237,9 @@ export function App() {
         case "compacting":
           setCompacting(true);
           break;
+        case "preflight":
+          setPreflighting(true);
+          break;
         case "compacted":
           // Auto-compaction marker (OPE-27): outbound-only — the transcript stays intact,
           // this divider just shows where the model's memory was summarized.
@@ -1343,7 +1353,7 @@ export function App() {
               ? [{ kind: "notice", tone: "info", text: p.notice } as Item]
               : []),
           ]);
-          sessionRef.current?.userMessage(p.text, p.attachments, p.model, p.skill);
+          sessionRef.current?.userMessage(p.text, p.attachments, p.model, p.skill, p.preflight);
         }
       },
       onClose: () => setConnected(false),
@@ -1457,12 +1467,17 @@ export function App() {
     return () => clearInterval(t);
   }, [surface, sessionId, browserRefreshKey, markUnattended]);
 
-  const send = (text: string, attachments?: Attachment[], skill?: string) => {
+  const send = (
+    text: string,
+    attachments?: Attachment[],
+    skill?: string,
+    opts?: { preflight?: boolean },
+  ) => {
     // UX-029: folder enforcement AT SEND. A code-family session with no folder has no
     // socket yet (the connect effect waits) — stash the message and ask where to work;
     // it goes out the moment the dialog resolves.
     if (gatesWorkspace(agent) && !workspace) {
-      setSendGate({ text, attachments, skill });
+      setSendGate({ text, attachments, skill, preflight: opts?.preflight });
       return;
     }
     // A typed message while a proposal gate is pending IS the answer: it resolves
@@ -1488,7 +1503,7 @@ export function App() {
     const shown = skill ? `/${skill}${text ? ` ${text}` : ""}` : text;
     setItems((p) => [...p, { kind: "user", text: shown, attachments, ts: Date.now() / 1000 }]);
     // The visible model rides along with the message (single source of truth per turn).
-    sessionRef.current?.userMessage(text, attachments, model, skill);
+    sessionRef.current?.userMessage(text, attachments, model, skill, opts?.preflight);
     followLatest(); // sending always re-engages stream-following, wherever the user had scrolled
   };
   // Resolving a LIVE prompt also resolves its parked Inbox mirror server-side, but the polled
@@ -2434,8 +2449,12 @@ export function App() {
                   {/* Compaction runs between provider turns (nothing streams during it), so
                       the transient takes over the waiting slot with a specific label. */}
                   {running && compacting && <WaitingForAgent label={t("app.compacting_context")} />}
+                  {running && preflighting && !compacting && (
+                    <WaitingForAgent label={t("app.preflighting")} />
+                  )}
                   {running &&
                     !compacting &&
+                    !preflighting &&
                     !reasoningStream &&
                     (!streaming || streamMode(streaming, items, running) === "hold") &&
                     !lastItemIsAssistant(items) && <WaitingForAgent />}
@@ -2599,6 +2618,9 @@ export function App() {
                       multi: pendingQuestion.multi,
                       header: pendingQuestion.header,
                       questions: pendingQuestion.questions,
+                      // The reconnect path renders the parked copy (data.preflight from the
+                      // server); the live event carries the same flag here.
+                      ...(pendingQuestion.preflight ? { data: { preflight: true } } : {}),
                     }}
                     onResolve={(_id, answer) => answerQuestion(answer)}
                     compact

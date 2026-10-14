@@ -17,6 +17,7 @@ from coworker.providers import (
 from coworker.server import SessionManager, create_app
 from coworker.sessions import SessionRecord
 from coworker.testing.autotitle import autotitle_reply, is_autotitle_call
+from coworker.testing.guidance import diagnosis_reply, is_diagnosis_call
 
 
 class ScriptedProvider(ProviderClient):
@@ -37,6 +38,10 @@ class ScriptedProvider(ProviderClient):
         # drops that title instead of writing or broadcasting it.
         if is_autotitle_call(messages):
             return autotitle_reply()
+        # The 开工前核对 diagnosis (coworker/guidance.py) rides this provider too, on an
+        # attended WS session's first task message — same hazard, same divert.
+        if is_diagnosis_call(messages):
+            return diagnosis_reply()
         return self._turns.pop(0)
 
     def capabilities(self, model):
@@ -461,6 +466,8 @@ def test_ws_allows_only_one_inflight_turn_per_session(tmp_path):
             # invariant under test is one CHAT turn at a time, so exclude title calls.
             if is_autotitle_call(messages):
                 return autotitle_reply(text="A Title")
+            if is_diagnosis_call(messages):
+                return diagnosis_reply()
             with self._lock:
                 self.active += 1
                 self.max_active = max(self.max_active, self.active)
@@ -581,6 +588,8 @@ def test_ws_error_persists_notice_and_retry_reruns(tmp_path):
             # to "recovered" — the WS never emits the persisted-error path this test pins.
             if is_autotitle_call(messages):
                 return autotitle_reply()
+            if is_diagnosis_call(messages):  # 开工前核对, same divert as the title call
+                return diagnosis_reply()
             self.calls += 1
             if self.calls == 1:
                 raise RuntimeError("outage")

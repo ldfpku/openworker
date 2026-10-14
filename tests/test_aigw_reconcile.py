@@ -29,6 +29,7 @@ from coworker.server import SessionManager, create_app
 from coworker.sessions import SessionRecord
 from coworker.teams.registry import TeamRegistry, TeamWorker
 from coworker.testing.autotitle import autotitle_reply, is_autotitle_call
+from coworker.testing.guidance import diagnosis_reply, is_diagnosis_call
 
 FABLE = "aigw:anthropic/claude-fable-5"
 SONNET = "aigw:anthropic/claude-sonnet-5"
@@ -46,6 +47,8 @@ class _Provider(ProviderClient):
     def complete(self, *, model, messages, tools=None, **settings):
         if is_autotitle_call(messages):
             return autotitle_reply()
+        if is_diagnosis_call(messages):  # 开工前核对, same divert as the title call
+            return diagnosis_reply()
         self.models.append(model)
         return AssistantTurn(text="ok", finish_reason="stop")
 

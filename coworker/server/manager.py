@@ -53,7 +53,7 @@ from ..unattended import UnattendedRegistry
 from ..audit import AuditStore
 from ..config import load_config, workspace_allowed_commands
 from ..conversations import LOST_TOOL_RESULT, ConversationStore, title_from
-from ..engine import ApprovalOutcome, Approver, TurnEngine
+from ..engine import PREFLIGHT_ID_PREFIX, ApprovalOutcome, Approver, TurnEngine
 from ..roots import RootDir, user_roots
 from ..workspace_trust import WorkspaceTrustStore
 from ..automation import Schedule, ScheduledTask, Scheduler, TaskRun, TaskStore
@@ -1204,6 +1204,14 @@ class SessionManager:
 
             engine.compaction_state = CompactionState.from_dict(record.compaction)
         engine.compaction_settings = self.compaction_settings
+        # 开工前核对 (coworker/guidance.py): live getter, same reasoning as compaction. The
+        # engine itself decides WHEN (first task message, attended); this supplies the
+        # model, the timeout, the catalog recommender and the session's skill menu.
+        engine.guidance_config = (
+            lambda eng=engine, sid=session_id, w=ws, a=agent_name: self.guidance_config(
+                eng, sid, w, a
+            )
+        )
         if carry is not None and carry.get("model_pinned"):
             engine.model_pinned = True
         # The lazy half of the gateway-list reconcile: a pull only walks sessions that
@@ -1578,7 +1586,9 @@ class SessionManager:
         ) -> dict[str, Any]:
             from ..tools.ask import answer_result, question_item_fields
 
-            fields = question_item_fields(args)
+            fields = question_item_fields(
+                args, preflight=str(tool_call_id or "").startswith(PREFLIGHT_ID_PREFIX)
+            )
             if fields is None:
                 return {"answer": "", "error": "no question"}
             inbox_name = self.inbox_routing.route_for(session_id, agent)
@@ -4520,7 +4530,7 @@ class SessionManager:
                 self._prefs[key] = kept
             else:
                 self._prefs.pop(key, None)
-        for key in ("compaction_model", "autotitle_model"):
+        for key in ("compaction_model", "autotitle_model", "guidance_model"):
             saved = self._prefs.get(key)
             if isinstance(saved, str) and self._aigw_delisted(saved):
                 logger.info(
@@ -5904,6 +5914,7 @@ class SessionManager:
             "secrets_path": str(self.secrets.path),
             **self.pdf_settings(),
             **self.compaction_settings_payload(),
+            **self.guidance_settings_payload(),
         }
 
     def _surfaces(self) -> dict[str, bool]:
@@ -6092,6 +6103,101 @@ class SessionManager:
             self._prefs["compaction_model"] = str(model)
         self._save_prefs()
         return {"ok": True, **self.compaction_settings()}
+
+    # -- 开工前核对 (coworker/guidance.py) ---------------------------------------------
+    def guidance_settings(self) -> dict[str, Any]:
+        """The live pre-flight knobs: on/off (default on) and the diagnosis-model pin
+        ("" → the session model's cheap sibling, like auto-title)."""
+        enabled = self._prefs.get("guidance_enabled")
+        return {
+            "enabled": True if enabled is None else bool(enabled),
+            "model": str(self._prefs.get("guidance_model") or ""),
+        }
+
+    def guidance_settings_payload(self) -> dict[str, Any]:
+        """The same knobs under REST-facing names (prefixed to keep /v1/settings flat)."""
+        settings = self.guidance_settings()
+        return {"guidance_enabled": settings["enabled"], "guidance_model": settings["model"]}
+
+    def set_guidance_settings(self, enabled: Any = None, model: Any = None) -> dict[str, Any]:
+        """Persist the pre-flight overrides. Engines read them live via `guidance_config`,
+        so a change applies to the next turn of a running session."""
+        if enabled is not None:
+            if not isinstance(enabled, bool):
+                return {"ok": False, "error": "guidance_enabled must be a boolean"}
+            self._prefs["guidance_enabled"] = enabled
+        if model is not None:
+            if not isinstance(model, str):
+                return {"ok": False, "error": "guidance_model must be a string"}
+            self._prefs["guidance_model"] = model
+        self._save_prefs()
+        return {"ok": True, **self.guidance_settings()}
+
+    def recommend_for(
+        self,
+        text: str,
+        session_id: str,
+        workspace: Optional[str | Path],
+        agent: Optional[str] = None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Catalog candidates for the pre-flight: library skills (flagged installed when on
+        this session's menu), zh library experts and the enabled built-in personas, scored
+        by coworker/library/recommend.py. A missing pack → no candidates, never an error."""
+        from ..library.api import _library
+        from ..library.recommend import recommend
+
+        try:
+            lib = _library()
+            skills = list((lib.skills() or {}).get("skills") or [])
+            experts = list((lib.experts("zh") or {}).get("experts") or [])
+        except Exception:
+            logger.warning("pre-flight: library unavailable", exc_info=True)
+            skills, experts = [], []
+        personas: list[dict[str, Any]] = []
+        try:
+            for row in self.personas.list_all():
+                if not (row.get("builtin") and row.get("enabled")):
+                    continue
+                entry = self.personas.get(str(row.get("id") or ""))
+                manifest = getattr(entry, "manifest", None) if entry is not None else None
+                personas.append(
+                    {
+                        **row,
+                        "description": str(getattr(manifest, "description", "") or ""),
+                    }
+                )
+        except Exception:
+            logger.warning("pre-flight: personas unavailable", exc_info=True)
+        # With the persona, so its carried skills (OPE-58) count as installed too.
+        installed = self.effective_skill_names(session_id, workspace, agent)
+        return recommend(
+            text,
+            library_skills=skills,
+            installed=set(installed),
+            library_experts=experts,
+            personas=personas,
+        )
+
+    def guidance_config(
+        self,
+        engine: TurnEngine,
+        session_id: str,
+        workspace: Optional[str | Path],
+        agent: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """What `TurnEngine._preflight` reads each time it runs. The diagnosis model is
+        the cheap same-provider sibling (`_utility_model`) unless pinned; the timeout is
+        the pre-flight's own short bound — the user is waiting on it, unlike a title."""
+        settings = self.guidance_settings()
+        from ..guidance import DEFAULT_TIMEOUT
+
+        return {
+            "enabled": settings["enabled"],
+            "model": settings["model"] or self._utility_model(engine.model),
+            "timeout": DEFAULT_TIMEOUT,
+            "recommend": lambda text: self.recommend_for(text, session_id, workspace, agent),
+            "installed_skills": set(self.effective_skill_names(session_id, workspace, agent)),
+        }
 
     def set_pdf_settings(
         self,
