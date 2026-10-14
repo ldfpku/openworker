@@ -17,6 +17,7 @@ import {
   turnAbortedText,
   turnRetryText,
   turnTruncatedText,
+  truncatedText,
 } from "./modeNotice";
 import { answerSupersededNotice } from "./promptResolved";
 
@@ -67,6 +68,12 @@ export function itemsFromMessages(messages: ConversationMessage[]): Item[] {
       // renders from the source sidecar.
       if (m.source?.connector) {
         items.push({ kind: "connector", source: m.source });
+        continue;
+      }
+      // OPE-171 continuation nudge: engine-authored, user-role so the model acts on it.
+      // Replayed as the same info line the live view showed, never as a user bubble.
+      if (m._display?.kind === "continuation") {
+        items.push({ kind: "notice", tone: "info", text: t("app.notice.continuation") });
         continue;
       }
       const user = userItemFromContent(m.content);
@@ -194,7 +201,7 @@ export function itemsFromMessages(messages: ConversationMessage[]): Item[] {
 // three more arms on a chain that is already ten ternaries deep. All three carry a
 // structured `reason` beside the server's English sentence, so each localizes from the
 // reason and falls back to that sentence for a reason it doesn't recognize.
-const CUT_OFF_NOTICE_KINDS = new Set(["turn_aborted", "turn_truncated", "turn_retry"]);
+const CUT_OFF_NOTICE_KINDS = new Set(["turn_aborted", "turn_truncated", "turn_retry", "truncated"]);
 
 function cutOffNoticeItem(m: ConversationMessage): Item {
   // Nothing came back at all: reported exactly like a provider failure, Retry and all.
@@ -204,6 +211,15 @@ function cutOffNoticeItem(m: ConversationMessage): Item {
       kind: "notice",
       tone: "warn",
       text: turnAbortedText(m.reason, m.text || "", m.retries),
+      retriable: true,
+    };
+  // OPE-171: the turn stopped after repeated output-limit cut-offs with no action.
+  // Retriable like an error: a fresh attempt usually acts.
+  if (m.kind === "truncated")
+    return {
+      kind: "notice",
+      tone: "warn",
+      text: truncatedText(m.continuations, m.text || ""),
       retriable: true,
     };
   // An answer DID arrive and the turn completed; this only warns that it may be missing

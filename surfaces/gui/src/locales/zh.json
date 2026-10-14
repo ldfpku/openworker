@@ -509,6 +509,8 @@
       "turn_aborted_filtered": "这条回复被提供商的内容策略拦截了。",
       "turn_truncated_no_finish": "这条回复可能不完整：它在上游发出结束帧之前就被截断了。",
       "turn_truncated_length": "这条回复可能不完整：模型触及了输出长度上限。",
+      "continuation": "回复在输出上限处被截断且未执行任何操作，正在让模型继续。",
+      "truncated": "已停止：回复连续 {{n}} 次在输出上限处被截断且未执行任何操作。请重试，或把任务拆小一些。",
       "turn_aborted_retried": "自动重试未能解决（重试 {{n}} 次）。",
       "turn_retry_no_finish": "模型输出被中断，正在自动重试（第 {{attempt}}/{{max}} 次）…",
       "turn_retry_empty": "模型返回了空回复，正在自动重试（第 {{attempt}}/{{max}} 次）…",

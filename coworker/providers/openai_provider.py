@@ -64,6 +64,69 @@ def _pin_reasoning_effort(kwargs: dict[str, Any]) -> None:
         kwargs.setdefault("reasoning_effort", "none")
 
 
+def _reasoning_field(obj: Any) -> Optional[str]:
+    """Which field the thinking arrived in: `reasoning_content` (Together, Moonshot,
+    DeepSeek, GLM) or `reasoning` (OpenRouter, xAI). The same name is used to send it
+    back (OPE-178)."""
+    for name in ("reasoning_content", "reasoning"):
+        value = getattr(obj, name, None)
+        if isinstance(value, str) and value:
+            return name
+    return None
+
+
+def _reasoning_extras(field: Optional[str], text: Optional[str]) -> dict[str, Any]:
+    """The `_openai_compat` sidecar persisted on the assistant message: the thinking text
+    and the field it arrived in, replayed verbatim by `replay_reasoning`. Kimi K3 requires
+    the complete assistant message — reasoning included — back on later turns; other
+    reasoning models on this path document the same. Empty when nothing arrived."""
+    if field and text:
+        return {"_openai_compat": {"field": field, "text": text}}
+    return {}
+
+
+# Model families whose thinking is sent back on later turns (OPE-178). An allow-list, not
+# "everyone": the sidecar is saved for every model, but replay is gated because some
+# endpoints 400 on a `reasoning_content` key in the INPUT (DeepSeek's own API for
+# `deepseek-reasoner`), and a model that never documented replay gains nothing from it.
+# Matched as substrings of the lowercased id, so vendor prefixes and gateway namespaces
+# (`together:moonshotai/Kimi-K3`, `@cf/zai-org/glm-5.3-flash`) all match.
+_REASONING_REPLAY_FAMILIES = ("kimi", "moonshot", "deepseek", "glm", "qwen3")
+# …and the exceptions within those families that reject the replayed field.
+_REASONING_REPLAY_EXCLUDED = ("deepseek-reasoner",)
+
+
+def replays_reasoning(model: str) -> bool:
+    """Whether `replay_reasoning` runs for this model id (see the allow-list above)."""
+    ident = (model or "").lower()
+    if any(name in ident for name in _REASONING_REPLAY_EXCLUDED):
+        return False
+    return any(name in ident for name in _REASONING_REPLAY_FAMILIES)
+
+
+def replay_reasoning(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Re-attach each assistant message's persisted thinking under the field name it
+    arrived in (OPE-178). Messages without the sidecar are returned untouched, so models
+    that never send reasoning see byte-identical requests. Call before
+    `_strip_foreign_sidecars`, which then removes the underscore key itself."""
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        sidecar = m.get("_openai_compat") if m.get("role") == "assistant" else None
+        if isinstance(sidecar, dict) and sidecar.get("text") and sidecar.get("field"):
+            out.append({**m, str(sidecar["field"]): str(sidecar["text"])})
+        else:
+            out.append(m)
+    return out
+
+
+def _outbound(model: str, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The messages as the wire sees them: thinking replayed for the models that take
+    it back, then every provider-private sidecar stripped."""
+    return _strip_foreign_sidecars(
+        replay_reasoning(messages) if replays_reasoning(model) else messages
+    )
+
+
 def _delta_reasoning(obj: Any) -> Optional[str]:
     """Thinking text off a delta/message: `reasoning_content` (DeepSeek, GLM, Kimi, and
     most compat vendors) or `reasoning` (xAI, OpenRouter). Extra response fields survive
@@ -307,7 +370,7 @@ class OpenAIProvider(ProviderClient):
     ) -> AssistantTurn:
         kwargs: dict[str, Any] = {
             "model": model,
-            "messages": _strip_foreign_sidecars(messages),
+            "messages": _outbound(model, messages),
             **settings,
         }
         if tools:
@@ -338,12 +401,14 @@ class OpenAIProvider(ProviderClient):
         text = getattr(message, "content", None)
         tool_calls = _parse_tool_calls(getattr(message, "tool_calls", None))
         text, tool_calls = _maybe_salvage_tool_calls(text, tool_calls, tools=tools)
+        reasoning_text = _delta_reasoning(message)
         return AssistantTurn(
             text=text,
             tool_calls=tool_calls,
             finish_reason=getattr(choice, "finish_reason", None),
             raw=response,
-            reasoning=_delta_reasoning(message),
+            reasoning=reasoning_text,
+            extras=_reasoning_extras(_reasoning_field(message), reasoning_text),
             usage=_usage_from(getattr(response, "usage", None)),
         )
 
@@ -360,7 +425,7 @@ class OpenAIProvider(ProviderClient):
     ):
         kwargs: dict[str, Any] = {
             "model": model,
-            "messages": _strip_foreign_sidecars(messages),
+            "messages": _outbound(model, messages),
             "stream": True,
             # Usage on the final chunk (empty `choices`). Compat servers that reject
             # the option get a one-shot retry without it (_param_fix_retry).
@@ -382,6 +447,7 @@ class OpenAIProvider(ProviderClient):
 
         text_parts: list[str] = []
         reasoning_parts: list[str] = []
+        reasoning_field: Optional[str] = None
         tool_accum: dict[int, dict[str, str]] = {}
         finish_reason = None
         usage: Optional[TokenUsage] = None
@@ -409,6 +475,7 @@ class OpenAIProvider(ProviderClient):
                 if delta is not None:
                     reasoning = _delta_reasoning(delta)
                     if reasoning:
+                        reasoning_field = reasoning_field or _reasoning_field(delta)
                         reasoning_parts.append(reasoning)
                         yield StreamChunk(reasoning_delta=reasoning)
                     content = getattr(delta, "content", None)
@@ -454,6 +521,9 @@ class OpenAIProvider(ProviderClient):
                     tool_calls=tool_calls,
                     finish_reason=finish_reason,
                     reasoning="".join(reasoning_parts) or None,
+                    extras=_reasoning_extras(
+                        reasoning_field, "".join(reasoning_parts) or None
+                    ),
                     usage=usage,
                     # A clean Chat Completions stream ALWAYS ends with a choice chunk carrying
                     # `finish_reason`; reaching here without one means the connection was cut

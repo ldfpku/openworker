@@ -9,6 +9,8 @@ workspace path. Other permission grants remain global-only.
 
 from __future__ import annotations
 
+import os
+
 try:
     import tomllib  # stdlib since 3.11
 except ModuleNotFoundError:  # 3.10, the floor requires-python declares
@@ -38,6 +40,17 @@ class Config:
     # is the default: a ceiling that fires on legitimate long work is worse than none,
     # and the right number is workload-specific (set it per workspace in config.toml).
     max_turn_tokens: int = 0
+    # OPE-186 change 3: cap on the auto-compaction trigger, in tokens. The engine compacts
+    # at min(80% of the model's window, this cap); the built-in cap is 250,000, which on a
+    # 1M-window model fired once in 445 long sessions. Lower it (e.g. 60000) to
+    # summarise long sessions earlier. Environment override: COWORKER_COMPACTION_CAP_TOKENS.
+    # In this fork the Settings pref (manager.compaction_settings) overrides this default.
+    compaction_cap_tokens: Optional[int] = None
+    # OPE-189: output ceiling for the summariser call, in tokens. Unset = 16,000. On a
+    # reasoning model the budget is shared with the model's thinking, so a low value means
+    # the summary itself never gets written. Environment override:
+    # COWORKER_COMPACTION_SUMMARY_MAX_TOKENS.
+    compaction_summary_max_tokens: Optional[int] = None
     allowed_commands: list[str] = field(
         default_factory=lambda: list(DEFAULT_ALLOWED_COMMANDS)
     )
@@ -90,6 +103,8 @@ _FIELDS = {
     "mode",
     "max_iterations",
     "max_turn_tokens",
+    "compaction_cap_tokens",
+    "compaction_summary_max_tokens",
     "allowed_commands",
     "auto_allow",
     "allowed_domains",
@@ -117,6 +132,10 @@ _GLOBAL_ONLY_FIELDS = {
     "auto_approve_shadow",
 }
 _WORKSPACE_FIELDS = _FIELDS - _GLOBAL_ONLY_FIELDS
+
+
+COMPACTION_CAP_TOKENS_ENV = "COWORKER_COMPACTION_CAP_TOKENS"
+COMPACTION_SUMMARY_MAX_TOKENS_ENV = "COWORKER_COMPACTION_SUMMARY_MAX_TOKENS"
 
 
 def global_config_path() -> Path:
@@ -169,4 +188,36 @@ def load_config(
                         [*cfg.allowed_commands, *workspace_allowed_commands(workspace)]
                     )
                 )
+    cfg.compaction_cap_tokens = _positive_int_setting(
+        cfg.compaction_cap_tokens, "compaction_cap_tokens", COMPACTION_CAP_TOKENS_ENV
+    )
+    cfg.compaction_summary_max_tokens = _positive_int_setting(
+        cfg.compaction_summary_max_tokens,
+        "compaction_summary_max_tokens",
+        COMPACTION_SUMMARY_MAX_TOKENS_ENV,
+    )
     return cfg
+
+
+def _positive_int_setting(
+    value: Any, name: str, env_var: str
+) -> Optional[int]:
+    """A config.toml value overridden by `env_var`; both must be positive integers."""
+    if value is not None and (
+        isinstance(value, bool) or not isinstance(value, int) or value <= 0
+    ):
+        raise ValueError(
+            f"{name} must be a positive integer, got {value!r} (config.toml)"
+        )
+    raw = (os.environ.get(env_var) or "").strip()
+    if not raw:
+        return value
+    try:
+        parsed = int(raw)
+    except ValueError:
+        parsed = 0
+    if parsed <= 0:
+        raise ValueError(
+            f"{name} must be a positive integer, got {raw!r} ({env_var})"
+        )
+    return parsed

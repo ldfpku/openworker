@@ -6093,6 +6093,9 @@ class SessionManager:
         summarizer-model pin; absent keys fall back to compaction.py defaults."""
         from ..compaction import DEFAULT_CAP_TOKENS, DEFAULT_THRESHOLD_PCT
 
+        # OPE-186/189: config.toml / COWORKER_COMPACTION_* are the defaults the Settings
+        # prefs override (the summariser ceiling has no pref at all).
+        config = load_config()
         try:
             threshold_pct = float(
                 self._prefs.get("compaction_threshold_pct") or DEFAULT_THRESHOLD_PCT
@@ -6101,16 +6104,21 @@ class SessionManager:
             threshold_pct = DEFAULT_THRESHOLD_PCT
         try:
             cap_tokens = int(
-                self._prefs.get("compaction_cap_tokens") or DEFAULT_CAP_TOKENS
+                self._prefs.get("compaction_cap_tokens")
+                or config.compaction_cap_tokens
+                or DEFAULT_CAP_TOKENS
             )
         except (TypeError, ValueError):
             cap_tokens = DEFAULT_CAP_TOKENS
-        return {
+        settings = {
             "threshold_pct": threshold_pct,
             "cap_tokens": cap_tokens,
             # "" → the session's own model (engine falls back to self.model).
             "model": str(self._prefs.get("compaction_model") or ""),
         }
+        if config.compaction_summary_max_tokens:
+            settings["summary_max_tokens"] = int(config.compaction_summary_max_tokens)
+        return settings
 
     def compaction_settings_payload(self) -> dict[str, Any]:
         """The same knobs under REST-facing names (prefixed to keep /v1/settings flat)."""
@@ -9839,11 +9847,11 @@ def _last_assistant_text(messages: list[dict[str, Any]]) -> Optional[str]:
 # finalized (they went to the WS, which never touches the automation TaskRun), so the
 # messages are what is left to read; a scheduled run sees its events but reads the same
 # messages, so both paths judge a turn alike. Never the engine's private `_cancel` flag.
-_RUN_FAILED_NOTICE_KINDS = frozenset({"error", "turn_aborted"})
+_RUN_FAILED_NOTICE_KINDS = frozenset({"error", "turn_aborted", "truncated"})
 
 # Notices that record something about the session, not how the turn ended — every
-# `_append_notice` kind in coworker/ except the four the verdict is read from
-# ("interrupted", "error", "turn_aborted", "turn_truncated"). The first five come from
+# `_append_notice` kind in coworker/ except the five the verdict is read from
+# ("interrupted", "error", "turn_aborted", "truncated", "turn_truncated"). The first five come from
 # the session's own handlers (connect, set_mode, set_model, add_root), so they can land
 # AFTER the run's turn has ended and before the run is judged — EXCEPT `project_presence`
 # (`add_root`), which is ALSO reachable from inside the turn loop: `add_root` is what the
