@@ -47,3 +47,5 @@ def test_bump_preserves_config_format(tmp_path):
     assert _MODULE.bump_config(path, "patch") == "0.8.1"
     assert path.read_text(encoding="utf-8") == text.replace("0.7.9", "0.8.1")
     assert json.loads(path.read_text(encoding="utf-8"))["productName"] == "OpenWorker"
+    # LF stays LF on every platform (a Windows run used to write CRLF, 2026-10-14).
+    assert b"" not in path.read_bytes()

@@ -28,13 +28,17 @@ def next_version(current: str, bump: str = "patch") -> str:
 
 
 def bump_config(path: Path, bump: str) -> str:
-    text = path.read_text(encoding="utf-8")
+    # Bytes in, bytes out: Python's text mode would turn every "
+" into "
+" on
+    # Windows, and the committed file is LF (repo policy: LF everywhere).
+    text = path.read_bytes().decode("utf-8")
     current = json.loads(text)["version"]
     version = next_version(current, bump)
     needle = f'"version": "{current}"'
     if text.count(needle) != 1:
         raise ValueError(f"expected exactly one version field in {path}")
-    path.write_text(text.replace(needle, f'"version": "{version}"'), encoding="utf-8")
+    path.write_bytes(text.replace(needle, f'"version": "{version}"').encode("utf-8"))
     return version
 
 
