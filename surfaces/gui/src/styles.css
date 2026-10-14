@@ -2193,3 +2193,16 @@ html[data-platform="linux"] ::-webkit-scrollbar-thumb:hover { background-color: 
   font-family: var(--mono); font-size: var(--fs-mono); line-height: 1.5;
   color: var(--muted); white-space: pre-wrap; text-align: left;
 }
+
+/* ---- macOS 26 top strip ------------------------------------------------------ */
+/* macOS 26 ignores the traffic-light position the shell asks for (19,24; centre y≈30) and
+   draws them at its own place: centre y≈21, 14px wide (measured on the 0.3.0 DMG, 2026-09-29).
+   The wordmark, the reveal button, the topbar cluster and the sidebar's brand row move up
+   to that midline. `?overlay=26` previews it in the browser with the lights drawn there. */
+.app.tauri-overlay.macos-26 .sidebar .brand { padding-top: 5px; }
+.app.tauri-overlay.macos-26 .nav-reveal-btn { top: 1px; }
+.app.tauri-overlay.macos-26 .main-topbar { padding-top: 0; height: 42px; }
+.boot-splash.tauri-overlay.macos-26 { padding-top: 30px; }
+.app.tauri-overlay.macos-26 .titlebar-drag { height: 42px; padding-top: 2px; }
+.app.tauri-overlay.macos-26 .sim-traffic-lights { top: 14px; }
+.app.tauri-overlay.macos-26 .sim-traffic-lights span { width: 14px; height: 14px; }
