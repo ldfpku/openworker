@@ -910,6 +910,9 @@
     "step_of": "{{step}} of {{total}}",
     "preflight_title": "Pre-flight check",
     "preflight_skip": "Skip — go ahead on defaults",
+    "skip": "Skip",
+    "skip_question": "Skip question",
+    "skip_all": "Skip all",
     "kind": {
       "approval": "Approval",
       "question": "Question",

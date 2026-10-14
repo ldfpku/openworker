@@ -3610,14 +3610,23 @@ class TurnEngine:
                 "error": "no response",
             }
 
-        if str(tool_call.id or "").startswith(PREFLIGHT_ID_PREFIX):
+        preflight = str(tool_call.id or "").startswith(PREFLIGHT_ID_PREFIX)
+        if preflight:
             # The engine's own 开工前核对 card — recognized by the call id, never by the
             # arguments: those are replayed to the model every turn, and a model imitating
             # them must not be able to make its own ask_user render as a pre-flight.
             result = _guidance.finish_preflight(args, result)
+        # A skipped question answers None (OPE-153), so an all-skipped card is "denied" like an
+        # unanswered one — `answers` being non-empty isn't enough on its own. The pre-flight
+        # card is the exception: its skip means "proceed on defaults", which IS an answer.
+        replies = result.get("answers")
         status = (
             "ok"
-            if (result.get("answer") or result.get("answers") or result.get("skipped"))
+            if (
+                result.get("answer")
+                or (isinstance(replies, dict) and any(v is not None for v in replies.values()))
+                or (preflight and result.get("skipped"))
+            )
             else "denied"
         )
         if status == "ok":
@@ -3654,8 +3663,10 @@ class TurnEngine:
         self._reviewer_denials = 0
         anchor = sum(1 for m in self.messages if m.get("role") == "user")
         answers = result.get("answers")
+        # Skipped questions answer None (OPE-153) — dropped here, else str(None) files "None"
+        # as something the user actually said.
         values = (
-            [_answer_as_text(v) for v in answers.values()]
+            [_answer_as_text(v) for v in answers.values() if v is not None]
             if isinstance(answers, dict)
             else [_answer_as_text(result.get("answer") or "")]
         )

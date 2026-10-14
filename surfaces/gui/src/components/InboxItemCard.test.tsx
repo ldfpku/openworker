@@ -172,6 +172,11 @@ describe("InboxItemCard — 开工前核对 (pre-flight) card", () => {
     expect(screen.queryByTestId("preflight-skip")).toBeNull();
   });
 
+  it("hides the generic Skip (OPE-153): its own button already means 'proceed on defaults'", () => {
+    render(<InboxItemCard item={preflightItem()} onResolve={vi.fn()} />);
+    expect(screen.queryByTestId("question-skip")).toBeNull();
+  });
+
   it("keeps a comma inside a multi-select label by resolving with a JSON array", () => {
     const onResolve = vi.fn();
     render(<InboxItemCard item={preflightItem()} onResolve={onResolve} />);
@@ -196,5 +201,59 @@ describe("InboxItemCard — 开工前核对 (pre-flight) card", () => {
     fireEvent.click(screen.getByText("a, b"));
     fireEvent.click(screen.getByText(/\(1\)/));
     expect(onResolve).toHaveBeenCalledWith("i1", JSON.stringify(["a, b"]));
+  });
+});
+
+// OPE-153 — every other question card carries Skip; a grouped one also "Skip all". The
+// resolution is the sentinel the server turns into a null answer (never ""), and a
+// whole-card skip keeps the answers already given.
+describe("InboxItemCard — skipping a question (OPE-153)", () => {
+  const grouped = () =>
+    base({
+      title: "Chart style?",
+      header: "Chart style",
+      questions: [
+        { question: "Chart style?", header: "Chart style", options: ["Bar", "Line"], allow_text: false },
+        { question: "Which distribution?", header: "Distribution", options: ["Stacked", "Grouped"], allow_text: false },
+        { question: "Which palette?", header: "Palette", options: ["Warm", "Cool"], allow_text: false },
+      ],
+    });
+
+  it("a single question offers Skip even without a free-text escape, resolving with the sentinel", async () => {
+    await i18n.changeLanguage("zh");
+    const onResolve = vi.fn();
+    render(<InboxItemCard item={base({ options: ["a", "b"], allow_text: false })} onResolve={onResolve} />);
+    const row = screen.getByTestId("question-skip");
+    expect(row.querySelectorAll("button").length).toBe(1);
+    expect(row.textContent).toBe("跳过");
+    fireEvent.click(row.querySelector("button")!);
+    expect(onResolve).toHaveBeenCalledWith("i1", "__ocw_skip__");
+  });
+
+  it("skipping one step advances the stepper like an answer would", async () => {
+    await i18n.changeLanguage("zh");
+    const onResolve = vi.fn();
+    render(<InboxItemCard item={grouped()} onResolve={onResolve} />);
+    fireEvent.click(screen.getByText("跳过此问题"));
+    expect(screen.getByTestId("question-stepper").textContent).toContain("2 / 3");
+    fireEvent.click(screen.getByRole("button", { name: "Stacked" }));
+    expect(screen.queryByText("全部跳过")).toBeNull(); // last step: nothing left to skip all
+    fireEvent.click(screen.getByRole("button", { name: "Warm" }));
+    expect(onResolve).toHaveBeenCalledWith(
+      "i1",
+      JSON.stringify({ "Chart style": "__ocw_skip__", Distribution: "Stacked", Palette: "Warm" }),
+    );
+  });
+
+  it("Skip all resolves the rest but keeps answers already given", async () => {
+    await i18n.changeLanguage("zh");
+    const onResolve = vi.fn();
+    render(<InboxItemCard item={grouped()} onResolve={onResolve} />);
+    fireEvent.click(screen.getByRole("button", { name: "Bar" }));
+    fireEvent.click(screen.getByText("全部跳过"));
+    expect(onResolve).toHaveBeenCalledWith(
+      "i1",
+      JSON.stringify({ "Chart style": "Bar", Distribution: "__ocw_skip__", Palette: "__ocw_skip__" }),
+    );
   });
 });

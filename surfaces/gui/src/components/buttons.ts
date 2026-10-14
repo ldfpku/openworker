@@ -7,6 +7,7 @@
 //   BTN_OUTLINE / BTN_OUTLINE_SM     — accent-outlined secondary ("Approve once", "Sign in")
 //   BTN_DANGER_SM                    — bordered, red text: the destructive row action ("Delete")
 //   BTN_QUIET                        — text-only destructive-ish action ("Dismiss", "Deny")
+//   BTN_SKIP                         — text-only escape that is not a rejection ("Skip" a question)
 //
 // Icon-only buttons are a component, not a class string: see IconButton.tsx.
 // There is no CSS button family any more (the old `.btn` / `.btn-primary` / connector
@@ -29,3 +30,7 @@ export const BTN_OUTLINE_SM =
 export const BTN_DANGER_SM =
   "text-[12px] px-2.5 py-1.5 rounded-lg border border-line bg-paper text-danger hover:border-danger shrink-0 disabled:opacity-40";
 export const BTN_QUIET = "text-[13px] px-3 py-2 text-faint hover:text-danger shrink-0";
+// Skip (OPE-153) is an escape, not a rejection — quiet like Deny, without the danger red. Uses
+// `muted` rather than Deny's `faint`: a borderless text button is already secondary next to the
+// option pills, and this one has to be FOUND (faint is only ~3:1 on the dark panel).
+export const BTN_SKIP = "text-[13px] px-3 py-2 text-muted hover:text-ink shrink-0";

@@ -33,6 +33,25 @@ MAX_GROUPED_QUESTIONS = 4
 # button, so a model-authored ask_user never sees this value.
 PREFLIGHT_SKIP = "__preflight_skip__"
 
+# OPE-153 — the resolution string a card sends when the user declines to answer. The resolution
+# field otherwise carries the answer verbatim, so "skipped" needs a value no answer can collide
+# with; the GUI writes the same constant (see SKIP in api.ts — keep the two in step).
+# A grouped card marks a per-question skip by using it as that question's value in the answer map,
+# and a whole-card skip by filling every unanswered question with it. Distinct from PREFLIGHT_SKIP:
+# that one means "proceed on defaults" for the engine's own card; this one is a plain decline.
+SKIP_SENTINEL = "__ocw_skip__"
+
+# Told to the agent alongside a skipped answer. Only the no-re-ask half is absolute — it's the
+# anti-loop guarantee the skip exists for. "Pick a default" is deliberately conditional: the same
+# note fires for "you choose the chart colour" and for "Staging or Production?", and a model that
+# follows instructions literally would deploy off a shrug. Proceeding without deciding is offered
+# as a third path so that judgment is asked for, not left to whichever model happens to be driving.
+SKIP_NOTE = (
+    "The user chose not to answer. Do not put this question back to them. If you can proceed "
+    "safely, pick a sensible default and say which way you went. If the choice is consequential "
+    "or hard to undo, don't guess — say what you'd need and let them come back to it."
+)
+
 # An option is a plain string OR a rich object. `label` is what the user picks (and what comes
 # back as the answer); `description` renders under it; `recommended` adds the green tag (put the
 # recommended option first); `preview` is monospace text shown in the side pane (code, config,
@@ -132,6 +151,12 @@ def ask_user_tool() -> object:
         returns `{"answers": {"<header or question>": "..."}}` — one entry per question (a
         list for `multi` entries). Don't ask what you can reasonably decide yourself; reserve
         this for choices that are actually the user's to make.
+
+        The user may SKIP any question. A skipped answer comes back as `null` (never ""), with
+        `skipped` naming what was declined. Treat it as "you decide" where the choice is safe:
+        pick a sensible default, continue, and say which way you went. Where it isn't — anything
+        consequential or hard to undo — don't guess; say what you'd need instead. Either way,
+        never re-ask a skipped question.
         """
         # Real handling lives in the engine (it needs the out-of-band Inbox round-trip). This body
         # only runs if no question_asker is wired (e.g. a headless surface).
@@ -259,26 +284,60 @@ def _answer_value(value) -> str | list[str]:
     return text
 
 
+def question_key(entry) -> str:
+    """The answer-map key for one grouped question — its header, else the question text. The
+    same key the card writes when it resolves, so the two halves agree."""
+    if not isinstance(entry, dict):
+        return "answer"
+    return str(entry.get("header") or entry.get("question") or "answer")
+
+
 def answer_result(item_questions: list, resolution: str | None) -> dict:
     """Shape the ask_user tool result from an Inbox item's resolution string. Grouped items
     resolve with a JSON object string keyed by header-or-question → `{"answers": {...}}`;
     everything else returns the plain `{"answer": str}` shape. Multi-select values come back
     as lists (see `_answer_value`); the pre-flight skip sentinel returns no answers at all,
-    flagged `skipped` so the engine treats it as "proceed on defaults", not a refusal."""
+    flagged `skipped` so the engine treats it as "proceed on defaults", not a refusal.
+
+    A skipped question (OPE-153) answers `None` rather than "", so the agent can tell "the user
+    declined" from "the answer came back empty" — the two used to be the same value. Skips also
+    carry `skipped` (the question keys, or True for a lone question) and `SKIP_NOTE`."""
     if resolution == PREFLIGHT_SKIP:
         return {"answers": {}, "skipped": True}
     if item_questions:
+        # A text-only surface (mirrored channel) can only send the bare sentinel: that skips the
+        # whole card, so every question answers None.
+        if resolution == SKIP_SENTINEL:
+            keys = [question_key(q) for q in item_questions]
+            return {
+                "answers": dict.fromkeys(keys),
+                "skipped": keys,
+                "note": SKIP_NOTE,
+            }
         try:
             parsed = json.loads(resolution or "")
         except (ValueError, TypeError):
             parsed = None
         if isinstance(parsed, dict):
-            return {"answers": {str(k): _answer_value(v) for k, v in parsed.items()}}
+            answers: dict[str, str | list[str] | None] = {}
+            skipped: list[str] = []
+            for k, v in parsed.items():
+                key = str(k)
+                if v is None or str(v) == SKIP_SENTINEL:
+                    answers[key] = None
+                    skipped.append(key)
+                else:
+                    answers[key] = _answer_value(v)
+            result: dict = {"answers": answers}
+            if skipped:
+                result["skipped"] = skipped
+                result["note"] = SKIP_NOTE
+            return result
         if resolution:
             # Answered from a text-only surface (e.g. a mirrored channel): attribute the lone
             # answer to the first question rather than losing it.
-            first = item_questions[0] if isinstance(item_questions[0], dict) else {}
-            key = str(first.get("header") or first.get("question") or "answer")
-            return {"answers": {key: _answer_value(resolution)}}
+            return {"answers": {question_key(item_questions[0]): _answer_value(resolution)}}
         return {"answer": ""}
+    if resolution == SKIP_SENTINEL:
+        return {"answer": None, "skipped": True, "note": SKIP_NOTE}
     return {"answer": _answer_value(resolution) if resolution else ""}

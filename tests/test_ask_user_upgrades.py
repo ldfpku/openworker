@@ -6,11 +6,23 @@ untouched by all of it."""
 import asyncio
 import json
 
+from coworker.engine import TurnEngine
 from coworker.inbox import InboxItem, InboxStore
-from coworker.interactions import buttons_for, decode
+from coworker.inbox_routing import choice_from_reply
+from coworker.interactions import (
+    buttons_for,
+    choices_for,
+    decode,
+    deny_resolution,
+    outcome_text,
+    weixin_prompt,
+)
 from coworker.server.manager import SessionManager
 from coworker.tools.ask import (
     MAX_GROUPED_QUESTIONS,
+    PREFLIGHT_SKIP,
+    SKIP_NOTE,
+    SKIP_SENTINEL,
     answer_result,
     ask_user_tool,
     normalize_option,
@@ -144,6 +156,75 @@ def test_answer_result_shapes():
     assert answer_result(grouped, "") == {"answer": ""}  # engine reads this as denied
 
 
+# -- skipping (OPE-153) -------------------------------------------------------
+
+
+def test_skipped_single_question_answers_null_not_empty():
+    """The whole point of the sentinel: "" (no answer came back) and a skip must not
+    look alike to the agent."""
+    res = answer_result([], SKIP_SENTINEL)
+    assert res["answer"] is None
+    assert res["skipped"] is True
+    assert res["note"] == SKIP_NOTE
+    assert answer_result([], "") == {"answer": ""}  # unchanged, still not a skip
+
+
+def test_skipped_grouped_questions_name_what_was_declined():
+    grouped = [{"question": "Chart style?", "header": "Chart"}, {"question": "Colors?"}]
+    # one step skipped, one answered
+    res = answer_result(grouped, json.dumps({"Chart": SKIP_SENTINEL, "Colors?": "Blue"}))
+    assert res["answers"] == {"Chart": None, "Colors?": "Blue"}
+    assert res["skipped"] == ["Chart"]
+    assert res["note"] == SKIP_NOTE
+    # whole card skipped from the card: every question carries the sentinel
+    res = answer_result(grouped, json.dumps({"Chart": SKIP_SENTINEL, "Colors?": SKIP_SENTINEL}))
+    assert res["answers"] == {"Chart": None, "Colors?": None}
+    assert res["skipped"] == ["Chart", "Colors?"]
+    # a JSON null means the same thing (defensive — a surface may serialize it that way)
+    assert answer_result(grouped, json.dumps({"Chart": None}))["skipped"] == ["Chart"]
+    # a multi-select answer next to a skip still comes back as a list (the comma fix)
+    res = answer_result(grouped, json.dumps({"Chart": SKIP_SENTINEL, "Colors?": ["a, b", "c"]}))
+    assert res["answers"] == {"Chart": None, "Colors?": ["a, b", "c"]}
+
+
+def test_bare_sentinel_skips_a_whole_grouped_card():
+    """A text-only surface can't send the answer map — the bare sentinel skips everything
+    rather than being filed as the first question's answer."""
+    grouped = [{"question": "Chart style?", "header": "Chart"}, {"question": "Colors?"}]
+    res = answer_result(grouped, SKIP_SENTINEL)
+    assert res["answers"] == {"Chart": None, "Colors?": None}
+    assert res["skipped"] == ["Chart", "Colors?"]
+
+
+def test_fully_answered_card_carries_no_skip_keys():
+    """No skip → no `skipped`/`note` noise in the agent's tool result."""
+    grouped = [{"question": "Chart style?", "header": "Chart"}]
+    assert answer_result(grouped, json.dumps({"Chart": "Bar"})) == {"answers": {"Chart": "Bar"}}
+    assert answer_result([], "staging") == {"answer": "staging"}
+
+
+def test_preflight_skip_stays_its_own_sentinel():
+    """The 开工前核对 card's 「跳过，按默认口径直接做」 is not an OPE-153 skip: it carries no
+    note and no null answers — the brief it renders already says to proceed on defaults."""
+    grouped = [{"question": "交付什么？", "header": "要什么"}]
+    assert answer_result(grouped, PREFLIGHT_SKIP) == {"answers": {}, "skipped": True}
+    assert "note" not in answer_result([], PREFLIGHT_SKIP)
+
+
+def test_skipped_answers_are_not_filed_as_user_replies():
+    """A skipped question answers None; the reviewer's history must not record "None"
+    (or anything) as something the user said."""
+    eng = TurnEngine.__new__(TurnEngine)
+    eng.messages = []
+    eng._ask_replies = []
+    eng._reviewer_denials = 2
+    eng._note_ask_replies({"answers": {"Chart": None, "Colors?": "Blue"}, "skipped": ["Chart"]}, "q")
+    assert [t for _, t, _ in eng._ask_replies] == ["Blue"]
+    eng._note_ask_replies({"answer": None, "skipped": True}, "q")
+    assert [t for _, t, _ in eng._ask_replies] == ["Blue"]
+    assert eng._reviewer_denials == 0
+
+
 # -- inbox persistence + back-compat ------------------------------------------
 
 
@@ -187,8 +268,67 @@ def test_buttons_use_rich_option_labels(tmp_path):
         options=["staging", {"label": "prod", "description": "the real one"}],
     )
     btns = buttons_for(item)
-    assert [b.label for b in btns] == ["staging", "prod"]
+    assert [b.label for b in btns] == ["staging", "prod", "Skip"]
     assert decode(btns[1].value) == (item.id, "prod")  # resolution IS the label
+
+
+def test_mirrored_question_offers_a_skip_button(tmp_path):
+    """OPE-153 — the channel gets the same way out the card has. Skip trails the options and
+    carries the sentinel, which answer_result() turns into a null answer."""
+    store = InboxStore(tmp_path / "inbox.json")
+    item = store.add_question("s1", "Env?", options=["staging", "prod"])
+    skip = buttons_for(item)[-1]
+    assert skip.label == "Skip"
+    assert decode(skip.value) == (item.id, SKIP_SENTINEL)
+    # and that resolution is what the agent ends up seeing
+    assert answer_result(item.questions, SKIP_SENTINEL)["answer"] is None
+
+
+def test_questions_without_options_get_no_buttons(tmp_path):
+    """A free-text question still mirrors as plain text — no lone Skip button, since the
+    "(Open the app to respond.)" fallback is the only way to answer it at all."""
+    store = InboxStore(tmp_path / "inbox.json")
+    item = store.add_question("s1", "What should I name it?")
+    assert buttons_for(item) == []
+
+
+def test_weixin_card_numbers_the_skip_and_reads_it_back(tmp_path):
+    """The WeChat card is derived from the same choices: Skip is the last number, worded 跳过,
+    a typed 跳过/skip lands on it instead of riding in as a free-text answer, and the receipt
+    says 跳过 rather than the sentinel."""
+    store = InboxStore(tmp_path / "inbox.json")
+    item = store.add_question("s1", "Env?", options=["staging", "prod"])
+    choices = choices_for(item)
+    assert [(c.label, c.intent) for c in choices] == [("staging", None), ("prod", None), ("Skip", "skip")]
+    card = weixin_prompt(item, 30)
+    assert "1 staging\n2 prod\n3 跳过" in card
+    assert choice_from_reply("3", choices, allow_text=True) == SKIP_SENTINEL
+    assert choice_from_reply("跳过", choices, allow_text=True) == SKIP_SENTINEL
+    assert choice_from_reply("skip", choices, allow_text=True) == SKIP_SENTINEL
+    assert choice_from_reply("拒绝", choices, allow_text=True) == "拒绝"  # a deny word is NOT a skip
+    assert outcome_text(item, SKIP_SENTINEL) == "跳过"
+    free = store.add_question("s1", "Name?")
+    assert outcome_text(free, SKIP_SENTINEL) == "跳过"  # skipped in the app: no choices to match
+
+
+def test_expired_question_is_skipped_not_answered_deny(tmp_path):
+    """The WeChat watchdog's fallback used to answer a question with the literal text "deny";
+    a question has nothing to deny, so it is skipped — grouped and free-text ones included —
+    and the engine's own pre-flight card falls back to its own "proceed on defaults"."""
+    store = InboxStore(tmp_path / "inbox.json")
+    assert deny_resolution(store.add_question("s1", "Env?", options=["a", "b"])) == SKIP_SENTINEL
+    assert deny_resolution(store.add_question("s1", "Name?")) == SKIP_SENTINEL
+    grouped = store.add_question(
+        "s1", **question_item_fields({"questions": [{"question": "A?"}, {"question": "B?"}]})
+    )
+    assert deny_resolution(grouped) == SKIP_SENTINEL
+    assert answer_result(grouped.questions, SKIP_SENTINEL)["answers"] == {"A?": None, "B?": None}
+    pre = store.add_question(
+        "s1", tool_call_id="preflight:1", **question_item_fields({"question": "交付什么？", "options": ["Word"]}, preflight=True)
+    )
+    assert deny_resolution(pre) == PREFLIGHT_SKIP
+    assert choices_for(pre)[-1].resolution == PREFLIGHT_SKIP
+    assert deny_resolution(store.add_approval("s1", "Run it?")) == "deny"  # approvals unchanged
 
 
 def test_grouped_questions_get_no_buttons(tmp_path):
@@ -210,7 +350,7 @@ def test_singleton_question_group_still_gets_buttons(tmp_path):
     )
     item = store.add_question("s1", **fields)
     btns = buttons_for(item)
-    assert [b.label for b in btns] == ["staging", "prod"]
+    assert [b.label for b in btns] == ["staging", "prod", "Skip"]
     assert decode(btns[0].value) == (item.id, "staging")
 
 
