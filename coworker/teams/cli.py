@@ -348,12 +348,15 @@ def _cmd_assign(args) -> int:
 
 
 def _cmd_attach(args) -> int:
-    source = Path(args.file).expanduser()
-    if not source.is_file():
-        print(f"error: no such file: {source}", file=sys.stderr)
+    from .attachments import read_image_file
+
+    try:
+        data, name = read_image_file(args.file)
+    except (BoardError, ValueError, OSError) as error:
+        print(f"error: {error}", file=sys.stderr)
         return 1
     result = _dialect(args).attach(
-        _space(args), args.id, source.read_bytes(), source.name, caption=args.caption
+        _space(args), args.id, data, name, caption=args.caption
     )
     ref = result.get("ref") or next(
         (r for r in (result.get("payload") or {}).get("refs", [])), ""

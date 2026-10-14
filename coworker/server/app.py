@@ -1130,6 +1130,9 @@ def create_app(manager: SessionManager) -> FastAPI:
         body = body or {}
 
         def run(actor):
+            manager.team_store.require_attachment_write(
+                str(body.get("space", "")), actor, int(body.get("id", 0))
+            )
             raw = str(body.get("data_b64", ""))
             # Cheap pre-decode bound: base64 is ~4/3 of the payload, so anything
             # multiples over the cap is refused before allocating the decode.
@@ -2071,6 +2074,20 @@ def create_app(manager: SessionManager) -> FastAPI:
     @app.post("/v1/connectors/slack/approval-owners/remove")
     def slack_approval_owner_remove(body: dict) -> dict[str, Any]:
         return manager.set_slack_approval_owner(
+            str(body.get("user_id", "")), add=False
+        )
+
+    @app.post("/v1/connectors/telegram/approval-owners/add")
+    def telegram_approval_owner_add(body: dict) -> dict[str, Any]:
+        return manager.set_telegram_approval_owner(
+            str(body.get("user_id", "")),
+            add=True,
+            display_name=str(body.get("name", "")),
+        )
+
+    @app.post("/v1/connectors/telegram/approval-owners/remove")
+    def telegram_approval_owner_remove(body: dict) -> dict[str, Any]:
+        return manager.set_telegram_approval_owner(
             str(body.get("user_id", "")), add=False
         )
 

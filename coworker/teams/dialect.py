@@ -218,6 +218,7 @@ class LocalDialect:
         # authority IS attach authority (workers attach on their slice only).
         if self.attachments is None:
             raise BoardError("no attachment store is attached to this board")
+        self.store.require_attachment_write(space, self.actor, item_id)
         ref = self.attachments.put(data, filename)
         return self.store.attach_ref(
             space,

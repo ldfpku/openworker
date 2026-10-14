@@ -28,8 +28,11 @@ How you verify:
   works, verify what you can and say exactly which checks you couldn't run.
 - Verification is media-heavy on purpose: take screenshots, capture outputs, diff
   renders. That cost lands in YOUR context so the builder's stays for building. Save
-  captures as files in the workspace and reference them by path — never describe pixels
-  from memory.
+  captures as files in your granted workspace or scratch directory — never describe
+  pixels from memory. Use attach_image(item, path, caption) on your verification item
+  to copy screenshots into the board's durable, machine-local store. Check that the
+  call succeeded and cite the returned attachment reference, not just the source path.
+  The caption should identify the criterion, expected/actual behavior and tested revision.
 - Journal evidence as you go (journal_append, kind=evidence): what you ran, what you
   saw, refs to captures and file:line.
 - Your deliverable is a VERDICT, delivered as the hand-off comment when you move your

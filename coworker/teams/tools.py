@@ -64,6 +64,7 @@ def board_tools(
     actor: Actor,
     taint: Callable[[], bool] = lambda: False,
     attachments=None,
+    roots: Callable[[], list] = lambda: [],
 ) -> list:
     """The board verbs for one agent, pre-bound to its space and identity.
 
@@ -154,25 +155,19 @@ def board_tools(
     def attach_image(item: int, path: str, caption: str = "") -> dict:
         """Attach a screenshot or image file (png/jpg/gif/webp, ≤10MB) to a work
         item so the lead/reviewer can SEE what you did — pair it with your review
-        hand-off. `caption` says what the image shows."""
-        from pathlib import Path as _Path
+        hand-off. Copies the image into OpenWorker's machine-local board store;
+        the original/worktree can be removed after success. Use a path within
+        your granted directories. `caption` says what the image proves."""
+        from .attachments import read_image_file
 
-        source = _Path(path).expanduser()
-        if not source.is_file():
-            return {"error": f"no such file: {path}"}
         try:
-            ref = attachments.put(source.read_bytes(), source.name)
-        except (BoardError, ValueError) as error:
+            store.require_attachment_write(space, actor, item)
+            data, name = read_image_file(path, roots=roots())
+            ref = attachments.put(data, name)
+            event = store.attach_ref(space, actor, item, caption or f"attached {name}", ref, taint=taint())
+            return {**event, "ref": ref, "stored": True}
+        except (BoardError, ValueError, OSError) as error:
             return {"error": str(error)}
-        return _call(
-            store.attach_ref,
-            space,
-            actor,
-            item,
-            caption or f"attached {source.name}",
-            ref,
-            taint=taint(),
-        )
 
     verbs = LEAD_VERBS if actor.role in (Role.USER, Role.LEAD) else WORKER_VERBS
     if attachments is not None:
