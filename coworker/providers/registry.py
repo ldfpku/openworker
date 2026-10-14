@@ -248,8 +248,12 @@ def _build_aigw(profile: dict[str, Any], secrets: Any) -> ProviderClient:
 def _build_ollama(profile: dict[str, Any], secrets: Any) -> ProviderClient:
     # Ollama's OpenAI-compatible endpoint ignores the key but the SDK requires a non-empty
     # string, so we pass a placeholder. `base_url` comes from the stored profile (or the default).
+    # Chat calls are rewritten onto the native API so we can set num_ctx — the /v1 handler
+    # cannot, and its 4,096-token default drops the Cowork prompt (see ollama_context.py).
+    from .ollama_context import ollama_http_client
+
     base_url = _normalize_ollama_url((profile or {}).get("base_url"))
-    return OpenAIProvider(api_key="ollama", base_url=base_url)
+    return OpenAIProvider(api_key="ollama", base_url=base_url, http_client=ollama_http_client())
 
 
 def _openai_compat(vendor: str, default_base_url: str, env_key: Optional[str] = None):
