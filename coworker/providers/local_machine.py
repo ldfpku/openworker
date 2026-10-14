@@ -21,7 +21,9 @@ import os
 import shutil
 import subprocess
 import sys
-from typing import Any, Optional
+from typing import Optional
+
+from .. import procutil
 
 GB = 1024**3
 
@@ -89,14 +91,14 @@ def nvidia_gpu_memory_bytes() -> Optional[int]:
     return best or None
 
 
-# Windows: a console program started from the desktop app would flash a black window.
-_NO_WINDOW: dict[str, Any] = {"creationflags": 0x08000000} if sys.platform == "win32" else {}  # CREATE_NO_WINDOW
-
-
 def _run(args: list[str]) -> str:
+    # Windows: a console program started from the desktop app would flash a black window.
+    # This fork keeps every spawn's creation flags in one place (procutil.popen_kwargs);
+    # tests/test_subprocess_hygiene.py enforces it.
     try:
         return subprocess.run(
-            args, capture_output=True, text=True, timeout=5, check=False, **_NO_WINDOW
+            args, capture_output=True, text=True, timeout=5, check=False,
+            **procutil.popen_kwargs(),
         ).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return ""
