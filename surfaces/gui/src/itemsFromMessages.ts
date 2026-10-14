@@ -70,6 +70,12 @@ export function itemsFromMessages(messages: ConversationMessage[]): Item[] {
         items.push({ kind: "connector", source: m.source });
         continue;
       }
+      // OPE-171 continuation nudge: engine-authored, user-role so the model acts on it.
+      // Replayed as the same info line the live view showed, never as a user bubble.
+      if (m._display?.kind === "continuation") {
+        items.push({ kind: "notice", tone: "info", text: t("app.notice.continuation") });
+        continue;
+      }
       const user = userItemFromContent(m.content);
       // Force-run (`/skill …`): `_display` holds the user's literal line; `content` carries
       // the model-facing framing. Render what the user typed — one truthful bubble.

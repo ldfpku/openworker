@@ -283,14 +283,6 @@ def _hold_back_hint(held_back: list[str]) -> str:
     )
 
 
-def _is_within(path: Path, root: Path) -> bool:
-    try:
-        Path(path).resolve().relative_to(Path(root).resolve())
-        return True
-    except (ValueError, OSError):
-        return False
-
-
 def build_engine(
     *,
     agent: Agent,
@@ -370,11 +362,12 @@ def build_engine(
 
     # OPE-186 change 3: the compaction transcript is written to a spill folder the model
     # can read. Prefer the session's scratch root (already one of the agent's folders).
-    # Otherwise the folder joins the session's directories read-only, BEFORE the tools are
-    # built, so read_file can open it (upstream's first trial spilled under the run's log
-    # folder and read_file answered "path escapes the session's directories"). The
-    # workspace itself is never written to, so a repository or task tree stays clean.
-    # (Upstream also spills bounded tool results here; this fork keeps `_clip_tool_result`.)
+    # Otherwise the engine adds the folder to the session's directories read-only on its
+    # first write (`_write_compaction_transcript`), so read_file can open it (upstream's
+    # first trial spilled under the run's log folder and read_file answered "path escapes
+    # the session's directories"). The workspace itself is never written to, so a
+    # repository or task tree stays clean. (Upstream also spills bounded tool results
+    # here and registers the folder up front; this fork keeps `_clip_tool_result`.)
     if tool_result_spill_dir is not None:
         spill_dir: Optional[Path] = Path(tool_result_spill_dir).expanduser().resolve()
     else:
@@ -388,9 +381,6 @@ def build_engine(
             spill_dir = (
                 Path(tempfile.gettempdir()) / "openworker" / f"tool-output-{os.getpid()}"
             ).resolve()
-    # Registered, not created: the folder appears on disk only when something is spilled.
-    if root_list and not any(_is_within(spill_dir, r.path) for r in root_list):
-        root_list.append(RootDir(path=spill_dir, writable=False, label="tool-output"))
 
     workspace_trusted = bool(ws and WorkspaceTrustStore().is_trusted(ws))
     config = load_config(ws, workspace_trusted=workspace_trusted)

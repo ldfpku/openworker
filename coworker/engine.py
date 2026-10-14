@@ -480,6 +480,14 @@ def _is_filtered_finish(finish_reason: Optional[str]) -> bool:
     return (finish_reason or "").strip().lower() in _FILTERED_FINISH_REASONS
 
 
+def _is_within(path: Any, root: Any) -> bool:
+    try:
+        Path(str(path)).resolve().relative_to(Path(str(root)).resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
 def _abort_reason(turn: AssistantTurn, *, trust_truncated: bool) -> str:
     """Why an answerless turn produced nothing — `_TURN_ABORTED_TEXT`'s key.
 
@@ -1456,7 +1464,13 @@ class TurnEngine:
                 },
             )
             return [event], False
-        self._log_abnormal_turn("turn_truncated", "length", turn, iterations, elapsed)
+        self._log_abnormal_turn("turn_gave_up", "length", turn, iterations, elapsed)
+        # The final cut reply is dropped from the outbound view altogether (like an
+        # aborted turn), not stubbed: it delivered nothing, and a Retry re-runs this
+        # history — which must then end on the last nudge (a user message), not on an
+        # assistant stub the Anthropic wire would read as a prefill.
+        if self.messages[-1].get("role") == "assistant":
+            self.messages[-1]["aborted"] = True
         text = (
             f"{self.model}'s reply was cut off at the output-token limit with "
             f"no action {self._continuations + 1} times in a row, so the turn "
@@ -1967,7 +1981,22 @@ class TurnEngine:
             )
             state.transcript_path = str(path)
         except OSError:
-            pass
+            return
+        # The folder joins the session's directories read-only — on first write, not at
+        # build time (upstream registers it eagerly, but there it fills with spilled tool
+        # results; here it holds only this transcript, and a phantom temp folder listed in
+        # every session's directories block would be paid for on every turn). `roots` is
+        # the one shared list the file tools, the permission engine and the context
+        # injector all read, so appending here is seen by all of them at once.
+        roots = getattr(self, "roots", None)
+        if isinstance(roots, list) and roots and not any(
+            _is_within(self._tool_result_spill_dir, getattr(r, "path", "")) for r in roots
+        ):
+            from .roots import RootDir
+
+            roots.append(
+                RootDir(path=self._tool_result_spill_dir, writable=False, label="tool-output")
+            )
 
     async def _compact_now(self, *, force: bool = False) -> Optional[str]:
         """Run the compaction policy. Callers gate on `_compaction_due()` (or `force`,

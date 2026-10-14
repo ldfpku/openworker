@@ -231,3 +231,31 @@ def test_stub_marker_never_reaches_a_provider_and_survives_persistence(tmp_path)
     _run(engine2, "next")
     assistants = [m for m in provider2.seen[0] if m["role"] == "assistant"]
     assert assistants[0] == {"role": "assistant", "content": TRUNCATION_STUB}
+
+
+def test_retry_after_the_cap_resends_a_history_ending_on_the_nudge(tmp_path):
+    """The `truncated` notice is retriable (engine `_RETRIABLE_NOTICE_KINDS`, GUI Retry
+    button). The final cut reply is dropped from the outbound view like an aborted turn,
+    so the re-run's history ends on the last nudge — a user message — never on an
+    assistant stub the Anthropic wire would read as a prefill."""
+    turns = [_cut() for _ in range(MAX_TRUNCATION_CONTINUATIONS + 1)] + [_stop("now done")]
+    engine, provider = _engine(tmp_path, turns)
+
+    async def _run_then_retry():
+        first = [ev async for ev in engine.run("go")]
+        second = [ev async for ev in engine.retry()]
+        return first, second
+
+    first, second = asyncio.run(_run_then_retry())
+    assert first[-1].data["status"] == "truncated"
+    assert second, "the truncated tail must be retriable"
+    assert second[-1].type == EventType.TURN_END
+    assert second[-1].data["status"] == "completed"
+    assert provider.calls == MAX_TRUNCATION_CONTINUATIONS + 2
+    resent = provider.seen[-1]
+    assert resent[-1] == {"role": "user", "content": TRUNCATION_NUDGE}
+    # Earlier cut replies travel as stubs; the final one is gone entirely.
+    stubs = [m for m in resent if m.get("role") == "assistant"]
+    assert stubs == [{"role": "assistant", "content": TRUNCATION_STUB}] * MAX_TRUNCATION_CONTINUATIONS
+    final_cut = _assistants(engine)[MAX_TRUNCATION_CONTINUATIONS]
+    assert final_cut["aborted"] is True and final_cut["finish_reason"] == "length"

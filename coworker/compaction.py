@@ -322,6 +322,11 @@ def extract_user_messages(span: list[dict[str, Any]]) -> list[str]:
     for msg in span:
         if msg.get("role") != "user":
             continue
+        # Engine-authored user-role messages (the OPE-171 continuation nudge) are not
+        # the user's words and must not be preserved as such.
+        display = msg.get("_display")
+        if isinstance(display, dict) and display.get("kind") == "continuation":
+            continue
         text = " ".join(_text_of(msg.get("content")).split())
         if text:
             out.append(text)

@@ -197,6 +197,26 @@ describe("itemsFromMessages truncated", () => {
     expect(notice.retriable).toBe(true);
   });
 
+  it("replays the engine's continuation nudge as the info line, not a user bubble", () => {
+    const items = itemsFromMessages([
+      { role: "user", content: "go", ts: 1752969700 },
+      { role: "assistant", content: "", finish_reason: "length", replay: "stub", ts: 1752969710 },
+      {
+        role: "user",
+        content: "Your previous reply hit the output-token limit …",
+        _display: { kind: "continuation", reason: "length", attempt: 1 },
+        ts: 1752969715,
+      },
+      { role: "assistant", content: "done", ts: 1752969720 },
+    ] as any);
+    const kinds = items.map((i: any) => i.kind);
+    expect(kinds).toEqual(["user", "notice", "assistant"]);
+    const nudge = items[1] as any;
+    expect(nudge.tone).toBe("info");
+    expect(nudge.text).toBe(i18n.t("app.notice.continuation"));
+    expect(items.some((i: any) => i.kind === "user" && /output-token/.test(i.text))).toBe(false);
+  });
+
   it("falls back to the server text when the counter is missing", () => {
     const items = itemsFromMessages([
       { role: "notice", kind: "truncated", text: "cut off 3 times" },

@@ -429,3 +429,19 @@ def test_user_message_budget_scales_with_the_trigger():
     assert C.user_message_budget(60_000) == 4_800  # a lowered trigger keeps its saving
     assert C.user_message_budget(1_000) == C._USER_BUDGET_MIN  # floor
     assert C.user_message_budget(10_000_000) == C._USER_BUDGET_MAX  # ceiling
+
+
+def test_continuation_nudge_is_not_a_preserved_user_message():
+    """OPE-171's nudge is engine-authored (user role so the model acts on it); the
+    compacted block's verbatim user-message list must not present it as the user's."""
+    span = [
+        {"role": "user", "content": "build the report"},
+        {"role": "assistant", "content": "", "finish_reason": "length", "replay": "stub"},
+        {
+            "role": "user",
+            "content": "Your previous reply hit the output-token limit …",
+            "_display": {"kind": "continuation", "reason": "length", "attempt": 1},
+        },
+        {"role": "user", "content": "and email it"},
+    ]
+    assert C.extract_user_messages(span) == ["build the report", "and email it"]
