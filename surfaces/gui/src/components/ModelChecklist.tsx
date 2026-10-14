@@ -3,9 +3,11 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { addModel, getSettings, removeModel, setDefaultModel, type ProviderCatalog } from "../api";
 import { sortModelIds } from "../modelOrder";
+import type { ModelPrices, ModelTiers } from "../modelPrice";
 import { isFreeModel } from "../providers/logos";
 import { formatRelative } from "../relTime";
 import { BTN_ACCENT_SM, BTN_BORDERED_SM } from "./buttons";
+import { ModelRowLabel } from "./ModelHints";
 
 // Cloud-account providers dispatch by a family segment baked into the model id
 // (`bedrock:claude/…`, `vertex:openweight/…`). The add-model row shows a dropdown so
@@ -42,6 +44,8 @@ export function ModelChecklist({
   curated,
   defaultModel,
   labels,
+  prices,
+  tiers,
   catalog,
   defaultGone,
   onRefresh,
@@ -53,6 +57,11 @@ export function ModelChecklist({
   curated: string[]; // the full curated list (all providers, full ids)
   defaultModel: string;
   labels?: Record<string, string>; // curated display names (full id → label); raw id when absent
+  // Company-gateway list prices (full id → USD per 1M input / output tokens) and tiers
+  // (full id → "limited"), from /v1/settings. A row without an entry shows nothing extra —
+  // which is every row of every other provider, and all of them on an older server.
+  prices?: ModelPrices;
+  tiers?: ModelTiers;
   catalog?: ProviderCatalog; // live model-catalog status; absent on old servers
   // The default model was one of THIS provider's and has left its server list (settings'
   // model_notice === "default_model_gone"): the row is gone, so say so above the list.
@@ -214,26 +223,25 @@ export function ModelChecklist({
                 title={isDefault ? t("models.default_locked") : undefined}
                 onChange={(e) => tick(id, e.target.checked)}
               />
-              <span className="mlist-name" title={id}>
-                {labels?.[id] || bare(id)}
-              </span>
-              {offCatalog(id) && (
-                <span
-                  className="text-[10.5px] px-1.5 py-0.5 rounded border border-warnInk/30 text-warnInk shrink-0"
-                  title={t("models.not_in_catalog_tip")}
-                  data-testid={`mlist-off-catalog-${id}`}
-                >
-                  {t("models.not_in_catalog")}
-                </span>
-              )}
-              {isFreeModel(id) && (
-                <span
-                  className="mlist-free"
-                  title={t("Runs on your own machine — no model bill")}
-                >
-                  {t("Free")}
-                </span>
-              )}
+              <ModelRowLabel id={id} name={labels?.[id] || bare(id)} price={prices?.[id]} tier={tiers?.[id]}>
+                {offCatalog(id) && (
+                  <span
+                    className="text-[10.5px] px-1.5 py-0.5 rounded border border-warnInk/30 text-warnInk shrink-0"
+                    title={t("models.not_in_catalog_tip")}
+                    data-testid={`mlist-off-catalog-${id}`}
+                  >
+                    {t("models.not_in_catalog")}
+                  </span>
+                )}
+                {isFreeModel(id) && (
+                  <span
+                    className="mlist-free"
+                    title={t("Runs on your own machine — no model bill")}
+                  >
+                    {t("Free")}
+                  </span>
+                )}
+              </ModelRowLabel>
             </label>
             {isDefault ? (
               <span className="mlist-default">{t("models.default_badge")}</span>

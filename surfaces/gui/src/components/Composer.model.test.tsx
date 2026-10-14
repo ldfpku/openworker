@@ -46,14 +46,19 @@ const props = (extra: Partial<Parameters<typeof Composer>[0]> = {}) => ({
   ...extra,
 });
 
-/** Open the picker and return the row whose label starts with `text`. */
-function openRow(text: string): HTMLElement {
-  fireEvent.click(screen.getByTitle(/Claude Fable 5/));
+/** The row of the (already open) picker whose label starts with `text`. */
+function pickerRow(text: string): HTMLElement {
   const row = screen
     .getAllByText((_c, el) => el?.className === "dd-label")
     .find((el) => el.textContent?.includes(text));
   if (!row) throw new Error(`no picker row for ${text}`);
   return row as HTMLElement;
+}
+
+/** Open the picker and return the row whose label starts with `text`. */
+function openRow(text: string): HTMLElement {
+  fireEvent.click(screen.getByTitle(/Claude Fable 5/));
+  return pickerRow(text);
 }
 
 afterEach(() => {
@@ -91,6 +96,80 @@ describe("Composer — the model picker's stand-in badge", () => {
     stubFetch();
     render(<Composer {...props({ modelFallbacks: undefined })} />);
     expect(openRow("Claude Fable 5").querySelector(".dd-badge")).toBeNull();
+  });
+});
+
+// Company-gateway models show their list price at the row's right edge (numbers only — the
+// tooltip has the unit) and a quiet "Restricted" tag when the administrator opened them to
+// 总经理 / 管理员 only. Neither is a badge: the Free / stand-in pill keeps its one slot.
+describe("Composer — the model picker's price note and Restricted tag", () => {
+  const priced = (extra: Partial<Parameters<typeof Composer>[0]> = {}) =>
+    props({
+      modelPrices: {
+        "aigw:anthropic/claude-fable-5": { in: 10, out: 50 },
+        "aigw:anthropic/claude-haiku-4-5": { in: 1 },
+      },
+      modelTiers: { "aigw:anthropic/claude-fable-5": "limited" },
+      ...extra,
+    });
+
+  it("shows the compact price with the spelled-out tooltip", () => {
+    stubFetch();
+    render(<Composer {...priced()} />);
+    const meta = openRow("Claude Fable 5").querySelector(".dd-meta");
+    expect(meta?.textContent).toBe("$10 / $50");
+    expect(meta?.getAttribute("title")).toBe("Input $10 · output $50 (USD per 1M tokens)");
+  });
+
+  it("names the side when only one is priced", () => {
+    stubFetch();
+    render(<Composer {...priced()} />);
+    expect(openRow("Claude Haiku 4.5").querySelector(".dd-meta")?.textContent).toBe("Input $1");
+  });
+
+  it("tags a limited model without taking the badge slot", () => {
+    stubFetch();
+    render(<Composer {...priced()} />);
+    const row = openRow("Claude Fable 5");
+    const tag = row.querySelector(".dd-tag");
+    expect(tag?.textContent).toBe("Restricted");
+    expect(tag?.getAttribute("title")).toBe("Open to the General Manager and administrators only");
+    // The stand-in pill is still there, and still the only pill.
+    expect(row.querySelector(".dd-badge")?.textContent).toBe("Has stand-in");
+    expect(pickerRow("Claude Haiku 4.5").querySelector(".dd-tag")).toBeNull();
+  });
+
+  it("adds nothing to a model without data, or when the backend sends no maps", () => {
+    stubFetch();
+    const { unmount } = render(<Composer {...priced()} />);
+    const local = openRow("Qwen3 Coder");
+    expect(local.querySelector(".dd-meta")).toBeNull();
+    expect(local.querySelector(".dd-tag")).toBeNull();
+    unmount();
+    render(<Composer {...props()} />);
+    const row = openRow("Claude Fable 5");
+    expect(row.querySelector(".dd-meta")).toBeNull();
+    expect(row.querySelector(".dd-tag")).toBeNull();
+    expect(row.querySelector(".chk-space")).toBeNull();
+    expect(row.textContent).toBe("Claude Fable 5 · via CloudflareHas stand-in✓");
+  });
+
+  it("says it in Chinese with the agreed wording", async () => {
+    stubFetch();
+    const i18n = (await import("i18next")).default;
+    await i18n.changeLanguage("zh");
+    try {
+      render(<Composer {...priced()} />);
+      const row = openRow("Claude Fable 5");
+      expect(row.querySelector(".dd-meta")?.textContent).toBe("$10 / $50");
+      expect(row.querySelector(".dd-meta")?.getAttribute("title")).toBe(
+        "输入 $10 · 输出 $50（美元 / 百万 token）",
+      );
+      expect(row.querySelector(".dd-tag")?.textContent).toBe("限制使用");
+      expect(row.querySelector(".dd-tag")?.getAttribute("title")).toBe("仅对总经理、管理员开放");
+    } finally {
+      await i18n.changeLanguage("en");
+    }
   });
 });
 

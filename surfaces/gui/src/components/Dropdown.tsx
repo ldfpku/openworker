@@ -9,6 +9,14 @@ export interface Option {
   badge?: string;
   /** Tooltip for the badge — say what "free" actually means rather than overclaiming. */
   badgeTitle?: string;
+  /** Quiet outlined tag right after the label: a plain fact about the row ("Restricted"),
+   * not a perk — so it does not compete for the badge pill. */
+  tag?: string;
+  tagTitle?: string;
+  /** Short muted note at the row's right edge (a model's price: "$3 / $15"); `metaTitle`
+   * spells it out. Keep it to a few characters — the menu is as wide as its widest row. */
+  meta?: string;
+  metaTitle?: string;
 }
 
 interface Props {
@@ -29,6 +37,9 @@ export function Dropdown({ prefix, value, options, onChange, align = "left", cla
   const [open, setOpen] = useState(!!defaultOpen);
   const current = options.find((o) => o.value === value);
   const label = (prefix ? `${prefix}: ` : "") + (current?.label || value);
+  // With a right-edge note on any row, every row keeps the ✓'s width free — otherwise the
+  // selected row's note would sit a check-mark to the left of all the others.
+  const hasMeta = options.some((o) => o.meta);
   return (
     <div className="dd">
       <button
@@ -43,7 +54,7 @@ export function Dropdown({ prefix, value, options, onChange, align = "left", cla
       {open && (
         <>
           <div className="dd-backdrop" onClick={() => setOpen(false)} />
-          <div className={"dd-menu " + align}>
+          <div className={"dd-menu " + align + (hasMeta ? " has-meta" : "")}>
             {options.map((o) => (
               <div
                 key={o.value}
@@ -55,12 +66,26 @@ export function Dropdown({ prefix, value, options, onChange, align = "left", cla
               >
                 <div className="dd-label">
                   {o.label}
+                  {o.tag && (
+                    <span className="dd-tag" title={o.tagTitle}>
+                      {o.tag}
+                    </span>
+                  )}
                   {o.badge && (
                     <span className="dd-badge" title={o.badgeTitle}>
                       {o.badge}
                     </span>
                   )}
-                  {o.value === value && <span className="chk">✓</span>}
+                  {o.meta && (
+                    <span className="dd-meta" title={o.metaTitle}>
+                      {o.meta}
+                    </span>
+                  )}
+                  {o.value === value ? (
+                    <span className="chk">✓</span>
+                  ) : (
+                    hasMeta && <span className="chk-space" aria-hidden="true" />
+                  )}
                 </div>
                 {o.description && <div className="dd-desc">{o.description}</div>}
               </div>

@@ -375,3 +375,122 @@ describe("ModelChecklist — catalog hygiene", () => {
     expect(screen.queryByTestId("mlist-default-gone")).toBeNull();
   });
 });
+
+// Owner ask 2026-10-14: a price hint next to the models (cost, and roughly capability), and
+// a "Restricted" tag on models the administrator opened to 总经理 / 管理员 only. Both come
+// from the company gateway's guard through /v1/settings; a row with no entry — every other
+// provider's, and a gateway model the guard did not price — must look exactly as before.
+describe("ModelChecklist — gateway price hint and Restricted tag", () => {
+  const SOL = "aigw:openai/gpt-6.1-sol";
+  const FLASH = "aigw:google-ai-studio/gemini-3.7-flash";
+  const HAIKU = "aigw:anthropic/claude-haiku-4-5";
+  const LUNA = "aigw:openai/gpt-6-luna";
+  const gateway = (extra: Partial<Parameters<typeof ModelChecklist>[0]> = {}) => (
+    <ModelChecklist
+      provider="aigw"
+      knownProviders={[...KNOWN, "aigw"]}
+      suggested={[
+        "openai/gpt-6.1-sol",
+        "google-ai-studio/gemini-3.7-flash",
+        "anthropic/claude-haiku-4-5",
+        "openai/gpt-6-luna",
+      ]}
+      curated={[SOL]}
+      defaultModel={SOL}
+      labels={{ [SOL]: "GPT-6.1 Sol · via Cloudflare" }}
+      prices={{ [SOL]: { in: 3, out: 15 }, [FLASH]: { in: 0.15, out: 0.6 }, [HAIKU]: { in: 1 } }}
+      tiers={{ [SOL]: "limited" }}
+      onChanged={() => {}}
+      {...extra}
+    />
+  );
+  const row = (id: string) => screen.getByTitle(id).closest(".mlist-row") as HTMLElement;
+
+  it("shows input / output price per million tokens on the row, with the spelled-out tooltip", () => {
+    render(gateway());
+    const price = screen.getByTestId(`mlist-price-${SOL}`);
+    expect(price.textContent).toBe("$3 / $15 per 1M tokens");
+    expect(price.getAttribute("title")).toBe("Input $3 · output $15 (USD per 1M tokens)");
+    // Inside the row's flexible name cell: whatever follows that cell does not move.
+    expect(price.closest(".mlist-main")).toBe(row(SOL).querySelector(".mlist-main"));
+    expect(screen.getByTestId(`mlist-price-${FLASH}`).textContent).toBe("$0.15 / $0.6 per 1M tokens");
+    // Only one side priced: that side, named.
+    expect(screen.getByTestId(`mlist-price-${HAIKU}`).textContent).toBe("Input $1 per 1M tokens");
+  });
+
+  it("tags a limited model 'Restricted' next to its name, and only that one", () => {
+    render(gateway());
+    const tag = screen.getByTestId(`mlist-restricted-${SOL}`);
+    expect(tag.textContent).toBe("Restricted");
+    expect(tag.getAttribute("title")).toBe("Open to the General Manager and administrators only");
+    // Right after the name group, ahead of the price.
+    expect(tag.parentElement?.previousElementSibling?.querySelector(".mlist-name")?.textContent).toBe(
+      "GPT-6.1 Sol · via Cloudflare",
+    );
+    expect(tag.nextElementSibling).toBe(screen.getByTestId(`mlist-price-${SOL}`));
+    expect(screen.queryAllByTestId(/^mlist-restricted-/)).toHaveLength(1);
+  });
+
+  it("adds nothing to a model without data", () => {
+    render(gateway());
+    expect(screen.queryByTestId(`mlist-price-${LUNA}`)).toBeNull();
+    expect(screen.queryByTestId(`mlist-restricted-${LUNA}`)).toBeNull();
+    // The row is the bare one it always was: checkbox + name, then the make-default button.
+    const main = row(LUNA).querySelector(".mlist-main")!;
+    expect(Array.from(main.children).map((el) => el.tagName)).toEqual(["INPUT", "SPAN"]);
+    expect(row(LUNA).textContent).toBe("openai/gpt-6-lunaMake default");
+  });
+
+  it("adds nothing at all when the server sends no maps (older backend, other providers)", () => {
+    render(gateway({ prices: undefined, tiers: undefined }));
+    expect(screen.queryAllByTestId(/^mlist-(price|restricted)-/)).toHaveLength(0);
+    cleanup();
+    render(
+      <ModelChecklist
+        provider="openai"
+        knownProviders={KNOWN}
+        suggested={["gpt-5.5"]}
+        curated={["gpt-5.5"]}
+        defaultModel="gpt-5.5"
+        // A map that only knows gateway ids says nothing about this provider's rows.
+        prices={{ [SOL]: { in: 3, out: 15 } }}
+        tiers={{ [SOL]: "limited" }}
+        onChanged={() => {}}
+      />,
+    );
+    expect(screen.queryAllByTestId(/^mlist-(price|restricted)-/)).toHaveLength(0);
+  });
+
+  it("ignores malformed prices and unknown tiers instead of showing them", () => {
+    render(
+      gateway({
+        prices: {
+          [SOL]: { in: -3, out: Number.NaN },
+          [FLASH]: { in: "0.15", out: 0.6 } as never,
+          [HAIKU]: null,
+        },
+        tiers: { [SOL]: "all", [FLASH]: "vip" },
+      }),
+    );
+    expect(screen.queryByTestId(`mlist-price-${SOL}`)).toBeNull();
+    expect(screen.getByTestId(`mlist-price-${FLASH}`).textContent).toBe("Output $0.6 per 1M tokens");
+    expect(screen.queryByTestId(`mlist-price-${HAIKU}`)).toBeNull();
+    expect(screen.queryAllByTestId(/^mlist-restricted-/)).toHaveLength(0);
+  });
+
+  it("says it in Chinese with the agreed wording", async () => {
+    const i18n = (await import("i18next")).default;
+    await i18n.changeLanguage("zh");
+    try {
+      render(gateway());
+      const price = screen.getByTestId(`mlist-price-${SOL}`);
+      expect(price.textContent).toBe("$3 / $15 每百万 token");
+      expect(price.getAttribute("title")).toBe("输入 $3 · 输出 $15（美元 / 百万 token）");
+      const tag = screen.getByTestId(`mlist-restricted-${SOL}`);
+      expect(tag.textContent).toBe("限制使用");
+      expect(tag.getAttribute("title")).toBe("仅对总经理、管理员开放");
+    } finally {
+      await i18n.changeLanguage("en");
+    }
+  });
+});

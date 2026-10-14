@@ -41,7 +41,7 @@ vi.mock("../api", () => ({
   codexSignout: vi.fn(async () => ({})),
 }));
 
-import { getProviders, setProvider, verifyProvider } from "../api";
+import { getProviders, getSettings, setProvider, verifyProvider } from "../api";
 
 afterEach(() => {
   cleanup();
@@ -128,4 +128,58 @@ describe("ModelsTab — Test stays on the provider page", () => {
     expect(key.placeholder).toBe("••••••••");
     expect(screen.getByText("gemini-3.5-flash")).toBeTruthy();
   }, 10000);
+});
+
+// The gallery view's "In the composer's picker" card lists every ticked model across
+// providers. Gateway models carry the guard's list price and, for the ones opened to
+// 总经理 / 管理员 only, a "Restricted" tag; the provider tag at the right stays put and
+// everyone else's rows are untouched.
+describe("ModelsTab — price hint and Restricted tag in the composer-picker card", () => {
+  const SOL = "aigw:openai/gpt-6.1-sol";
+  const LUNA = "aigw:openai/gpt-6-luna";
+  const aigw: ProviderInfo = {
+    name: "aigw",
+    title: "Cloudflare AI Gateway",
+    needs_key: false,
+    configured: true,
+    values: {},
+    suggested_models: ["openai/gpt-6.1-sol", "openai/gpt-6-luna"],
+    recommended_model: null,
+    fields: [],
+    catalog: LIVE,
+  };
+
+  it("shows the price and the tag on gateway rows only", async () => {
+    vi.mocked(getProviders).mockResolvedValue([aigw]);
+    vi.mocked(getSettings).mockResolvedValue({
+      model: "gpt-5.5",
+      models: ["gpt-5.5", SOL, LUNA],
+      model_labels: { [SOL]: "GPT-6.1 Sol · via Cloudflare", [LUNA]: "GPT-6 Luna · via Cloudflare" },
+      model_prices: { [SOL]: { in: 3, out: 15 } },
+      model_tiers: { [SOL]: "limited" },
+      source: "stored",
+    } as never);
+
+    render(<ModelsTab />);
+    const card = await screen.findByTestId("composer-picker");
+    const price = await screen.findByTestId(`mlist-price-${SOL}`);
+    expect(card.contains(price)).toBe(true);
+    expect(price.textContent).toBe("$3 / $15 per 1M tokens");
+    expect(price.getAttribute("title")).toBe("Input $3 · output $15 (USD per 1M tokens)");
+    expect(screen.getByTestId(`mlist-restricted-${SOL}`).textContent).toBe("Restricted");
+
+    // The provider tag is still the row's own element after the name cell, not inside it.
+    const row = price.closest(".mlist-row")!;
+    expect(Array.from(row.children).map((el) => el.textContent)).toEqual([
+      "GPT-6.1 Sol · via CloudflareRestricted$3 / $15 per 1M tokens",
+      "Cloudflare AI Gateway",
+      "Make default",
+    ]);
+
+    // An unpriced gateway model and a direct-provider model: nothing extra.
+    expect(screen.queryByTestId(`mlist-price-${LUNA}`)).toBeNull();
+    expect(screen.queryByTestId(`mlist-restricted-${LUNA}`)).toBeNull();
+    expect(screen.queryByTestId("mlist-price-gpt-5.5")).toBeNull();
+    expect(screen.queryAllByTestId(/^mlist-(price|restricted)-/)).toHaveLength(2);
+  });
 });

@@ -10,6 +10,7 @@ hard dependency the app can crash on.
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -46,14 +47,64 @@ def supports_catalog(name: str) -> bool:
     return name in CATALOG_PROVIDERS
 
 
+#: The guard's two model tiers. `"limited"` is a 限制使用模型: one the administrator
+#: opened only to the 总经理 / 管理员 roles (whoever sees it in their list holds one).
+MODEL_TIERS = frozenset({"all", "limited"})
+
+
+def clean_price(value: Any) -> Optional[float]:
+    """A list price in USD per 1,000,000 tokens, or None for anything that is not one:
+    a missing field, a non-number (strings included — `"3"` is not a price), a bool
+    (`True` is an int in Python), a negative, NaN or infinity. Zero is a price.
+
+    Prices are only ever SHOWN, never computed with, and only ever come from the company
+    gateway's guard — so the rule is "what the guard said, or nothing": no rounding, no
+    default, no estimate. Used both when a pull is parsed and when the cached rows are read
+    back (prefs are a file on disk; a hand-edited one must not put garbage on screen)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except (OverflowError, ValueError):
+        return None
+    if not math.isfinite(number) or number < 0:
+        return None
+    return number
+
+
+def clean_tier(value: Any) -> Optional[str]:
+    """`"all"` / `"limited"` exactly as the guard spells them, else None."""
+    return value if isinstance(value, str) and value in MODEL_TIERS else None
+
+
 @dataclass(frozen=True)
 class CatalogModel:
     id: str
     label: str
     context_window: Optional[int] = None
+    # Company gateway only (`parse_aigw`): the guard's list price per 1M input / output
+    # tokens in USD, and the model's tier. None = the guard did not say (an older guard, or
+    # a model without a listed price). No other provider's parser sets these.
+    price_in: Optional[float] = None
+    price_out: Optional[float] = None
+    tier: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {"id": self.id, "label": self.label, "context_window": self.context_window}
+        out: dict[str, Any] = {
+            "id": self.id,
+            "label": self.label,
+            "context_window": self.context_window,
+        }
+        # Only what is known: every other provider's rows (and a gateway row the guard gave
+        # no price for) keep exactly the three keys they always had, in the settings cache
+        # on disk as well.
+        if self.price_in is not None:
+            out["price_in"] = self.price_in
+        if self.price_out is not None:
+            out["price_out"] = self.price_out
+        if self.tier is not None:
+            out["tier"] = self.tier
+        return out
 
 
 # -- chat-model filtering ---------------------------------------------------------
@@ -293,14 +344,20 @@ def aigw_model_label(model_id: str) -> str:
 
 def parse_aigw(payload: Any) -> list[CatalogModel]:
     """gateway-guard `GET /gate/models`: `{"models": [{"id": "anthropic/claude-opus-5",
-    "family": "anthropic/", "context": null, "created": "2026-07-24"}, ...],
+    "family": "anthropic/", "context": null, "created": "2026-07-24", "price_in": 5,
+    "price_out": 25, "tier": "limited"}, ...],
     "probe": "anthropic/claude-haiku-4-5", ...}` — the allowlist itself: exactly the models
     this person's administrator ticked for them, and the single source of truth for what
     the picker may offer under `aigw:` (the curated matrix only lends these ids a label
     and a context window; it never adds one). `probe` is read separately by the Test
     button (`registry._aigw_probe_model`). Ids are the gateway form the provider sends
     as-is. Non-chat rows (deep-research, computer-use, …) still get the same client-side
-    cull as every other catalog."""
+    cull as every other catalog.
+
+    `price_in` / `price_out` (USD per 1M tokens) and `tier` are optional per row: an older
+    guard sends none of them and a model can lack a listed price. Each is kept only when
+    it is well-formed (`clean_price` / `clean_tier`) and is otherwise simply absent — a bad
+    price never costs the row, and nothing is ever filled in for a missing one."""
     out: list[CatalogModel] = []
     seen: set[str] = set()
     if not isinstance(payload, dict):
@@ -323,7 +380,16 @@ def parse_aigw(payload: Any) -> list[CatalogModel]:
                 if isinstance(context_window, int) and context_window > 0
                 else None
             )
-            out.append(CatalogModel(model_id, aigw_model_label(model_id), context_window))
+            out.append(
+                CatalogModel(
+                    model_id,
+                    aigw_model_label(model_id),
+                    context_window,
+                    price_in=clean_price(entry.get("price_in")),
+                    price_out=clean_price(entry.get("price_out")),
+                    tier=clean_tier(entry.get("tier")),
+                )
+            )
             seen.add(model_id)
         except Exception:
             continue

@@ -98,7 +98,12 @@ from ..providers import (
     provider_descriptors,
     verify_provider_key,
 )
-from ..providers.catalog import CATALOG_PROVIDERS, supports_catalog
+from ..providers.catalog import (
+    CATALOG_PROVIDERS,
+    clean_price,
+    clean_tier,
+    supports_catalog,
+)
 from ..providers.registry import RETIRED_PROVIDERS
 from ..secrets import SecretStore, state_dir
 from ..sessions import SessionRecord
@@ -4468,6 +4473,12 @@ class SessionManager:
         person instead of being made for them."""
         return self._aigw_delisted(self.model)
 
+    def _aigw_shown(self) -> tuple[Any, ...]:
+        """Everything a GUI draws from the gateway list, as one comparable value:
+        `_store_model_catalog` takes it before and after a pull and pushes
+        `models_changed` when the two differ."""
+        return (self._aigw_allowed(), self._aigw_default_gone(), self._aigw_pricing())
+
     def _reconcile_aigw_selections(self) -> bool:
         """Drop every `aigw:` pick saved in PREFS that the server list no longer carries.
         Runs after each successful pull (`_store_model_catalog` is the one place they all
@@ -4904,7 +4915,10 @@ class SessionManager:
 
         now = datetime.now(timezone.utc).isoformat()
         gateway_pull = name == "aigw" and bool(result.get("ok"))
-        before = (self._aigw_allowed(), self._aigw_default_gone()) if gateway_pull else None
+        # What open GUIs render from this list: the ids, whether the default survived, and
+        # the price / tier each row shows. Same ids with new prices (the guard gaining the
+        # fields, an administrator re-pricing or re-tiering a model) is a change too.
+        before = self._aigw_shown() if gateway_pull else None
         with self._catalog_lock:
             if result.get("unsupported"):
                 self._model_catalog.pop(name, None)
@@ -4947,9 +4961,7 @@ class SessionManager:
                 self._kick_session_reconcile()
             except Exception:  # noqa: BLE001 - inline when no loop runs; same containment
                 logger.exception("aigw: reconciling loaded sessions failed")
-        if gateway_pull and (
-            reconciled or before != (self._aigw_allowed(), self._aigw_default_gone())
-        ):
+        if gateway_pull and (reconciled or before != self._aigw_shown()):
             self._announce_models_changed()
 
     def refresh_model_catalog(
@@ -5718,6 +5730,45 @@ class SessionManager:
                     windows[full_id] = context_window
         return labels, windows
 
+    def _aigw_pricing(self) -> tuple[dict[str, dict[str, float]], dict[str, str]]:
+        """({routed id → {"in": …, "out": …}}, {routed id → "limited"}) for the company
+        gateway's models — what the guard's `GET /gate/models` said about each model on
+        this person's list, read back from the same cached rows `_aigw_allowed` reads.
+
+        Prices are USD per 1,000,000 input / output tokens as charged to the company
+        account. A side the guard did not give is left out of the inner map, and a model
+        with neither side is left out altogether: the GUI shows a hint only for what is
+        here, so "absent" has to stay absent — nothing is estimated, defaulted or carried
+        over from the matrix. Tiers carry only `"limited"` (a model the administrator
+        opened to the 总经理 / 管理员 roles only); `"all"` is the unmarked case.
+
+        Gateway only, on purpose: the guard is the one source with authoritative prices,
+        so a `price_in` that turned up in another provider's cached rows is never read.
+        A signed-out gateway reports nothing, same as its labels (`_catalog_metadata`).
+        Values are re-checked on the way out (`clean_price` / `clean_tier`) — the cache is
+        a prefs file on disk and may predate, or have been edited since, the pull."""
+        prices: dict[str, dict[str, float]] = {}
+        tiers: dict[str, str] = {}
+        if not self._provider_configured("aigw"):
+            return prices, tiers
+        for m in self._catalog_models("aigw"):
+            if not isinstance(m, dict) or not m.get("id"):
+                continue
+            full_id = f"aigw:{m['id']}"
+            price = {
+                side: value
+                for side, value in (
+                    ("in", clean_price(m.get("price_in"))),
+                    ("out", clean_price(m.get("price_out"))),
+                )
+                if value is not None
+            }
+            if price:
+                prices[full_id] = price
+            if clean_tier(m.get("tier")) == "limited":
+                tiers[full_id] = "limited"
+        return prices, tiers
+
     @staticmethod
     def _model_fallbacks(
         labels: dict[str, str], allowed: Optional[frozenset[str]]
@@ -5786,6 +5837,7 @@ class SessionManager:
         from ..providers.matrix import model_context_windows, model_labels
 
         catalog_labels, catalog_windows = self._catalog_metadata()
+        model_prices, model_tiers = self._aigw_pricing()
         scratch_effective, scratch_error = self.ensure_scratch_base()
         labels = {**catalog_labels, **model_labels()}
 
@@ -5809,6 +5861,14 @@ class SessionManager:
             # switch is on — the composer badge must promise nothing the client wouldn't
             # actually do. Empty on every non-gateway install.
             "model_fallbacks": self._model_fallbacks(labels, self._aigw_allowed()),
+            # Company gateway only, straight from the guard's list (`_aigw_pricing`):
+            # {full id → {"in": USD per 1M input tokens, "out": USD per 1M output tokens}}
+            # — a side the guard did not price is missing, an unpriced model is not in the
+            # map — and {full id → "limited"} for models opened to 总经理 / 管理员 only.
+            # Both empty off-gateway and against a guard that predates the fields; the
+            # model lists show a price hint / "Restricted" tag for exactly what is here.
+            "model_prices": model_prices,
+            "model_tiers": model_tiers,
             "has_key": env_key or stored,
             # Provider-agnostic "can this default model actually run?" — true when the default
             # model's provider is configured (any provider, not just OpenAI). Drives the GUI's

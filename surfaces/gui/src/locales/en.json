@@ -1373,7 +1373,17 @@
     "make_default": "Make default",
     "not_in_catalog": "not in the provider's list",
     "not_in_catalog_tip": "The provider's model list doesn't include this id — calls to it may fail. It stays here because it is ticked or is the default.",
-    "add_manually": "Add a model by id…"
+    "add_manually": "Add a model by id…",
+    "price_both": "{{in}} / {{out}} per 1M tokens",
+    "price_in": "Input {{in}} per 1M tokens",
+    "price_out": "Output {{out}} per 1M tokens",
+    "price_in_short": "Input {{in}}",
+    "price_out_short": "Output {{out}}",
+    "price_tip_both": "Input {{in}} · output {{out}} (USD per 1M tokens)",
+    "price_tip_in": "Input {{in}} (USD per 1M tokens)",
+    "price_tip_out": "Output {{out}} (USD per 1M tokens)",
+    "restricted": "Restricted",
+    "restricted_tip": "Open to the General Manager and administrators only"
   },
   "onboarding": {
     "cancel": "Cancel",

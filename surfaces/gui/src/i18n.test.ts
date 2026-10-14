@@ -75,6 +75,18 @@ const IMPORTANT_KEYS = [
   "transcript.resolved_timed_out",
   "transcript.resolved_outcome_allow",
   "transcript.resolved_outcome_deny",
+  // The model lists' price hint (company-gateway models) and "Restricted" tag: the row
+  // text, the composer picker's one-sided short form, and the spelled-out tooltips.
+  "models.price_both",
+  "models.price_in",
+  "models.price_out",
+  "models.price_in_short",
+  "models.price_out_short",
+  "models.price_tip_both",
+  "models.price_tip_in",
+  "models.price_tip_out",
+  "models.restricted",
+  "models.restricted_tip",
 ] as const;
 
 const values: Record<string, Record<string, string | number>> = {
@@ -102,6 +114,14 @@ const values: Record<string, Record<string, string | number>> = {
   "composer.fallback_badge_tip": { model: "GPT-5.6 Sol" },
   "manage.listening_title_uncounted": { title: "Slack" },
   "transcript.resolved_via_weixin": { outcome: "同意" },
+  "models.price_both": { in: "$3", out: "$15" },
+  "models.price_in": { in: "$3" },
+  "models.price_out": { out: "$15" },
+  "models.price_in_short": { in: "$3" },
+  "models.price_out_short": { out: "$15" },
+  "models.price_tip_both": { in: "$3", out: "$15" },
+  "models.price_tip_in": { in: "$3" },
+  "models.price_tip_out": { out: "$15" },
 };
 
 function flatten(tree: LocaleTree, prefix = "", result: Record<string, string> = {}) {

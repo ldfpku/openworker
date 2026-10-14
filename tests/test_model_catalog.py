@@ -19,6 +19,8 @@ from coworker.providers.catalog import (
     CATALOG_PROVIDERS,
     CatalogModel,
     aigw_model_label,
+    clean_price,
+    clean_tier,
     is_chat_model_id,
     parse_aigw,
     parse_anthropic,
@@ -931,6 +933,213 @@ def test_parse_aigw_keeps_gateway_ids_and_culls_non_chat_rows():
     assert parse_catalog("aigw", payload) == parse_aigw(payload)
     for bad in (None, [], {"models": "x"}, {"data": []}):
         assert parse_aigw(bad) == []
+
+
+# -- aigw: list prices and tiers on the guard's rows --------------------------------
+# The guard is the only source of prices the app has. Each row may carry `price_in` /
+# `price_out` (USD per 1,000,000 tokens) and `tier` ("all" | "limited"); any of them may be
+# missing (older guard, unpriced model). What is malformed is dropped field by field — the
+# row stays, and nothing is ever filled in.
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        (3, 3.0),
+        (15.0, 15.0),
+        (0.051, 0.051),
+        (0, 0.0),  # zero is a price (a model the company is not billed for)
+        (None, None),
+        ("3", None),  # a string is not a number, even a numeric-looking one
+        ("", None),
+        (True, None),  # bool is an int in Python; it is not a price
+        (False, None),
+        (-1, None),
+        (-0.5, None),
+        (float("nan"), None),
+        (float("inf"), None),
+        (10**400, None),  # an int too large for a float
+        ([3], None),
+        ({"usd": 3}, None),
+    ],
+)
+def test_clean_price(raw, expected):
+    assert clean_price(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("all", "all"),
+        ("limited", "limited"),
+        ("LIMITED", None),
+        ("vip", None),
+        ("", None),
+        (None, None),
+        (1, None),
+        (["limited"], None),
+    ],
+)
+def test_clean_tier(raw, expected):
+    assert clean_tier(raw) == expected
+
+
+def test_parse_aigw_reads_prices_and_tier():
+    payload = {
+        "models": [
+            {
+                "id": "openai/gpt-6.1-sol",
+                "family": "openai/",
+                "context": 1050000,
+                "created": "2026-09-30",
+                "price_in": 3,
+                "price_out": 15.0,
+                "tier": "limited",
+            },
+            {
+                "id": "google-ai-studio/gemini-3.7-flash",
+                "price_in": 0.15,
+                "price_out": 0.6,
+                "tier": "all",
+            },
+        ]
+    }
+    assert [m.to_dict() for m in parse_aigw(payload)] == [
+        {
+            "id": "openai/gpt-6.1-sol",
+            "label": "GPT-6.1 Sol · via Cloudflare",
+            "context_window": 1050000,
+            "price_in": 3.0,
+            "price_out": 15.0,
+            "tier": "limited",
+        },
+        {
+            "id": "google-ai-studio/gemini-3.7-flash",
+            "label": "Gemini 3.7 Flash · via Cloudflare",
+            "context_window": None,
+            "price_in": 0.15,
+            "price_out": 0.6,
+            "tier": "all",
+        },
+    ]
+
+
+def test_parse_aigw_without_the_new_fields_is_unchanged():
+    # An older guard: today's four keys only. The rows keep exactly the three keys they
+    # always had — no `price_in: None` placeholders in the cache or on the wire.
+    payload = {
+        "models": [
+            {
+                "id": "anthropic/claude-opus-5",
+                "family": "anthropic/",
+                "context": None,
+                "created": "2026-07-24",
+            },
+            {"id": "openai/gpt-6-luna", "price_in": None, "price_out": None},  # explicit nulls
+        ]
+    }
+    rows = [m.to_dict() for m in parse_aigw(payload)]
+    assert rows == [
+        {
+            "id": "anthropic/claude-opus-5",
+            "label": "Claude Opus 5 · via Cloudflare",
+            "context_window": None,
+        },
+        {"id": "openai/gpt-6-luna", "label": "GPT-6 Luna · via Cloudflare", "context_window": None},
+    ]
+
+
+def test_parse_aigw_drops_garbage_prices_field_by_field_and_keeps_the_row():
+    import json
+
+    payload = {
+        "models": [
+            {"id": "a/one", "price_in": "3", "price_out": 15, "tier": "LIMITED"},
+            {"id": "a/two", "price_in": -1, "price_out": True, "tier": 7},
+            {"id": "a/three", "price_in": float("nan"), "price_out": float("inf")},
+            {"id": "a/four", "price_in": 0.051, "price_out": {"usd": 1}, "tier": None},
+            {"id": "a/five", "price_in": 0, "price_out": 0},
+        ]
+    }
+    rows = {m.id: m for m in parse_aigw(payload)}
+    assert list(rows) == ["a/one", "a/two", "a/three", "a/four", "a/five"]
+
+    def got(model_id: str) -> tuple:
+        row = rows[model_id]
+        return (row.price_in, row.price_out, row.tier)
+
+    assert got("a/one") == (None, 15.0, None)
+    assert got("a/two") == (None, None, None)
+    assert got("a/three") == (None, None, None)
+    assert got("a/four") == (0.051, None, None)
+    assert got("a/five") == (0.0, 0.0, None)
+    # What survives a parse always survives the prefs file: no NaN / Infinity reaches json.
+    json.dumps([m.to_dict() for m in rows.values()], allow_nan=False)
+
+
+def test_no_other_provider_parser_ever_sets_a_price():
+    # A price on someone else's row is not authoritative (OpenRouter and friends publish
+    # their own, in their own units) — only the gateway parser reads these keys.
+    row = {"id": "glm-5.2", "name": "GLM", "price_in": 3, "price_out": 15, "tier": "limited"}
+    for parsed in (
+        parse_openai_compat({"data": [row]}, "openrouter"),
+        parse_anthropic({"data": [{**row, "id": "claude-x", "display_name": "Claude X"}]}),
+        parse_gemini(
+            {
+                "models": [
+                    {
+                        "name": "models/gemini-x",
+                        "supportedGenerationMethods": ["generateContent"],
+                        "price_in": 3,
+                        "price_out": 15,
+                        "tier": "limited",
+                    }
+                ]
+            }
+        ),
+    ):
+        assert len(parsed) == 1
+        assert set(parsed[0].to_dict()) == {"id", "label", "context_window"}
+
+
+def test_list_provider_models_aigw_carries_prices_to_the_cache_rows(monkeypatch):
+    _patch_get(
+        monkeypatch,
+        status=200,
+        json_body={
+            "models": [
+                {"id": "openai/gpt-5.6-terra", "price_in": 0.75, "price_out": 4.5, "tier": "all"},
+                {"id": "anthropic/claude-fable-5", "price_in": 10, "tier": "limited"},
+                {"id": "openai/gpt-6-luna"},
+            ]
+        },
+    )
+    res = list_provider_models("aigw", fields={"oauth_token": "tok-1"})
+    assert res == {
+        "ok": True,
+        "models": [
+            {
+                "id": "openai/gpt-5.6-terra",
+                "label": "GPT-5.6 Terra · via Cloudflare",
+                "context_window": None,
+                "price_in": 0.75,
+                "price_out": 4.5,
+                "tier": "all",
+            },
+            {
+                "id": "anthropic/claude-fable-5",
+                "label": "Claude Fable 5 · via Cloudflare",
+                "context_window": None,
+                "price_in": 10.0,
+                "tier": "limited",
+            },
+            {
+                "id": "openai/gpt-6-luna",
+                "label": "GPT-6 Luna · via Cloudflare",
+                "context_window": None,
+            },
+        ],
+    }
 
 
 def test_list_provider_models_aigw_hits_gate_models_with_the_oauth_session(monkeypatch):

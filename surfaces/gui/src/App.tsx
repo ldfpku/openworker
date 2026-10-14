@@ -68,6 +68,7 @@ import { answerSupersededNotice, promptResolvedNotice } from "./promptResolved";
 import { itemsFromMessages } from "./itemsFromMessages";
 import { hasConversation } from "./draft";
 import { normalizeMode } from "./modes";
+import type { ModelPrices, ModelTiers } from "./modelPrice";
 import { BASELINE_PERSONA, fallbackAgent } from "./personaLifecycle";
 import {
   clearPick,
@@ -254,6 +255,11 @@ export function App() {
   // {full model id → the label of the same-tier model the AI Gateway falls back to when the
   // shared pool is busy}; drives the composer picker's stand-in badge. Empty off-gateway.
   const [modelFallbacks, setModelFallbacks] = useState<Record<string, string>>({});
+  // Company-gateway list prices ({full id → USD per 1M input / output tokens}) and tiers
+  // ({full id → "limited"}); the composer picker's price note and "Restricted" tag. Empty
+  // off-gateway and on older backends.
+  const [modelPrices, setModelPrices] = useState<ModelPrices>({});
+  const [modelTiers, setModelTiers] = useState<ModelTiers>({});
   // Settings: show the composer's context-window fill bar. OFF by default (owner ask),
   // so an older backend without the field also shows the session total.
   const [contextBar, setContextBar] = useState(false);
@@ -750,6 +756,8 @@ export function App() {
         setModelLabels(s.model_labels || {});
         setModelContextWindows(s.model_context_windows || {});
         setModelFallbacks(s.model_fallbacks || {});
+        setModelPrices(s.model_prices || {});
+        setModelTiers(s.model_tiers || {});
         setContextBar(s.context_bar === true);
         setModelReady(s.model_ready);
         setModelNotice(s.model_notice ?? null);
@@ -2516,6 +2524,8 @@ export function App() {
               models={models}
               modelLabels={modelLabels}
               modelFallbacks={modelFallbacks}
+              modelPrices={modelPrices}
+              modelTiers={modelTiers}
               running={running}
               gateOpen={!unattended && (!!pendingTeam || !!pendingItemsReq)}
               connected={connected}

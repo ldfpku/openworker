@@ -1,3 +1,4 @@
+import type { ModelPrices, ModelTiers } from "./modelPrice";
 import type { GroupedQuestion, QuestionOption, SessionInfo, WsEvent } from "./types";
 
 declare const __COWORKER_DEV_TOKEN__: string;
@@ -1099,6 +1100,13 @@ export interface ModelSettings {
   // the shared pool rate-limits this one}. Only gateway models with a Dynamic Route appear;
   // absent on older backends and while the rollback switch is off.
   model_fallbacks?: Record<string, string>;
+  // Company AI Gateway only, as its guard lists them: {full id → price in USD per 1M
+  // input / output tokens} — a side the guard did not price is missing, an unpriced model
+  // is not in the map — and {full id → "limited"} for models the administrator opened to
+  // the 总经理 / 管理员 roles only. The model lists show a price hint / "Restricted" tag
+  // for exactly what is here; absent on older backends and empty off-gateway.
+  model_prices?: ModelPrices;
+  model_tiers?: ModelTiers;
   // Token savings (PDF attachments): fallback for models without native PDF support,
   // and attach-time thresholds. Optional so the GUI is robust to an older backend.
   pdf_fallback?: "text" | "images";

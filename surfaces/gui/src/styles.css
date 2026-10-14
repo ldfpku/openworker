@@ -585,6 +585,24 @@ body {
   padding: 1px 7px; border-radius: 999px;
   background: var(--accent-soft); color: var(--accent);
 }
+/* "Restricted" on a gateway model the administrator opened to two roles only: an outlined,
+   uncoloured tag — a fact about the row, deliberately quieter than the .dd-badge pill. */
+.dd-tag {
+  margin-left: 7px; flex: none; white-space: nowrap;
+  font-size: 10px; line-height: 1.5; padding: 0 6px; border-radius: 999px;
+  border: 1px solid var(--line-strong); color: var(--muted);
+}
+/* A model's price ("$3 / $15") at the row's right edge. margin-left:auto takes the free
+   space whether or not a badge sits before it; rows stay single-line so the menu grows to
+   its widest row instead of wrapping the note under the name. */
+.dd-meta {
+  margin-left: auto; padding-left: 14px; flex: none; white-space: nowrap;
+  font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums;
+}
+.dd-menu.has-meta .dd-label { white-space: nowrap; }
+.dd-menu.has-meta .chk, .dd-menu.has-meta .chk-space {
+  flex: none; width: 14px; margin-left: 6px; text-align: right;
+}
 .send { width: 34px; height: 34px; border-radius: 50%; border: none; background: var(--accent); color: #fff; cursor: pointer; font-size: 16px; }
 .send:disabled { opacity: 0.4; cursor: default; }
 .statusline { max-width: 760px; margin: 6px auto 0; font-size: 12px; color: var(--faint); display: flex; gap: 12px; }
@@ -962,6 +980,33 @@ body {
   background: var(--accent-soft); color: var(--accent);
 }
 .mlist-row.off .mlist-free { opacity: 0.55; }
+/* Company-gateway rows (ModelRowLabel): a quiet "Restricted" tag and the list price as
+   muted secondary text. Such a row wraps its name cell in .mlist-wrap, which holds two
+   groups on ONE wrapping line — [.mlist-ident: name + badges] [.mlist-extra: tag + price]:
+   side by side while there is room; in a narrower window the second group drops under the
+   name (aligned with it — the checkbox stays outside) so the name keeps its line instead
+   of being squeezed to an ellipsis. All of it lives in .mlist-main, the row's flexible
+   cell, so the provider tag / default badge after it never move. Rows with neither a price
+   nor a tier get no wrapper at all. */
+.mlist-wrap {
+  flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center;
+  column-gap: 9px; row-gap: 2px; overflow: hidden;
+}
+.mlist-ident, .mlist-extra {
+  flex: 0 1 auto; min-width: 0; max-width: 100%; display: flex; align-items: center; gap: 9px;
+}
+.mlist-extra { gap: 7px; }
+.mlist-tag {
+  flex: none; font-size: 10.5px; line-height: 1.5; white-space: nowrap;
+  padding: 0 6px; border-radius: 999px;
+  border: 1px solid var(--line-strong); color: var(--muted);
+}
+.mlist-price {
+  flex: 0 1 auto; min-width: 0; font-size: 12px; color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.mlist-row.off .mlist-tag, .mlist-row.off .mlist-price { opacity: 0.7; }
 .mlist-make {
   visibility: hidden; border: 1px solid var(--line-strong); background: var(--panel);
   border-radius: 7px; padding: 3px 9px; font-size: 12px; color: var(--muted); cursor: pointer; flex: none;

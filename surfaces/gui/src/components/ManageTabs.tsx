@@ -29,6 +29,7 @@ import { BTN_ACCENT, BTN_BORDERED } from "./buttons";
 import { CloudSignInInline, CloudStatusPending } from "./connectors/CloudSignIn";
 import { IconButton } from "./IconButton";
 import { ModelChecklist } from "./ModelChecklist";
+import { ModelRowLabel } from "./ModelHints";
 import { sortModelIds } from "../modelOrder";
 import { ProviderCards, ProviderForm, useProviderSetup } from "../providers/ProviderSetup";
 import { formatRelative } from "../relTime";
@@ -170,6 +171,8 @@ export function ModelsTab() {
             curated={settings.models}
             defaultModel={settings.model}
             labels={settings.model_labels}
+            prices={settings.model_prices}
+            tiers={settings.model_tiers}
             catalog={info?.catalog}
             defaultGone={
               settings.model_notice === "default_model_gone" && settings.model.startsWith(`${ps.sel}:`)
@@ -265,9 +268,14 @@ function ComposerPickerCard({
                   title={isDefault ? t("models.default_locked") : t("manage.remove_from_picker")}
                   onChange={() => removeModel(id).then((r) => r.ok && onChanged())}
                 />
-                <span className="mlist-name" title={id}>
-                  {settings.model_labels?.[id] || id}
-                </span>
+                {/* The name, plus — company-gateway rows only, and only with an entry in
+                    the maps — the Restricted tag and the list price. */}
+                <ModelRowLabel
+                  id={id}
+                  name={settings.model_labels?.[id] || id}
+                  price={settings.model_prices?.[id]}
+                  tier={settings.model_tiers?.[id]}
+                />
               </label>
               <span className="text-[11px] text-faint mr-2 shrink-0">{tag(id)}</span>
               {isDefault ? (

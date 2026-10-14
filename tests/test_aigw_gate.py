@@ -493,3 +493,178 @@ def test_the_manager_hands_the_gateway_provider_its_list_reader(tmp_path, monkey
     mgr.refresh_model_catalog("aigw")
     # Read at retry time, so a refreshed list applies without rebuilding the provider.
     assert client._route_allowed("anthropic/claude-opus-5") is True
+
+
+# -- list prices and the "limited" tier reach the settings payload ---------------------------
+# The guard's rows may carry `price_in` / `price_out` (USD per 1,000,000 tokens) and `tier`.
+# They ride the same cached rows as the list itself and come out of `get_settings` as
+# `model_prices` / `model_tiers`, keyed by the routed id — for gateway models only, and only
+# for what the guard actually said.
+
+
+def _priced(model_id: str, **extra) -> dict:
+    return {
+        "id": model_id,
+        "label": f"{model_id} · via Cloudflare",
+        "context_window": None,
+        **extra,
+    }
+
+
+def _mgr_priced(tmp_path, monkeypatch, *rows: dict) -> SessionManager:
+    mgr = _mgr(tmp_path, monkeypatch, *[r["id"] for r in rows])
+    mgr._model_catalog["aigw"]["models"] = [dict(r) for r in rows]
+    return mgr
+
+
+def test_prices_and_tiers_reach_the_settings_payload(tmp_path, monkeypatch):
+    mgr = _mgr_priced(
+        tmp_path,
+        monkeypatch,
+        _priced("openai/gpt-6.1-sol", price_in=3.0, price_out=15.0, tier="limited"),
+        _priced("google-ai-studio/gemini-3.7-flash", price_in=0.15, price_out=0.6, tier="all"),
+        _priced("anthropic/claude-haiku-4-5", price_in=1.0),  # only one side priced
+        _priced("openai/gpt-6-luna"),  # the guard listed no price
+    )
+    s = mgr.get_settings()
+    assert s["model_prices"] == {
+        "aigw:openai/gpt-6.1-sol": {"in": 3.0, "out": 15.0},
+        "aigw:google-ai-studio/gemini-3.7-flash": {"in": 0.15, "out": 0.6},
+        "aigw:anthropic/claude-haiku-4-5": {"in": 1.0},
+    }
+    # "all" is the unmarked case: only restricted models are named.
+    assert s["model_tiers"] == {"aigw:openai/gpt-6.1-sol": "limited"}
+
+
+def test_an_older_guard_yields_empty_price_and_tier_maps(tmp_path, monkeypatch):
+    mgr = _mgr(tmp_path, monkeypatch, "anthropic/claude-sonnet-5", "openai/gpt-6-luna")
+    s = mgr.get_settings()
+    assert s["model_prices"] == {}
+    assert s["model_tiers"] == {}
+    # …and with no list at all.
+    fresh = _mgr(tmp_path / "b", monkeypatch).get_settings()
+    assert (fresh["model_prices"], fresh["model_tiers"]) == ({}, {})
+
+
+def test_garbage_in_the_cached_rows_never_reaches_the_payload(tmp_path, monkeypatch):
+    # The cache is a prefs file: rows written by an older build, or edited by hand, are
+    # re-checked on the way out — a bad side is dropped, not shown and not guessed.
+    mgr = _mgr_priced(
+        tmp_path,
+        monkeypatch,
+        _priced("a/strings", price_in="3", price_out="15", tier="LIMITED"),
+        _priced("a/negative", price_in=-3, price_out=15),
+        _priced("a/bools", price_in=True, price_out=False, tier=True),
+        _priced("a/nan", price_in=float("nan"), price_out=float("inf")),
+        _priced("a/zero", price_in=0, price_out=0, tier="vip"),
+    )
+    s = mgr.get_settings()
+    assert s["model_prices"] == {
+        "aigw:a/negative": {"out": 15.0},
+        "aigw:a/zero": {"in": 0.0, "out": 0.0},
+    }
+    assert s["model_tiers"] == {}
+
+
+def test_prices_are_reported_for_gateway_models_only(tmp_path, monkeypatch):
+    mgr = _mgr_priced(
+        tmp_path,
+        monkeypatch,
+        _priced("openai/gpt-6.1-sol", price_in=3.0, price_out=15.0, tier="limited"),
+    )
+    # Another configured provider whose cached rows happen to carry the same keys (an
+    # OpenRouter-style catalog, a hand-edited prefs file): not the guard, so not a price.
+    mgr.secrets.put("provider:zai", {"api_key": "k"})
+    mgr._model_catalog["zai"] = {
+        "fetched_at": "2026-10-13T00:00:00+00:00",
+        "models": [
+            {
+                "id": "glm-5.2",
+                "label": "GLM-5.2 · Z AI",
+                "context_window": None,
+                "price_in": 1.0,
+                "price_out": 2.0,
+                "tier": "limited",
+            }
+        ],
+        "error": None,
+        "failed_at": None,
+    }
+    s = mgr.get_settings()
+    assert "zai:glm-5.2" in s["model_labels"]  # the row itself is read…
+    assert set(s["model_prices"]) == {"aigw:openai/gpt-6.1-sol"}  # …its "price" is not
+    assert set(s["model_tiers"]) == {"aigw:openai/gpt-6.1-sol"}
+    assert all(k.startswith("aigw:") for k in (*s["model_prices"], *s["model_tiers"]))
+
+
+def test_a_signed_out_gateway_reports_no_prices(tmp_path, monkeypatch):
+    mgr = _mgr_priced(
+        tmp_path,
+        monkeypatch,
+        _priced("openai/gpt-6.1-sol", price_in=3.0, price_out=15.0, tier="limited"),
+    )
+    assert mgr.get_settings()["model_prices"]
+    profile = dict(mgr.secrets.get("provider:aigw") or {})
+    profile.pop("access_token", None)
+    mgr.secrets.put("provider:aigw", profile)
+    s = mgr.get_settings()
+    assert (s["model_prices"], s["model_tiers"]) == ({}, {})
+
+
+def test_a_pull_stores_prices_and_they_survive_a_restart(tmp_path, monkeypatch):
+    mgr = _mgr(tmp_path, monkeypatch, "openai/gpt-6.1-sol")
+    assert mgr.get_settings()["model_prices"] == {}
+    _pull(
+        monkeypatch,
+        {
+            "ok": True,
+            "models": [
+                _priced("openai/gpt-6.1-sol", price_in=3.0, price_out=15.0, tier="limited"),
+                _priced("openai/gpt-6-luna"),
+            ],
+        },
+    )
+    mgr.refresh_model_catalog("aigw")
+    expected = {"aigw:openai/gpt-6.1-sol": {"in": 3.0, "out": 15.0}}
+    assert mgr.get_settings()["model_prices"] == expected
+    reborn = SessionManager(data_dir=tmp_path / "data")
+    s = reborn.get_settings()
+    assert s["model_prices"] == expected
+    assert s["model_tiers"] == {"aigw:openai/gpt-6.1-sol": "limited"}
+    # A failed pull afterwards keeps the last list, prices included.
+    _pull(monkeypatch, {"ok": False, "error": "boom"})
+    mgr.refresh_model_catalog("aigw")
+    assert mgr.get_settings()["model_prices"] == expected
+
+
+async def test_new_prices_on_an_unchanged_list_tell_open_guis_to_reload(tmp_path, monkeypatch):
+    # The day the guard starts sending prices (or an administrator re-prices / re-tiers a
+    # model) the ids do not change at all — open composers must still hear about it.
+    mgr = _mgr(tmp_path, monkeypatch, "openai/gpt-6.1-sol", "openai/gpt-6-luna")
+    mgr._loop = asyncio.get_running_loop()
+    events: list[dict] = []
+
+    async def client(message: dict) -> None:
+        events.append(message)
+
+    mgr.register_event_client(client)
+
+    async def pull(*rows: dict) -> None:
+        _pull(monkeypatch, {"ok": True, "models": [dict(r) for r in rows]})
+        await asyncio.to_thread(mgr.refresh_model_catalog, "aigw")
+        await asyncio.sleep(0.05)
+
+    plain = (_priced("openai/gpt-6.1-sol"), _priced("openai/gpt-6-luna"))
+    priced = (
+        _priced("openai/gpt-6.1-sol", price_in=3.0, price_out=15.0),
+        _priced("openai/gpt-6-luna", price_in=0.2, price_out=1.0),
+    )
+    await pull(*plain)
+    assert events == []
+    await pull(*priced)  # same ids, prices appear
+    assert len(events) == 1
+    await pull(*priced)  # identical → quiet
+    assert len(events) == 1
+    await pull(priced[0] | {"tier": "limited"}, priced[1])  # a tier change alone
+    assert len(events) == 2
+    assert events[-1] == {"type": "models_changed"}

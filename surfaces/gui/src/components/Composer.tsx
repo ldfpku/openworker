@@ -8,6 +8,7 @@ import { enhancePrompt, getSettings, inspectPdf, sessionSkills, type SessionSkil
 import { formatTokens, totalTokens } from "../usage";
 import { Dropdown, type Option } from "./Dropdown";
 import { isFreeModel } from "../providers/logos";
+import { isRestrictedTier, priceHint, type ModelPrices, type ModelTiers } from "../modelPrice";
 import { sortModelIds } from "../modelOrder";
 import { Icon } from "./Icon";
 import { IconButton } from "./IconButton";
@@ -114,6 +115,11 @@ interface Props {
   // {model id → the display label of the same-tier model the AI Gateway falls back to when
   // the shared pool rate-limits this one}. Absent off-gateway and on older backends.
   modelFallbacks?: Record<string, string>;
+  // Company-gateway list prices ({model id → USD per 1M input / output tokens}) and tiers
+  // ({model id → "limited"}): the picker's price note and "Restricted" tag. A model without
+  // an entry shows neither — every non-gateway model, and all of them on older backends.
+  modelPrices?: ModelPrices;
+  modelTiers?: ModelTiers;
   // The model is FIXED once the session has history (§17): the picker renders ONLY on a fresh
   // session; after the first turn the fact lives in the topbar subtitle (§22) — no
   // interactive-then-disabled control.
@@ -822,10 +828,17 @@ export function Composer(props: Props) {
       : standIn
         ? { badge: t("composer.fallback_badge"), badgeTitle: standInTip }
         : {};
+    // Price and tier are NOT badges: the price is a muted note at the row's right edge
+    // (numbers only — the tooltip carries the unit), and "Restricted" is a quiet outlined
+    // tag by the name. Neither takes the pill above, and neither renders without data.
+    const price = priceHint(props.modelPrices?.[m], t);
+    const restricted = isRestrictedTier(props.modelTiers?.[m]);
     return {
       value: m,
       label: props.modelLabels?.[m] || shortModel(m),
       ...badge,
+      ...(restricted ? { tag: t("models.restricted"), tagTitle: t("models.restricted_tip") } : {}),
+      ...(price ? { meta: price.short, metaTitle: price.title } : {}),
     };
   });
 

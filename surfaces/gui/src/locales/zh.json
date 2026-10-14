@@ -1345,7 +1345,17 @@
     "make_default": "设为默认",
     "not_in_catalog": "不在提供商列表里",
     "not_in_catalog_tip": "提供商返回的模型列表里没有这个 id，调用可能失败。它还留在这里，是因为已勾选或是默认模型。",
-    "add_manually": "按 id 手动添加模型…"
+    "add_manually": "按 id 手动添加模型…",
+    "price_both": "{{in}} / {{out}} 每百万 token",
+    "price_in": "输入 {{in}} 每百万 token",
+    "price_out": "输出 {{out}} 每百万 token",
+    "price_in_short": "输入 {{in}}",
+    "price_out_short": "输出 {{out}}",
+    "price_tip_both": "输入 {{in}} · 输出 {{out}}（美元 / 百万 token）",
+    "price_tip_in": "输入 {{in}}（美元 / 百万 token）",
+    "price_tip_out": "输出 {{out}}（美元 / 百万 token）",
+    "restricted": "限制使用",
+    "restricted_tip": "仅对总经理、管理员开放"
   },
   "onboarding": {
     "cancel": "取消",
