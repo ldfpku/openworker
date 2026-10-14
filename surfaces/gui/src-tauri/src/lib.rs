@@ -72,7 +72,8 @@ fn free_port() -> u16 {
 fn os_version() -> String {
     #[cfg(target_os = "macos")]
     {
-        if let Ok(out) = Command::new("sw_vers").arg("-productVersion").output() {
+        // new_command, not Command::new: every spawn goes through it (R6 window-flash guard).
+        if let Ok(out) = new_command("/usr/bin/sw_vers").arg("-productVersion").output() {
             return String::from_utf8_lossy(&out.stdout).trim().to_string();
         }
     }
