@@ -28,9 +28,7 @@ def next_version(current: str, bump: str = "patch") -> str:
 
 
 def bump_config(path: Path, bump: str) -> str:
-    # Bytes in, bytes out: Python's text mode would turn every "
-" into "
-" on
+    # Bytes in, bytes out: Python's text mode would turn every LF into CRLF on
     # Windows, and the committed file is LF (repo policy: LF everywhere).
     text = path.read_bytes().decode("utf-8")
     current = json.loads(text)["version"]
