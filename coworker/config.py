@@ -46,6 +46,11 @@ class Config:
     # summarise long sessions earlier. Environment override: COWORKER_COMPACTION_CAP_TOKENS.
     # In this fork the Settings pref (manager.compaction_settings) overrides this default.
     compaction_cap_tokens: Optional[int] = None
+    # OPE-189: output ceiling for the summariser call, in tokens. Unset = 16,000. On a
+    # reasoning model the budget is shared with the model's thinking, so a low value means
+    # the summary itself never gets written. Environment override:
+    # COWORKER_COMPACTION_SUMMARY_MAX_TOKENS.
+    compaction_summary_max_tokens: Optional[int] = None
     allowed_commands: list[str] = field(
         default_factory=lambda: list(DEFAULT_ALLOWED_COMMANDS)
     )
@@ -99,6 +104,7 @@ _FIELDS = {
     "max_iterations",
     "max_turn_tokens",
     "compaction_cap_tokens",
+    "compaction_summary_max_tokens",
     "allowed_commands",
     "auto_allow",
     "allowed_domains",
@@ -129,6 +135,7 @@ _WORKSPACE_FIELDS = _FIELDS - _GLOBAL_ONLY_FIELDS
 
 
 COMPACTION_CAP_TOKENS_ENV = "COWORKER_COMPACTION_CAP_TOKENS"
+COMPACTION_SUMMARY_MAX_TOKENS_ENV = "COWORKER_COMPACTION_SUMMARY_MAX_TOKENS"
 
 
 def global_config_path() -> Path:
@@ -183,6 +190,11 @@ def load_config(
                 )
     cfg.compaction_cap_tokens = _positive_int_setting(
         cfg.compaction_cap_tokens, "compaction_cap_tokens", COMPACTION_CAP_TOKENS_ENV
+    )
+    cfg.compaction_summary_max_tokens = _positive_int_setting(
+        cfg.compaction_summary_max_tokens,
+        "compaction_summary_max_tokens",
+        COMPACTION_SUMMARY_MAX_TOKENS_ENV,
     )
     return cfg
 

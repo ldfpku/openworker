@@ -15,7 +15,20 @@ from coworker.permissions import PermissionEngine
 from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
 from coworker.tools import ToolRegistry
 
-SUMMARY = "## Primary request and intent\nkeep building the report"
+# Must clear the OPE-189 quality gate: all eight sections, past the minimum length.
+SUMMARY = "\n".join(
+    f"## {name}\nenough detail in this section to clear the summary minimum length"
+    for name in (
+        "Primary request and intent",
+        "Key concepts and decisions",
+        "Artifacts and files",
+        "Errors and fixes",
+        "All user messages",
+        "Pending tasks",
+        "Current work",
+        "Next step",
+    )
+)
 
 
 class CompactingProvider(ProviderClient):
@@ -118,6 +131,56 @@ def test_compaction_cap_config_and_env(tmp_path, monkeypatch):
         assert "compaction_cap_tokens" in str(exc)
     else:
         raise AssertionError("a zero cap must be rejected")
+
+
+def test_summary_budget_config_and_env(tmp_path, monkeypatch):
+    """OPE-189: the summariser's output ceiling is a setting, not a constant — on a
+    reasoning model it is shared with the model's thinking."""
+    from coworker.config import COMPACTION_SUMMARY_MAX_TOKENS_ENV
+
+    monkeypatch.delenv(COMPACTION_SUMMARY_MAX_TOKENS_ENV, raising=False)
+    (tmp_path / ".coworker").mkdir()
+    cfg_file = tmp_path / ".coworker" / "config.toml"
+    cfg_file.write_text("compaction_summary_max_tokens = 24000\n", encoding="utf-8")
+    cfg = load_config(tmp_path, global_path=tmp_path / "no-global.toml")
+    assert cfg.compaction_summary_max_tokens == 24000
+    monkeypatch.setenv(COMPACTION_SUMMARY_MAX_TOKENS_ENV, "9000")
+    cfg = load_config(tmp_path, global_path=tmp_path / "no-global.toml")
+    assert cfg.compaction_summary_max_tokens == 9000  # env wins
+    monkeypatch.setenv(COMPACTION_SUMMARY_MAX_TOKENS_ENV, "0")
+    try:
+        load_config(tmp_path, global_path=tmp_path / "no-global.toml")
+    except ValueError as exc:
+        assert "compaction_summary_max_tokens" in str(exc)
+    else:
+        raise AssertionError("a zero budget must be rejected")
+
+
+def test_engine_passes_the_configured_budgets_to_the_summarizer(tmp_path):
+    """The trigger drives both derived budgets, and the summariser call gets the ceiling."""
+    seen: dict = {}
+
+    class Recorder(CompactingProvider):
+        def complete(self, *, model, messages, tools=None, **settings):
+            seen.update(settings)
+            return super().complete(model=model, messages=messages, tools=tools, **settings)
+
+    engine = TurnEngine(
+        provider=Recorder([AssistantTurn(text="done", finish_reason="stop")]),
+        registry=ToolRegistry(),
+        permissions=PermissionEngine(workspace_root=tmp_path),
+        model="gpt-5.5",
+        messages=_history(),
+    )
+    engine.compaction_settings = lambda: {
+        "cap_tokens": 400,
+        "threshold_pct": 0.8,
+        "context_window": 100_000,
+        "summary_max_tokens": 7_777,
+    }
+    _collect(engine)
+    assert seen.get("max_tokens") == 7_777
+    assert C.user_message_budget(400) == C._USER_BUDGET_MIN  # floor at a tiny trigger
 
 
 def test_render_transcript_is_readable_and_skips_system():

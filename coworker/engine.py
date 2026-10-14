@@ -1813,6 +1813,7 @@ class TurnEngine:
             cfg["context_window"] = model_context_windows().get(self.model)
         cfg.setdefault("threshold_pct", _compaction.DEFAULT_THRESHOLD_PCT)
         cfg.setdefault("cap_tokens", _compaction.DEFAULT_CAP_TOKENS)
+        cfg.setdefault("summary_max_tokens", _compaction.SUMMARY_MAX_TOKENS)
         return cfg
 
     def _compaction_due(self) -> bool:
@@ -1864,9 +1865,13 @@ class TurnEngine:
         pct = float(cfg["threshold_pct"])
         cap = int(cfg["cap_tokens"])
         window = cfg.get("context_window")
-        keep = int(
-            _compaction.KEEP_RECENT_FRACTION
-            * _compaction.trigger_tokens(window, threshold_pct=pct, cap_tokens=cap)
+        trigger = _compaction.trigger_tokens(window, threshold_pct=pct, cap_tokens=cap)
+        keep = int(_compaction.KEEP_RECENT_FRACTION * trigger)
+        # OPE-189: both budgets scale with the trigger, so lowering it to save tokens can't
+        # be undone by a block that keeps spending the freed space.
+        user_budget = _compaction.user_message_budget(trigger)
+        summary_max = int(
+            cfg.get("summary_max_tokens") or _compaction.SUMMARY_MAX_TOKENS
         )
         model = str(cfg.get("model") or "") or self.model
 
@@ -1877,6 +1882,8 @@ class TurnEngine:
                 model=model,
                 keep_tokens=keep,
                 prior=self.compaction_state,
+                summary_max_tokens=summary_max,
+                user_budget_tokens=user_budget,
             )
 
         state: Optional[_compaction.CompactionState] = None
@@ -1926,7 +1933,11 @@ class TurnEngine:
             self._last_context_tokens = None  # stale once the outbound view shrank
             return "Context compacted — earlier turns were summarized"
         if failed or force:
-            trimmed = _compaction.trim_state(self.messages, prior=self.compaction_state)
+            trimmed = _compaction.trim_state(
+                self.messages,
+                prior=self.compaction_state,
+                user_budget_tokens=user_budget,
+            )
             if trimmed is not None:
                 self.compaction_state = trimmed
                 self._last_context_tokens = None

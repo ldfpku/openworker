@@ -6043,6 +6043,9 @@ class SessionManager:
         summarizer-model pin; absent keys fall back to compaction.py defaults."""
         from ..compaction import DEFAULT_CAP_TOKENS, DEFAULT_THRESHOLD_PCT
 
+        # OPE-186/189: config.toml / COWORKER_COMPACTION_* are the defaults the Settings
+        # prefs override (the summariser ceiling has no pref at all).
+        config = load_config()
         try:
             threshold_pct = float(
                 self._prefs.get("compaction_threshold_pct") or DEFAULT_THRESHOLD_PCT
@@ -6050,21 +6053,22 @@ class SessionManager:
         except (TypeError, ValueError):
             threshold_pct = DEFAULT_THRESHOLD_PCT
         try:
-            # OPE-186: config.toml / COWORKER_COMPACTION_CAP_TOKENS is the default the
-            # Settings pref overrides (read only while no pref is saved).
             cap_tokens = int(
                 self._prefs.get("compaction_cap_tokens")
-                or load_config().compaction_cap_tokens
+                or config.compaction_cap_tokens
                 or DEFAULT_CAP_TOKENS
             )
         except (TypeError, ValueError):
             cap_tokens = DEFAULT_CAP_TOKENS
-        return {
+        settings = {
             "threshold_pct": threshold_pct,
             "cap_tokens": cap_tokens,
             # "" → the session's own model (engine falls back to self.model).
             "model": str(self._prefs.get("compaction_model") or ""),
         }
+        if config.compaction_summary_max_tokens:
+            settings["summary_max_tokens"] = int(config.compaction_summary_max_tokens)
+        return settings
 
     def compaction_settings_payload(self) -> dict[str, Any]:
         """The same knobs under REST-facing names (prefixed to keep /v1/settings flat)."""

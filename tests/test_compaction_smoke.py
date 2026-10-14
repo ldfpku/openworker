@@ -28,11 +28,18 @@ class LongSessionProvider(ProviderClient):
             messages[0].get("content", "")
         ):
             self.summary_prompts.append(str(messages[1]["content"]))
+            # Must clear the OPE-189 quality gate (all sections, past the minimum
+            # length), or the engine falls back to trimming and no summary is kept.
             return AssistantTurn(
                 text=(
                     "## Primary request and intent\nBuild the Q3 report; never email "
-                    "it without approval.\n## Current work\nDrafting section "
-                    f"{len(self.summary_prompts)}.\n## Next step\nContinue drafting."
+                    "it without approval.\n## Key concepts and decisions\nSections "
+                    "follow the finance template.\n## Artifacts and files\nreport.md "
+                    "under the workspace root.\n## Errors and fixes\nNone so far.\n"
+                    "## All user messages\nKeep drafting the Q3 report.\n## Pending "
+                    "tasks\nRemaining sections of the report.\n## Current work\n"
+                    f"Drafting section {len(self.summary_prompts)}.\n## Next step\n"
+                    "Continue drafting the next section of the report in order."
                 ),
                 finish_reason="stop",
             )
