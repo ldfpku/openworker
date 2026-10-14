@@ -1,12 +1,26 @@
 # Gemini 中转方案（gemini-relay）
 
-> **已停用：OpenWorker 0.7.1 起不再提供独立 Gemini 卡或登录中转。**
-> Google 模型保留在 ZY 的 Cloudflare AI Gateway，工作邮箱登录即可。
-> 本目录代码和文档仅作历史参考；不要在 ZY 创建或部署这个 Worker、KV 或用量数据库，
-> 也不要继续按下文发放公司 Gemini key。原 DF 云资源暂不删除。
-> 当前步骤见 [管理员初始化手册](../docs/手册/01-管理员初始化手册.md)。
+> **2026-10-14 恢复，改部署在 ZY 账号。** 2026-10-03（OpenWorker 0.7.1）曾随网关迁移一并停用；
+> 属主 10-14 决定恢复 Google AI Studio 供应商卡及这个登录中转。DF 上的旧 Worker、KV、D1 与 Access
+> 应用不再使用，也不要再往 DF 部署。
+>
+> | ZY 资源 | 标识 | 说明 |
+> |---|---|---|
+> | 账号 | ZY（账号 ID 不写进本公开仓库，见私有的帮助站仓库） | 部署时在命令环境里设 `CLOUDFLARE_ACCOUNT_ID` 与 `CLOUDFLARE_API_TOKEN`；本机 wrangler 登录关联的是 DF，不能用 |
+> | KV `ROSTER-smjtools-migration` | `51a35aba347f40f1a511a41f1220c033` | 10-03 从 DF 复制的名册；与 `claude-relay.ROSTER`、help 的 `RELAY_ROSTER` 共用 |
+> | D1 `gemini_relay_usage` | `69aed1fc-7a1d-4dfc-8fe4-0852ee7c106c` | 10-03 复制，迁移 0001–0003 已在；历史用量截至 10-01 |
+> | Access 团队域 | `https://zy-smj.cloudflareaccess.com` | 身份源「Employee one-time PIN」已存在 |
+> | Access 应用 | `gemini-relay-login`，`gemini.smjtools.com/login/*` | 挂可复用策略 `smj-employees`；AUD 填进 `ACCESS_AUD`（DF 的旧 AUD 不能用） |
+>
+> 部署记录：Worker 版本 `f7c78900-e39a-4afa-9cfb-bc531f146a6b`（2026-10-14）。当日实测：`/healthz` 200、未登录 401、`/login/*` 跳 ZY 登录页；
+> 管理员走完整登录 → 设置页「测试」通过 → 经中转列出 63 个模型 → `generateContent` 200 → 限额计数 +1 → 注销。
+>
+> 名册仍由 help.smjtools.com/admin 的用户表派生（help 的 `RELAY_ROSTER` 绑定指向上面这个 KV）。
+> Google 模型同时保留在公司 AI Gateway 里（工作邮箱登录、统一计费、不需要个人 key）；这张卡用的是
+> 每人自己的 Google AI Studio key，不走统一计费。
 
-本目录记录旧中转的设计、部署、接入、排错和安全评估，供追溯使用，不是当前初始化方案。
+本目录是这套中转的设计、部署、接入、排错和安全评估。下文写于 DF 时期，凡出现旧账号的域名服务器、
+`smj-cf.cloudflareaccess.com` 或旧 ID 的地方，以上表为准。
 
 ## 一句话
 
@@ -46,7 +60,7 @@ Gemini API（出口 IP 为 Cloudflare 边缘）
 - 一个能开 Gemini API 的 **Google 账号**：全公司的 key 都从它签发，账单也记在它头上。
   **中转本身不需要放任何 key**——它只在转发的瞬间经手，不存储。
 
-## 历史快速开始（已停用，不适用于 ZY）
+## 快速开始
 
 ### 1. 配好 Cloudflare Access 登录
 
@@ -58,10 +72,9 @@ Gemini API（出口 IP 为 Cloudflare 边缘）
 cd gemini-relay\worker
 npm install
 Remove-Item Env:HTTP_PROXY, Env:HTTPS_PROXY, Env:ALL_PROXY -ErrorAction SilentlyContinue   # 清掉 proxy-guard 遗留的代理变量，wrangler 直连 api.cloudflare.com（详见 docs/03）
-npx wrangler login
-npx wrangler kv namespace create ROSTER               # 首次；输出的 id 填入 wrangler.jsonc 的 kv_namespaces
-npx wrangler d1 create gemini_relay_usage             # 首次；输出的 database_id 填入 wrangler.jsonc 的 d1_databases
-npx wrangler d1 migrations apply gemini_relay_usage --remote   # 建 usage / auth_events / quota 表
+# ZY：KV 与 D1 已存在（见文首表），不要再 create。本机 `wrangler login` 关联的是 DF，
+# 改用 ZY 的凭据：只在这条命令的环境里设置 CLOUDFLARE_ACCOUNT_ID 与 CLOUDFLARE_API_TOKEN，不要写进文件。
+npx wrangler d1 migrations list gemini_relay_usage --remote    # 确认 0001–0003 已应用
 npx wrangler deploy
 ```
 

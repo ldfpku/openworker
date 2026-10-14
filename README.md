@@ -57,7 +57,7 @@
 | --- | --- |
 | **一个登记过的公司邮箱** | 用来证明「你是名单里的人」。就是管理员发安装包给你时用的那个。 |
 公司模型统一走 ZY 账号的 Cloudflare AI Gateway：只需登记过的邮箱登录，
-**不需要 Gemini key 或 NVIDIA key**。Google 模型仍在网关中提供。
+**不需要任何 key**。Google 模型也在网关中提供。
 
 ### 配置模型
 
@@ -67,8 +67,9 @@
 
 练手可以走 **AMD Radeon Cloud Token Factory** 的公开免费模型：在「自定义端点」卡填入 `https://developer.amd.com.cn/radeon/api/v1` 和自己注册的 `rc-` 开头的 key，再手填 `DeepSeek-V4-Flash-0731` 即可，额度按天重置，不产生公司账单。
 
-独立 Gemini 卡/中转与 NVIDIA (NIM) 卡已停用。其他现有提供商、Vertex、Ollama
-和自定义端点保留；不迁移旧 Gemini/NVIDIA 默认模型、会话或定时任务。
+「Gemini (Google)」卡（Google AI Studio，经公司中转 `gemini.smjtools.com`）已于 2026-10-14 在 ZY 恢复：
+先用工作邮箱收验证码登录中转，再填管理员发给你的 Gemini API key；这条线用的是那把 key 的额度，
+不走公司网关的统一计费。NVIDIA (NIM) 卡仍停用。其他现有提供商、Vertex、Ollama 和自定义端点保留。
 
 **能用哪些模型**：Cloudflare AI Gateway 的模型清单由网关按你本人的权限下发，
 包含可用的 OpenAI、Anthropic、Google 等模型。登录后自动拉取，「测试」通过时也会更新，

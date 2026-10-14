@@ -1,6 +1,11 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "gemini-relay",
+	// Deployed on the ZY account since the 2026-10-14 restore. The account id is deliberately
+	// NOT written here (this repository is public): deploy with CLOUDFLARE_ACCOUNT_ID and
+	// CLOUDFLARE_API_TOKEN set for ZY in that command's environment only. A deploy under the
+	// machine's own wrangler login (bound to the old DF account) fails on the bindings below
+	// instead of landing there, which is the intent.
 	"main": "src/index.ts",
 	"compatibility_date": "2026-08-01",
 	// workers.dev is DNS-poisoned in mainland China and would expose a second, uncontrolled
@@ -17,8 +22,11 @@
 	// login redirect and the AUD tag is in every issued token — so they live here, not in
 	// `wrangler secret`. Fill both in from docs/08-Access登录配置.md before deploying.
 	"vars": {
-		"ACCESS_TEAM_DOMAIN": "https://smj-cf.cloudflareaccess.com",
-		"ACCESS_AUD": "32a3246d550042d19452c271cafa75f5d98fbd2ffe114a19232795105daf2e36",
+		// ZY team. The AUD is the ZY application `gemini-relay-login` (id e8f13b5b-…,
+		// gemini.smjtools.com/login/*, created 2026-10-14); the old DF AUD must never be
+		// accepted here.
+		"ACCESS_TEAM_DOMAIN": "https://zy-smj.cloudflareaccess.com",
+		"ACCESS_AUD": "eabac4064bb8874be8a6e1df03aac76ce38ba084db2a3f5d6c0b69fd6c74c46c",
 		// House default ceilings, per person per window (worker/src/quota.ts). A roster entry
 		// may override any of them; -1 disables a ceiling, 0 suspends the person entirely.
 		// These are the numbers everyone gets unless roster.csv says otherwise, so they are
@@ -43,8 +51,10 @@
 	},
 	"kv_namespaces": [
 		{
+			// ZY `ROSTER-smjtools-migration` — the roster copied from DF on 2026-10-03, shared
+			// with claude-relay and kept in step with help.smjtools.com/admin (RELAY_ROSTER).
 			"binding": "ROSTER",
-			"id": "757a4efde59c44d1a47267e4aa06e11b"
+			"id": "51a35aba347f40f1a511a41f1220c033"
 		}
 	],
 	// schema changes go through migrations/:
@@ -53,7 +63,7 @@
 		{
 			"binding": "USAGE_DB",
 			"database_name": "gemini_relay_usage",
-			"database_id": "96cd44cf-273b-4e88-845d-1183e7f2fdeb",
+			"database_id": "69aed1fc-7a1d-4dfc-8fe4-0852ee7c106c",
 			"migrations_dir": "migrations"
 		}
 	]

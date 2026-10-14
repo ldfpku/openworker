@@ -224,7 +224,12 @@ def test_default_model_change_rebinds_open_drafts_but_not_history_or_hand_picks(
     assert manager._draft_carry["draft-4"]["model"] == "zai:glm-5.2"
 
 
-def test_retired_gemini_profile_is_preserved_but_never_offered(tmp_path, monkeypatch):
+def test_remove_key_keeps_the_gemini_login_and_moves_a_stranded_default(tmp_path, monkeypatch):
+    """Audit 2026-09-10: "Remove key…" on Gemini used to delete the whole profile —
+    including the relay sign-in the confirm dialog never mentioned — and a default model
+    left on a provider that just lost its key blocked sending in every session even with
+    another provider connected. Now the login survives, the cached catalog goes, and the
+    default moves to a model whose provider still works."""
     from coworker.server.manager import SessionManager
 
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -244,12 +249,45 @@ def test_retired_gemini_profile_is_preserved_but_never_offered(tmp_path, monkeyp
     manager.secrets.put("provider:zai", {"type": "api_key", "api_key": "sk-glm"})
     manager._model_catalog["gemini"] = {"fetched_at": "x", "models": [{"id": "m", "label": "M"}], "error": None, "failed_at": None}
     assert manager.set_default_model("gemini:gemini-3.5-flash")["ok"] is True
+    assert manager.get_settings()["model_ready"] is True
+
+    # The Gemini card knows a key without a login is not "connected".
+    row = next(r for r in manager.get_providers() if r["name"] == "gemini")
+    assert row["configured"] is True and row["needs_signin"] is False
+
+    assert manager.remove_provider("gemini")["ok"] is True
+    profile = manager.secrets.get("provider:gemini") or {}
+    assert "api_key" not in profile and "key_set_at" not in profile
+    assert profile["relay_token"] == "owr_abc" and profile["relay_email"] == "a@example.test"
+    assert "gemini" not in manager._model_catalog
+    assert manager._model_provider(manager.model) == "zai"
+    assert manager.get_settings()["model_ready"] is True
+
+    # A key without a login: still "configured", but flagged so the card can say so.
+    manager.secrets.put("provider:gemini", {"type": "api_key", "api_key": "AIza-test"})
+    row = next(r for r in manager.get_providers() if r["name"] == "gemini")
+    assert row["configured"] is True and row["needs_signin"] is True
+
+
+def test_retired_nvidia_profile_is_preserved_but_never_offered(tmp_path, monkeypatch):
+    from coworker.server.manager import SessionManager
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    manager = SessionManager(data_dir=tmp_path / "data")
+    manager.secrets.put(
+        "provider:nvidia",
+        {"type": "api_key", "api_key": "nvapi-test", "key_set_at": "2026-09-01"},
+    )
+    manager.secrets.put("provider:zai", {"type": "api_key", "api_key": "sk-glm"})
+    manager._model_catalog["nvidia"] = {"fetched_at": "x", "models": [{"id": "m", "label": "M"}], "error": None, "failed_at": None}
+    assert manager.set_default_model("nvidia:moonshotai/kimi-k3")["ok"] is True
     assert manager.get_settings()["model_ready"] is False
-    assert all(row["name"] != "gemini" for row in manager.get_providers())
-    profile = manager.secrets.get("provider:gemini")
-    assert manager.remove_provider("gemini")["ok"] is False
-    assert manager.secrets.get("provider:gemini") == profile
-    assert manager.model == "gemini:gemini-3.5-flash"
+    assert all(row["name"] != "nvidia" for row in manager.get_providers())
+    profile = manager.secrets.get("provider:nvidia")
+    assert manager.remove_provider("nvidia")["ok"] is False
+    assert manager.secrets.get("provider:nvidia") == profile
+    assert manager.model == "nvidia:moonshotai/kimi-k3"
 
 
 def test_remove_active_provider_key_moves_a_stranded_default(tmp_path, monkeypatch):

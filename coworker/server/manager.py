@@ -4835,6 +4835,13 @@ class SessionManager:
             ]
             if other_required:
                 return api_key, merged, "missing: " + ", ".join(other_required)
+        if name == "gemini":
+            # Not a descriptor field (nothing types it into a form), so the merge loop above
+            # never picks it up — but the relay refuses an unauthenticated probe, so a live
+            # call would fail for a correctly configured colleague without it.
+            from ..providers.gemini_provider import resolve_relay_token
+
+            merged["relay_token"] = resolve_relay_token(self.secrets) or ""
         if name == "aigw":
             # Same reason as the relay above: the OAuth session is not a form field, and
             # a live call has to use the credential a real call would use — otherwise a
@@ -5052,6 +5059,16 @@ class SessionManager:
                     d.name
                 ),
             }
+            if d.name == "gemini":
+                # The relay refuses a key without a login and a login without a key
+                # (README: "缺一样都不行"). "configured" only means the key is there, so
+                # the card said "✓ Connected" while the very next request would fail
+                # with "not signed in" (audit 2026-09-10). Say which half is missing.
+                from ..providers.gemini_provider import resolve_relay_token
+
+                row["needs_signin"] = configured and not bool(
+                    resolve_relay_token(self.secrets)
+                )
             if d.auth == "oauth":
                 # Sign-in state instead of key state; the token values themselves
                 # never leave the SecretStore.
@@ -5247,8 +5264,12 @@ class SessionManager:
         `provider:<name>` profile's key, endpoint and key_set_at go, so the provider reads
         as never configured. Curated models stay; they just gray out until a new key.
 
-        The AI Gateway has no key: its credential is the sign-in, so removing it is
-        its sign-out. Retired providers are rejected without changing their profiles.
+        Two providers keep a LOGIN in the same profile, and "remove key" must not throw
+        that away with it (audit 2026-09-10): Gemini's relay sign-in (relay_* fields —
+        the key is the person's, the login is who they are; dropping both silently was a
+        surprise the confirm dialog never mentioned), and the AI Gateway, which has no key
+        at all — its only credential IS the sign-in, so removing it is its sign-out.
+        Retired providers are rejected without changing their profiles.
         The cached model catalog goes too (an unconfigured card must not keep showing a
         list as if live), and a default model left pointing at this provider moves on.
         """
@@ -5260,7 +5281,12 @@ class SessionManager:
 
             aigw_auth.logout(self.secrets)
         else:
-            self.secrets.delete(f"provider:{name}")
+            profile = dict(self.secrets.get(f"provider:{name}") or {})
+            kept = {k: v for k, v in profile.items() if k.startswith("relay_")}
+            if kept:
+                self.secrets.put(f"provider:{name}", kept)
+            else:
+                self.secrets.delete(f"provider:{name}")
         self._forget_model_catalog(name)
         self._refresh_provider(name)
         self.ensure_default_model_available()

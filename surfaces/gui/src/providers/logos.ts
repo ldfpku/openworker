@@ -8,6 +8,7 @@
 
 import anthropic from "./logos/anthropic.svg";
 import openai from "./logos/openai.svg";
+import gemini from "./logos/gemini.svg";
 import byteplus from "./logos/byteplus.svg";
 import volcengine from "./logos/volcengine.svg";
 import ollama from "./logos/ollama.svg";
@@ -32,6 +33,7 @@ export const PROVIDER_LOGOS: Record<string, string> = {
   // The subscription provider wears the same vendor mark — it's the same models,
   // different billing (owner call 2026-08-21: no bare-letter monogram).
   "openai-codex": openai,
+  gemini,
   aigw: cloudflare,
   ark: byteplus,
   "ark-agent-plan-cn": volcengine,
@@ -54,6 +56,7 @@ export const PROVIDER_LOGOS: Record<string, string> = {
 export const PROVIDER_ORDER = [
   "anthropic",
   "openai",
+  "gemini",
   // Ahead of the direct vendors it fronts: for users behind the Great Firewall this is
   // the route that actually reaches OpenAI/Claude/Grok, and it needs one token, not six.
   "aigw",

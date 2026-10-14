@@ -5,7 +5,7 @@
 公司链路为 **OpenWorker → ZY Access → gateway-guard → ZY AI Gateway**。
 用户地址仍是 `gateway.smjtools.com`；ZY 的团队域为 `zy-smj.cloudflareaccess.com`，
 应用 AUD 必须来自 ZY 新建应用。只需工作邮箱登录，Google 模型保留在网关中；
-独立 Gemini 中转和 NVIDIA 卡不再使用。
+NVIDIA 卡不再使用；Gemini 中转（`gemini.smjtools.com`）已于 2026-10-14 在 ZY 恢复，是与本网关并行的另一条线（见 §0）。
 
 **本域名属于 gateway-guard Worker，而不是 AI Gateway 的直接自定义域。**
 不要按旧 §1.1 给 AI Gateway 再挂同名域，也不要删除域名以致级联删除 Access/OAuth。

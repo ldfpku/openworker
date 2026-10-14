@@ -675,6 +675,7 @@ def test_utility_model_for_every_table_row_and_fallback():
             "aigw:google-ai-studio/gemini-3.1-flash-lite"
         ),
         "anthropic:claude-opus-4-8": "anthropic:claude-haiku-4-5",
+        "gemini:gemini-3.7-flash": "gemini:gemini-3.5-flash-lite",
         "bedrock:claude/anthropic.claude-sonnet-4-6-v1:0": (
             "bedrock:claude/anthropic.claude-haiku-4-5-v1:0"
         ),

@@ -634,13 +634,14 @@ def test_stream_closes_the_wire_and_still_raises_the_real_error_mid_stream():
 # -- registry / capabilities ----------------------------------------------------------
 
 
-def test_registry_does_not_offer_standalone_gemini():
+def test_registry_builds_native_gemini_provider():
     from coworker.providers.registry import build_provider_client
 
-    with pytest.raises(ValueError, match="no longer available"):
-        build_provider_client("gemini", {"api_key": "AIza-x"}, None)
-    with pytest.raises(ValueError, match="no longer available"):
-        build_provider_client("gemini", {}, None)
+    provider = build_provider_client("gemini", {"api_key": "AIza-x"}, None)
+    assert isinstance(provider, GeminiProvider)
+    assert provider._api_key == "AIza-x"
+    # no key in the profile is fine at build time — resolution is deferred to first call
+    assert isinstance(build_provider_client("gemini", {}, None), GeminiProvider)
 
 
 def test_resolve_api_key_env_then_secrets(monkeypatch):
@@ -837,15 +838,17 @@ def test_ensure_client_accepts_new_style_auth_keys(monkeypatch):
     assert captured["api_key"] == "AQ.Ab8-auth-key"
 
 
-def test_hidden_base_url_cannot_reenable_standalone_gemini():
+def test_build_gemini_forwards_hidden_base_url_override():
     # The registry's base_url is a hidden profile key (no ProviderField) — same precedent
     # as anthropic's thinking_budget.
     from coworker.providers.registry import build_provider_client
 
-    with pytest.raises(ValueError, match="no longer available"):
-        build_provider_client(
-            "gemini", {"api_key": "AIza-x", "base_url": "https://custom.example"}, None
-        )
+    overridden = build_provider_client(
+        "gemini", {"api_key": "AIza-x", "base_url": "https://custom.example"}, None
+    )
+    assert overridden._base_url == "https://custom.example"
+    default = build_provider_client("gemini", {"api_key": "AIza-x"}, None)
+    assert default._base_url is None  # falls through to resolve_base_url's own precedence
 
 
 def test_gemini_capabilities_parallel_tool_calls():

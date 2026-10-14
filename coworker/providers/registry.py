@@ -9,7 +9,7 @@ model string and builds (and caches) its client from the matching SecretStore pr
 Today: `openai` (the default — native models via the Responses API; an optional custom
 endpoint covering Azure OpenAI's `/openai/v1` and any OpenAI-compliant gateway keeps the
 Chat Completions path), `anthropic` (native Messages API via
-`AnthropicProvider`), `bedrock`
+`AnthropicProvider`), `gemini` (native Google GenAI API via `GeminiProvider`), `bedrock`
 (models in the user's own AWS account — Claude natively, everything else via Converse),
 `vertex` (the user's own GCP project — Gemini and Claude natively, open-weight via the
 MaaS endpoint), `aigw` (Cloudflare AI Gateway — many vendors on one work-account sign-in,
@@ -36,6 +36,7 @@ from .aigateway_provider import (
 from .anthropic_provider import AnthropicProvider
 from .base import ProviderClient
 from .bedrock_provider import BedrockProvider
+from .gemini_provider import GeminiProvider, RELAY_TOKEN_PREFIX, resolve_base_url
 from .openai_provider import OpenAIProvider
 from .openai_responses import OpenAIResponsesProvider
 from .vertex_provider import VertexProvider
@@ -43,7 +44,7 @@ from .vertex_provider import VertexProvider
 logger = logging.getLogger(__name__)
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
-RETIRED_PROVIDERS = frozenset({"gemini", "nvidia"})
+RETIRED_PROVIDERS = frozenset({"nvidia"})
 
 
 def retired_provider_error(name: str) -> str:
@@ -170,6 +171,15 @@ def _build_anthropic(profile: dict[str, Any], secrets: Any) -> ProviderClient:
     return AnthropicProvider(
         api_key=api_key, secrets=secrets, thinking_budget=thinking_budget
     )
+
+
+def _build_gemini(profile: dict[str, Any], secrets: Any) -> ProviderClient:
+    # Same deferred-key contract as anthropic (GeminiProvider/resolve_api_key).
+    # base_url: hidden profile override (same precedent as anthropic's thinking_budget) —
+    # no ProviderField, since the UI only ever asks for the key.
+    api_key = ((profile or {}).get("api_key") or "").strip() or None
+    base_url = ((profile or {}).get("base_url") or "").strip() or None
+    return GeminiProvider(api_key=api_key, secrets=secrets, base_url=base_url)
 
 
 def _build_bedrock(profile: dict[str, Any], secrets: Any) -> ProviderClient:
@@ -449,6 +459,24 @@ DESCRIPTORS: list[ProviderDescriptor] = [
         build=_build_anthropic,
         recommended_model="claude-fable-5",
         env_key="ANTHROPIC_API_KEY",
+    ),
+    ProviderDescriptor(
+        name="gemini",
+        title="Gemini (Google)",
+        needs_key=True,
+        fields=[
+            ProviderField(
+                "api_key",
+                "Gemini API key",
+                secret=True,
+                placeholder="AIza…",
+            ),
+        ],
+        build=_build_gemini,
+        # Newest stable Flash on https://ai.google.dev/gemini-api/docs/models
+        # ("our latest and most capable Flash model", checked 2026-08-22).
+        recommended_model="gemini-3.7-flash",
+        env_key="GEMINI_API_KEY",
     ),
     ProviderDescriptor(
         name="bedrock",
@@ -870,6 +898,8 @@ def detect_provider(api_key: str) -> Optional[str]:
         return "anthropic"
     if key.startswith("sk-or-"):
         return "openrouter"
+    if key.startswith("AIza"):
+        return "gemini"
     if key.startswith(("sk-", "sk_")):
         return "openai"
     return None
@@ -1232,6 +1262,56 @@ def _verify_vertex(fields: dict[str, Any], timeout: float) -> dict[str, Any]:
     return {"ok": False, "error": f"Vertex AI returned HTTP {resp.status_code}."}
 
 
+#: Google 401 reasons that mean "Google recognizes an AI Studio auth key (`AQ.…`) but will
+#: not serve THIS one" — `x-goog-api-key` earns ACCESS_TOKEN_TYPE_UNSUPPORTED, `Bearer`
+#: earns API_KEY_SERVICE_BLOCKED. A healthy auth key sails through the plain header form
+#: and the relay untouched (verified live 2026-08-27), so these mean the key itself is
+#: dead, mis-copied, or simply the wrong one. Docs float a "Restrict to Gemini API only"
+#: console fix, but no such switch exists in the AI Studio UI (owner checked 2026-08-27) —
+#: point at the key, not at settings nobody can find.
+_UNUSABLE_KEY_REASONS = frozenset(
+    {"ACCESS_TOKEN_TYPE_UNSUPPORTED", "API_KEY_SERVICE_BLOCKED"}
+)
+
+_UNUSABLE_KEY_HINT = (
+    "Google 认得出这是 AI Studio 新版 auth key（AQ. 开头），但拒收了这一把——"
+    "通常是 key 已失效、复制不完整，或粘的不是可用的那把。"
+    "请到 https://aistudio.google.com/api-keys 重新完整复制一遍粘进来；"
+    "还不行就让管理员新建一把再发你。"
+)
+
+
+def _google_error_detail(resp: Any) -> tuple[str, str]:
+    """(`message`, first `details[].reason`) out of a Google-shaped `{"error": {...}}`
+    body, else ("", "") — non-JSON bodies, test fakes without a .json."""
+    try:
+        parsed = resp.json()
+    except (ValueError, AttributeError):
+        return "", ""
+    if not isinstance(parsed, dict):
+        return "", ""
+    error = parsed.get("error")
+    if not isinstance(error, dict):
+        return "", ""
+    message = str(error.get("message") or "").strip()
+    reason = ""
+    details = error.get("details")
+    if isinstance(details, list):
+        for entry in details:
+            if isinstance(entry, dict) and entry.get("reason"):
+                reason = str(entry["reason"])
+                break
+    return message, reason
+
+
+def relay_headers_from(fields: dict[str, Any]) -> dict[str, str]:
+    """`Authorization: Bearer` for the company Gemini relay, out of an already-merged field
+    map. Test runs before anything is saved, so the caller (manager.verify_provider) is the
+    one holding the SecretStore; this module only reads what it was handed."""
+    token = str(fields.get("relay_token") or "").strip()
+    return {"Authorization": f"Bearer {token}"} if token.startswith(RELAY_TOKEN_PREFIX) else {}
+
+
 def _catalog_request(
     name: str,
     *,
@@ -1242,9 +1322,9 @@ def _catalog_request(
 ) -> tuple[Any, Optional[str]]:
     """One GET against a provider's model-list endpoint — the shared wire logic behind
     both `verify_provider_key` (the Test button) and `list_provider_models` (the catalog
-    fetch). Covers Anthropic, Ollama, the gateway guard and OpenAI-compatible `/models`;
-    Ark's POST Responses probe and the multi-field cloud providers stay inline in
-    `verify_provider_key`. Returns `(response, None)` on a completed
+    fetch). Covers Anthropic, Gemini via the relay, Ollama, the gateway guard and
+    OpenAI-compatible `/models`; Ark's POST Responses probe and the multi-field cloud
+    providers stay inline in `verify_provider_key`. Returns `(response, None)` on a completed
     HTTP round trip (any status code) or `(None, error)` on a network failure — never
     raises.
     """
@@ -1256,6 +1336,18 @@ def _catalog_request(
             resp = httpx.get(
                 "https://api.anthropic.com/v1/models",
                 headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
+                timeout=timeout,
+            )
+        elif name == "gemini":
+            # Two credentials, because the company relay wants both: `key` is the person's
+            # own Google key (what Test is actually validating) and the relay login says who
+            # is asking. Testing while signed out earns a 401 from the relay, which is the
+            # honest answer — that call would fail for real too.
+            gemini_headers = {"x-goog-api-key": key}
+            gemini_headers.update(relay_headers_from(fields or {}))
+            resp = httpx.get(
+                resolve_base_url(None) + "/v1beta/models",
+                headers=gemini_headers,
                 timeout=timeout,
             )
         elif name == "ollama":
@@ -1303,6 +1395,16 @@ def _map_probe_failure(name: str, d: ProviderDescriptor, resp: Any) -> dict[str,
     """Status-code and response-body → user-facing error text for a failed
     (`status_code >= 300`) model-list/probe response. Shared by `verify_provider_key` and
     `list_provider_models`."""
+    if name == "gemini":
+        # The relay's refusals arrive as a Google-shaped JSON envelope whose `message` was
+        # written for exactly this moment (not signed in / login revoked / over quota) —
+        # pass it through instead of flattening everything into "Invalid API key.". An
+        # unconfigured AI Studio auth key additionally gets the console-side fix spelled out.
+        detail, reason = _google_error_detail(resp)
+        if reason in _UNUSABLE_KEY_REASONS:
+            return {"ok": False, "error": _UNUSABLE_KEY_HINT}
+        if detail:
+            return {"ok": False, "error": detail}
     if name == "aigw":
         # The guard's own refusal first, verbatim: its Chinese `message` is written for
         # this pane — 502 `catalog_unavailable` (the administrator has ticked no model for

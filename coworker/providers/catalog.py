@@ -25,6 +25,7 @@ CATALOG_PROVIDERS = frozenset(
         "aigw",
         "openai",
         "anthropic",
+        "gemini",
         "custom",
         "together",
         "fireworks",

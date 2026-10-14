@@ -48,6 +48,7 @@ def test_catalog_providers_membership():
     for name in (
         "openai",
         "anthropic",
+        "gemini",
         "custom",
         "together",
         "fireworks",
@@ -66,7 +67,6 @@ def test_catalog_providers_membership():
         assert supports_catalog(name), name
         assert name in CATALOG_PROVIDERS
     for name in (
-        "gemini",
         "nvidia",
         "ollama",
         "ark",
@@ -271,7 +271,7 @@ def _patch_get(monkeypatch, status=200, json_body=None, capture=None, raise_exc=
     monkeypatch.setattr("httpx.get", fake_get)
 
 
-def test_retired_gemini_catalog_does_not_query_the_relay(monkeypatch):
+def test_list_provider_models_gemini_relay_header_and_fields(monkeypatch):
     cap: dict = {}
     _patch_get(
         monkeypatch,
@@ -291,8 +291,17 @@ def test_retired_gemini_catalog_does_not_query_the_relay(monkeypatch):
     res = list_provider_models(
         "gemini", api_key="AIza-x", fields={"relay_token": "owr_x"}
     )
-    assert res["ok"] is False and res["unsupported"] is True
-    assert cap == {}
+    assert res["ok"] is True
+    assert res["models"] == [
+        {
+            "id": "gemini-3.7-flash",
+            "label": "Gemini 3.7 Flash · Google",
+            "context_window": 1048576,
+        }
+    ]
+    assert cap["url"] == "https://gemini.smjtools.com/v1beta/models"
+    assert cap["headers"]["x-goog-api-key"] == "AIza-x"
+    assert cap["headers"]["Authorization"] == "Bearer owr_x"
 
 
 def test_list_provider_models_anthropic(monkeypatch):
