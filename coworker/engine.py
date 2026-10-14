@@ -3729,6 +3729,10 @@ class TurnEngine:
             for msg in source_messages
             if msg.get("role") != "notice" and not msg.get("aborted")
         ]
+        # 开工前核对 (replay-side only): the synthetic ask_user exchange becomes one user
+        # message carrying the brief — see `_fold_preflight_exchange` for why a synthetic
+        # tool call must never reach a provider.
+        out = _fold_preflight_exchange(out)
         # Crash/interrupt repair (replay-side only): an assistant tool_call whose
         # result never landed — the process died or the turn was interrupted between
         # persisting the assistant message and its tool outputs — makes strict
@@ -4106,6 +4110,50 @@ def _clip_tool_result(content: str) -> str:
 # ids never look like this, and the id is persisted, so it is the one signal that survives a
 # durable resume and cannot be forged from the model side.
 PREFLIGHT_ID_PREFIX = "preflight:"
+
+
+_PREFLIGHT_FOLD_PREFIX = "（开工前核对：用户在提问卡上确认的任务要素，优先级高于你自己的推断）\n"
+
+
+def _fold_preflight_exchange(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Outbound-only: drop the synthetic `preflight:*` assistant tool call and turn its
+    tool result into a plain user message carrying the brief.
+
+    The canonical history keeps the exchange as a real ask_user round-trip (transcript,
+    Inbox idempotency and durable resume all key off the `preflight:` id), but providers
+    reject a tool call they did not author, each in its own way — observed live on
+    2026-10-14: Anthropic 400s on the id (`^[a-zA-Z0-9_-]+$`, no colon) and Gemini 3+
+    400s on the missing thought_signature of a functionCall part. The exchange IS the
+    user's answers, so a user message is also the honest shape; every route (Anthropic,
+    OpenAI, Gemini 3.8, Gemini 4) accepted it in the same live check."""
+    out: list[dict[str, Any]] = []
+    pending: set[str] = set()
+    for msg in messages:
+        role = msg.get("role")
+        if role == "assistant":
+            ids = [str(c.get("id") or "") for c in (msg.get("tool_calls") or [])]
+            if ids and all(i.startswith(PREFLIGHT_ID_PREFIX) for i in ids):
+                pending.update(ids)
+                continue
+        if role == "tool" and str(msg.get("tool_call_id") or "") in pending:
+            pending.discard(str(msg.get("tool_call_id") or ""))
+            out.append({"role": "user", "content": _preflight_fold_text(msg.get("content"))})
+            continue
+        out.append(msg)
+    return out
+
+
+def _preflight_fold_text(content: Any) -> str:
+    """The brief from a pre-flight tool result (its `brief` field), or the raw result when
+    the result has no brief (never empty: the user did answer or skip)."""
+    text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        parsed = None
+    if isinstance(parsed, dict) and parsed.get("brief"):
+        return _PREFLIGHT_FOLD_PREFIX + str(parsed["brief"])
+    return _PREFLIGHT_FOLD_PREFIX + text
 
 
 def _user_text(content: Any) -> str:

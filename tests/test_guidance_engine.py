@@ -165,10 +165,34 @@ def test_round_trip_persists_a_synthetic_ask_user_and_the_brief(tmp_path):
     assert "推荐专家：质量体系" in result["brief"]
     assert engine.messages[-1]["content"] == "开工"
 
-    # the main model saw the exchange; the sidecar never reaches a provider
+    # the main model saw the brief as a USER message — never the synthetic tool call
+    # (Anthropic rejects the id's colon, Gemini 3+ the missing thought_signature) — and
+    # the sidecar never reaches a provider
     seen = provider.main_calls[0]
-    assert any(m.get("role") == "tool" and "<task-brief>" in m["content"] for m in seen)
+    assert not any(m.get("role") == "tool" for m in seen)
+    assert not any(m.get("tool_calls") for m in seen if m.get("role") == "assistant")
+    folded = [m for m in seen if m.get("role") == "user" and "<task-brief>" in str(m.get("content"))]
+    assert len(folded) == 1 and "开工前核对" in folded[0]["content"]
     assert not any("_preflight" in m for m in seen)
+
+
+def test_outbound_view_folds_the_preflight_exchange_only(tmp_path):
+    provider = GuidanceProvider([text_turn()], diagnosis=WEAK)
+    engine = make_engine(tmp_path, provider, asker=Asker())
+    collect(engine)
+    # a real (model-authored) tool exchange after the pre-flight stays a tool exchange
+    engine.messages.append(
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "call_1", "type": "function",
+         "function": {"name": "read_file", "arguments": "{}"}}]}
+    )
+    engine.messages.append({"role": "tool", "tool_call_id": "call_1", "content": "ok"})
+    out = engine._outbound_messages()
+    roles = [(m["role"], [c["id"] for c in m.get("tool_calls") or []]) for m in out]
+    assert ("assistant", ["preflight:1"]) not in roles
+    assert ("assistant", ["call_1"]) in roles
+    assert [m for m in out if m.get("role") == "tool"] == [{"role": "tool", "tool_call_id": "call_1", "content": "ok"}]
+    # canonical history is untouched
+    assert any(m.get("role") == "tool" and m.get("tool_call_id") == "preflight:1" for m in engine.messages)
 
 
 def test_skip_button_authorizes_defaults_and_counts_as_answered(tmp_path):
