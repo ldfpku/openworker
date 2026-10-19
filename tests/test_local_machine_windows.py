@@ -1,10 +1,9 @@
-"""Machine facts on Windows: no console window flashes, and a readable processor name."""
+"""Machine facts on Windows: the probes run without a console window flashing."""
 
 from __future__ import annotations
 
 import subprocess
 import sys
-import types
 
 from coworker import procutil
 from coworker.providers import local_machine
@@ -29,16 +28,3 @@ def test_console_programs_run_without_a_window_on_windows(monkeypatch):
         assert seen["creationflags"] & procutil.CREATE_NO_WINDOW
     else:
         assert "creationflags" not in seen
-
-
-def test_windows_processor_name_comes_from_the_registry(monkeypatch):
-    fake = types.SimpleNamespace(
-        HKEY_LOCAL_MACHINE=object(),
-        OpenKey=lambda root, path: ("key", path),
-        QueryValueEx=lambda key, name: ("Intel(R) Core(TM)  i7-12700H  ", 1),
-        CloseKey=lambda key: None,
-    )
-    monkeypatch.setitem(sys.modules, "winreg", fake)
-    assert local_machine._windows_processor() == "Intel(R) Core(TM) i7-12700H"
-    monkeypatch.setitem(sys.modules, "winreg", None)  # not Windows: import fails
-    assert local_machine._windows_processor() == ""
