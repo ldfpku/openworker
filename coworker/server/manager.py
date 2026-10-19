@@ -8874,6 +8874,22 @@ class SessionManager:
             ):
                 return
             if not title or len(title) > 80:
+                # Not an exception, so the `except` below never sees it — and an EMPTY
+                # completion is exactly how a thinking model that ignores
+                # `reasoning_effort="none"` fails here (the 800-token budget spent on
+                # thinking, no text). Without this line that failure is invisible: the
+                # 2026-10-20 audit found untitled glm-5.3-flash sessions and not one
+                # "autotitle failed" in the server log.
+                logger.warning(
+                    "autotitle for %s on %s came back %s (finish_reason=%s, "
+                    "reasoning=%s, usage=%s)",
+                    session_id,
+                    title_model,
+                    "empty" if not title else f"{len(title)} chars",
+                    getattr(turn, "finish_reason", None),
+                    bool(getattr(turn, "reasoning", None)),
+                    getattr(turn, "usage", None),
+                )
                 return
             if self.session_store.set_auto_title(session_id, title[:60]):
                 # Best-effort nudge for any live viewer; the sidebar's poll and

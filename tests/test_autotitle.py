@@ -346,3 +346,23 @@ async def test_non_english_small_talk_still_hits_the_sentinel(tmp_path):
     await _turn(mgr, "lang3", "帮我整理季度汇报")
     assert len(provider.title_calls) == 2
     assert mgr.session_store.load("lang3").title == "季度汇报整理"
+
+
+async def test_empty_title_completion_is_logged_not_silent(tmp_path, caplog):
+    # An empty completion (a thinking model that ignored `reasoning_effort="none"` and
+    # spent the whole budget thinking) is not an exception, so the `except` never sees
+    # it. It must still leave a trace: the 2026-10-20 audit found untitled sessions and
+    # not one "autotitle" line in the server log. Over-long output is logged the same way.
+    import logging
+
+    # Three windows fire (turn-1 start, turn-1 end, turn-2 start); the third answers
+    # with the sentinel, which is a silent no-op by design.
+    mgr, _ = _mgr(tmp_path, [_text("ok"), _text("ok")], ["", "x" * 81, "small-talk"])
+    with caplog.at_level(logging.WARNING, logger="coworker.server.manager"):
+        await _turn(mgr, "diag1", "帮我整理季度汇报")
+        await _turn(mgr, "diag1", "再加一张图表")
+    assert mgr.session_store.title_state("diag1")["auto_title"] is None
+    notes = [r.getMessage() for r in caplog.records if "autotitle for diag1" in r.getMessage()]
+    assert len(notes) == 2, caplog.text
+    assert "came back empty" in notes[0] and "gpt-5.6-luna" in notes[0]
+    assert "81 chars" in notes[1]
