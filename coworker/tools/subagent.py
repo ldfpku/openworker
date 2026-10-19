@@ -120,8 +120,9 @@ def build_explorer_engine(
     ws = str(Path(workspace).resolve())
     registry = ToolRegistry()
     # Read-only slice of the Code agent's toolset, with the same toolkit replacements
-    # (our grep for search_files, our windowed read_file for read_file/read_file_lines).
-    replaced = {"search_files", "read_file", "read_file_lines"}
+    # (our grep for search_files, our windowed read_file for read_file/read_file_lines,
+    # our folder-aware list_files for the toolkit's files-only one — OPE-203).
+    replaced = {"search_files", "read_file", "read_file_lines", "list_files"}
     registry.register_all(
         [
             t

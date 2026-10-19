@@ -75,6 +75,9 @@ def test_explorer_engine_is_read_only(tmp_path):
     assert "run_shell" not in names
     assert "explore" not in names  # no recursion
     assert engine.permissions.mode is Mode.PLAN  # writes hard-blocked even if present
+    # The same toolkit replacements as the Code agent: our folder-aware `list_files`
+    # (OPE-203), not the toolkit's files-only one.
+    assert hasattr(engine.registry.get("list_files").func, "__coworker_schema__")
 
 
 def test_explore_returns_final_report(tmp_path):
