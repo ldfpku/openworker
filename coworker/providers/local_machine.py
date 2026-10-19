@@ -104,22 +104,6 @@ def _run(args: list[str]) -> str:
         return ""
 
 
-def _windows_processor() -> str:
-    """The marketing name Windows keeps in the registry ("Intel(R) Core(TM) i7-12700H");
-    platform.processor() gives "Intel64 Family 6 Model 154 Stepping 3, GenuineIntel"."""
-    try:
-        import winreg
-
-        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0")
-        try:
-            value, _ = winreg.QueryValueEx(key, "ProcessorNameString")
-        finally:
-            winreg.CloseKey(key)
-        return " ".join(str(value).split())
-    except Exception:
-        return ""
-
-
 @functools.lru_cache(maxsize=1)
 def model_memory_bytes() -> Optional[int]:
     """The memory a local model loads into on this machine."""

@@ -1,10 +1,16 @@
-"""Line-numbered file reading (`read_file`) and an honest `write_file` — both replace the
-aisuite toolkit's originals.
+"""Line-numbered file reading (`read_file`), folder-aware listing (`list_files`) and an
+honest `write_file` — all three replace the aisuite toolkit's originals.
 
 The toolkit's `read_file` returns raw text (the agent can't cite path:line without
 counting) and raises outright on large files (the agent errors and guesses). This one
 returns `cat -n`-style numbered lines, windows big files instead of failing, and tells
 the agent how to continue reading. Read-only, workspace-scoped.
+
+The toolkit's `list_files` returns files only, so a workspace whose top level holds
+nothing but a subfolder lists as `[]` and the agent concludes it is empty (OPE-203). This
+one lists folders too, marked with a trailing `/`, so one non-recursive look shows the
+shape of the tree. Both read tools are scoped to the session's roots by the same
+`resolve_read_path`.
 
 `write_file` is the toolkit's own, wrapped (see `write_file_tools`): it reports the
 ABSOLUTE path it wrote plus which root that is, and it refuses the ZIP-container Office
@@ -18,10 +24,16 @@ from typing import Any, NamedTuple, Optional
 
 import aisuite as ai
 
+# The toolkit's own skip-list, so our listing hides exactly the folders its `search_files`
+# and the rest still skip (`.git`, `node_modules`, `__pycache__`, …) — one source of truth.
+from aisuite.toolkits.files import DEFAULT_IGNORES as _IGNORED_DIRS
+
 from ..roots import resolved_paths
 
 _DEFAULT_MAX_LINES = 2000
 _MAX_LINE_CHARS = 500
+_DEFAULT_MAX_RESULTS = 100
+_MAX_RESULTS_CAP = 2000
 
 _SCHEMA = {
     "type": "function",
@@ -49,6 +61,40 @@ _SCHEMA = {
                 },
             },
             "required": ["path"],
+        },
+    },
+}
+
+_LIST_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "list_files",
+        "description": (
+            "List files and folders under a path; folders end with '/'. Use "
+            "recursive=false to see one level, and pattern (a glob such as '*.py') to "
+            "filter by name. Read-only."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Folder to list, relative to the workspace (default '.').",
+                },
+                "pattern": {
+                    "type": "string",
+                    "description": "Glob to match names against (default '*').",
+                },
+                "recursive": {
+                    "type": "boolean",
+                    "description": "Descend into subfolders (default true).",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": f"Stop after this many entries (default {_DEFAULT_MAX_RESULTS}).",
+                },
+            },
+            "required": [],
         },
     },
 }
@@ -89,9 +135,10 @@ def resolve_read_path(
 
 
 def file_tools(workspace: str, roots: Optional[list] = None) -> list:
-    """Windowed read_file rooted at `workspace`. With `roots` (RootDir list), absolute
-    paths inside ANY root also resolve — multi-root sessions (universal scratch) address
-    their scratch/extra dirs by the absolute paths the roots context advertises."""
+    """Windowed read_file and folder-aware list_files rooted at `workspace`. With `roots`
+    (RootDir list), absolute paths inside ANY root also resolve — multi-root sessions
+    (universal scratch) address their scratch/extra dirs by the absolute paths the roots
+    context advertises."""
     root = Path(workspace).resolve()
     # `roots` is kept BY REFERENCE and resolved on every call (see resolved_paths) — never
     # snapshotted here. Materialising the paths at build time made read_file the one
@@ -172,7 +219,65 @@ def file_tools(workspace: str, roots: Optional[list] = None) -> list:
         requires_approval=False,
     )
     read_file.__coworker_schema__ = _SCHEMA
-    return [read_file]
+
+    def list_files(
+        path: str = ".",
+        pattern: str = "*",
+        recursive: bool = True,
+        max_results: int = _DEFAULT_MAX_RESULTS,
+    ) -> Any:
+        n = (
+            max_results
+            if isinstance(max_results, int) and max_results > 0
+            else _DEFAULT_MAX_RESULTS
+        )
+        n = min(n, _MAX_RESULTS_CAP)
+        # Same containment rule as `read_file` (and the office readers): relative to the
+        # workspace, or inside any of the session's roots, resolved fresh on every call.
+        base, home, err = resolve_read_path(str(path or "."), root, roots)
+        if err:
+            return {"error": err}
+        if not base.is_dir():
+            return {"error": f"not a directory: {path}"}
+
+        results: list[str] = []
+        try:
+            iterator = (
+                base.rglob(pattern or "*") if recursive else base.glob(pattern or "*")
+            )
+            for item in iterator:
+                # Skip-list is judged from the root the listing lives in, so `.git` and
+                # friends stay hidden at any depth while a workspace that itself sits
+                # under a `build/` folder still lists.
+                if any(part in _IGNORED_DIRS for part in item.relative_to(home).parts):
+                    continue
+                # Workspace entries come back relative (posix separators, round-trippable
+                # as a `path` argument on every platform); entries in another root come
+                # back absolute, as `read_file` reports them.
+                shown = item.relative_to(root).as_posix() if home == root else str(item)
+                if item.is_dir():
+                    results.append(shown + "/")
+                elif item.is_file():
+                    results.append(shown)
+                else:
+                    continue
+                if len(results) >= n:
+                    break
+        except OSError as exc:
+            return {"error": f"list failed: {exc}"}
+        return sorted(results)
+
+    list_files.__name__ = "list_files"
+    list_files.__doc__ = _LIST_SCHEMA["function"]["description"]
+    list_files.__aisuite_tool_metadata__ = ai.ToolMetadata(
+        name="list_files",
+        category="filesystem",
+        risk_level="low",
+        capabilities=["list_files"],
+        requires_approval=False,
+    )
+    list_files.__coworker_schema__ = _LIST_SCHEMA
+    return [read_file, list_files]
 
 
 # Office formats `write_file` must refuse. It encodes its `content` as UTF-8, so every one
