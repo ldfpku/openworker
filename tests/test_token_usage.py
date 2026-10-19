@@ -356,6 +356,23 @@ def test_model_context_windows_covers_verified_entries_only():
     assert all(isinstance(v, int) and v > 0 for v in windows.values())
 
 
+def test_deepseek_v4_context_windows_match_provider_limits():
+    # The native API and each reseller expose different windows for the same model; the
+    # 128,000 these rows used to carry compacted a 1M session at 102,400 tokens.
+    # (Together's row is not pinned here: upstream refreshed it to 512K in 267c562f, which
+    # this fork has not ported yet.)
+    windows = model_context_windows()
+    expected = {
+        "deepseek:deepseek-v4-flash": 1_000_000,
+        "deepseek:deepseek-v4-pro": 1_000_000,
+        # Fireworks lists "1040k tokens" for its deployment (read 2026-10-17).
+        "fireworks:accounts/fireworks/models/deepseek-v4-pro": 1_040_000,
+        "openrouter:deepseek/deepseek-v4-pro": 1_048_576,
+    }
+
+    assert {model: windows[model] for model in expected} == expected
+
+
 # -- compat-vendor usage shapes (2026-08-31) -------------------------------------------
 # A bare `getattr` chain silently reports cache_read=0 when a vendor hands the field back
 # in a shape the SDK didn't model — which is how "this vendor does no prompt caching"

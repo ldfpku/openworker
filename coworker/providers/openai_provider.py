@@ -265,6 +265,13 @@ def _cache_write_from(usage: Any) -> int:
     return 0
 
 
+def _output_limit(kwargs: dict[str, Any]) -> Optional[int]:
+    """The completion ceiling actually sent, after `_param_fix_retry` may have renamed
+    `max_tokens` to `max_completion_tokens` or dropped it (server default -> None)."""
+    value = kwargs.get("max_tokens", kwargs.get("max_completion_tokens"))
+    return int(value) if value else None
+
+
 def _usage_from(usage: Any) -> Optional[TokenUsage]:
     """chat.completions usage → normalized counts. `prompt_tokens` INCLUDES cached
     tokens, so the cached share is subtracted into `cache_read`.
@@ -410,6 +417,7 @@ class OpenAIProvider(ProviderClient):
             reasoning=reasoning_text,
             extras=_reasoning_extras(_reasoning_field(message), reasoning_text),
             usage=_usage_from(getattr(response, "usage", None)),
+            output_limit=_output_limit(kwargs),
         )
 
     def capabilities(self, model: str) -> ModelCapabilities:
@@ -525,6 +533,7 @@ class OpenAIProvider(ProviderClient):
                         reasoning_field, "".join(reasoning_parts) or None
                     ),
                     usage=usage,
+                    output_limit=_output_limit(kwargs),
                     # A clean Chat Completions stream ALWAYS ends with a choice chunk carrying
                     # `finish_reason`; reaching here without one means the connection was cut
                     # mid-response (relay/gateway hang-up, upstream timeout). The engine needs

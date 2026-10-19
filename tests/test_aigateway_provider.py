@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 
+import httpx
 import pytest
 
 from coworker.providers import capabilities_for
@@ -1325,6 +1326,67 @@ def test_other_test_failures_keep_their_plain_reading(monkeypatch, listing, comp
     _Http(monkeypatch, listing, completion)
     out = verify_provider_key("aigw", fields=_SIGNED_IN)
     assert out["ok"] is False and needle in out["error"], out
+
+
+@pytest.mark.parametrize(
+    "exc,needle",
+    [
+        # Python's wording for a TLS handshake that never completes — the failure this
+        # network hit repeatedly in 2026-10. It must read as TLS (proxy / VPN), not as a
+        # generic timeout.
+        (
+            httpx.ConnectTimeout("_ssl.c:980: The handshake operation timed out"),
+            "TLS handshake failed or timed out",
+        ),
+        (httpx.ConnectTimeout("The request timed out."), "connection timed out"),
+        (httpx.ConnectError("[Errno 11001] getaddrinfo failed"), "DNS could not resolve"),
+        (httpx.ConnectError("[Errno 10061] Connection refused"), "connection was refused"),
+        (
+            httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"),
+            "certificate verification failed",
+        ),
+        # Unknown cause → the original sentence, byte for byte (its translation key).
+        (RuntimeError("boom"), "Couldn't reach the gateway — check your network and try again."),
+    ],
+)
+def test_unreachable_gateway_names_the_failure_kind_in_a_fixed_sentence(
+    monkeypatch, caplog, exc, needle
+):
+    # The GUI translates the Test's answer by whole-string lookup, so the sentence is one
+    # of a fixed family (every one starting "Couldn't reach the gateway") rather than the
+    # free-form class+message line the other providers show. Both requests — the list and
+    # the completion — answer the same way, and the raw cause goes to the log at WARNING,
+    # where a packaged build keeps it.
+    import logging
+
+    from coworker.providers.registry import _AIGW_UNREACHABLE, _AIGW_UNREACHABLE_DEFAULT
+
+    family = {_AIGW_UNREACHABLE_DEFAULT, *_AIGW_UNREACHABLE.values()}
+    for listing, completion in ((exc, (200, {})), ((200, _LISTING), exc)):
+        _Http(monkeypatch, listing, completion)
+        with caplog.at_level(logging.WARNING, logger="coworker.providers.registry"):
+            out = verify_provider_key("aigw", fields=_SIGNED_IN)
+        assert out["ok"] is False and needle in out["error"], out
+        assert out["error"] in family and out["error"].startswith("Couldn't reach the gateway")
+        assert any(
+            "aigw verify" in r.getMessage() and type(exc).__name__ in r.getMessage()
+            for r in caplog.records
+        ), caplog.text
+        caplog.clear()
+
+
+def test_every_gateway_unreachable_sentence_has_a_chinese_translation():
+    # The whole point of the fixed family: each sentence is a literal key in the GUI's
+    # zh-CN catalog. A new kind without its entry would show colleagues English.
+    import json
+    from pathlib import Path
+
+    from coworker.providers.registry import _AIGW_UNREACHABLE, _AIGW_UNREACHABLE_DEFAULT
+
+    root = Path(__file__).resolve().parents[1]
+    catalog = json.loads((root / "surfaces/gui/src/locales/zh-CN.json").read_text("utf-8"))
+    for sentence in (_AIGW_UNREACHABLE_DEFAULT, *_AIGW_UNREACHABLE.values()):
+        assert catalog.get(sentence, "").startswith("连不上网关"), sentence
 
 
 def test_test_exercises_the_credential_a_real_call_would_use(monkeypatch):

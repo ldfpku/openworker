@@ -590,6 +590,9 @@ class AIGatewayProvider(ProviderClient):
         out = dict(settings)
         if wire_for(model) == "responses" or wire_for(route.fallback) == "responses":
             out.setdefault("reasoning_effort", "none")
+        # A configured `max_output_tokens` (OPE-177) arrives here as `max_tokens` in the
+        # engine's settings and must survive the re-send under the renamed key; only a
+        # turn that carried no ceiling at all gets the default.
         if "max_tokens" in out:
             out["max_completion_tokens"] = out.pop("max_tokens")
         else:

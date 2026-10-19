@@ -384,6 +384,11 @@ def build_engine(
 
     workspace_trusted = bool(ws and WorkspaceTrustStore().is_trusted(ws))
     config = load_config(ws, workspace_trusted=workspace_trusted)
+    # OPE-177: the configured per-reply output ceiling rides `model_settings`, which
+    # the engine spreads into every provider call (and explorer subagents inherit).
+    # An explicit `max_tokens` from the caller wins over the config value.
+    if config.max_output_tokens is not None and "max_tokens" not in (model_settings or {}):
+        model_settings = {**(model_settings or {}), "max_tokens": config.max_output_tokens}
     executor = LocalExecutor(cwd=ws) if ws is not None else None
     todo = TodoList()
     context = AgentContext(

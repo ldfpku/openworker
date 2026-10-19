@@ -311,3 +311,58 @@ def test_autotitle_marker_matches_the_live_prompt():
     prompt rewrite that drops the marker fails HERE, loudly, instead of silently breaking
     every provider double across tests/ that relies on is_autotitle_call."""
     assert AUTOTITLE_MARKER in SessionManager._AUTOTITLE_PROMPT
+
+
+async def test_title_call_pins_the_opener_language(tmp_path):
+    # With no language pinned in the titling instruction, an English system prompt
+    # ("4-5 word title") biases the model toward English titles even for non-English
+    # sessions. The prompt must tell the model to match the opener's language.
+    mgr, provider = _mgr(tmp_path, [_text("好的")], ["日本行程规划"])
+    await _turn(mgr, "lang1", "帮我规划一下日本的旅行")
+
+    system = provider.title_calls[0][0]["content"]
+    assert "same language as the user's opening message" in system
+
+
+async def test_non_english_opener_keeps_non_english_title(tmp_path):
+    # End to end: a CJK title survives the sanitizer (whitespace collapse and quote
+    # strip don't touch CJK) and the 80-char absurdity cap, and is stored verbatim.
+    mgr, _ = _mgr(tmp_path, [_text("好的，我来帮你安排")], ["日本行程规划"])
+    await _turn(mgr, "lang2", "帮我规划一下日本的旅行")
+    assert mgr.session_store.load("lang2").title == "日本行程规划"
+
+
+async def test_non_english_small_talk_still_hits_the_sentinel(tmp_path):
+    # The sentinel is a fixed English token regardless of the session's language;
+    # normalization must keep catching it after the prompt rewording.
+    mgr, provider = _mgr(
+        tmp_path,
+        [_text("你好呀"), _text("在的")],
+        ["small-talk", "季度汇报整理"],
+    )
+    await _turn(mgr, "lang3", "你好")
+    assert mgr.session_store.title_state("lang3")["auto_title"] is None
+
+    await _turn(mgr, "lang3", "帮我整理季度汇报")
+    assert len(provider.title_calls) == 2
+    assert mgr.session_store.load("lang3").title == "季度汇报整理"
+
+
+async def test_empty_title_completion_is_logged_not_silent(tmp_path, caplog):
+    # An empty completion (a thinking model that ignored `reasoning_effort="none"` and
+    # spent the whole budget thinking) is not an exception, so the `except` never sees
+    # it. It must still leave a trace: the 2026-10-20 audit found untitled sessions and
+    # not one "autotitle" line in the server log. Over-long output is logged the same way.
+    import logging
+
+    # Three windows fire (turn-1 start, turn-1 end, turn-2 start); the third answers
+    # with the sentinel, which is a silent no-op by design.
+    mgr, _ = _mgr(tmp_path, [_text("ok"), _text("ok")], ["", "x" * 81, "small-talk"])
+    with caplog.at_level(logging.WARNING, logger="coworker.server.manager"):
+        await _turn(mgr, "diag1", "帮我整理季度汇报")
+        await _turn(mgr, "diag1", "再加一张图表")
+    assert mgr.session_store.title_state("diag1")["auto_title"] is None
+    notes = [r.getMessage() for r in caplog.records if "autotitle for diag1" in r.getMessage()]
+    assert len(notes) == 2, caplog.text
+    assert "came back empty" in notes[0] and "gpt-5.6-luna" in notes[0]
+    assert "81 chars" in notes[1]

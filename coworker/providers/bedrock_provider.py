@@ -64,6 +64,10 @@ def _usage_from(usage: Any) -> Optional[TokenUsage]:
 # Converse has no required max token param but per-model defaults vary wildly (Meta's is
 # 512 — an agent turn gets truncated mid-tool-call); 4096 fits every family's ceiling.
 DEFAULT_MAX_TOKENS = 4096
+# Deliberately lower than the 32,000 of the direct Anthropic/OpenAI clients: Bedrock
+# enforces per-model output ceilings that differ by family and region, and a request
+# above the ceiling is a hard 400. `max_output_tokens` in config (OPE-177) raises it
+# for deployments that know their models' limits.
 
 # Converse stopReason → the engine's OpenAI-shaped finish_reason vocabulary. A guardrail
 # or content block maps to `content_filter` (OpenAI's own spelling), NOT to `stop`: the
@@ -399,6 +403,7 @@ class _BedrockConverseClient(ProviderClient):
             raw=response,
             reasoning="".join(reasoning_parts) or None,
             usage=_usage_from(response.get("usage")),
+            output_limit=kwargs["inferenceConfig"]["maxTokens"],
         )
 
     def stream(
@@ -470,6 +475,7 @@ class _BedrockConverseClient(ProviderClient):
                     finish_reason=_STOP_REASON_MAP.get(stop_reason, stop_reason),
                     reasoning="".join(reasoning_parts) or None,
                     usage=usage,
+                    output_limit=kwargs["inferenceConfig"]["maxTokens"],
                 )
             )
         finally:

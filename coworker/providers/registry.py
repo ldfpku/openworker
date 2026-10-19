@@ -720,7 +720,12 @@ DESCRIPTORS: list[ProviderDescriptor] = [
         base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
         recommended_model="qwen3-max",
         env_key="DASHSCOPE_API_KEY",
-        endpoint_help="Prefilled with Alibaba Model Studio's international endpoint. China (Beijing): https://dashscope.aliyuncs.com/compatible-mode/v1",
+        endpoint_help=(
+            "Prefilled with the international endpoint. If your key was issued on the "
+            "China mainland portal (qwencloud.com), switch to "
+            "https://dashscope.aliyuncs.com/compatible-mode/v1 — keys only work against "
+            "the endpoint in the region where they were created."
+        ),
     ),
     _compat(
         "xai",
@@ -959,6 +964,108 @@ _AIGW_NOT_A_GATEWAY = (
 )
 
 
+# -- transport failures (the Test button's "couldn't reach") ---------------------------
+# (signature, kind, hint) — first match wins, so the specific readings come before the
+# broad "timed out". Signatures are substrings of the lowercased `str(exc)` plus the
+# exception's class name: every stack spells the same failure differently (httpx
+# ConnectTimeout, ssl.SSLError, socket.gaierror, botocore EndpointConnectionError…) while
+# the words underneath repeat. `handshake` is listed before `timed out` on purpose — the
+# failure this company hits most, "The handshake operation timed out" (a TLS handshake
+# that never completes, usually a proxy or an interrupted VPN), reads as a TLS problem,
+# not as a generic timeout.
+_TRANSPORT_SIGNATURES: tuple[tuple[str, str, str], ...] = (
+    (
+        "certificate_verify_failed",
+        "certificate",
+        "TLS certificate verification failed; the app's CA bundle may be missing or stale",
+    ),
+    (
+        "certificate verify failed",
+        "certificate",
+        "TLS certificate verification failed; the app's CA bundle may be missing or stale",
+    ),
+    ("handshake", "tls", "the TLS handshake failed or timed out"),
+    ("ssl:", "tls", "TLS handshake failed"),
+    ("sslerror", "tls", "TLS handshake failed"),
+    ("gaierror", "dns", "DNS could not resolve the endpoint"),
+    ("nodename", "dns", "DNS could not resolve the endpoint"),
+    ("name or service", "dns", "DNS could not resolve the endpoint"),
+    ("getaddrinfo", "dns", "DNS could not resolve the endpoint"),
+    ("name resolution", "dns", "DNS could not resolve the endpoint"),
+    ("refused", "refused", "the endpoint refused the connection"),
+    ("timed out", "timeout", "the connection timed out"),
+    ("timeout", "timeout", "the connection timed out"),
+)
+
+
+def _classify_transport_error(exc: BaseException) -> tuple[Optional[str], Optional[str]]:
+    """`(kind, hint)` for a verify probe's transport failure — `(None, None)` when the
+    text matches no known signature. `kind` keys the gateway's fixed sentences below;
+    `hint` is the English clause the other probes append."""
+    haystack = f"{' '.join(str(exc).split())} {exc.__class__.__name__}".lower()
+    for signature, kind, hint in _TRANSPORT_SIGNATURES:
+        if signature in haystack:
+            return kind, hint
+    return None, None
+
+
+def _describe_transport_error(exc: BaseException) -> str:
+    """Turn a verify probe's transport failure into one actionable line.
+
+    The bare class name ("ConnectError") cost a real user round-trips of diagnosis while
+    the exception carried the answer all along — TLS verification, DNS, refusal and
+    timeout each read differently (upstream #505). Class name plus message, plus a short
+    hint when the signature maps to a known fix; a silent exception renders exactly the
+    old class-name-only text.
+    """
+    msg = " ".join(str(exc).split()).rstrip(".")[:200]
+    _kind, hint = _classify_transport_error(exc)
+    name = exc.__class__.__name__
+    if hint:
+        if not msg:
+            return f"{name} — {hint}"
+        return f"{name}: {msg} — looks like {hint}"
+    return name if not msg else f"{name}: {msg}"
+
+
+# The gateway's "couldn't reach" is a FIXED sentence per failure kind, not the free-form
+# line above: the GUI translates server strings by whole-string lookup
+# (surfaces/gui/src/providers/ProviderSetup.tsx `localizeVerifyError` → `t(msg)`, keys in
+# locales/zh-CN.json), so interpolating the exception would leave colleagues with English.
+# Every sentence keeps the "Couldn't reach the gateway" prefix; the raw class and message
+# go to the server log at warning level instead (`_verify_aigw`).
+_AIGW_UNREACHABLE_DEFAULT = "Couldn't reach the gateway — check your network and try again."
+_AIGW_UNREACHABLE: dict[str, str] = {
+    "timeout": (
+        "Couldn't reach the gateway — the connection timed out. Check your network or "
+        "proxy and try again."
+    ),
+    "tls": (
+        "Couldn't reach the gateway — the TLS handshake failed or timed out. Check your "
+        "network, proxy or VPN and try again."
+    ),
+    "certificate": (
+        "Couldn't reach the gateway — TLS certificate verification failed. The app's CA "
+        "bundle may be missing or stale, or a proxy is intercepting HTTPS."
+    ),
+    "dns": (
+        "Couldn't reach the gateway — DNS could not resolve its address. Check your "
+        "network or DNS settings and try again."
+    ),
+    "refused": (
+        "Couldn't reach the gateway — the connection was refused. Check your network or "
+        "proxy and try again."
+    ),
+}
+
+
+def _aigw_unreachable(exc: Optional[BaseException]) -> dict[str, Any]:
+    """The Test's answer when a gateway request never completed: a fixed sentence picked
+    by failure kind (translatable), the full cause in the log (greppable)."""
+    kind, _hint = _classify_transport_error(exc) if exc is not None else (None, None)
+    return {"ok": False, "error": _AIGW_UNREACHABLE.get(kind or "", _AIGW_UNREACHABLE_DEFAULT)}
+
+
 def _verify_aigw(fields: dict[str, Any], timeout: float) -> dict[str, Any]:
     """Ask the guard which model to test with, then run one short generation on it.
 
@@ -990,19 +1097,20 @@ def _verify_aigw(fields: dict[str, Any], timeout: float) -> dict[str, Any]:
     oauth_token = str((fields or {}).get("oauth_token") or "").strip()
     if not oauth_token and not access_token:
         return {"ok": False, "error": "Sign in to the gateway first."}
-    # Static string on purpose: interpolating the exception class would defeat the GUI's
-    # word-for-word translation table, and ConnectError/ReadTimeout tells a colleague
-    # nothing their network status doesn't.
-    unreachable = {
-        "ok": False,
-        "error": "Couldn't reach the gateway — check your network and try again.",
-    }
+    # Fixed sentences on purpose (`_aigw_unreachable`): interpolating the exception would
+    # defeat the GUI's word-for-word translation table. The KIND of failure still reaches
+    # the person — a TLS handshake that times out (this network's recurring one, 2026-10)
+    # points at the proxy/VPN, not at "check your network" — and the raw cause is logged
+    # at warning so support can read it without a debug build.
     listing, err = _catalog_request(
-        "aigw", key="", base_url=None, fields=fields, timeout=timeout
+        "aigw", key="", base_url=None, fields=fields, timeout=timeout, raw_exc=True
     )
     if listing is None:
-        logger.debug("aigw verify: model list unreachable: %s", err)
-        return unreachable
+        logger.warning(
+            "aigw verify: model list unreachable: %s",
+            _describe_transport_error(err) if isinstance(err, BaseException) else err,
+        )
+        return _aigw_unreachable(err if isinstance(err, BaseException) else None)
     if listing.status_code >= 300:
         if listing.status_code == 404 and not _guard_message(listing):
             return {"ok": False, "error": _AIGW_NOT_A_GATEWAY}
@@ -1039,8 +1147,8 @@ def _verify_aigw(fields: dict[str, Any], timeout: float) -> dict[str, Any]:
             timeout=timeout,
         )
     except Exception as exc:
-        logger.debug("aigw verify: unreachable: %s", exc)
-        return unreachable
+        logger.warning("aigw verify: unreachable: %s", _describe_transport_error(exc))
+        return _aigw_unreachable(exc)
     if resp.status_code < 300:
         return {"ok": True}
     # The guard sits in front of this call too (403 `model_restricted`, 503
@@ -1159,7 +1267,10 @@ def _verify_bedrock(fields: dict[str, Any], timeout: float) -> dict[str, Any]:
             if code == "ExpiredTokenException":
                 return {"ok": False, "error": "The credentials have expired — generate a new key."}
             return {"ok": False, "error": f"AWS Bedrock returned {code}."}
-        return {"ok": False, "error": f"Couldn't reach AWS Bedrock ({kind})."}
+        return {
+            "ok": False,
+            "error": f"Couldn't reach AWS Bedrock ({_describe_transport_error(exc)}).",
+        }
     return {"ok": True}
 
 
@@ -1198,7 +1309,7 @@ def _verify_vertex(fields: dict[str, Any], timeout: float) -> dict[str, Any]:
         except Exception as exc:
             return {
                 "ok": False,
-                "error": f"Couldn't reach Vertex AI ({exc.__class__.__name__}).",
+                "error": f"Couldn't reach Vertex AI ({_describe_transport_error(exc)}).",
             }
         if resp.status_code < 300:
             return {"ok": True}
@@ -1253,7 +1364,10 @@ def _verify_vertex(fields: dict[str, Any], timeout: float) -> dict[str, Any]:
             timeout=timeout,
         )
     except Exception as exc:
-        return {"ok": False, "error": f"Couldn't reach Vertex AI ({exc.__class__.__name__})."}
+        return {
+            "ok": False,
+            "error": f"Couldn't reach Vertex AI ({_describe_transport_error(exc)}).",
+        }
     if resp.status_code < 300:
         return {"ok": True}
     if resp.status_code in (401, 403):
@@ -1323,14 +1437,16 @@ def _catalog_request(
     base_url: Optional[str],
     fields: Optional[dict[str, Any]],
     timeout: float,
-) -> tuple[Any, Optional[str]]:
+    raw_exc: bool = False,
+) -> tuple[Any, Any]:
     """One GET against a provider's model-list endpoint — the shared wire logic behind
     both `verify_provider_key` (the Test button) and `list_provider_models` (the catalog
     fetch). Covers Anthropic, Gemini via the relay, Ollama, the gateway guard and
     OpenAI-compatible `/models`; Ark's POST Responses probe and the multi-field cloud
     providers stay inline in `verify_provider_key`. Returns `(response, None)` on a completed
     HTTP round trip (any status code) or `(None, error)` on a network failure — never
-    raises.
+    raises. `error` is the user-facing sentence ("Couldn't reach <title> (<cause>)."), or
+    the exception itself with `raw_exc=True` for a caller that words its own answer.
     """
     import httpx
 
@@ -1391,7 +1507,9 @@ def _catalog_request(
                 timeout=timeout,
             )
     except Exception as exc:  # DNS/connection/timeout — never let it bubble to a 500
-        return None, f"Couldn't reach {d.title} ({exc.__class__.__name__})."
+        if raw_exc:
+            return None, exc
+        return None, f"Couldn't reach {d.title} ({_describe_transport_error(exc)})."
     return resp, None
 
 
@@ -1501,7 +1619,7 @@ def verify_provider_key(
         except Exception as exc:
             return {
                 "ok": False,
-                "error": f"Couldn't reach {d.title} ({exc.__class__.__name__}).",
+                "error": f"Couldn't reach {d.title} ({_describe_transport_error(exc)}).",
             }
     else:
         resp, err = _catalog_request(

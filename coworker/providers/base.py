@@ -146,6 +146,12 @@ class AssistantTurn:
     # mistaken for a cut connection. Usage is NOT a substitute signal here: plenty of
     # compat endpoints ignore `stream_options.include_usage` on a perfectly good stream.
     truncated: bool = False
+    # The per-reply output-token ceiling the provider actually sent on this request
+    # (`max_tokens` / `max_completion_tokens` / `max_output_tokens`), after any
+    # provider-side adjustment (Anthropic budget floor, OpenAI rename). None when the
+    # provider left it to the server. Persisted on the assistant message as the
+    # `max_output_tokens` sidecar so a run record states its ceiling (OPE-177).
+    output_limit: Optional[int] = None
 
     @property
     def has_tool_calls(self) -> bool:

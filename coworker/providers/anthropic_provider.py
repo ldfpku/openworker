@@ -20,6 +20,7 @@ from chat.completions in ways the converters must absorb:
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any, Optional
 
@@ -53,6 +54,8 @@ def _usage_from(usage: Any) -> Optional[TokenUsage]:
 # (the call truncates mid-arguments and the write fails). Current Claude models all
 # accept ≥32k output.
 DEFAULT_MAX_TOKENS = 32000
+
+logger = logging.getLogger(__name__)
 
 # The API offers exactly two ephemeral-cache tiers, 5m and 1h. 1h was chosen 2026-08-29
 # as the baseline (owner call — the user wanted ~30min; 1h is the nearest tier) so the
@@ -592,7 +595,19 @@ class AnthropicProvider(ProviderClient):
             # Budget must fit under max_tokens.
             budget = int(thinking.get("budget_tokens") or 0)
             floor = max(DEFAULT_MAX_TOKENS, budget + 4096)
-            if int(filtered.get("max_tokens") or 0) <= budget:
+            requested = int(filtered.get("max_tokens") or 0)
+            if requested <= budget:
+                if requested:
+                    # A configured max_output_tokens (OPE-177) that does not clear the
+                    # budget would be rejected by the API; say so rather than silently
+                    # sending a different ceiling than the one configured.
+                    logger.warning(
+                        "max_output_tokens=%d is not above the thinking budget (%d); "
+                        "sending max_tokens=%d instead",
+                        requested,
+                        budget,
+                        floor,
+                    )
                 filtered["max_tokens"] = floor
         if thinking.get("type") in ("enabled", "adaptive"):
             # Sampling knobs are rejected alongside thinking (and removed outright on 4.7+).
@@ -670,6 +685,7 @@ class AnthropicProvider(ProviderClient):
             reasoning=_reasoning_text(thinking_blocks),
             extras=_thinking_extras(thinking_blocks),
             usage=_usage_from(getattr(response, "usage", None)),
+            output_limit=kwargs.get("max_tokens"),
         )
 
     def capabilities(self, model: str) -> ModelCapabilities:
@@ -792,6 +808,7 @@ class AnthropicProvider(ProviderClient):
                     reasoning=_reasoning_text(thinking_blocks),
                     extras=_thinking_extras(thinking_blocks),
                     usage=usage,
+                    output_limit=kwargs.get("max_tokens"),
                 )
             )
         finally:

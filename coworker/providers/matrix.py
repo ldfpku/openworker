@@ -209,15 +209,25 @@ MATRIX: dict[str, ModelEntry] = {
     # back via pdf_support.py like the other compat vendors.
     "meta:muse-spark-1.1": ModelEntry("Muse Spark 1.1 · Meta", _AGENTIC_IMAGE),
     "zai:glm-5.2": ModelEntry("GLM-5.2 · Z AI", _AGENTIC, 128_000),
+    # DeepSeek's native API exposes the full 1M context for both V4 variants
+    # (verified against the official model table 2026-08-10).
     "deepseek:deepseek-v4-flash": ModelEntry(
-        "DeepSeek V4 Flash · DeepSeek", _AGENTIC, 128_000
+        "DeepSeek V4 Flash · DeepSeek", _AGENTIC, 1_000_000
     ),
     "deepseek:deepseek-v4-pro": ModelEntry(
-        "DeepSeek V4 Pro · DeepSeek", _AGENTIC, 128_000
+        "DeepSeek V4 Pro · DeepSeek", _AGENTIC, 1_000_000
     ),
     "kimi:kimi-k2.6": ModelEntry("Kimi K2.6 · Moonshot", _AGENTIC, 256_000),
     "minimax:MiniMax-M2.5": ModelEntry("MiniMax M2.5 · MiniMax"),
     "qwen:qwen3-max": ModelEntry("Qwen3 Max · Alibaba", _AGENTIC, 256_000),
+    # Qwen3.8 Max: multimodal (text/image/video/document) per Alibaba's model card, unlike
+    # the text-only Qwen3 Max above — needs its own entry so the qwen prefix heuristic in
+    # capabilities.py (vision=False for the whole family) doesn't strip images client-side
+    # (owner report 2026-08-02). PDF unverified over the compat surface, same caveat as
+    # Muse Spark, so it falls back via pdf_support.py too. Model Studio lists the GA id
+    # `qwen3.8-max` with a 1,000,000 context window (read 2026-10-17); the earlier
+    # `qwen3.8-max-preview` id is no longer listed.
+    "qwen:qwen3.8-max": ModelEntry("Qwen3.8 Max · Alibaba", _AGENTIC_IMAGE, 1_000_000),
     "xai:grok-4.3": ModelEntry("Grok 4.3 · xAI", _AGENTIC, 256_000),
     "mistral:mistral-large-latest": ModelEntry(
         "Mistral Large · Mistral", _AGENTIC, 128_000
@@ -248,23 +258,27 @@ MATRIX: dict[str, ModelEntry] = {
     "fireworks:accounts/fireworks/models/kimi-k2p6": ModelEntry(
         "Kimi K2.6 · via Fireworks", _AGENTIC, 256_000
     ),
+    # fireworks.ai/models/fireworks/deepseek-v4-pro lists "1040k tokens" (read 2026-10-17),
+    # a little under the model-level 1M.
     "fireworks:accounts/fireworks/models/deepseek-v4-pro": ModelEntry(
-        "DeepSeek V4 Pro · via Fireworks", _AGENTIC, 128_000
+        "DeepSeek V4 Pro · via Fireworks", _AGENTIC, 1_040_000
     ),
     "fireworks:accounts/fireworks/models/llama4-maverick-instruct-basic": ModelEntry(
         "Llama 4 Maverick · via Fireworks", _AGENTIC, 1_000_000
     ),
     # OpenRouter slugs are lowercase `<lab>/<model>` (checked against their catalog
-    # 2026-07-25); same labs as above, one key for all of them.
+    # 2026-07-25); same labs as above, one key for all of them. Kimi K2.6 and Llama 4
+    # Maverick declare image input (architecture.input_modalities, 2026-08-09); PDFs
+    # unverified over the compat surface, like Kimi K3 above.
     "openrouter:z-ai/glm-5.2": ModelEntry("GLM-5.2 · via OpenRouter", _AGENTIC, 128_000),
     "openrouter:moonshotai/kimi-k2.6": ModelEntry(
-        "Kimi K2.6 · via OpenRouter", _AGENTIC, 256_000
+        "Kimi K2.6 · via OpenRouter", _AGENTIC_IMAGE, 256_000
     ),
     "openrouter:deepseek/deepseek-v4-pro": ModelEntry(
-        "DeepSeek V4 Pro · via OpenRouter", _AGENTIC, 128_000
+        "DeepSeek V4 Pro · via OpenRouter", _AGENTIC, 1_048_576
     ),
     "openrouter:meta-llama/llama-4-maverick": ModelEntry(
-        "Llama 4 Maverick · via OpenRouter", _AGENTIC, 1_000_000
+        "Llama 4 Maverick · via OpenRouter", _AGENTIC_IMAGE, 1_000_000
     ),
     # Stealth/cloaked alpha (catalog-checked 2026-08-24: 1,048,576 ctx, tool calling).
     # These are temporary lab previews — expect the slug to vanish when the lab ships
