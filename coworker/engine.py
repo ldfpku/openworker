@@ -1855,6 +1855,9 @@ class TurnEngine:
                 payload["reasoning"] = turn.reasoning
             if turn.usage is not None:
                 payload["usage"] = {"model": self.model, **turn.usage.as_dict()}
+            if turn.output_limit:
+                # The output ceiling the provider sent (OPE-177).
+                payload["max_output_tokens"] = turn.output_limit
             yield Event(EventType.ASSISTANT_MESSAGE, payload)
 
             # Something DID arrive, but it was cut off. It stays (the user has already
@@ -3906,9 +3909,9 @@ class TurnEngine:
         """
         # Strip the display-only sidecars — `source` (connector cards), `_display`
         # (e.g. filter-hidden counts), `ts` (append-time timestamps), `t0` (when the tool
-        # actually started running), `reasoning` (thinking text), `usage` (token counts)
-        # and `finish_reason`/`truncated`/`aborted` (how the round-trip ended) — copying
-        # only messages that carry one. Whole `notice` messages (error/interrupted/
+        # actually started running), `reasoning` (thinking text), `usage` (token counts),
+        # `max_output_tokens` (the ceiling sent, OPE-177) and `finish_reason`/`truncated`/
+        # `aborted` (how the round-trip ended) — copying only messages that carry one. Whole `notice` messages (error/interrupted/
         # model-switch markers) are display-only too, and so is an `aborted` assistant
         # message (the thinking from a turn that delivered nothing, kept for the
         # transcript alone): both are dropped entirely rather than stripped, because an
@@ -3921,6 +3924,7 @@ class TurnEngine:
             "t0",
             "reasoning",
             "usage",
+            "max_output_tokens",
             "finish_reason",
             "truncated",
             "aborted",
@@ -4241,6 +4245,11 @@ def _assistant_message(
         # 2026-09-18 report unexplainable from the record alone. Display/diagnostic
         # sidecar like `usage` — stripped before every provider call.
         message["finish_reason"] = turn.finish_reason
+    if turn.output_limit:
+        # The per-reply output ceiling the provider actually sent (OPE-177), so a
+        # `length` finish can be read against the limit that produced it. Display
+        # sidecar like `usage`: stripped before every provider call.
+        message["max_output_tokens"] = turn.output_limit
     if turn.truncated:
         # Only set when the provider can tell a cut stream from a clean one, and only
         # when it was cut (providers/base.py) — so its absence means "clean", never

@@ -51,6 +51,14 @@ class Config:
     # the summary itself never gets written. Environment override:
     # COWORKER_COMPACTION_SUMMARY_MAX_TOKENS.
     compaction_summary_max_tokens: Optional[int] = None
+    # OPE-177: per-reply output-token ceiling sent to the provider as `max_tokens`
+    # (thinking, visible text and tool-call arguments all count against it). Unset = each
+    # provider's own default (32,000 for Anthropic, the OpenAI-compatible endpoints and the
+    # company gateway; Bedrock 4,096; Gemini leaves it to Google). Anthropic recommends
+    # ~64,000 at high effort. A reply that hits the ceiling is nudged to continue (OPE-171,
+    # 1.0.3) — a higher ceiling simply means fewer nudges. Environment override:
+    # COWORKER_MAX_OUTPUT_TOKENS. An explicit `build_engine(model_settings=...)` wins.
+    max_output_tokens: Optional[int] = None
     allowed_commands: list[str] = field(
         default_factory=lambda: list(DEFAULT_ALLOWED_COMMANDS)
     )
@@ -105,6 +113,7 @@ _FIELDS = {
     "max_turn_tokens",
     "compaction_cap_tokens",
     "compaction_summary_max_tokens",
+    "max_output_tokens",
     "allowed_commands",
     "auto_allow",
     "allowed_domains",
@@ -136,6 +145,7 @@ _WORKSPACE_FIELDS = _FIELDS - _GLOBAL_ONLY_FIELDS
 
 COMPACTION_CAP_TOKENS_ENV = "COWORKER_COMPACTION_CAP_TOKENS"
 COMPACTION_SUMMARY_MAX_TOKENS_ENV = "COWORKER_COMPACTION_SUMMARY_MAX_TOKENS"
+MAX_OUTPUT_TOKENS_ENV = "COWORKER_MAX_OUTPUT_TOKENS"
 
 
 def global_config_path() -> Path:
@@ -195,6 +205,9 @@ def load_config(
         cfg.compaction_summary_max_tokens,
         "compaction_summary_max_tokens",
         COMPACTION_SUMMARY_MAX_TOKENS_ENV,
+    )
+    cfg.max_output_tokens = _positive_int_setting(
+        cfg.max_output_tokens, "max_output_tokens", MAX_OUTPUT_TOKENS_ENV
     )
     return cfg
 

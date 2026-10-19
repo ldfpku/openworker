@@ -631,6 +631,10 @@ class GeminiProvider(ProviderClient):
         settings: dict[str, Any],
     ) -> dict[str, Any]:
         system, contents = convert_messages(messages)
+        # The engine's generic `max_tokens` (a configured `max_output_tokens`, OPE-177, or
+        # a one-shot helper's own ceiling) becomes Gemini's `max_output_tokens`; unset
+        # stays unset — Google applies the model's own default, and `output_limit` on the
+        # turn is None to say so.
         if "max_tokens" in settings and "max_output_tokens" not in settings:
             settings["max_output_tokens"] = settings["max_tokens"]
         if "stop" in settings and "stop_sequences" not in settings:
@@ -677,6 +681,7 @@ class GeminiProvider(ProviderClient):
             reasoning="".join(parsed.thoughts) or None,
             extras=_signature_extras(parsed.text_sig, parsed.call_sigs),
             usage=_usage_from(getattr(response, "usage_metadata", None)),
+            output_limit=settings.get("max_output_tokens"),
         )
 
     def capabilities(self, model: str) -> ModelCapabilities:
@@ -744,6 +749,7 @@ class GeminiProvider(ProviderClient):
                     reasoning="".join(thought_parts) or None,
                     extras=_signature_extras(text_sig, call_sigs),
                     usage=usage,
+                    output_limit=settings.get("max_output_tokens"),
                 )
             )
         finally:
