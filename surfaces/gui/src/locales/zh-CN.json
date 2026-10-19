@@ -1067,7 +1067,7 @@
   "PostHog URL": "PostHog URL",
   "Posts messages and uploads files as the bot.": "以机器人身份发布消息和上传文件。",
   "Posture Worker": "云配置组员",
-  "Prefilled with Alibaba Model Studio's international endpoint. China (Beijing): https://dashscope.aliyuncs.com/compatible-mode/v1": "已预填阿里云百炼（Model Studio）的国际端点。中国（北京）：https://dashscope.aliyuncs.com/compatible-mode/v1",
+  "Prefilled with the international endpoint. If your key was issued on the China mainland portal (qwencloud.com), switch to https://dashscope.aliyuncs.com/compatible-mode/v1 — keys only work against the endpoint in the region where they were created.": "已预填国际端点。如果你的 key 是在国内站（qwencloud.com / 阿里云百炼）申请的，请改成 https://dashscope.aliyuncs.com/compatible-mode/v1——key 只能用在申请它的那个区域的端点上。",
   "Prefilled with DeepSeek's official endpoint; edit only for a regional or proxy variant.": "已预填 DeepSeek 官方端点；仅在需要区域或代理地址时修改。",
   "Prefilled with Fireworks AI's official endpoint; edit only for a regional or proxy variant.": "已预填 Fireworks AI 官方端点；仅在需要区域或代理地址时修改。",
   "Prefilled with MiniMax's official endpoint; edit only for a regional or proxy variant.": "已预填 MiniMax 官方端点；仅在需要区域或代理地址时修改。",
