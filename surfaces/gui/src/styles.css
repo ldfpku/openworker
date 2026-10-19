@@ -568,7 +568,11 @@ body {
    (upstream #208). The picker sits inside the tour's `data-tour="model"` wrapper, so the whole
    chain down to the pill must be allowed to shrink: wrapper (min-w-0 in Composer.tsx) → .dd →
    .pill (whose global 240px cap would otherwise win) → .pill-label (already ellipsised). The same
-   rule covers the "No model" / loading pills, which sit in the wrapper without a .dd. */
+   rule covers the "No model" / loading pills, which sit in the wrapper without a .dd. The
+   wrapper carries the 240px cap itself: a percentage max-width against a content-sized box
+   counts as none while the pill is measured, so without it a long label would run past 240px
+   on a wide composer (Composer.tsx keeps the wrapper min-w-0). */
+.composer [data-tour="model"] { max-width: 240px; }
 .composer [data-tour="model"] .dd { min-width: 0; max-width: 100%; }
 .composer [data-tour="model"] .pill { max-width: 100%; }
 
