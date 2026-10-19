@@ -338,13 +338,18 @@ export function Composer(props: Props) {
   // and an unguarded second clear would wipe the prefill, whose own guard stops it reapplying.
   // Seeded with the CURRENT resetKey so a mount never clears: a restored draft (§ surface
   // switch) belongs to this very conversation — only a LATER resetKey change wipes it.
+  // "Wipes" means: the box becomes whatever the owner hands in for the INCOMING conversation
+  // (its own saved draft — App keeps the text per session in localStorage so a reload, which
+  // boots on a throwaway id and then switches to the resumed session, gets it back), else
+  // empty. Nothing bleeds: the previous conversation's text is never carried over.
   const clearedFor = useRef<string | undefined>(props.resetKey);
   useEffect(() => {
     if (clearedFor.current === props.resetKey) return;
     clearedFor.current = props.resetKey;
-    setText("");
-    setAttachments([]);
-    setPendingSkill(null);
+    const incoming = props.draft;
+    setText(incoming?.text ?? "");
+    setAttachments(incoming?.attachments ?? []);
+    setPendingSkill(incoming?.skill ?? null);
     resetEnhance();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.resetKey]);
@@ -1010,7 +1015,7 @@ export function Composer(props: Props) {
         />
 
         {/* Three-control row (§22): + attach · Mode ⌄ …(right)… model (fresh only) · send */}
-        <div className="px-2.5 pb-2.5 pt-1 flex items-center gap-1.5">
+        <div className="px-2.5 pb-2.5 pt-1 flex min-w-0 items-center gap-1.5">
           {/* + attach menu */}
           <div className="relative">
             <IconButton
@@ -1180,8 +1185,12 @@ export function Composer(props: Props) {
           {/* data-tour wrapper: the guided tour spotlights whichever model control is live.
               Fork-only — upstream has no tour, so a merge that rewrites this block drops the
               wrapper silently and the tour skips its "Pick a model" step (2026-09-01). */}
+          {/* min-w-0: this is the one control allowed to give way. Every other item on the row
+              is flex:none, so when a narrow session column (artifact panel open, small window)
+              runs out of room the model label truncates instead of pushing Send/Stop out of the
+              composer (upstream #208, 4178d680; see `.composer [data-tour="model"]` in styles.css). */}
           {!dictation?.recording && (
-            <span className="inline-flex" data-tour="model">
+            <span className="inline-flex min-w-0" data-tour="model">
               {needsModel ? (
                 <button
                   className="pill model-warn chip"
