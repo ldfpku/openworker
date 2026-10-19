@@ -455,10 +455,15 @@ class PermissionEngine:
             url = str(arguments.get("url", ""))
             if self._domain_allowed(url, include_session=honor_session_grants):
                 return Decision(True, "domain on allowlist")
+        # Exec risk never takes the name-only shortcut: a legacy `run_shell` entry in a
+        # task's always_allowed_tools (or any name-level session grant) would otherwise
+        # bypass the command allowlist entirely — any command, unattended, indefinitely.
+        # Shell still routes through `_command_allowed` / `session_allow_commands` below.
         if (
             honor_session_grants
             and tool_name in self.session_allow_tools
             and not is_connector
+            and not is_shell
         ):
             return Decision(True, "tool allowed for session")
 

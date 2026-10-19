@@ -2218,3 +2218,27 @@ async def test_scheduled_run_reads_a_spreadsheet_without_asking(tmp_path, monkey
 
     assert run.status == "ok", run.error
     assert manager.inbox.pending(run.session_id) == []
+
+
+# -- standing allowances reach the permission engine ---------------------------
+def test_seed_task_permissions_feeds_always_allowed_commands(tmp_path):
+    """`always_allowed_commands` existed on the model but never reached the engine, so a
+    scheduled task with pre-approved shell commands still parked on an approval nobody
+    would answer (and the overlap guard then skipped every later run). A name-only
+    `run_shell` entry, by contrast, must NOT wave arbitrary commands through."""
+    from types import SimpleNamespace
+
+    from coworker.permissions import PermissionEngine
+    from coworker.server.manager import SessionManager
+
+    task = _task(
+        workspace=str(tmp_path),
+        always_allowed_tools=["run_shell"],
+        always_allowed_commands=["make build"],
+    )
+    engine = SimpleNamespace(permissions=PermissionEngine(workspace_root=tmp_path))
+
+    SessionManager._seed_task_permissions(SimpleNamespace(), engine, task)
+
+    assert engine.permissions.evaluate("run_shell", {"command": "make build"}, None).allowed
+    assert engine.permissions.evaluate("run_shell", {"command": "rm -rf /"}, None).needs_user
