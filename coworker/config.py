@@ -53,8 +53,9 @@ class Config:
     compaction_summary_max_tokens: Optional[int] = None
     # OPE-177: per-reply output-token ceiling sent to the provider as `max_tokens`
     # (thinking, visible text and tool-call arguments all count against it). Unset = each
-    # provider's own default (32,000 for Anthropic, the OpenAI-compatible endpoints and the
-    # company gateway; Bedrock 4,096; Gemini leaves it to Google). Anthropic recommends
+    # provider's own default (32,000 for Anthropic and every Chat Completions endpoint,
+    # the company gateway's included; Bedrock 4,096; the Responses API and Gemini leave it
+    # to the server). Anthropic recommends
     # ~64,000 at high effort. A reply that hits the ceiling is nudged to continue (OPE-171,
     # 1.0.3) — a higher ceiling simply means fewer nudges. Environment override:
     # COWORKER_MAX_OUTPUT_TOKENS. An explicit `build_engine(model_settings=...)` wins.

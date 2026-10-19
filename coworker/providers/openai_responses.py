@@ -87,6 +87,15 @@ def _remember_refused(model: Any, before: dict[str, Any], after: dict[str, Any])
         _REFUSED_PARAMS.setdefault(str(model or ""), set()).update(dropped)
 
 
+def _sent_output_limit(kwargs: dict[str, Any]) -> Optional[int]:
+    """The `max_output_tokens` this request actually went out with (OPE-177): the
+    request's own value, unless the model is known to refuse the param — `_create` drops
+    refused params before sending and remembers each new refusal, so asking AFTER the
+    call is exact. None means the server applied its own default."""
+    value = _without_refused(kwargs).get("max_output_tokens")
+    return int(value) if value else None
+
+
 def _param_fix_retry(kwargs: dict[str, Any], exc: Exception) -> dict[str, Any]:
     """Kwargs for the one retry an unsupported-parameter error earns, or re-raise.
 
@@ -392,6 +401,9 @@ class OpenAIResponsesProvider(ProviderClient):
         settings: dict[str, Any],
     ) -> dict[str, Any]:
         instructions, items = convert_messages(messages)
+        # The engine's generic `max_tokens` (a configured `max_output_tokens`, OPE-177, or
+        # a one-shot helper's own ceiling) is this API's `max_output_tokens`; unset stays
+        # unset — the server applies the model's default and `output_limit` says None.
         if "max_tokens" in settings and "max_output_tokens" not in settings:
             settings = {**settings, "max_output_tokens": settings["max_tokens"]}
         kwargs: dict[str, Any] = {
@@ -446,7 +458,9 @@ class OpenAIResponsesProvider(ProviderClient):
             model=model, messages=messages, tools=tools, settings=settings
         )
         response = self._create(self._ensure_client(), kwargs)
-        return _parse_response(response)
+        turn = _parse_response(response)
+        turn.output_limit = _sent_output_limit(kwargs)
+        return turn
 
     def capabilities(self, model: str) -> ModelCapabilities:
         return capabilities_for(model)
@@ -464,6 +478,7 @@ class OpenAIResponsesProvider(ProviderClient):
         )
         kwargs["stream"] = True
         events = self._create(self._ensure_client(), kwargs)
+        output_limit = _sent_output_limit(kwargs)
 
         try:
             text_parts: list[str] = []
@@ -504,12 +519,14 @@ class OpenAIResponsesProvider(ProviderClient):
                 turn = _parse_response(final)
                 if turn.text is None and not turn.tool_calls and text_parts:
                     turn.text = "".join(text_parts)
+                turn.output_limit = output_limit
                 yield StreamChunk(turn=turn)
             else:
                 yield StreamChunk(
                     turn=AssistantTurn(
                         text="".join(text_parts) or None,
                         reasoning="".join(reasoning_parts) or None,
+                        output_limit=output_limit,
                     )
                 )
         finally:

@@ -35,6 +35,7 @@ from coworker.providers.aigateway_provider import AIGatewayProvider, _Route
 from coworker.providers.anthropic_provider import DEFAULT_MAX_TOKENS as ANTHROPIC_DEFAULT
 from coworker.providers.gemini_provider import GeminiProvider
 from coworker.providers.openai_provider import _MAX_TOKENS_ERROR
+from coworker.providers.openai_responses import OpenAIResponsesProvider
 from coworker.providers.openai_provider import DEFAULT_MAX_TOKENS as OPENAI_DEFAULT
 from coworker.tools import ToolRegistry
 
@@ -314,6 +315,81 @@ def test_gateway_route_resend_carries_the_configured_limit():
         ]
         == OPENAI_DEFAULT
     )
+
+
+class _GatewaySpy:
+    """A gateway sub-client that records the settings it was handed."""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def complete(self, *, model, messages, tools=None, **kw):
+        self.calls.append({"model": model, **kw})
+        return AssistantTurn(text="ok", finish_reason="stop")
+
+
+def test_gateway_hands_the_configured_limit_to_every_wire():
+    # `AIGatewayProvider.complete` spreads the engine's settings into whichever
+    # sub-provider the model's wire selects — the OpenAI tier rides Responses (the
+    # company's most used models), Claude rides Messages, the rest Chat Completions. The
+    # configured value must reach all three unchanged; each sub-provider then maps it.
+    spies = {"responses": _GatewaySpy(), "messages": _GatewaySpy(), "chat": _GatewaySpy()}
+    p = AIGatewayProvider(base_url="https://gateway.example.com", access_token="jwt", clients=spies)
+    for model, wire in (
+        ("openai/gpt-6.1-sol", "responses"),
+        ("anthropic/claude-sonnet-5-5", "messages"),
+        ("workers-ai/@cf/zai-org/glm-5.3-flash", "chat"),
+    ):
+        p.complete(model=model, messages=[{"role": "user", "content": "x"}], max_tokens=64000)
+        assert spies[wire].calls[-1]["max_tokens"] == 64000, model
+
+
+# -- OpenAI Responses (the gateway's OpenAI tier) -------------------------------------
+
+
+class _FakeResponses:
+    def __init__(self, response):
+        self.kwargs: dict = {}
+
+        def create(**kwargs):
+            self.kwargs = kwargs
+            return response
+
+        self.responses = SimpleNamespace(create=create)
+
+
+def _responses_reply():
+    return SimpleNamespace(
+        output=[
+            {
+                "type": "message",
+                "id": "msg_1",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "hi"}],
+            }
+        ],
+        status="completed",
+        incomplete_details=None,
+    )
+
+
+def test_responses_maps_the_limit_and_reports_it():
+    fake = _FakeResponses(_responses_reply())
+    turn = OpenAIResponsesProvider(client=fake).complete(
+        model="gpt-6.1-sol", messages=[{"role": "user", "content": "x"}], max_tokens=64000
+    )
+    assert fake.kwargs["max_output_tokens"] == 64000
+    assert "max_tokens" not in fake.kwargs
+    assert turn.output_limit == 64000
+
+
+def test_responses_unset_leaves_the_ceiling_to_the_server():
+    fake = _FakeResponses(_responses_reply())
+    turn = OpenAIResponsesProvider(client=fake).complete(
+        model="gpt-6.1-sol", messages=[{"role": "user", "content": "x"}]
+    )
+    assert "max_output_tokens" not in fake.kwargs
+    assert turn.output_limit is None
 
 
 # -- Gemini (fork) ------------------------------------------------------------------
