@@ -1010,7 +1010,7 @@ export function Composer(props: Props) {
         />
 
         {/* Three-control row (§22): + attach · Mode ⌄ …(right)… model (fresh only) · send */}
-        <div className="px-2.5 pb-2.5 pt-1 flex items-center gap-1.5">
+        <div className="px-2.5 pb-2.5 pt-1 flex min-w-0 items-center gap-1.5">
           {/* + attach menu */}
           <div className="relative">
             <IconButton
@@ -1180,8 +1180,12 @@ export function Composer(props: Props) {
           {/* data-tour wrapper: the guided tour spotlights whichever model control is live.
               Fork-only — upstream has no tour, so a merge that rewrites this block drops the
               wrapper silently and the tour skips its "Pick a model" step (2026-09-01). */}
+          {/* min-w-0: this is the one control allowed to give way. Every other item on the row
+              is flex:none, so when a narrow session column (artifact panel open, small window)
+              runs out of room the model label truncates instead of pushing Send/Stop out of the
+              composer (upstream #208, 4178d680; see `.composer [data-tour="model"]` in styles.css). */}
           {!dictation?.recording && (
-            <span className="inline-flex" data-tour="model">
+            <span className="inline-flex min-w-0" data-tour="model">
               {needsModel ? (
                 <button
                   className="pill model-warn chip"

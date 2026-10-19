@@ -562,6 +562,16 @@ body {
 .pill.chip { background: var(--paper); border: 1px solid var(--line); }
 .pill.chip:hover { border-color: var(--line-strong); background: var(--paper); }
 
+/* The model picker shares the composer's single control row with the send/stop action (and, in
+   this fork, the enhance / pre-flight buttons). When an artifact panel or a small window narrows
+   that column, let the model label truncate instead of pushing the action outside the composer
+   (upstream #208). The picker sits inside the tour's `data-tour="model"` wrapper, so the whole
+   chain down to the pill must be allowed to shrink: wrapper (min-w-0 in Composer.tsx) → .dd →
+   .pill (whose global 240px cap would otherwise win) → .pill-label (already ellipsised). The same
+   rule covers the "No model" / loading pills, which sit in the wrapper without a .dd. */
+.composer [data-tour="model"] .dd { min-width: 0; max-width: 100%; }
+.composer [data-tour="model"] .pill { max-width: 100%; }
+
 /* dropdown popover */
 .dd { position: relative; }
 .dd-backdrop { position: fixed; inset: 0; z-index: 20; }
