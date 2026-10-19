@@ -1,7 +1,7 @@
 // A draft stays a draft while the transcript holds only mode bookkeeping (owner ask
 // 2026-09-02): the setup row stays, the model stays choosable, the header states no facts.
-import { describe, expect, it } from "vitest";
-import { hasConversation } from "./draft";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { draftStorageKey, hasConversation, readStoredDraft, writeStoredDraft } from "./draft";
 import { itemsFromMessages } from "./itemsFromMessages";
 import type { Item } from "./types";
 
@@ -61,5 +61,47 @@ describe("hasConversation (draft vs started)", () => {
       { role: "user", content: "hello" },
     ] as any);
     expect(hasConversation(items)).toBe(true);
+  });
+});
+
+// The unsent text survives a page reload (upstream f24b3fd4 / b90c02d5): per session in
+// localStorage, text only, removed the moment the box is empty, never an error.
+describe("composer draft storage (reload)", () => {
+  afterEach(() => {
+    localStorage.clear();
+    vi.restoreAllMocks();
+  });
+
+  it("keys per session under coworker:composer-draft:v1:<id>", () => {
+    expect(draftStorageKey("abc")).toBe("coworker:composer-draft:v1:abc");
+  });
+
+  it("round-trips text, per session; nothing stored reads as undefined (not an empty draft)", () => {
+    expect(readStoredDraft("s1")).toBeUndefined();
+    writeStoredDraft("s1", "half a thought");
+    expect(readStoredDraft("s1")).toBe("half a thought");
+    expect(readStoredDraft("s2")).toBeUndefined();
+    expect(localStorage.getItem("coworker:composer-draft:v1:s1")).toBe("half a thought");
+  });
+
+  it("empty text removes the entry (sent / cleared) and an empty session id is ignored", () => {
+    writeStoredDraft("s1", "half a thought");
+    writeStoredDraft("s1", "");
+    expect(localStorage.getItem("coworker:composer-draft:v1:s1")).toBeNull();
+    expect(readStoredDraft("s1")).toBeUndefined();
+    writeStoredDraft("", "stray");
+    expect(localStorage.length).toBe(0);
+    expect(readStoredDraft("")).toBeUndefined();
+  });
+
+  it("a throwing localStorage (private mode, quota) is swallowed on both read and write", () => {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("QuotaExceededError");
+    });
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("SecurityError");
+    });
+    expect(() => writeStoredDraft("s1", "half a thought")).not.toThrow();
+    expect(readStoredDraft("s1")).toBeUndefined();
   });
 });

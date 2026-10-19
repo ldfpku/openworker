@@ -117,4 +117,26 @@ describe("Composer — the draft survives a surface switch", () => {
     expect(screen.queryByText("notes.txt")).toBeNull();
     expect(onDraftChange).toHaveBeenLastCalledWith({ text: "", attachments: [], skill: null });
   });
+
+  it("a resetKey change adopts the INCOMING conversation's own draft (reload: boot switches from a throwaway id to the resumed session) — and never reports the old text under the new key", async () => {
+    stubFetch();
+    const onDraftChange = vi.fn();
+    const old: ComposerDraft = { text: "old session text", attachments: [NOTES], skill: null };
+    const { rerender } = render(
+      <Composer {...props({ resetKey: "s1", draft: old, onDraftChange })} />,
+    );
+    expect(box().value).toBe("old session text");
+    const before = onDraftChange.mock.calls.length;
+
+    const saved: ComposerDraft = { text: "draft before reload", attachments: [], skill: null };
+    rerender(<Composer {...props({ resetKey: "s2", draft: saved, onDraftChange })} />);
+    await waitFor(() => expect(box().value).toBe("draft before reload"));
+    // The old conversation's attachment went with its text.
+    expect(screen.queryByText("notes.txt")).toBeNull();
+    // Every report after the switch is the incoming draft — the owner stores reports under
+    // the CURRENT session key, so a stray "old session text" here would clobber s2's entry.
+    const after = onDraftChange.mock.calls.slice(before).map((c) => c[0] as ComposerDraft);
+    expect(after.length).toBeGreaterThan(0);
+    for (const d of after) expect(d.text).toBe("draft before reload");
+  });
 });

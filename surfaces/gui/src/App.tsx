@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { useTranslation } from "react-i18next";
 import {
   announceInboxUnlock,
@@ -67,7 +67,7 @@ import {
 } from "./modeNotice";
 import { answerSupersededNotice, promptResolvedNotice } from "./promptResolved";
 import { itemsFromMessages } from "./itemsFromMessages";
-import { hasConversation } from "./draft";
+import { hasConversation, readStoredDraft, writeStoredDraft } from "./draft";
 import { normalizeMode } from "./modes";
 import type { ModelPrices, ModelTiers } from "./modelPrice";
 import { BASELINE_PERSONA, fallbackAgent } from "./personaLifecycle";
@@ -517,6 +517,15 @@ export function App() {
   // state. The unsent draft is kept here instead, keyed by session, and restored on remount
   // (owner ask 2026-09-02).
   const composerDraftRef = useRef<({ key: string } & ComposerDraft) | null>(null);
+  // …and the text also goes to localStorage per session (draft.ts), so a reload hands it back.
+  // Read once per session id, not per render: the lift above wins whenever it is for this
+  // session (it still has the attachments); the stored copy covers a fresh page — including
+  // boot, which resumes the last session by switching from a throwaway id to the resumed one,
+  // where the composer adopts the incoming draft instead of clearing (Composer's resetKey effect).
+  const storedDraft = useMemo<ComposerDraft | undefined>(() => {
+    const text = readStoredDraft(sessionId);
+    return text ? { text, attachments: [], skill: null } : undefined;
+  }, [sessionId]);
 
   // Persona metadata drives workspace behavior by FAMILY, not by hardcoded id (so a DevOps/SecOps
   // code-family persona gates a folder like Code, and a knowledge persona starts orphan like Cowork).
@@ -2598,9 +2607,11 @@ export function App() {
               unattended={unattended}
               onUnattendedChange={agent !== "chat" ? toggleUnattended : undefined}
               prefill={composerPrefill}
-              draft={composerDraftRef.current?.key === sessionId ? composerDraftRef.current : undefined}
+              draft={composerDraftRef.current?.key === sessionId ? composerDraftRef.current : storedDraft}
               onDraftChange={(d) => {
                 composerDraftRef.current = { key: sessionId, ...d };
+                // Sent or emptied → the entry goes; the composer clears its box after onSend.
+                writeStoredDraft(sessionId, d.text);
               }}
               resetKey={sessionId}
               usage={usage}

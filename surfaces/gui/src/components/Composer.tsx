@@ -338,13 +338,18 @@ export function Composer(props: Props) {
   // and an unguarded second clear would wipe the prefill, whose own guard stops it reapplying.
   // Seeded with the CURRENT resetKey so a mount never clears: a restored draft (§ surface
   // switch) belongs to this very conversation — only a LATER resetKey change wipes it.
+  // "Wipes" means: the box becomes whatever the owner hands in for the INCOMING conversation
+  // (its own saved draft — App keeps the text per session in localStorage so a reload, which
+  // boots on a throwaway id and then switches to the resumed session, gets it back), else
+  // empty. Nothing bleeds: the previous conversation's text is never carried over.
   const clearedFor = useRef<string | undefined>(props.resetKey);
   useEffect(() => {
     if (clearedFor.current === props.resetKey) return;
     clearedFor.current = props.resetKey;
-    setText("");
-    setAttachments([]);
-    setPendingSkill(null);
+    const incoming = props.draft;
+    setText(incoming?.text ?? "");
+    setAttachments(incoming?.attachments ?? []);
+    setPendingSkill(incoming?.skill ?? null);
     resetEnhance();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.resetKey]);
