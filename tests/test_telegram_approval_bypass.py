@@ -119,6 +119,30 @@ def test_telegram_reply_can_still_answer_a_question(tmp_path):
     assert manager.inbox.get(question.id).resolution == "A"
 
 
+def test_chat_reply_leaves_a_plan_item_pending_for_the_app(tmp_path):
+    """A plan item resolves with a structured payload ({"approved": …, "mode": …}) that a
+    bare chat reply cannot carry. `_parse_inbox_json("allow")` is `{}`, so the user's
+    "yes" used to be recorded as a REJECTION and the item consumed — it could no longer be
+    answered in-app either. The token is recognized (consumed, like a refused protected
+    approval above), but the item stays pending for the app."""
+    manager = _manager(tmp_path)
+    plan = manager.inbox.add_plan("s1", "Approve the plan?", body="1. ship it")
+    consumed = manager._resolve_inbox_reply(_tg_reply(f"approve [ow:{plan.id}]"))
+    assert consumed is True
+    assert manager.inbox.get(plan.id).state == "pending"
+    assert manager.inbox.get(plan.id).resolution is None
+
+
+def test_chat_reply_leaves_a_directory_item_pending_for_the_app(tmp_path):
+    manager = _manager(tmp_path)
+    folder = manager.inbox.add_directory(
+        "s1", "Grant access?", data={"path": "/srv/data", "writable": False}
+    )
+    consumed = manager._resolve_inbox_reply(_tg_reply(f"allow [ow:{folder.id}]"))
+    assert consumed is True
+    assert manager.inbox.get(folder.id).state == "pending"
+
+
 def test_slack_bound_item_is_not_resolvable_from_telegram(tmp_path):
     # Cross-transport: an item whose inbox is bound to Slack must not be resolved by a
     # Telegram reply, even though Slack's own owner check would apply on the Slack lane.

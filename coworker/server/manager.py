@@ -7294,6 +7294,10 @@ class SessionManager:
         engine.permissions.task_rules = task.standing_rules()
         for tool in task.name_allowed_tools():
             engine.permissions.allow_tool_for_session(tool)
+        # Pre-approved shell commands: the model field existed, but was never fed to the
+        # engine, so an unattended run still parked on an approval nobody would answer.
+        for cmd in task.always_allowed_commands:
+            engine.permissions.allow_command_for_session(cmd)
 
     def _build_task_engine(self, task, *, session_id: str) -> TurnEngine:
         ag = get_agent(task.agent)
@@ -7586,6 +7590,14 @@ class SessionManager:
         def _resolve(item_id: str, resolution: str) -> bool:
             item = self.inbox.get(item_id)
             if item is None:
+                return False
+            # Plan and directory items need a structured JSON payload (approved/granted,
+            # mode/path/writable) that a bare chat reply cannot provide. The mirrored
+            # message already says "(Open the app to respond.)" and buttons_for returns
+            # [] for these kinds — honour that by leaving them pending instead of
+            # consuming them into a silent refusal. (The WeChat numbered-card path
+            # builds the structured payload itself and never reaches here.)
+            if item.kind in {"plan", "directory"}:
                 return False
             platform = getattr(event.source, "platform", "")
             if item.kind in self._PROTECTED_ITEM_KINDS:

@@ -82,28 +82,39 @@ def build_callables(
         name = tool_name(server.name, mcp_tool.name)
         remote = mcp_tool.name
 
-        def _invoke(_remote: str = remote, **kwargs: Any) -> Any:
-            future = asyncio.run_coroutine_threadsafe(call_async(_remote, kwargs), loop)
-            # Cancelling THIS future propagates onto the task on the server loop
-            # (`run_coroutine_threadsafe` chains the two), so the request is actually
-            # dropped rather than merely stopped being waited for. `add_interrupt_hook`
-            # fires the hook on the spot when Stop is already pending, which closes the
-            # window between the call starting and the hook being attached; `cancel` is
-            # idempotent and thread-safe, as that contract requires.
-            detach = (
-                register_stop_hook(future.cancel)
-                if register_stop_hook is not None
-                else None
-            )
-            try:
-                return future.result(timeout)
-            except concurrent.futures.CancelledError:
-                # Same shape `run_shell` records when `interrupt_now` cuts it short: a
-                # result dict carrying `error`, not a raised exception.
-                return {"error": "interrupted by user"}
-            finally:
-                if detach is not None:
-                    detach()
+        # Bind `remote` in a dedicated closure rather than a default argument. The
+        # default-argument form (`_remote=remote`) also defeats late binding, but it
+        # exposes the routing target as a caller-overridable keyword: a model-supplied
+        # `_remote` in the tool-call arguments would then re-route an approved, filtered
+        # call to any other tool on this server, since the approval gate and the
+        # include/exclude filter only ever see the visible tool name.
+        def _make_invoke(remote: str) -> Callable[..., Any]:
+            def _invoke(**kwargs: Any) -> Any:
+                future = asyncio.run_coroutine_threadsafe(call_async(remote, kwargs), loop)
+                # Cancelling THIS future propagates onto the task on the server loop
+                # (`run_coroutine_threadsafe` chains the two), so the request is actually
+                # dropped rather than merely stopped being waited for. `add_interrupt_hook`
+                # fires the hook on the spot when Stop is already pending, which closes the
+                # window between the call starting and the hook being attached; `cancel` is
+                # idempotent and thread-safe, as that contract requires.
+                detach = (
+                    register_stop_hook(future.cancel)
+                    if register_stop_hook is not None
+                    else None
+                )
+                try:
+                    return future.result(timeout)
+                except concurrent.futures.CancelledError:
+                    # Same shape `run_shell` records when `interrupt_now` cuts it short: a
+                    # result dict carrying `error`, not a raised exception.
+                    return {"error": "interrupted by user"}
+                finally:
+                    if detach is not None:
+                        detach()
+
+            return _invoke
+
+        _invoke = _make_invoke(remote)
 
         # We attach the schema + metadata explicitly (rather than via `ai.tool`, which would
         # try to derive a schema from this `**kwargs` wrapper): the registry reads both attrs.
