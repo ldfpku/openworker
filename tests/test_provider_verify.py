@@ -225,6 +225,85 @@ def test_verify_unexpected_status(monkeypatch):
     assert "500" in res["error"]
 
 
+# -- verify_provider_key: transport failures carry their cause (upstream #505) -------------
+def test_verify_transport_failure_includes_cause_and_hint(monkeypatch):
+    import httpx
+
+    _patch_get(
+        monkeypatch,
+        raise_exc=httpx.ConnectError(
+            "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: "
+            "unable to get local issuer certificate (_ssl.c:1000)"
+        ),
+    )
+    result = verify_provider_key("openai", api_key="sk-x")
+    assert result["ok"] is False
+    assert "CERTIFICATE_VERIFY_FAILED" in result["error"]
+    assert "CA bundle" in result["error"]
+
+
+def test_verify_dns_failure_names_dns(monkeypatch):
+    import httpx
+
+    _patch_get(monkeypatch, raise_exc=httpx.ConnectError("[Errno -3] nodename nor servname provided"))
+    error = verify_provider_key("openai", api_key="sk-x")["error"]
+    assert "DNS" in error
+    assert "[Errno -3]" in error
+
+
+def test_verify_timeout_says_timed_out(monkeypatch):
+    import httpx
+
+    _patch_get(monkeypatch, raise_exc=httpx.ConnectTimeout("The request timed out."))
+    error = verify_provider_key("openai", api_key="sk-x")["error"]
+    assert "timed out" in error
+
+
+def test_verify_tls_handshake_timeout_reads_as_tls_not_generic_timeout(monkeypatch):
+    # The failure this network hits most (2026-10): the TCP connect succeeds, the TLS
+    # handshake never completes. Python spells it "The handshake operation timed out";
+    # it must point at TLS (proxy / VPN), not read as a plain timeout.
+    import httpx
+
+    _patch_get(
+        monkeypatch,
+        raise_exc=httpx.ConnectTimeout("_ssl.c:980: The handshake operation timed out"),
+    )
+    error = verify_provider_key("openai", api_key="sk-x")["error"]
+    assert "TLS handshake" in error and "ConnectTimeout" in error
+
+
+def test_verify_silent_timeout_class_still_says_timed_out(monkeypatch):
+    # httpx raises ConnectTimeout with an EMPTY message on some paths; the class name is
+    # the only evidence left, and it is enough.
+    import httpx
+
+    _patch_get(monkeypatch, raise_exc=httpx.ConnectTimeout(""))
+    assert verify_provider_key("openai", api_key="sk-x") == {
+        "ok": False,
+        "error": "Couldn't reach OpenAI (ConnectTimeout — the connection timed out).",
+    }
+
+
+def test_verify_silent_exception_falls_back_to_class_name_only(monkeypatch):
+    class Weird(Exception):
+        pass
+
+    _patch_get(monkeypatch, raise_exc=Weird())
+    assert verify_provider_key("openai", api_key="sk-x") == {"ok": False, "error": "Couldn't reach OpenAI (Weird)."}
+
+
+def test_verify_gemini_relay_transport_failure_carries_its_cause(monkeypatch):
+    # The Gemini Test goes through the company relay (`_catalog_request`'s gemini branch),
+    # the second most used path here — a DNS miss on the relay host must say so.
+    import httpx
+
+    _patch_get(monkeypatch, raise_exc=httpx.ConnectError("[Errno 11001] getaddrinfo failed"))
+    error = verify_provider_key("gemini", api_key="AIza-x")["error"]
+    assert error.startswith("Couldn't reach Gemini")
+    assert "getaddrinfo failed" in error and "DNS" in error
+
+
 # -- custom endpoint: no vendor default, so a blank URL must never probe api.openai.com ---
 
 
