@@ -7587,6 +7587,14 @@ class SessionManager:
             item = self.inbox.get(item_id)
             if item is None:
                 return False
+            # Plan and directory items need a structured JSON payload (approved/granted,
+            # mode/path/writable) that a bare chat reply cannot provide. The mirrored
+            # message already says "(Open the app to respond.)" and buttons_for returns
+            # [] for these kinds — honour that by leaving them pending instead of
+            # consuming them into a silent refusal. (The WeChat numbered-card path
+            # builds the structured payload itself and never reaches here.)
+            if item.kind in {"plan", "directory"}:
+                return False
             platform = getattr(event.source, "platform", "")
             if item.kind in self._PROTECTED_ITEM_KINDS:
                 if not self._actor_owns_protected_item(
