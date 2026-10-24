@@ -18,27 +18,30 @@
   !define /ifndef OW_SIDECAR_EXE "openworker-server.exe"
   ; Kill, then give the kernel a moment to close the handles before any File step runs.
   ; Loop a few times: the kill is async and a busy sidecar (mid tool call) can take a beat.
+  ; LogicLib ${Do}/${LoopUntil} on purpose — it mints its own unique labels. A hand-written
+  ; label built from ${__LINE__} does NOT work inside a macro (the value is insertion-
+  ; dependent, "file.depth.line"), which broke the 1.0.7 Windows build with
+  ; `could not resolve label "ow_kill_loop_6559.1.22"`.
   StrCpy $R9 0
-  ow_kill_loop_${__LINE__}:
+  ${Do}
     !if "${INSTALLMODE}" == "currentUser"
       nsis_tauri_utils::FindProcessCurrentUser "${OW_SIDECAR_EXE}"
     !else
       nsis_tauri_utils::FindProcess "${OW_SIDECAR_EXE}"
     !endif
     Pop $R8
-    ${If} $R8 = 0 ; 0 = found
-      !if "${INSTALLMODE}" == "currentUser"
-        nsis_tauri_utils::KillProcessCurrentUser "${OW_SIDECAR_EXE}"
-      !else
-        nsis_tauri_utils::KillProcess "${OW_SIDECAR_EXE}"
-      !endif
-      Pop $R8
-      Sleep 500
-      IntOp $R9 $R9 + 1
-      ${If} $R9 < 6
-        Goto ow_kill_loop_${__LINE__}
-      ${EndIf}
+    ${If} $R8 <> 0 ; 0 = found; anything else = gone, we're done
+      ${ExitDo}
     ${EndIf}
+    !if "${INSTALLMODE}" == "currentUser"
+      nsis_tauri_utils::KillProcessCurrentUser "${OW_SIDECAR_EXE}"
+    !else
+      nsis_tauri_utils::KillProcess "${OW_SIDECAR_EXE}"
+    !endif
+    Pop $R8
+    Sleep 500
+    IntOp $R9 $R9 + 1
+  ${LoopUntil} $R9 >= 6
 !macroend
 
 !macro NSIS_HOOK_PREINSTALL
