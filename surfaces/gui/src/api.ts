@@ -40,6 +40,8 @@ const openWebSocket = (url: string): WebSocket => {
 
 export interface Health {
   status: string;
+  /** Sidecar build version (coworker/_version.py); absent on pre-1.0.7 servers. */
+  version?: string;
   default_workspace: string | null;
   model: string;
 }

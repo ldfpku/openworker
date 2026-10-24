@@ -681,7 +681,10 @@ def test_sidecar_token_gates_rest_and_websockets(tmp_path, monkeypatch):
     manager = SessionManager(workspace=tmp_path, provider=ScriptedProvider([]))
     client = TestClient(create_app(manager))
 
-    assert client.get("/v1/health").json() == {"status": "ok"}
+    health = client.get("/v1/health").json()
+    # Unauthenticated, but it also carries the sidecar version so the GUI can spot a
+    # half-applied update (GUI 1.0.6 / sidecar 1.0.5 — the 2026-10-24 incident).
+    assert health["status"] == "ok" and isinstance(health.get("version"), str)
     assert client.get("/v1/sessions").status_code == 401
     assert client.get(
         "/v1/sessions", headers={"X-OpenWorker-Token": "wrong"}

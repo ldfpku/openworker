@@ -346,6 +346,77 @@ def test_trim_none_when_too_small():
     assert trim_state([user("hi"), assistant("yo")]) is None
 
 
+def test_trim_with_tail_target_clears_the_trigger():
+    """A 10% step on a long history leaves the window still over the trigger, so the next
+    iteration would pay for another failed summarizer round. With a tail target the trim
+    keeps advancing until the verbatim tail fits — never past the last turn."""
+    msgs = convo(turns=20, bulk=2000)  # ~10k tokens
+    plain = trim_state(msgs)
+    assert estimate_tokens(msgs[plain.boundary_index :]) > 3_000
+    aimed = trim_state(msgs, max_tail_tokens=3_000)
+    assert aimed.boundary_index > plain.boundary_index
+    assert estimate_tokens(msgs[aimed.boundary_index :]) <= 3_000
+    assert msgs[aimed.boundary_index]["role"] in ("user", "assistant")
+    assert aimed.boundary_index < len(msgs)
+    assert len(aimed.user_messages) >= 1  # the dropped turns' user messages survive
+    # A target smaller than the last turn still keeps the last turn.
+    tiny = trim_state(msgs, max_tail_tokens=1)
+    assert tiny is not None and tiny.boundary_index < len(msgs)
+
+
+# -- local models ---------------------------------------------------------------
+
+
+def test_is_local_model_matches_the_ollama_vendor_only():
+    assert C.is_local_model("ollama:qwen3:8b")
+    assert C.is_local_model("Ollama:gemma4")
+    assert not C.is_local_model("gpt-5.5")
+    assert not C.is_local_model("openai:gpt-5.5")
+    assert not C.is_local_model("")
+
+
+def test_span_budget_local_is_window_bound_and_capped():
+    assert C.span_budget_chars(1_000_000) == C._SPAN_BUDGET_CHARS  # hosted: unchanged
+    small = C.span_budget_chars(16_384, summary_max_tokens=4_000, local=True)
+    assert C._LOCAL_SPAN_BUDGET_MIN_CHARS <= small < C.LOCAL_SPAN_BUDGET_CHARS
+    # The render must leave room for reply + fixed prompt parts inside num_ctx.
+    assert small // 4 + 4_000 + C._LOCAL_PROMPT_OVERHEAD_TOKENS <= 16_384
+    big = C.span_budget_chars(131_072, summary_max_tokens=4_000, local=True)
+    assert big == C.LOCAL_SPAN_BUDGET_CHARS
+    assert C.span_budget_chars(None, local=True) == C.LOCAL_SPAN_BUDGET_CHARS
+
+
+def test_summarizer_span_render_honours_budget():
+    msgs = [user("first " + "a" * 5000), assistant("b" * 5000), user("last " + "c" * 500)]
+    out = summarizer_messages(msgs, budget_chars=2_000)
+    body = out[1]["content"]
+    assert "oldest turns elided" in body
+    assert "last " in body and "first " not in body
+
+
+def test_summarize_span_local_settings_turn_thinking_off():
+    fake = FakeSummarizer()
+    summarize_span(
+        fake, "ollama:qwen3", [user("hi")], budget_chars=20_000, reasoning_effort="none"
+    )
+    assert fake.calls[0]["reasoning_effort"] == "none"
+    hosted = FakeSummarizer()
+    summarize_span(hosted, "gpt-5.5", [user("hi")])
+    assert "reasoning_effort" not in hosted.calls[0]
+
+
+def test_is_timeout_error():
+    import asyncio
+
+    class ReadTimeout(Exception):
+        pass
+
+    assert C.is_timeout_error(asyncio.TimeoutError())
+    assert C.is_timeout_error(ReadTimeout("x"))
+    assert C.is_timeout_error(RuntimeError("Request timed out."))
+    assert not C.is_timeout_error(RuntimeError("summarizer returned an unusable summary"))
+
+
 # -- state round-trip + overflow detection ------------------------------------
 
 

@@ -95,7 +95,7 @@ import { FolderGate } from "./components/FolderGate";
 import { SessionSetupRow } from "./components/SessionSetupRow";
 import { SendFolderDialog } from "./components/SendFolderDialog";
 import { Onboarding } from "./components/Onboarding";
-import { UpdateBanner } from "./components/UpdateBanner";
+import { SidecarVersionWarning, UpdateBanner } from "./components/UpdateBanner";
 import { WaitingForAgent } from "./components/WaitingForAgent";
 import { ScheduledView } from "./components/ScheduledView";
 import { RightRail } from "./components/RightRail";
@@ -2100,6 +2100,8 @@ export function App() {
       )}
       {/* Desktop-only auto-update prompt (15s after boot, then every 30 min; inert in browser). */}
       <UpdateBanner />
+      {/* GUI/sidecar version mismatch (half-applied update) — same slot as the update card. */}
+      <SidecarVersionWarning />
       {/* UX-026: automation-start toast — quiet panel, neutral dot/drain, accent only
           on the action (rev 2); auto-dismisses with the 5s drain bar. */}
       {runToast && (

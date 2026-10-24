@@ -55,6 +55,70 @@ SUMMARY_SECTION_MARKERS = (
 # first casualty (huge and mostly stale — a file read 40 turns ago is better re-read).
 _SPAN_TOOL_RESULT_CLIP = 400
 _SPAN_BUDGET_CHARS = 400_000
+
+# -- local models (Ollama) ------------------------------------------------------
+# The budgets above were sized for hosted models that ingest 100k tokens in seconds and
+# stream 16k tokens in under a minute. A model on the user's own GPU/CPU does neither:
+# prompt eval runs at hundreds of tokens/s, generation at tens, and the popular local
+# families (qwen3, gpt-oss, deepseek-r1) THINK before answering unless told not to. Fed the
+# hosted-size prompt, such a summarizer never finished inside SUMMARY_TIMEOUT_S; every
+# attempt timed out, the blind retry timed out again, the 10% trim left the window still
+# over the trigger, and the next iteration repeated the whole cycle — a tool loop spent
+# more than ten minutes "compacting" without ever producing a summary. For local models:
+# a prompt the machine can ingest in well under a minute, a reply budget that is the
+# summary and nothing else (no thinking), one bounded attempt, and a trim that actually
+# clears the trigger.
+LOCAL_MODEL_VENDORS = ("ollama",)
+LOCAL_SUMMARY_MAX_TOKENS = 4_000  # a complete eight-section summary is ~1.5–2.5k tokens
+LOCAL_SUMMARY_TIMEOUT_S = 180.0  # one attempt; no blind retry of a timed-out local call
+LOCAL_SPAN_BUDGET_CHARS = 120_000  # ~30k tokens — about a minute at local prompt-eval rates
+# Ollama runs with `shift` off (providers/ollama_context.py): a prompt that does not fit
+# `num_ctx` is an error, not a silent truncation. The summarizer prompt is the system
+# prompt + the prior summary + the span render + the reply, so the span render is held
+# to what remains of the window after the rest — with slack, because chars/4 undercounts
+# tokens for code and CJK text.
+_LOCAL_PROMPT_OVERHEAD_TOKENS = 6_000  # system prompt, tail instruction, prior summary
+_LOCAL_SPAN_FILL = 0.6
+_LOCAL_SPAN_BUDGET_MIN_CHARS = 16_000
+# A trimmed outbound view this far under the trigger does not re-trigger on the next
+# iteration (the compacted block re-adds up to ~8% of the trigger in user messages).
+TRIM_TARGET_FRACTION = 0.6
+
+
+def is_local_model(model: str) -> bool:
+    """True for a model served from the user's own machine (`ollama:<name>`)."""
+    vendor, sep, _ = (model or "").partition(":")
+    return bool(sep) and vendor.strip().lower() in LOCAL_MODEL_VENDORS
+
+
+def span_budget_chars(
+    context_window: Optional[int],
+    *,
+    summary_max_tokens: int = SUMMARY_MAX_TOKENS,
+    local: bool = False,
+) -> int:
+    """How much of the span render the summarizer gets to read. Hosted models: the
+    fixed budget. Local models: the smaller of the local ceiling and what fits the
+    model's window next to the reply and the fixed parts of the prompt."""
+    if not local:
+        return _SPAN_BUDGET_CHARS
+    window = context_window or DEFAULT_CONTEXT_WINDOW
+    room = window - int(summary_max_tokens) - _LOCAL_PROMPT_OVERHEAD_TOKENS
+    fitted = int(room * 4 * _LOCAL_SPAN_FILL)
+    return max(_LOCAL_SPAN_BUDGET_MIN_CHARS, min(LOCAL_SPAN_BUDGET_CHARS, fitted))
+
+
+def is_timeout_error(exc: BaseException) -> bool:
+    """A summarizer attempt that ran out of time (the engine's wait_for, httpx/SDK read
+    timeouts) rather than one the model answered badly. Retrying such an attempt with
+    the same input on the same local hardware costs the full budget again for the same
+    outcome, so the engine skips the blind retry for local models."""
+    if isinstance(exc, TimeoutError):  # asyncio.TimeoutError is TimeoutError on 3.11+
+        return True
+    name = type(exc).__name__.lower()
+    if "timeout" in name:
+        return True
+    return "timed out" in str(exc).lower() or "timeout" in str(exc).lower()
 # User messages preserved mechanically in the compacted block. They cannot simply all be
 # kept — otherwise the list appends forever and the block slowly reclaims the window it
 # freed — but OPE-189 showed both halves of the old rule (clip each to 600 chars, keep the
@@ -467,12 +531,15 @@ def _render_span(span: list[dict[str, Any]], *, budget_chars: int = _SPAN_BUDGET
 
 
 def summarizer_messages(
-    span: list[dict[str, Any]], *, prior_summary: str = ""
+    span: list[dict[str, Any]],
+    *,
+    prior_summary: str = "",
+    budget_chars: int = _SPAN_BUDGET_CHARS,
 ) -> list[dict[str, Any]]:
     """The provider-ready messages for the summarizer call. On repeated compaction the
     previous summary is message zero of the new span — summarized along with the turns
-    since."""
-    body = _render_span(span)
+    since. `budget_chars` bounds the span render (see span_budget_chars)."""
+    body = _render_span(span, budget_chars=budget_chars)
     if prior_summary:
         body = (
             "[previous compaction summary — fold its still-relevant content into the new "
@@ -499,6 +566,8 @@ def summarize_span(
     prior_summary: str = "",
     max_tokens: int = SUMMARY_MAX_TOKENS,
     timeout: float = SUMMARY_TIMEOUT_S,
+    budget_chars: int = _SPAN_BUDGET_CHARS,
+    reasoning_effort: Optional[str] = None,
 ) -> str:
     """One summarizer round-trip (blocking — the engine runs it off-loop). Tools are
     disabled; the Settings model override is just a different `model` id. Raises on
@@ -506,13 +575,21 @@ def summarize_span(
 
     The explicit timeout also makes the OpenAI/Anthropic providers disable their own
     automatic retries (providers.base.bounded_client), so the engine's one deliberate
-    retry cannot silently become a long chain of SDK retries."""
+    retry cannot silently become a long chain of SDK retries.
+
+    `reasoning_effort="none"` switches thinking off for the call (Ollama: `think: false`
+    via providers/ollama_context.py). The engine sets it for local models, where thinking
+    tokens at tens of tokens/s are what pushed the summary past its deadline."""
+    settings: dict[str, Any] = {"max_tokens": max_tokens, "timeout": timeout}
+    if reasoning_effort:
+        settings["reasoning_effort"] = reasoning_effort
     turn = provider.complete(
         model=model,
-        messages=summarizer_messages(span, prior_summary=prior_summary),
+        messages=summarizer_messages(
+            span, prior_summary=prior_summary, budget_chars=budget_chars
+        ),
         tools=None,
-        max_tokens=max_tokens,
-        timeout=timeout,
+        **settings,
     )
     text = (getattr(turn, "text", None) or "").strip()
     problem = summary_quality_problem(text)
@@ -557,6 +634,8 @@ def build_state(
     summary_max_tokens: int = SUMMARY_MAX_TOKENS,
     summary_timeout: float = SUMMARY_TIMEOUT_S,
     user_budget_tokens: int = _USER_BUDGET_MAX,
+    span_budget: int = _SPAN_BUDGET_CHARS,
+    reasoning_effort: Optional[str] = None,
 ) -> Optional[CompactionState]:
     """Summarize everything older than the picked boundary into a new CompactionState.
     On repeated compaction the prior summary heads the new span. Returns None when there
@@ -574,6 +653,8 @@ def build_state(
         prior_summary=prior.summary_text if prior is not None else "",
         max_tokens=summary_max_tokens,
         timeout=summary_timeout,
+        budget_chars=span_budget,
+        reasoning_effort=reasoning_effort,
     )
     users, dropped = fit_user_messages(
         prior_users + extract_user_messages(span),
@@ -597,10 +678,17 @@ def trim_state(
     prior: Optional[CompactionState] = None,
     fraction: float = _TRIM_FRACTION,
     user_budget_tokens: int = _USER_BUDGET_MAX,
+    max_tail_tokens: Optional[int] = None,
 ) -> Optional[CompactionState]:
     """The no-LLM fallback: advance the boundary past ~`fraction` of the outbound
     messages. No summary — but the mechanical block and the user-message list (never
-    trimmed away, per spec) are free, so the model still gets deterministic state."""
+    trimmed away, per spec) are free, so the model still gets deterministic state.
+
+    `max_tail_tokens`: keep advancing (over legal suffix heads) until the verbatim tail
+    estimates at or under it — the last turn always survives. Without it a 10% step on a
+    long history routinely left the outbound view still over the trigger, so the next
+    iteration paid for another failed summarizer round, and the one after that, until
+    enough 10% steps had accumulated: with a local model that was minutes per iteration."""
     start = prior.boundary_index if prior is not None else 0
     remaining = len(messages) - start
     if remaining <= 2:
@@ -609,12 +697,18 @@ def trim_state(
     target = start + step
     # Land on a legal suffix head at or after the target (never a tool message).
     boundary = None
-    for i in range(target, len(messages)):
-        if messages[i].get("role") in ("user", "assistant"):
-            boundary = i
-            break
+    heads = [i for i in range(target, len(messages)) if messages[i].get("role") in ("user", "assistant")]
+    if heads:
+        boundary = heads[0]
     if boundary is None or boundary <= start or boundary >= len(messages):
         return None
+    if max_tail_tokens is not None:
+        # Prefer user-turn heads once the step is taken, so the tail starts on a whole
+        # turn where one exists; an assistant head is the fallback inside a giant turn.
+        for i in heads[1:]:
+            if estimate_tokens(messages[boundary:]) <= max_tail_tokens:
+                break
+            boundary = i
     span = messages[start:boundary]
     prior_users = list(prior.user_messages) if prior is not None else []
     summary = (

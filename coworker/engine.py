@@ -1948,8 +1948,26 @@ class TurnEngine:
                 cfg["context_window"] = context_window_for(self.model)
         cfg.setdefault("threshold_pct", _compaction.DEFAULT_THRESHOLD_PCT)
         cfg.setdefault("cap_tokens", _compaction.DEFAULT_CAP_TOKENS)
-        cfg.setdefault("summary_max_tokens", _compaction.SUMMARY_MAX_TOKENS)
-        cfg.setdefault("summary_timeout", _compaction.SUMMARY_TIMEOUT_S)
+        # The summarizer is the compaction model when one is pinned in Settings, else the
+        # session model — EXCEPT that a local session model (Ollama) hands the summary to
+        # the Cloudflare AI Gateway's default summarizer when the gateway is signed in
+        # (`gateway_model`, from SessionManager._compaction_gateway_model): a local model
+        # spent 10+ minutes per compaction and never finished (OPE-27 follow-up). If no
+        # gateway is available, the local summarizer stays, with budgets sized for local
+        # hardware — see compaction.py "local models". An explicit pin wins over both.
+        pinned = str(cfg.get("model") or "")
+        summarizer = pinned or self.model
+        gateway_model = str(cfg.get("gateway_model") or "")
+        if not pinned and gateway_model and _compaction.is_local_model(summarizer):
+            summarizer = gateway_model
+        cfg["model"] = summarizer
+        cfg["local_summarizer"] = _compaction.is_local_model(summarizer)
+        if cfg["local_summarizer"]:
+            cfg.setdefault("summary_max_tokens", _compaction.LOCAL_SUMMARY_MAX_TOKENS)
+            cfg.setdefault("summary_timeout", _compaction.LOCAL_SUMMARY_TIMEOUT_S)
+        else:
+            cfg.setdefault("summary_max_tokens", _compaction.SUMMARY_MAX_TOKENS)
+            cfg.setdefault("summary_timeout", _compaction.SUMMARY_TIMEOUT_S)
         return cfg
 
     def _compaction_due(self) -> bool:
@@ -2043,18 +2061,40 @@ class TurnEngine:
         except (TypeError, ValueError):
             summary_timeout = _compaction.SUMMARY_TIMEOUT_S
         model = str(cfg.get("model") or "") or self.model
+        local = bool(cfg.get("local_summarizer")) or _compaction.is_local_model(model)
+        span_budget = _compaction.span_budget_chars(
+            window, summary_max_tokens=summary_max, local=local
+        )
+        # Local summarizers write the summary and nothing else: thinking at local
+        # generation rates is what ate the deadline (compaction.py "local models").
+        reasoning_effort = "none" if local else None
 
         def _build() -> Optional[_compaction.CompactionState]:
-            return _compaction.build_state(
-                self.messages,
-                provider=self.provider,
-                model=model,
-                keep_tokens=keep,
-                prior=self.compaction_state,
-                summary_max_tokens=summary_max,
-                summary_timeout=summary_timeout,
-                user_budget_tokens=user_budget,
-            )
+            started = time.monotonic()
+            try:
+                return _compaction.build_state(
+                    self.messages,
+                    provider=self.provider,
+                    model=model,
+                    keep_tokens=keep,
+                    prior=self.compaction_state,
+                    summary_max_tokens=summary_max,
+                    summary_timeout=summary_timeout,
+                    user_budget_tokens=user_budget,
+                    span_budget=span_budget,
+                    reasoning_effort=reasoning_effort,
+                )
+            finally:
+                logger.info(
+                    "context compaction summarizer call: model=%s local=%s "
+                    "span_budget_chars=%d max_tokens=%d timeout=%.0fs elapsed=%.1fs",
+                    model,
+                    local,
+                    span_budget,
+                    summary_max,
+                    summary_timeout,
+                    time.monotonic() - started,
+                )
 
         async def _build_bounded() -> Optional[_compaction.CompactionState]:
             # The provider timeout stops the HTTP request and SDK retries; wait_for is the
@@ -2066,7 +2106,7 @@ class TurnEngine:
 
         state: Optional[_compaction.CompactionState] = None
         failed = False
-        for _attempt in range(2):  # first try + the unconditional single retry
+        for _attempt in range(2):  # first try + the single retry
             try:
                 state = await _build_bounded()
                 failed = False
@@ -2079,6 +2119,12 @@ class TurnEngine:
                     model,
                     exc,
                 )
+                # A local model that ran out of time will run out of time again on the
+                # same input — the retry is a second full deadline spent for the same
+                # outcome (the hosted-provider retry stays: there a timeout is usually a
+                # transient stall). Go straight to the fallback.
+                if local and _compaction.is_timeout_error(exc):
+                    break
         if failed and self.question_asker is not None and self.is_attended and self.is_attended():
             # A stable id makes the Inbox item idempotent across a durable resume (a
             # resumed session must not re-prompt an already-answered card); the attempt
@@ -2122,10 +2168,13 @@ class TurnEngine:
             self._last_context_tokens = None  # stale once the outbound view shrank
             return "Context compacted — earlier turns were summarized"
         if failed or force:
+            # Trim far enough that the next iteration does not immediately re-trigger
+            # another (failing) summarizer round — see compaction.trim_state.
             trimmed = _compaction.trim_state(
                 self.messages,
                 prior=self.compaction_state,
                 user_budget_tokens=user_budget,
+                max_tail_tokens=int(_compaction.TRIM_TARGET_FRACTION * trigger),
             )
             if trimmed is not None:
                 self.compaction_state = trimmed

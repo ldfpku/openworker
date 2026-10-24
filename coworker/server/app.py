@@ -223,6 +223,7 @@ _CONNECT_FAILED_DETAIL = (
     "Close this tab and try again from OpenWorker."
 )
 
+from .. import __version__
 from ..attachments import (
     MAX_ATTACHMENTS as _MAX_ATTACHMENTS,
     MAX_IMAGE_CHARS,
@@ -339,10 +340,14 @@ def create_app(manager: SessionManager) -> FastAPI:
 
     @app.get("/v1/health")
     def health(request: Request) -> dict[str, Any]:
+        # `version` is the *sidecar's* build (coworker/_version.py). The desktop shell compares
+        # it with its own version so a half-applied update (new GUI, old openworker-server.exe
+        # — the 1.0.5→1.0.6 Windows incident) is reported instead of silently running stale.
         if api_token and not _request_authenticated(request):
-            return {"status": "ok"}
+            return {"status": "ok", "version": __version__}
         return {
             "status": "ok",
+            "version": __version__,
             "default_workspace": manager.default_workspace,
             "model": manager.model,
         }

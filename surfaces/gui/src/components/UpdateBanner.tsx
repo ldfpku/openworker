@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { getHealth } from "../api";
 import {
   checkForUpdate,
   clearPendingUpdate,
@@ -25,6 +26,54 @@ import {
 
 const FIRST_CHECK_MS = 15_000;
 const RECHECK_MS = 30 * 60_000;
+
+/** Half-applied update detector. The Windows 1.0.5→1.0.6 upgrade left a 1.0.6 GUI running a
+ * 1.0.5 `openworker-server.exe` (its files were locked during install), and nothing in the UI
+ * said so — the only symptom was `openworker/1.0.5` in Cloudflare AI Gateway logs. The shell
+ * injects its own version (`__OCW_APP_VERSION__`); the sidecar reports its build in
+ * /v1/health. If they differ, say so plainly and tell the user how to repair it. Servers older
+ * than 1.0.7 don't report a version — that is itself a mismatch when the shell is ≥1.0.7. */
+export function SidecarVersionWarning() {
+  const { t } = useTranslation();
+  const [mismatch, setMismatch] = useState<{ app: string; sidecar: string } | null>(null);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    const appVersion = (globalThis as any).__OCW_APP_VERSION__;
+    if (typeof appVersion !== "string" || !appVersion) return;
+    let cancelled = false;
+    // The sidecar boots after the window; retry a few times before giving up quietly.
+    const attempt = (left: number) => {
+      getHealth()
+        .then((h) => {
+          if (cancelled) return;
+          const sidecar = h.version ?? "<1.0.7";
+          if (sidecar !== appVersion) setMismatch({ app: appVersion, sidecar });
+        })
+        .catch(() => {
+          if (!cancelled && left > 0) setTimeout(() => attempt(left - 1), 2_000);
+        });
+    };
+    attempt(15);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (!mismatch) return null;
+  return (
+    <div
+      className="fixed bottom-[64px] left-3 z-[35] w-[276px] rounded-xl border border-line bg-panel shadow-2xl px-4 py-3.5"
+      role="alert"
+      data-testid="sidecar-version-warning"
+    >
+      <div className="text-[13px] font-semibold text-warnInk">{t("update.sidecar_mismatch_title")}</div>
+      <div className="text-[12px] text-muted mt-0.5">
+        {t("update.sidecar_mismatch", { app: mismatch.app, sidecar: mismatch.sidecar })}
+      </div>
+    </div>
+  );
+}
 
 // downloading: background pre-fetch in flight (button locked).
 // ready: bytes cached in the shell — install is instant.

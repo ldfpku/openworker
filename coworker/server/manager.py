@@ -6115,10 +6115,46 @@ class SessionManager:
             "cap_tokens": cap_tokens,
             # "" → the session's own model (engine falls back to self.model).
             "model": str(self._prefs.get("compaction_model") or ""),
+            # The gateway model the engine substitutes for a LOCAL summarizer (see
+            # `_compaction_gateway_model`); "" when the gateway can't take the call.
+            "gateway_model": self._compaction_gateway_model(),
         }
         if config.compaction_summary_max_tokens:
             settings["summary_max_tokens"] = int(config.compaction_summary_max_tokens)
         return settings
+
+    def _compaction_gateway_model(self) -> str:
+        """The Cloudflare AI Gateway model that writes compaction summaries for sessions
+        running on a LOCAL model (Ollama).
+
+        A local model summarizing a hosted-size span ran for 10+ minutes without ever
+        producing a summary (OPE-27 follow-up, 2026-10-24). The summary is a short, tools-off
+        completion — exactly the kind of call the gateway handles in seconds — so when the
+        person is signed in to the gateway, it writes the summary instead of the GPU. The
+        pick is the gateway's cheap utility tier (Haiku, the `_UTILITY_MODELS` default for
+        `aigw:anthropic/`), checked against this person's server list like every other
+        `aigw:` id; failing that, the app default when it is itself a gateway model; failing
+        that, the first listed gateway row in the matrix. "" when the gateway is not
+        configured — the engine then keeps the local summarizer with its local budgets.
+        An explicit `compaction_model` pin always wins over this (engine side)."""
+        if not self._provider_configured("aigw"):
+            return ""
+        from ..providers.matrix import MATRIX, utility_model_for
+
+        preferred = utility_model_for("aigw:anthropic/")
+        if self._aigw_listed(preferred):
+            return preferred
+        allowed = self._aigw_allowed()
+        if allowed is None:
+            # No server list has ever been pulled: nothing to check against, so the
+            # matrix default stands (the same reading as `_utility_model`'s callers).
+            return preferred
+        if str(self.model or "").startswith("aigw:") and self._aigw_listed(self.model):
+            return str(self.model)
+        for mid in MATRIX:
+            if mid.startswith("aigw:") and self._aigw_listed(mid):
+                return mid
+        return ""
 
     def compaction_settings_payload(self) -> dict[str, Any]:
         """The same knobs under REST-facing names (prefixed to keep /v1/settings flat)."""

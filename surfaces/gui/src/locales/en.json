@@ -1,4 +1,4 @@
-{
+﻿{
   "boot": {
     "starting": "Starting OpenWorker…",
     "restoring": "Restoring your session…"
@@ -494,6 +494,8 @@
     "downloading": "Downloading…",
     "install_failed": "The update couldn't be installed — it will be offered again next launch.",
     "later": "Later",
+    "sidecar_mismatch_title": "Update incomplete",
+    "sidecar_mismatch": "The app is v{{app}} but its background service is still v{{sidecar}} — the last update was only partly applied. Quit OpenWorker and run the installer again.",
     "restart_to_update": "Restart to update"
   },
   "toast": {

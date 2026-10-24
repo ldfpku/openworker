@@ -202,6 +202,144 @@ def test_stalled_summarizer_times_out_and_auto_trims(tmp_path):
     assert engine.compaction_state is not None and engine.compaction_state.trimmed
 
 
+def test_local_summarizer_timeout_fails_once_and_trim_clears_the_trigger(tmp_path):
+    """The >10-minute local-model compaction (2026-10-24): a hosted-size summarizer
+    prompt timed out, was blindly retried (timed out again), the 10% trim left the
+    window over the trigger, and the next iteration repeated it all. With a local
+    summarizer: one bounded attempt, thinking off, a local-size span budget, and a trim
+    that leaves nothing for the next iteration to re-compact."""
+    release = threading.Event()
+
+    class SlowLocalProvider(CompactingProvider):
+        def complete(self, *, model, messages, tools=None, **settings):
+            if messages and "compacting an AI coworker" in str(
+                messages[0].get("content", "")
+            ):
+                self.summary_calls.append({"model": model, **settings})
+                release.wait(5)
+                raise RuntimeError("released after the deadline")
+            return super().complete(
+                model=model, messages=messages, tools=tools, **settings
+            )
+
+    provider = SlowLocalProvider(
+        [
+            AssistantTurn(
+                tool_calls=[ToolCall(id="c1", name="nonexistent_tool", arguments={})],
+                finish_reason="tool_calls",
+            ),
+            AssistantTurn(text="done", finish_reason="stop"),
+        ]
+    )
+    engine = make_engine(tmp_path, provider, messages=long_history(turns=20), cap=400)
+    engine.model = "ollama:qwen3:8b"
+    engine.compaction_settings = lambda: {
+        "cap_tokens": 400,
+        "threshold_pct": 0.8,
+        "context_window": 32_768,
+        "summary_timeout": 0.03,
+    }
+
+    async def scenario():
+        started = time.monotonic()
+        events = [event async for event in engine.run("continue")]
+        return events, time.monotonic() - started
+
+    try:
+        events, elapsed = asyncio.run(scenario())
+    finally:
+        release.set()
+
+    assert elapsed < 1.0
+    # One attempt only — a local timeout is not blindly retried.
+    assert len(provider.summary_calls) == 1
+    call = provider.summary_calls[0]
+    assert call["timeout"] == 0.03
+    assert call["reasoning_effort"] == "none"
+    assert call["max_tokens"] == 4_000  # the local default, not the hosted 16k
+    compacted = [e for e in events if e.type == EventType.COMPACTED]
+    # Exactly one compaction across both iterations: the trim cleared the trigger.
+    assert len(compacted) == 1 and "trimmed" in compacted[0].data["text"].lower()
+    assert not engine._compaction_due()
+    assert provider.main_calls == 2
+
+
+def test_local_session_hands_the_summary_to_the_gateway_default(tmp_path):
+    # A session on a local model summarizes through the Cloudflare AI Gateway's default
+    # summarizer when the manager says the gateway can take it: hosted budgets, the
+    # gateway id on the summarizer call, the session model untouched.
+    provider = CompactingProvider([AssistantTurn(text="done", finish_reason="stop")])
+    engine = make_engine(tmp_path, provider, messages=long_history(), cap=400)
+    engine.model = "ollama:qwen3:8b"
+    engine.compaction_settings = lambda: {
+        "cap_tokens": 400,
+        "threshold_pct": 0.8,
+        "context_window": 32_768,
+        "gateway_model": "aigw:anthropic/claude-haiku-4-5",
+    }
+    cfg = engine._compaction_config()
+    assert cfg["model"] == "aigw:anthropic/claude-haiku-4-5"
+    assert cfg["local_summarizer"] is False
+    assert cfg["summary_max_tokens"] == 16_000
+    assert cfg["summary_timeout"] == 120.0
+
+    events = collect(engine)
+    assert any(e.type == EventType.COMPACTED for e in events)
+    assert provider.summary_calls[0]["model"] == "aigw:anthropic/claude-haiku-4-5"
+    assert provider.summary_calls[0].get("reasoning_effort") is None  # hosted: thinking stays on
+    assert engine.model == "ollama:qwen3:8b"
+
+
+def test_gateway_default_does_not_override_a_pin_or_a_hosted_session(tmp_path):
+    provider = CompactingProvider([AssistantTurn(text="done", finish_reason="stop")])
+    engine = make_engine(tmp_path, provider, messages=long_history(), cap=400)
+    # Hosted session: the gateway default is irrelevant, the session model summarizes.
+    engine.compaction_settings = lambda: {
+        "cap_tokens": 400,
+        "threshold_pct": 0.8,
+        "context_window": 100_000,
+        "gateway_model": "aigw:anthropic/claude-haiku-4-5",
+    }
+    assert engine._compaction_config()["model"] == "gpt-5.5"
+    # Local session with an explicit Settings pin: the pin wins over the gateway default.
+    engine.model = "ollama:gemma4"
+    engine.compaction_settings = lambda: {
+        "cap_tokens": 400,
+        "threshold_pct": 0.8,
+        "context_window": 32_768,
+        "model": "ollama:qwen3:8b",
+        "gateway_model": "aigw:anthropic/claude-haiku-4-5",
+    }
+    cfg = engine._compaction_config()
+    assert cfg["model"] == "ollama:qwen3:8b"
+    assert cfg["local_summarizer"] is True
+    # Local session, gateway not signed in ("" from the manager): local summarizer stays.
+    engine.compaction_settings = lambda: {
+        "cap_tokens": 400,
+        "threshold_pct": 0.8,
+        "context_window": 32_768,
+        "gateway_model": "",
+    }
+    cfg = engine._compaction_config()
+    assert cfg["model"] == "ollama:gemma4"
+    assert cfg["local_summarizer"] is True
+    assert cfg["summary_max_tokens"] == 4_000
+
+
+def test_hosted_summarizer_defaults_are_unchanged(tmp_path):
+    provider = CompactingProvider([AssistantTurn(text="done", finish_reason="stop")])
+    engine = make_engine(tmp_path, provider, messages=long_history(), cap=400)
+    cfg = engine._compaction_config()
+    assert cfg["local_summarizer"] is False
+    assert cfg["summary_max_tokens"] == 16_000
+    assert cfg["summary_timeout"] == 120.0
+    engine.model = "ollama:gemma4"
+    local = engine._compaction_config()
+    assert local["local_summarizer"] is True
+    assert local["summary_max_tokens"] == 4_000
+    assert local["summary_timeout"] == 180.0
+
+
 def test_summarizer_failure_attended_prompts_retry_then_succeeds(tmp_path):
     provider = CompactingProvider(
         [AssistantTurn(text="done", finish_reason="stop")], summary_fails=2
@@ -287,6 +425,39 @@ def test_set_compaction_settings_validates_and_round_trips(tmp_path):
     payload = mgr.compaction_settings_payload()
     assert payload["compaction_threshold_pct"] == 0.5
     assert payload["compaction_model"] == "gpt-4o-mini"
+
+
+def test_compaction_gateway_model_follows_sign_in_and_server_list(tmp_path):
+    from coworker.server.manager import SessionManager
+
+    class Provider(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            return AssistantTurn(text="hi")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    mgr = SessionManager(workspace=tmp_path, provider=Provider())
+    # Not signed in to the gateway: nothing to hand the summary to.
+    assert mgr.compaction_settings()["gateway_model"] == ""
+
+    mgr._provider_configured = lambda name: name == "aigw"
+    # Signed in, no server list pulled yet: the matrix's cheap utility tier.
+    mgr._aigw_allowed = lambda: None
+    assert mgr._compaction_gateway_model() == "aigw:anthropic/claude-haiku-4-5"
+    # Listed Haiku → Haiku.
+    mgr._aigw_allowed = lambda: frozenset({"anthropic/claude-haiku-4-5", "openai/gpt-5.6-sol"})
+    assert mgr._compaction_gateway_model() == "aigw:anthropic/claude-haiku-4-5"
+    # Haiku not on the list: the app default when it is a listed gateway model...
+    mgr._aigw_allowed = lambda: frozenset({"openai/gpt-5.6-sol", "openai/gpt-5.6-luna"})
+    mgr.model = "aigw:openai/gpt-5.6-sol"
+    assert mgr._compaction_gateway_model() == "aigw:openai/gpt-5.6-sol"
+    # ...else the first listed matrix row.
+    mgr.model = "ollama:qwen3:8b"
+    assert mgr._compaction_gateway_model() == "aigw:openai/gpt-5.6-sol"
+    # Signed in but the list carries no model we know: leave the local summarizer alone.
+    mgr._aigw_allowed = lambda: frozenset({"somevendor/unknown"})
+    assert mgr.compaction_settings()["gateway_model"] == ""
 
 
 def test_compaction_state_survives_save_and_rebuild(tmp_path):

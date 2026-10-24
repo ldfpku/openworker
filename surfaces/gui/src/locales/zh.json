@@ -1,4 +1,4 @@
-{
+﻿{
   "boot": {
     "starting": "正在启动 OpenWorker…",
     "restoring": "正在恢复您的会话…"
@@ -476,6 +476,8 @@
     "downloading": "正在下载…",
     "install_failed": "更新未能安装——下次启动时将再次提示。",
     "later": "稍后",
+    "sidecar_mismatch_title": "更新未完成",
+    "sidecar_mismatch": "应用是 v{{app}}，但后台服务仍是 v{{sidecar}}——上次更新只应用了一部分。请退出 OpenWorker 并重新运行安装程序。",
     "restart_to_update": "重启以更新"
   },
   "toast": {

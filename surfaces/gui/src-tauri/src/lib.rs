@@ -801,6 +801,31 @@ fn clear_pending_update(pending: tauri::State<'_, PendingUpdate>) {
     *pending.0.lock().unwrap() = None;
 }
 
+/// Kill the Python sidecar and *wait* for it to be gone.
+///
+/// Called from both the quit path (RunEvent) and — critically — right before an update is
+/// installed. The 1.0.5 → 1.0.6 upgrade shipped a half-updated install on Windows: the
+/// updater plugin launches the NSIS installer and then `std::process::exit`s, which skips
+/// RunEvent entirely, so the sidecar was still alive while the installer copied files. NSIS
+/// only knows about `openworker-desktop.exe` (CheckIfAppIsRunning), so `openworker-server.exe`,
+/// `python312.dll` and every loaded `.pyd` stayed locked, the File steps for them failed, and
+/// the user ended up with a 1.0.6 GUI driving a 1.0.5 sidecar (gateway logs: `openworker/1.0.5`).
+/// Killing *and waiting* here releases those handles before the installer starts; the NSIS
+/// pre-install hook (windows/hooks.nsh) is the second line of defence for manual installs.
+fn stop_sidecar(app: &tauri::AppHandle) {
+    let Some(state) = app.try_state::<ServerProcess>() else {
+        return;
+    };
+    let child = state.0.lock().unwrap().take();
+    if let Some(mut child) = child {
+        let _ = child.kill();
+        // Reap it so the exe/DLL handles are actually released before we return. kill()
+        // on Windows is TerminateProcess, so this never blocks for long; on POSIX it also
+        // avoids a zombie if the parent lingers.
+        let _ = child.wait();
+    }
+}
+
 #[tauri::command]
 async fn install_update(
     app: tauri::AppHandle,
@@ -820,16 +845,25 @@ async fn install_update(
             _ => None,
         }
     };
-    match cached {
-        Some(bytes) => update.install(bytes).map_err(|e| e.to_string())?,
+    // Download first (if needed) while the sidecar is still serving the UI, then stop it
+    // *before* the installer runs: on Windows `install` never returns (the plugin exits the
+    // process after launching NSIS), so this is the only place the sidecar can be stopped
+    // deterministically. See stop_sidecar() for the half-updated-install bug this fixes.
+    let bytes = match cached {
+        Some(bytes) => bytes,
         None => update
-            .download_and_install(|_, _| {}, || {})
+            .download(|_, _| {}, || {})
             .await
             .map_err(|e| e.to_string())?,
+    };
+    stop_sidecar(&app);
+    if let Some(state) = app.try_state::<KeepAwake>() {
+        drop(state.0.lock().unwrap().take());
     }
+    update.install(bytes).map_err(|e| e.to_string())?;
     // Windows never reaches here (the NSIS installer takes over and relaunches).
-    // macOS: the .app was swapped in place — restart into the new version. The tray
-    // Exit path's sidecar kill runs via RunEvent, so no orphaned openworker-server.
+    // macOS: the .app was swapped in place — restart into the new version; the sidecar
+    // was already stopped above, so no orphaned openworker-server.
     app.restart();
 }
 
@@ -840,10 +874,13 @@ pub fn run() {
     let http = format!("http://127.0.0.1:{port}");
     let ws = format!("ws://127.0.0.1:{port}");
     // Debug-format yields a quoted JS string literal.
+    // __OCW_APP_VERSION__ is the shell's own build; the SPA compares it with the sidecar's
+    // /v1/health `version` to flag a half-applied update (see stop_sidecar()).
     let inject = format!(
-        "window.__COWORKER_HTTP__={http:?};window.__COWORKER_WS__={ws:?};window.__COWORKER_API_TOKEN__={api_token:?};window.__OCW_PLATFORM__={:?};window.__OCW_OS_VERSION__={:?};",
+        "window.__COWORKER_HTTP__={http:?};window.__COWORKER_WS__={ws:?};window.__COWORKER_API_TOKEN__={api_token:?};window.__OCW_PLATFORM__={:?};window.__OCW_OS_VERSION__={:?};window.__OCW_APP_VERSION__={:?};",
         std::env::consts::OS,
-        os_version()
+        os_version(),
+        env!("CARGO_PKG_VERSION")
     );
 
     tauri::Builder::default()
@@ -1038,11 +1075,7 @@ pub fn run() {
             // Also on Exit: belt-and-suspenders in case a quit path reaches teardown without
             // a preceding ExitRequested (observed with macOS Cmd+Q under the tray setup).
             if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
-                if let Some(state) = app.try_state::<ServerProcess>() {
-                    if let Some(mut child) = state.0.lock().unwrap().take() {
-                        let _ = child.kill();
-                    }
-                }
+                stop_sidecar(app);
                 if let Some(state) = app.try_state::<KeepAwake>() {
                     // Dropping the guard releases the hold (caffeinate kill / execution-state clear).
                     drop(state.0.lock().unwrap().take());
