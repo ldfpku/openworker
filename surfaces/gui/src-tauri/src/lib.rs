@@ -867,7 +867,17 @@ async fn install_update(
     app.restart();
 }
 
+fn release_version(config_version: Option<&str>) -> String {
+    // tauri.conf.json is the release pipeline's single source of truth and is also what
+    // packaging/write_version.py stamps into the sidecar. CARGO_PKG_VERSION is the Rust
+    // crate's independent version (still 0.1.0), so using it here makes a healthy install
+    // look like a half-applied update whenever the two versions differ.
+    config_version.unwrap_or(env!("CARGO_PKG_VERSION")).to_string()
+}
+
 pub fn run() {
+    let context = tauri::generate_context!();
+    let app_version = release_version(context.config().version.as_deref());
     let locale = shell_locale();
     let port = free_port();
     let api_token = launch_token();
@@ -877,10 +887,9 @@ pub fn run() {
     // __OCW_APP_VERSION__ is the shell's own build; the SPA compares it with the sidecar's
     // /v1/health `version` to flag a half-applied update (see stop_sidecar()).
     let inject = format!(
-        "window.__COWORKER_HTTP__={http:?};window.__COWORKER_WS__={ws:?};window.__COWORKER_API_TOKEN__={api_token:?};window.__OCW_PLATFORM__={:?};window.__OCW_OS_VERSION__={:?};window.__OCW_APP_VERSION__={:?};",
+        "window.__COWORKER_HTTP__={http:?};window.__COWORKER_WS__={ws:?};window.__COWORKER_API_TOKEN__={api_token:?};window.__OCW_PLATFORM__={:?};window.__OCW_OS_VERSION__={:?};window.__OCW_APP_VERSION__={app_version:?};",
         std::env::consts::OS,
         os_version(),
-        env!("CARGO_PKG_VERSION")
     );
 
     tauri::Builder::default()
@@ -1059,7 +1068,7 @@ pub fn run() {
 
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building the OpenWorker desktop app")
         .run(|app, event| {
             // macOS: clicking the Dock icon fires Reopen. Close-to-tray only HIDES the main
@@ -1082,6 +1091,21 @@ pub fn run() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod release_version_regression_tests {
+    #[test]
+    fn tauri_config_version_wins_over_independent_crate_version() {
+        // Regression: v1.0.9 reported "app v0.1.0, sidecar v1.0.9" on a healthy install
+        // because the injected value came from Cargo.toml instead of tauri.conf.json.
+        assert_eq!(super::release_version(Some("1.0.9")), "1.0.9");
+    }
+
+    #[test]
+    fn missing_config_version_falls_back_to_crate_version() {
+        assert_eq!(super::release_version(None), env!("CARGO_PKG_VERSION"));
+    }
 }
 
 /// Regression coverage for the console-flash bug reported while testing local dictation: on
