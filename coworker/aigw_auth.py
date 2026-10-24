@@ -555,14 +555,29 @@ def access_token(secrets: SecretStore) -> str:
     with _refresh_lock:
         # Re-read under the lock: a concurrent call may already have refreshed, and two
         # refreshes racing would burn one of the rotated tokens for nothing.
-        state = _state(secrets)
-        if _is_fresh(state):
-            return str(state.get("access_token") or "")
-        try:
-            return _refresh(secrets, state)
-        except Exception as exc:  # noqa: BLE001
-            logger.info("aigw oauth: silent refresh failed: %s", exc)
-            return ""
+        # Retry the silent refresh a few times with a short pause. The refresh is one
+        # network call, and a single transient failure used to hand the caller an empty
+        # bearer, which failed the whole request — for an unattended compaction that meant
+        # two dead attempts and a trim instead of a summary (observed 2026-10-24 13:39:
+        # the access token expired during an idle stretch, the first refresh hit a
+        # network hiccup, and both summarizer attempts failed instantly).
+        last_exc: Optional[Exception] = None
+        for attempt in range(3):
+            state = _state(secrets)
+            if _is_fresh(state):
+                return str(state.get("access_token") or "")
+            if not state.get("refresh_token"):
+                # The grant was spent or revoked (a 400/401 refresh clears the tokens):
+                # retrying cannot help — send the stale token and let the gateway judge it.
+                break
+            try:
+                return _refresh(secrets, state)
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                if attempt < 2:
+                    time.sleep(1.0 + attempt)
+        logger.info("aigw oauth: silent refresh failed: %s", last_exc)
+        return ""
 
 
 def status(secrets: SecretStore) -> dict[str, Any]:
