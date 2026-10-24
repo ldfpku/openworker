@@ -577,9 +577,15 @@ export function ProviderForm({
       )
     : [];
   // Without a choice control, Test lives next to the required secret (the API key), or
-  // the first field for keyless providers (Ollama's Detect).
+  // the first field for keyless providers (Ollama's Detect). The gateway keeps Test on
+  // its sign-in card; its optional display-name field is only a blur-saved label.
   const requiredSecret = fieldsAll.find((x) => x.secret && x.required);
-  const testKey = requiredSecret ? requiredSecret.key : fieldsAll[0]?.key;
+  const testKey =
+    sel === GATEWAY_PROVIDER
+      ? undefined
+      : requiredSecret
+        ? requiredSecret.key
+        : fieldsAll[0]?.key;
   // The command chip copies silently otherwise — the clipboard changed but nothing on
   // screen said so (owner-hit 2026-10-14).
   const [copied, setCopied] = useState(false);
@@ -620,10 +626,9 @@ export function ProviderForm({
       </div>
     ) : null;
 
-  // The gateway's card sits in the same slot, but for the opposite reason: its address is
-  // baked into the app and the login is the whole credential, so the provider declares no
-  // fields and this card IS the entire pane — sign-in saves the provider, and Test lives
-  // on the signed-in card.
+  // The gateway's address is baked into the app and the login is the whole credential.
+  // Sign-in and Test live on this card; the optional display-name field below it only
+  // controls the person's label in Cloudflare User Insights.
   const gatewayCard =
     sel === GATEWAY_PROVIDER ? (
       <div className="mt-3 mb-1">

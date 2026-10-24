@@ -32,6 +32,7 @@ from .base import (
     StreamChunk,
     TokenUsage,
     ToolCall,
+    bounded_client,
     close_stream,
 )
 from .capabilities import capabilities_for
@@ -615,6 +616,9 @@ class AnthropicProvider(ProviderClient):
                 filtered.pop(key, None)
         filtered.setdefault("max_tokens", DEFAULT_MAX_TOKENS)
         kwargs: dict[str, Any] = {"model": model, "messages": converted, **filtered}
+        # SDK request option, not a Messages API body field (same split as Responses).
+        if settings.get("timeout") is not None:
+            kwargs["timeout"] = settings["timeout"]
         if system:
             kwargs["system"] = system
         if tools:
@@ -633,7 +637,10 @@ class AnthropicProvider(ProviderClient):
         kwargs = self._request_kwargs(
             model=model, messages=messages, tools=tools, settings=settings
         )
-        client = self._ensure_client()
+        # Only a caller-supplied timeout disables SDK retries. Ordinary turns keep the
+        # SDK's resilience; bounded one-shot calls (notably compaction) do not multiply
+        # their deadline behind the engine's back.
+        client = bounded_client(self._ensure_client(), kwargs.get("timeout"))
         # Non-streaming only: opts out of the SDK's 10-minute refusal (see _nonstreaming_timeout).
         kwargs.setdefault("timeout", _nonstreaming_timeout(kwargs["max_tokens"]))
         if self._use_refusal_fallback(model):

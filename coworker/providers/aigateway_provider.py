@@ -17,8 +17,9 @@ Access choice decides everything else in this module:
     signing in (`aigw_auth`, renews itself, nothing to paste) or a `cloudflared`-printed
     JWT typed into Settings (lapses daily). The former wins when both are present.
   * **Spend is attributed per person for free.** Access stamps the authenticated user
-    onto every request as `cf.user_id`, which drives the gateway's User Insights page and
-    per-user spend limits. Nothing has to be passed from the client.
+    onto every request as `cf.user_id`, which drives User Insights and per-user limits.
+    The optional `display_name` metadata only supplies a readable label; it never replaces
+    that verified identity.
   * **Billing is the account's.** Third-party models are paid from the account's prepaid
     Unified Billing credits; no per-vendor key is stored on the gateway.
 
@@ -59,6 +60,7 @@ previous answer and make a broken probe look healthy.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Any, Callable, Collection, NamedTuple, Optional
@@ -137,17 +139,34 @@ def wire_url(base_url: str, wire: str) -> str:
     return normalise_base(base_url) + _WIRE_PATHS[wire]
 
 
-def access_headers(access_token: str) -> dict[str, str]:
-    """Everything this provider adds to a request: the Access session, and a User-Agent
-    that will not be mistaken for an AI crawler (see `_user_agent`)."""
+def _request_headers(display_name: str = "") -> dict[str, str]:
+    """Headers shared by both Access credential routes.
+
+    `display_name` is only a human-readable label for User Insights. Do not add a custom
+    `user`/`user_id` here: Access already supplies the verified `cf.user_id`, and a second
+    identity would split one person's usage. ASCII JSON escapes keep Chinese names valid
+    in HTTP headers without changing what Cloudflare decodes and displays.
+    """
     headers = {"User-Agent": _user_agent()}
+    name = (display_name or "").strip()
+    if name:
+        headers["cf-aig-metadata"] = json.dumps(
+            {"display_name": name}, ensure_ascii=True, separators=(",", ":")
+        )
+    return headers
+
+
+def access_headers(access_token: str, display_name: str = "") -> dict[str, str]:
+    """Everything this provider adds to a request: the Access session, request metadata,
+    and a User-Agent that will not be mistaken for an AI crawler (see `_user_agent`)."""
+    headers = _request_headers(display_name)
     token = (access_token or "").strip()
     if token:
         headers[ACCESS_HEADER] = token
     return headers
 
 
-def bearer_headers(token: str) -> dict[str, str]:
+def bearer_headers(token: str, display_name: str = "") -> dict[str, str]:
     """The same, for an OAuth session from `aigw_auth`.
 
     Managed OAuth asks for its token in the slot its own challenge names —
@@ -156,7 +175,7 @@ def bearer_headers(token: str) -> dict[str, str]:
     on 2026-08-23, on all three wires and with no vendor credential present at all), so
     each credential simply travels where its own protocol says it should.
     """
-    headers = {"User-Agent": _user_agent()}
+    headers = _request_headers(display_name)
     value = (token or "").strip()
     if value:
         headers["Authorization"] = f"Bearer {value}"
@@ -352,6 +371,7 @@ class AIGatewayProvider(ProviderClient):
         access_token: str = "",
         token_provider: Optional[Callable[[], str]] = None,
         thinking_budget: Optional[int] = None,
+        display_name: str = "",
         clients: Optional[dict[str, ProviderClient]] = None,
         allowed_models: Optional[Callable[[], Optional[Collection[str]]]] = None,
     ):
@@ -360,6 +380,7 @@ class AIGatewayProvider(ProviderClient):
         # this provider's own message rather than OpenAI's. Tests inject `clients`.
         self._base_url = normalise_base(base_url)
         self._access_token = (access_token or "").strip()
+        self._display_name = (display_name or "").strip()
         # Asked once per request for the current OAuth bearer, so a silent refresh takes
         # effect immediately. Returns "" when nobody has signed in, which is why the
         # pasted session below stays a live fallback rather than being replaced.
@@ -424,8 +445,10 @@ class AIGatewayProvider(ProviderClient):
                 "Cloudflare AI Gateway is not signed in — open Settings ▸ Models and "
                 "press Sign in."
             )
-        headers = bearer_headers(credential) if kind == "bearer" else access_headers(
-            credential
+        headers = (
+            bearer_headers(credential, self._display_name)
+            if kind == "bearer"
+            else access_headers(credential, self._display_name)
         )
         base = wire_url(self._base_url, wire)
         if wire == "messages":

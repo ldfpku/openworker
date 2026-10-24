@@ -12,12 +12,10 @@ import {
 import logoDark from "../brand/logo-dark.webp";
 import logoLight from "../brand/logo.webp";
 
-// The AI Gateway's identity pane. Unlike the Gemini relay's card (RelaySignIn), this one
-// IS the whole setup: the gateway's address is baked into the app (owner call 2026-08-27)
-// and signing in is the only credential, so the provider declares no fields and nothing
-// renders below this card. That hands the card the two jobs the field row used to carry —
-// a finished sign-in saves the provider (which is what puts the recommended model in the
-// composer), and the Test button lives here, on the signed-in state.
+// The AI Gateway's identity pane. The gateway's address is baked into the app and signing
+// in is the only credential. A finished sign-in saves the provider (which puts the
+// recommended model in the composer), and Test lives here on the signed-in state. The
+// optional, non-credential display-name field renders below this card.
 
 const CARD = "rounded-xl border border-line bg-paper/60 px-4 py-3.5";
 
@@ -73,9 +71,8 @@ export function GatewaySignIn({
       setWaiting(false);
       if (s?.signed_in) {
         setStatus(s);
-        // What Test & save used to do for this provider: an empty save is the whole
-        // save (there are no fields), and it is what runs the server-side conveniences —
-        // the recommended model lands in the composer right after signing in.
+        // An empty save preserves any existing display-name field and runs the server-side
+        // conveniences — the recommended model lands in the composer right after sign-in.
         void setProvider("aigw", {})
           .catch(() => undefined)
           .finally(() => onChanged?.());

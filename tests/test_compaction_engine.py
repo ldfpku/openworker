@@ -3,6 +3,8 @@ failure policy (attended prompt / unattended auto-trim), raw-overflow routing, a
 session persistence round-trip. Scripted providers, tiny forced windows, no network."""
 
 import asyncio
+import threading
+import time
 
 from coworker.engine import TurnEngine
 from coworker.events import EventType
@@ -156,6 +158,48 @@ def test_summarizer_failure_unattended_auto_trims(tmp_path):
     assert compacted and "trimmed" in compacted[0].data["text"].lower()
     assert engine.compaction_state is not None and engine.compaction_state.trimmed
     assert len(provider.summary_calls) == 2  # the one unconditional retry, then trim
+
+
+def test_stalled_summarizer_times_out_and_auto_trims(tmp_path):
+    """A wedged Cloudflare/non-streaming call must not hold COMPACTING for the SDK's
+    ten-minute read timeout. Both attempts are bounded and carry the request timeout."""
+    release = threading.Event()
+
+    class HangingProvider(CompactingProvider):
+        def complete(self, *, model, messages, tools=None, **settings):
+            if messages and "compacting an AI coworker" in str(
+                messages[0].get("content", "")
+            ):
+                self.summary_calls.append(settings)
+                release.wait(5)
+                raise RuntimeError("released after the deadline")
+            return super().complete(
+                model=model, messages=messages, tools=tools, **settings
+            )
+
+    provider = HangingProvider([AssistantTurn(text="done", finish_reason="stop")])
+    engine = make_engine(tmp_path, provider, messages=long_history(), cap=400)
+    configured = engine.compaction_settings
+    engine.compaction_settings = lambda: {**configured(), "summary_timeout": 0.03}
+
+    async def scenario():
+        started = time.monotonic()
+        events = [event async for event in engine.run("continue")]
+        # Measure before asyncio.run() shuts down its default executor: that shutdown
+        # deliberately joins abandoned to_thread calls, unlike the long-lived app loop.
+        return events, time.monotonic() - started
+
+    try:
+        events, elapsed = asyncio.run(scenario())
+    finally:
+        release.set()
+
+    assert elapsed < 1.0
+    assert len(provider.summary_calls) == 2
+    assert all(call["timeout"] == 0.03 for call in provider.summary_calls)
+    compacted = [e for e in events if e.type == EventType.COMPACTED]
+    assert compacted and "trimmed" in compacted[0].data["text"].lower()
+    assert engine.compaction_state is not None and engine.compaction_state.trimmed
 
 
 def test_summarizer_failure_attended_prompts_retry_then_succeeds(tmp_path):

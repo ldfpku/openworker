@@ -1949,6 +1949,7 @@ class TurnEngine:
         cfg.setdefault("threshold_pct", _compaction.DEFAULT_THRESHOLD_PCT)
         cfg.setdefault("cap_tokens", _compaction.DEFAULT_CAP_TOKENS)
         cfg.setdefault("summary_max_tokens", _compaction.SUMMARY_MAX_TOKENS)
+        cfg.setdefault("summary_timeout", _compaction.SUMMARY_TIMEOUT_S)
         return cfg
 
     def _compaction_due(self) -> bool:
@@ -2033,6 +2034,14 @@ class TurnEngine:
         summary_max = int(
             cfg.get("summary_max_tokens") or _compaction.SUMMARY_MAX_TOKENS
         )
+        try:
+            summary_timeout = float(
+                cfg.get("summary_timeout") or _compaction.SUMMARY_TIMEOUT_S
+            )
+            if summary_timeout <= 0:
+                raise ValueError("compaction timeout must be positive")
+        except (TypeError, ValueError):
+            summary_timeout = _compaction.SUMMARY_TIMEOUT_S
         model = str(cfg.get("model") or "") or self.model
 
         def _build() -> Optional[_compaction.CompactionState]:
@@ -2043,18 +2052,33 @@ class TurnEngine:
                 keep_tokens=keep,
                 prior=self.compaction_state,
                 summary_max_tokens=summary_max,
+                summary_timeout=summary_timeout,
                 user_budget_tokens=user_budget,
+            )
+
+        async def _build_bounded() -> Optional[_compaction.CompactionState]:
+            # The provider timeout stops the HTTP request and SDK retries; wait_for is the
+            # provider-independent wall-clock backstop. Cancelling to_thread cannot kill an
+            # already-running Python thread, so the request-level timeout is load-bearing.
+            return await asyncio.wait_for(
+                asyncio.to_thread(_build), timeout=summary_timeout
             )
 
         state: Optional[_compaction.CompactionState] = None
         failed = False
         for _attempt in range(2):  # first try + the unconditional single retry
             try:
-                state = await asyncio.to_thread(_build)
+                state = await _build_bounded()
                 failed = False
                 break
-            except Exception:
+            except Exception as exc:
                 failed = True
+                logger.warning(
+                    "context compaction attempt %d failed for model %s: %s",
+                    _attempt + 1,
+                    model,
+                    exc,
+                )
         if failed and self.question_asker is not None and self.is_attended and self.is_attended():
             # A stable id makes the Inbox item idempotent across a durable resume (a
             # resumed session must not re-prompt an already-answered card); the attempt
@@ -2082,10 +2106,15 @@ class TurnEngine:
                 if not answer or answer.get("answer") != "Retry":
                     break
                 try:
-                    state = await asyncio.to_thread(_build)
+                    state = await _build_bounded()
                     failed = False
                     break
-                except Exception:
+                except Exception as exc:
+                    logger.warning(
+                        "context compaction manual retry failed for model %s: %s",
+                        model,
+                        exc,
+                    )
                     continue
         if state is not None:
             self._write_compaction_transcript(state)

@@ -233,13 +233,16 @@ GOOD_SUMMARY = "\n".join(
 )
 
 
-def test_summarize_span_passes_model_and_budget():
+def test_summarize_span_passes_model_budget_and_timeout():
     fake = FakeSummarizer(text=GOOD_SUMMARY)
-    out = summarize_span(fake, "prov:model-x", [user("hi")], max_tokens=9999)
+    out = summarize_span(
+        fake, "prov:model-x", [user("hi")], max_tokens=9999, timeout=12.5
+    )
     assert out == GOOD_SUMMARY
     assert fake.calls[0]["model"] == "prov:model-x"
     assert fake.calls[0]["tools"] is None
     assert fake.calls[0]["max_tokens"] == 9999
+    assert fake.calls[0]["timeout"] == 12.5
 
 
 def test_summarize_span_refuses_an_unusable_summary():

@@ -32,6 +32,10 @@ KEEP_RECENT_FRACTION = 0.25
 # spent it thinking on 60 of 103 summary calls, so the summary itself was cut off or never
 # started. Overridable per run ("summary_max_tokens" in the compaction settings).
 SUMMARY_MAX_TOKENS = 16_000
+# A compaction is bookkeeping, not a turn that may park the session for the SDK's
+# ten-minute read timeout (multiplied by SDK retries). Both the provider request and the
+# engine's await use this bound; a stalled summarizer falls back to the deterministic trim.
+SUMMARY_TIMEOUT_S = 120.0
 # A summary is the coworker's ONLY memory of the span, so "not empty" is too low a bar to
 # accept one. Below this, or missing the sections, it is refused and retried (OPE-189).
 SUMMARY_MIN_CHARS = 400
@@ -494,15 +498,21 @@ def summarize_span(
     *,
     prior_summary: str = "",
     max_tokens: int = SUMMARY_MAX_TOKENS,
+    timeout: float = SUMMARY_TIMEOUT_S,
 ) -> str:
     """One summarizer round-trip (blocking — the engine runs it off-loop). Tools are
     disabled; the Settings model override is just a different `model` id. Raises on
-    provider failure or an UNUSABLE summary — the caller owns the retry/trim policy."""
+    provider failure or an UNUSABLE summary — the caller owns the retry/trim policy.
+
+    The explicit timeout also makes the OpenAI/Anthropic providers disable their own
+    automatic retries (providers.base.bounded_client), so the engine's one deliberate
+    retry cannot silently become a long chain of SDK retries."""
     turn = provider.complete(
         model=model,
         messages=summarizer_messages(span, prior_summary=prior_summary),
         tools=None,
         max_tokens=max_tokens,
+        timeout=timeout,
     )
     text = (getattr(turn, "text", None) or "").strip()
     problem = summary_quality_problem(text)
@@ -545,6 +555,7 @@ def build_state(
     keep_tokens: int,
     prior: Optional[CompactionState] = None,
     summary_max_tokens: int = SUMMARY_MAX_TOKENS,
+    summary_timeout: float = SUMMARY_TIMEOUT_S,
     user_budget_tokens: int = _USER_BUDGET_MAX,
 ) -> Optional[CompactionState]:
     """Summarize everything older than the picked boundary into a new CompactionState.
@@ -562,6 +573,7 @@ def build_state(
         span,
         prior_summary=prior.summary_text if prior is not None else "",
         max_tokens=summary_max_tokens,
+        timeout=summary_timeout,
     )
     users, dropped = fit_user_messages(
         prior_users + extract_user_messages(span),

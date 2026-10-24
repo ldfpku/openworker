@@ -242,6 +242,7 @@ def _build_aigw(profile: dict[str, Any], secrets: Any) -> ProviderClient:
         access_token=access_token,
         token_provider=read_session if secrets is not None else None,
         thinking_budget=thinking_budget,
+        display_name=str((profile or {}).get("display_name") or ""),
     )
 
 
@@ -645,13 +646,19 @@ DESCRIPTORS: list[ProviderDescriptor] = [
         name="aigw",
         title="Cloudflare AI Gateway",
         needs_key=True,
-        # No form at all (owner call 2026-08-27): the company gateway's address is baked
-        # into the app (aigateway_provider.DEFAULT_BASE_URL) and signing in IS the
-        # credential, so there is nothing left to type. The old routes still work without
-        # a field — `resolve_settings` keeps honouring a previously stored profile and the
-        # CLOUDFLARE_AIGW_* env vars (headless machines paste a `cloudflared` session
-        # there now).
-        fields=[],
+        # No credential fields (owner call 2026-08-27): the company gateway's address is
+        # baked in and signing in IS the credential. The optional display name is only a
+        # User Insights label; leaving it empty preserves the existing Access identity.
+        # Legacy address/session profiles and CLOUDFLARE_AIGW_* env vars still work.
+        fields=[
+            ProviderField(
+                "display_name",
+                "Display name",
+                required=False,
+                placeholder="Your name",
+                help="Shown as your name in Cloudflare AI Gateway User Insights.",
+            )
+        ],
         build=_build_aigw,
         # Not the flagship, unlike every other provider's recommendation. Fable 5 and
         # Opus 5 both work here, but this is one shared prepaid balance for the whole
@@ -1133,7 +1140,12 @@ def _verify_aigw(fields: dict[str, Any], timeout: float) -> dict[str, Any]:
             "error": "The gateway's list has no model to test with — ask your "
             "administrator to open one for you.",
         }
-    headers = bearer_headers(oauth_token) if oauth_token else access_headers(access_token)
+    display_name = str((fields or {}).get("display_name") or "")
+    headers = (
+        bearer_headers(oauth_token, display_name)
+        if oauth_token
+        else access_headers(access_token, display_name)
+    )
     headers["cf-aig-skip-cache"] = "true"
     try:
         resp = httpx.post(

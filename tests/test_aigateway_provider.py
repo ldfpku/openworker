@@ -11,6 +11,7 @@ rejects. Those are what these cover.
 
 from __future__ import annotations
 
+import json
 import re
 
 import httpx
@@ -92,6 +93,18 @@ def test_sub_clients_are_cached_per_wire_not_per_model():
     assert p._client_for("xai/grok-4.3") is first
 
 
+def test_router_passes_the_saved_display_name_to_the_gateway_provider():
+    class Secrets:
+        def get(self, profile):
+            assert profile == "provider:aigw"
+            return {"base_url": BASE, "access_token": SESSION, "display_name": "DF"}
+
+    router = ProviderRouter(Secrets())
+    gateway = router._client_for("aigw:x/y")
+    headers = gateway._client_for("x/y")._default_headers
+    assert json.loads(headers["cf-aig-metadata"]) == {"display_name": "DF"}
+
+
 # -- credentials and routing headers -----------------------------------------------
 
 
@@ -122,6 +135,29 @@ def test_every_wire_authenticates_with_the_access_session_only():
 def test_access_header_is_omitted_rather_than_sent_empty():
     assert "cf-access-token" not in access_headers("")
     assert "cf-access-token" not in access_headers("  ")
+    assert "cf-aig-metadata" not in access_headers(SESSION)
+    assert "cf-aig-metadata" not in access_headers(SESSION, "   ")
+
+
+def test_display_name_metadata_reaches_every_wire_without_changing_access_identity():
+    p = _provider(display_name="  刘德富  ")
+    for model in ("anthropic/claude-haiku-4-5", "openai/gpt-5.6-sol", "x/y"):
+        headers = p._client_for(model)._default_headers
+        assert headers["cf-access-token"] == SESSION
+        assert json.loads(headers["cf-aig-metadata"]) == {"display_name": "刘德富"}
+        # The display label must not create a second User Insights identity. Access owns
+        # cf.user_id; custom user/user_id fields could split the same person's usage.
+        assert set(json.loads(headers["cf-aig-metadata"])) == {"display_name"}
+
+
+def test_oauth_display_name_metadata_is_ascii_on_the_wire():
+    p = AIGatewayProvider(
+        base_url=BASE, token_provider=lambda: "oauth-tok", display_name="张三"
+    )
+    headers = p._client_for("x/y")._default_headers
+    assert headers["Authorization"] == "Bearer oauth-tok"
+    assert headers["cf-aig-metadata"].isascii()
+    assert json.loads(headers["cf-aig-metadata"]) == {"display_name": "张三"}
 
 
 def test_the_sdk_user_agent_is_replaced_on_every_wire():
@@ -1128,12 +1164,13 @@ def test_descriptor_is_registered_with_a_curated_default():
     assert f"aigw:{d.recommended_model}" in MATRIX
 
 
-def test_the_pane_has_no_fields_left_to_type():
-    # The company gateway's address is baked in (owner call 2026-08-27), and signing in is
-    # the credential — so the descriptor declares no form at all. A field reappearing here
-    # would resurrect the "fill the address, paste a session" chore the pane just shed.
+def test_the_pane_only_asks_for_an_optional_display_name():
+    # No address or session field may reappear: signing in remains the whole credential.
+    # The one non-credential field is the optional User Insights label.
     d = get_descriptor("aigw")
-    assert d.fields == []
+    assert [f.key for f in d.fields] == ["display_name"]
+    assert d.fields[0].required is False
+    assert d.fields[0].secret is False
 
 
 def test_configured_means_holding_a_credential_not_an_address(monkeypatch):
@@ -1238,6 +1275,14 @@ def test_test_probes_with_the_model_the_guard_names(monkeypatch):
     assert completion["url"] == BASE + "/compat/chat/completions"
     assert completion["json"]["model"] == "google-ai-studio/gemini-3.6-flash"
     assert completion["json"]["max_tokens"] == 16  # still a sub-cent call
+
+
+def test_test_probe_also_carries_the_display_name(monkeypatch):
+    http = _Http(monkeypatch, (200, _LISTING))
+    fields = {**_SIGNED_IN, "display_name": "测试用户"}
+    assert verify_provider_key("aigw", fields=fields) == {"ok": True}
+    metadata = http.calls[1]["headers"]["cf-aig-metadata"]
+    assert json.loads(metadata) == {"display_name": "测试用户"}
 
 
 def test_the_probe_model_is_not_hard_coded_anywhere(monkeypatch):

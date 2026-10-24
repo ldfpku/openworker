@@ -274,6 +274,22 @@ def test_complete_text_turn_with_defaults():
     assert "tools" not in fake.kwargs
 
 
+def test_complete_explicit_timeout_disables_sdk_retries():
+    fake = _FakeClient(response=_text_response())
+    retry_options = []
+
+    def with_options(*, max_retries):
+        retry_options.append(max_retries)
+        return fake
+
+    fake.with_options = with_options
+    AnthropicProvider(client=fake).complete(
+        model="m", messages=[{"role": "user", "content": "x"}], timeout=12.5
+    )
+    assert retry_options == [0]
+    assert fake.kwargs["timeout"] == 12.5
+
+
 def test_complete_parses_tool_use_blocks():
     response = SimpleNamespace(
         content=[
