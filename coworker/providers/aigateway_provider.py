@@ -427,6 +427,10 @@ class AIGatewayProvider(ProviderClient):
                 token = (self._token_provider() or "").strip()
             except Exception:  # noqa: BLE001 - a broken sign-in must not mask the paste
                 logger.debug("aigw: token provider failed", exc_info=True)
+                if not self._access_token:
+                    # Without a legacy session there is no fallback. In particular, do not
+                    # turn a failed OAuth refresh into the misleading "not signed in".
+                    raise
                 token = ""
             if token:
                 return ("bearer", token)

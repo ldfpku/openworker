@@ -7,6 +7,7 @@ import {
   getTrustedWorkspaces,
   setAutoApprove,
   setAutoApproveShadow,
+  setAutoWorkspaceIgnore,
   setCompactionSettings,
   setContextBar,
   setGuidanceSettings,
@@ -822,16 +823,18 @@ function UpdateInline() {
 function TokenSavingsCard() {
   const { t } = useTranslation();
   const [pdf, setPdf] = useState<PdfSettings | null>(null);
+  const [autoIgnore, setAutoIgnore] = useState(true);
 
   useEffect(() => {
     getSettings()
-      .then((s) =>
+      .then((s) => {
         setPdf({
           pdf_fallback: s.pdf_fallback || "text",
           pdf_max_pages: s.pdf_max_pages || 20,
           pdf_max_mb: s.pdf_max_mb || 10,
-        }),
-      )
+        });
+        setAutoIgnore(s.auto_workspace_ignore !== false);
+      })
       .catch(() => setPdf({ pdf_fallback: "text", pdf_max_pages: 20, pdf_max_mb: 10 }));
   }, []);
 
@@ -897,19 +900,35 @@ function TokenSavingsCard() {
       <div className={FIELD_HELP}>
         {t("settings.pdf_limits_help")}
       </div>
+
+      <label className="mt-4 pt-3 border-t border-line flex items-start gap-2.5">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={autoIgnore}
+          data-testid="auto-workspace-ignore"
+          onChange={(e) => {
+            const enabled = e.target.checked;
+            setAutoIgnore(enabled);
+            void setAutoWorkspaceIgnore(enabled);
+          }}
+        />
+        <span>
+          <span className="block text-[13px] text-ink">{t("Optimize search when opening a project")}</span>
+          <span className={FIELD_HELP}>{t("Create a standard .ignore file for dependency folders, build output and local secrets. Existing ignore files are never changed.")}</span>
+        </span>
+      </label>
     </div>
   );
 }
 
 // -- Context compaction (OPE-27) ------------------------------------------------
 // Long sessions are summarized automatically when they approach the model's context
-// limit, so work continues instead of hitting a raw provider error. Two spec'd
-// overrides (trigger % + token cap) and the summarizer-model pin — nothing more.
+// limit, so work continues instead of hitting a raw provider error. Only the trigger
+// percentage and token cap are configurable; self-managed summarizers use a fixed pool.
 function CompactionCard() {
   const { t } = useTranslation();
   const [cfg, setCfg] = useState<CompactionSettings | null>(null);
-  const [models, setModels] = useState<string[]>([]);
-  const [labels, setLabels] = useState<Record<string, string>>({});
 
   useEffect(() => {
     getSettings()
@@ -919,8 +938,6 @@ function CompactionCard() {
           compaction_cap_tokens: s.compaction_cap_tokens ?? 250_000,
           compaction_model: s.compaction_model ?? "",
         });
-        setModels(s.models || []);
-        setLabels(s.model_labels || {});
       })
       .catch(() =>
         setCfg({
@@ -937,7 +954,6 @@ function CompactionCard() {
   };
 
   if (!cfg) return null;
-  const modelLabel = (id: string) => labels[id]?.split(" · ")[0] || id;
   return (
     <div className={CARD + " p-4 mb-4"} data-testid="compaction-card">
       <div className={FIELD_LABEL}>{t("Context compaction")}</div>
@@ -990,24 +1006,8 @@ function CompactionCard() {
         {t("The cap makes very-large-context models compact early — quality and speed degrade well before their nominal limit.")}
       </div>
 
-      <div className="mt-3 flex items-center gap-2.5">
-        <span className="text-[13px] text-ink">{t("Summarizer model")}</span>
-        <select
-          value={cfg.compaction_model}
-          data-testid="compaction-model"
-          className="px-2 py-1.5 rounded-lg border border-line bg-paper text-[13px] text-ink outline-none focus:border-accent"
-          onChange={(e) => save({ compaction_model: e.target.value })}
-        >
-          <option value="">{t("Session’s own model (default)")}</option>
-          {sortModelIds(models).map((m) => (
-            <option key={m} value={m}>
-              {modelLabel(m)}
-            </option>
-          ))}
-        </select>
-      </div>
-      <div className={FIELD_HELP}>
-        {t("The summary is written by this model. The default follows whatever model the session is using.")}
+      <div className={"mt-3 " + FIELD_HELP}>
+        {t("Self-managed sessions automatically summarize through Cloudflare AI Gateway with failover: GPT-6 Luna → GLM 5.3 Flash → Claude Haiku 4.5. No summarizer model setting is needed.")}
       </div>
     </div>
   );

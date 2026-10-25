@@ -1934,6 +1934,20 @@ class TurnEngine:
                 self._inject_steering()
 
     # -- auto-compaction (OPE-27) ------------------------------------------------
+    def _local_session_model(self) -> bool:
+        """Location of the MAIN model, not of the selected summarizer.
+
+        ProviderRouter treats Ollama and every custom endpoint as self-managed; a plain
+        test or third-party provider keeps the original Ollama-prefix behaviour.
+        """
+        checker = getattr(getattr(self, "provider", None), "is_local_model", None)
+        if callable(checker):
+            try:
+                return bool(checker(self.model))
+            except Exception:
+                pass
+        return _compaction.is_local_model(self.model)
+
     def _compaction_config(self) -> dict[str, Any]:
         cfg = dict(self.compaction_settings() or {}) if self.compaction_settings else {}
         if not cfg.get("context_window"):
@@ -1948,20 +1962,24 @@ class TurnEngine:
                 cfg["context_window"] = context_window_for(self.model)
         cfg.setdefault("threshold_pct", _compaction.DEFAULT_THRESHOLD_PCT)
         cfg.setdefault("cap_tokens", _compaction.DEFAULT_CAP_TOKENS)
-        # The summarizer is the compaction model when one is pinned in Settings, else the
-        # session model — EXCEPT that a local session model (Ollama) hands the summary to
-        # the Cloudflare AI Gateway's default summarizer when the gateway is signed in
-        # (`gateway_model`, from SessionManager._compaction_gateway_model): a local model
-        # spent 10+ minutes per compaction and never finished (OPE-27 follow-up). If no
-        # gateway is available, the local summarizer stays, with budgets sized for local
-        # hardware — see compaction.py "local models". An explicit pin wins over both.
+        # Self-managed MAIN sessions always use the fixed Cloudflare pool. Saved pins and
+        # the old gateway_model preference are intentionally irrelevant here: neither a
+        # stale direct-provider id nor the gateway catalog picker can break compaction.
+        # Hosted sessions keep their existing pin-or-session-model behaviour.
         pinned = str(cfg.get("model") or "")
-        summarizer = pinned or self.model
-        gateway_model = str(cfg.get("gateway_model") or "")
-        if not pinned and gateway_model and _compaction.is_local_model(summarizer):
-            summarizer = gateway_model
+        local_session = TurnEngine._local_session_model(self)
+        models = (
+            list(_compaction.GATEWAY_SUMMARY_MODELS)
+            if local_session
+            else [pinned or self.model]
+        )
+        summarizer = models[0]
         cfg["model"] = summarizer
-        cfg["local_summarizer"] = _compaction.is_local_model(summarizer)
+        cfg["fallback_models"] = models[1:]
+        cfg["local_session"] = local_session
+        cfg["local_summarizer"] = _compaction.is_local_model(summarizer) or (
+            local_session and summarizer == self.model
+        )
         if cfg["local_summarizer"]:
             cfg.setdefault("summary_max_tokens", _compaction.LOCAL_SUMMARY_MAX_TOKENS)
             cfg.setdefault("summary_timeout", _compaction.LOCAL_SUMMARY_TIMEOUT_S)
@@ -2037,9 +2055,9 @@ class TurnEngine:
     async def _compact_now(self, *, force: bool = False) -> Optional[str]:
         """Run the compaction policy. Callers gate on `_compaction_due()` (or `force`,
         the overflow path). Returns the user-facing notice text when the outbound view
-        changed, else None. Failure policy per spec: retry once (both modes); attended →
-        Retry / Trim prompt; unattended → auto-trim and continue (never park a run on
-        bookkeeping)."""
+        changed, else None. Failure policy: a single summarizer gets one retry, while a
+        self-managed session tries each fixed gateway model once; attended → Retry / Trim
+        prompt; unattended → auto-trim and continue (never park a run on bookkeeping)."""
         cfg = self._compaction_config()
         pct = float(cfg["threshold_pct"])
         cap = int(cfg["cap_tokens"])
@@ -2105,26 +2123,36 @@ class TurnEngine:
             )
 
         state: Optional[_compaction.CompactionState] = None
-        failed = False
-        for _attempt in range(2):  # first try + the single retry
-            try:
-                state = await _build_bounded()
-                failed = False
-                break
-            except Exception as exc:
-                failed = True
-                logger.warning(
-                    "context compaction attempt %d failed for model %s: %s",
-                    _attempt + 1,
-                    model,
-                    exc,
-                )
-                # A local model that ran out of time will run out of time again on the
-                # same input — the retry is a second full deadline spent for the same
-                # outcome (the hosted-provider retry stays: there a timeout is usually a
-                # transient stall). Go straight to the fallback.
-                if local and _compaction.is_timeout_error(exc):
-                    break
+        # Self-managed sessions try the fixed gateway pool once per model. A single hosted
+        # summarizer retains the original first-try-plus-one-retry policy; a local timeout
+        # still stops immediately rather than paying for the same deadline twice.
+        route = [model, *list(cfg.get("fallback_models") or [])]
+        attempts = route if len(route) > 1 else [model, model]
+
+        async def _build_with_failover() -> bool:
+            nonlocal model, state
+            for index, candidate in enumerate(attempts):
+                model = candidate
+                try:
+                    state = await _build_bounded()
+                    return True
+                except Exception as exc:
+                    logger.warning(
+                        "context compaction attempt %d failed for model %s: %s",
+                        index + 1,
+                        model,
+                        exc,
+                    )
+                    if index + 1 < len(attempts):
+                        logger.info(
+                            "context compaction switching summarizer to %s",
+                            attempts[index + 1],
+                        )
+                    if local and _compaction.is_timeout_error(exc):
+                        break
+            return False
+
+        failed = not await _build_with_failover()
         if failed and self.question_asker is not None and self.is_attended and self.is_attended():
             # A stable id makes the Inbox item idempotent across a durable resume (a
             # resumed session must not re-prompt an already-answered card); the attempt
@@ -2151,17 +2179,10 @@ class TurnEngine:
                 )
                 if not answer or answer.get("answer") != "Retry":
                     break
-                try:
-                    state = await _build_bounded()
-                    failed = False
+                # Manual Retry traverses the same pool from its primary again.
+                failed = not await _build_with_failover()
+                if not failed:
                     break
-                except Exception as exc:
-                    logger.warning(
-                        "context compaction manual retry failed for model %s: %s",
-                        model,
-                        exc,
-                    )
-                    continue
         if state is not None:
             self._write_compaction_transcript(state)
             self.compaction_state = state

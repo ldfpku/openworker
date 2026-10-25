@@ -57,6 +57,7 @@ from ..conversations import LOST_TOOL_RESULT, ConversationStore, title_from
 from ..engine import PREFLIGHT_ID_PREFIX, ApprovalOutcome, Approver, TurnEngine
 from ..roots import RootDir, user_roots
 from ..workspace_trust import WorkspaceTrustStore
+from ..workspace_ignore import ensure_workspace_ignore
 from ..automation import Schedule, ScheduledTask, Scheduler, TaskRun, TaskStore
 from ..connectors import (
     Gateway,
@@ -583,12 +584,28 @@ class SessionManager:
                 return {"path": str(resolved), "ok": False, "error": str(exc)}
         resolved = resolved.resolve()
         self.session_store.touch_workspace(str(resolved))
+        ignore_file = ensure_workspace_ignore(
+            resolved, enabled=bool(self._prefs.get("auto_workspace_ignore", True))
+        )
+        if ignore_file["status"] == "unavailable":
+            logger.warning(
+                "could not create workspace search ignore file for %s: %s",
+                resolved,
+                ignore_file.get("error", "unknown error"),
+            )
         return {
             "path": str(resolved),
             "ok": True,
             "git_branch": _git_branch(resolved),
             "command_trust": self.workspace_command_trust(resolved),
+            "ignore_file": ignore_file,
         }
+
+    def set_auto_workspace_ignore(self, enabled: Any) -> dict[str, Any]:
+        """Enable one-time .ignore creation when a real project folder is opened."""
+        self._prefs["auto_workspace_ignore"] = bool(enabled)
+        self._save_prefs()
+        return {"ok": True, "auto_workspace_ignore": bool(enabled)}
 
     def workspace_command_trust(self, path: str | Path) -> dict[str, Any]:
         if not str(path).strip():
@@ -5948,6 +5965,9 @@ class SessionManager:
             "nav_layout": self._nav_layout(),
             "sessions_peek": self.sessions_peek(),
             "context_bar": self.context_bar(),
+            "auto_workspace_ignore": bool(
+                self._prefs.get("auto_workspace_ignore", True)
+            ),
             # Auto-Approve feature flag + its shadow-eval sibling (spec §1.5). Drive the
             # Settings toggles and gate the composer's Auto-Approve mode entry.
             "auto_approve": self.auto_approve(),
@@ -6113,48 +6133,13 @@ class SessionManager:
         settings = {
             "threshold_pct": threshold_pct,
             "cap_tokens": cap_tokens,
-            # "" → the session's own model (engine falls back to self.model).
+            # Hosted sessions retain this legacy pin. Self-managed sessions ignore it and
+            # use compaction.GATEWAY_SUMMARY_MODELS directly, with no gateway/catalog pref.
             "model": str(self._prefs.get("compaction_model") or ""),
-            # The gateway model the engine substitutes for a LOCAL summarizer (see
-            # `_compaction_gateway_model`); "" when the gateway can't take the call.
-            "gateway_model": self._compaction_gateway_model(),
         }
         if config.compaction_summary_max_tokens:
             settings["summary_max_tokens"] = int(config.compaction_summary_max_tokens)
         return settings
-
-    def _compaction_gateway_model(self) -> str:
-        """The Cloudflare AI Gateway model that writes compaction summaries for sessions
-        running on a LOCAL model (Ollama).
-
-        A local model summarizing a hosted-size span ran for 10+ minutes without ever
-        producing a summary (OPE-27 follow-up, 2026-10-24). The summary is a short, tools-off
-        completion — exactly the kind of call the gateway handles in seconds — so when the
-        person is signed in to the gateway, it writes the summary instead of the GPU. The
-        pick is the gateway's cheap utility tier (Haiku, the `_UTILITY_MODELS` default for
-        `aigw:anthropic/`), checked against this person's server list like every other
-        `aigw:` id; failing that, the app default when it is itself a gateway model; failing
-        that, the first listed gateway row in the matrix. "" when the gateway is not
-        configured — the engine then keeps the local summarizer with its local budgets.
-        An explicit `compaction_model` pin always wins over this (engine side)."""
-        if not self._provider_configured("aigw"):
-            return ""
-        from ..providers.matrix import MATRIX, utility_model_for
-
-        preferred = utility_model_for("aigw:anthropic/")
-        if self._aigw_listed(preferred):
-            return preferred
-        allowed = self._aigw_allowed()
-        if allowed is None:
-            # No server list has ever been pulled: nothing to check against, so the
-            # matrix default stands (the same reading as `_utility_model`'s callers).
-            return preferred
-        if str(self.model or "").startswith("aigw:") and self._aigw_listed(self.model):
-            return str(self.model)
-        for mid in MATRIX:
-            if mid.startswith("aigw:") and self._aigw_listed(mid):
-                return mid
-        return ""
 
     def compaction_settings_payload(self) -> dict[str, Any]:
         """The same knobs under REST-facing names (prefixed to keep /v1/settings flat)."""

@@ -55,6 +55,23 @@ def test_pattern_and_subpath_apply(tmp_path):
     ]
 
 
+def test_recursive_patterns_keep_directory_and_double_star_semantics(tmp_path):
+    _site(tmp_path)
+    (tmp_path / "personal-site" / "src").mkdir()
+    (tmp_path / "personal-site" / "src" / "app.py").write_text("pass", encoding="utf-8")
+    tool = _list_files(tmp_path)
+
+    assert tool(path="personal-site", pattern="*.md", recursive=True) == [
+        "personal-site/_includes/about.md"
+    ]
+    assert tool(path="personal-site", pattern="src/*.py", recursive=True) == [
+        "personal-site/src/app.py"
+    ]
+    assert tool(path="personal-site", pattern="**/*.html", recursive=True) == [
+        "personal-site/index.html"
+    ]
+
+
 def test_ignored_folders_stay_hidden(tmp_path):
     _site(tmp_path)
     (tmp_path / ".git" / "objects").mkdir(parents=True)

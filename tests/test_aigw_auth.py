@@ -187,6 +187,22 @@ def test_nobody_signed_in_is_an_empty_string_not_an_error(monkeypatch):
     assert aigw_auth.access_token(FakeSecrets()) == ""
 
 
+def test_a_failed_refresh_preserves_the_real_error_instead_of_reporting_signed_out(monkeypatch):
+    monkeypatch.setattr("httpx.post", lambda *a, **k: (_ for _ in ()).throw(
+        ValueError("Invalid port: ':1]'")
+    ))
+    monkeypatch.setattr(aigw_auth.time, "sleep", lambda _: None)
+    s = _store({
+        "access_token": "stale",
+        "refresh_token": "r",
+        "expires_at": time.time() - 10,
+        "token_endpoint": "https://as.example/token",
+    })
+    with pytest.raises(RuntimeError, match="token refresh failed: Invalid port"):
+        aigw_auth.access_token(s)
+    assert aigw_auth.status(s)["signed_in"] is True
+
+
 def test_a_token_of_unknown_age_is_refreshed_rather_than_trusted(monkeypatch):
     # "No stated expiry" must not mean "valid forever" — that is the documented trap in
     # coworker/mcp/oauth.py, where an hour-old token kept being sent, the server 401'd,

@@ -569,7 +569,7 @@ def access_token(secrets: SecretStore) -> str:
             if not state.get("refresh_token"):
                 # The grant was spent or revoked (a 400/401 refresh clears the tokens):
                 # retrying cannot help — send the stale token and let the gateway judge it.
-                break
+                return str(state.get("access_token") or "")
             try:
                 return _refresh(secrets, state)
             except Exception as exc:  # noqa: BLE001
@@ -577,7 +577,13 @@ def access_token(secrets: SecretStore) -> str:
                 if attempt < 2:
                     time.sleep(1.0 + attempt)
         logger.info("aigw oauth: silent refresh failed: %s", last_exc)
-        return ""
+        # Returning "" here makes the provider report "not signed in" even though the
+        # saved session exists. Preserve the actual network/configuration failure so the
+        # compaction error is actionable; a pasted legacy session can still fall back in
+        # AIGatewayProvider._credential().
+        raise RuntimeError(
+            f"Cloudflare AI Gateway token refresh failed: {last_exc}"
+        ) from last_exc
 
 
 def status(secrets: SecretStore) -> dict[str, Any]:

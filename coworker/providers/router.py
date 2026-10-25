@@ -51,6 +51,17 @@ class ProviderRouter(ProviderClient):
         except Exception:
             pass
 
+    def is_local_model(self, model: str) -> bool:
+        """Whether compaction should hand this self-managed session to the gateway.
+
+        Ollama and custom OpenAI-compatible endpoints are both self-managed. A custom
+        endpoint may be a local server exposed through a company domain, so its URL host
+        cannot reliably classify the deployment location.
+        """
+        from ..compaction import is_local_model
+
+        return is_local_model(model) or self._provider_name(model) == "custom"
+
     # -- routing ----------------------------------------------------------------
     def _provider_name(self, model: str) -> str:
         """The provider for a model: the `prefix` of `prefix:rest` if it's a known provider,

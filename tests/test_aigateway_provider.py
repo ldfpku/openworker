@@ -232,6 +232,15 @@ def test_a_broken_sign_in_falls_back_instead_of_taking_the_provider_down():
     assert p._client_for("x/y")._default_headers["cf-access-token"] == SESSION
 
 
+def test_a_broken_sign_in_without_a_pasted_session_preserves_the_real_error():
+    def boom() -> str:
+        raise RuntimeError("token refresh failed: Invalid port")
+
+    p = AIGatewayProvider(base_url=BASE, token_provider=boom)
+    with pytest.raises(RuntimeError, match="token refresh failed: Invalid port"):
+        p._client_for("x/y")
+
+
 def test_a_refreshed_token_reaches_the_next_request():
     # The credential is baked into each sub-client's headers at build time, so a silent
     # refresh is only real if the cached sub-clients are dropped. Without this the

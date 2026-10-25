@@ -91,6 +91,11 @@ export async function openWorkspace(
   error?: string;
   git_branch?: string | null;
   command_trust?: WorkspaceCommandTrust;
+  ignore_file?: {
+    path: string;
+    status: "created" | "existing" | "disabled" | "unavailable";
+    error?: string;
+  };
 }> {
   const res = await fetch(`${httpBase()}/v1/workspaces/open`, {
     method: "POST",
@@ -1088,6 +1093,8 @@ export interface ModelSettings {
   // Composer: show the context-window fill bar (default FALSE; absent → the chip shows
   // the session total). The usage popover keeps both numbers regardless.
   context_bar?: boolean;
+  // Create a standard .ignore once when a project folder is opened (default true).
+  auto_workspace_ignore?: boolean;
   // Auto-Approve mode (spec §1.5): the feature flag that offers the reviewer mode, and its
   // shadow-eval sibling. Both default FALSE and are absent on older backends — the composer
   // hides the Auto-Approve mode entry unless auto_approve is explicitly true.
@@ -1229,6 +1236,17 @@ export async function setContextBar(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ context_bar: shown }),
+  });
+  return res.json();
+}
+
+export async function setAutoWorkspaceIgnore(
+  enabled: boolean,
+): Promise<{ ok: boolean; auto_workspace_ignore?: boolean; error?: string }> {
+  const res = await fetch(`${httpBase()}/v1/settings/workspace-ignore`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ auto_workspace_ignore: enabled }),
   });
   return res.json();
 }

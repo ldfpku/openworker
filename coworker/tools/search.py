@@ -21,6 +21,7 @@ import aisuite as ai
 
 from .. import procutil
 from ..roots import resolved_paths
+from ..workspace_ignore import WorkspaceIgnore, ignore_files
 
 # Per-OS application data directories. These are not build noise: on macOS 14+ merely
 # *descending* into ~/Library/Application Support (other apps' containers) trips the App
@@ -111,10 +112,13 @@ def search_tools(workspace: str, roots: Optional[list] = None) -> list:
         base = (root / (path or ".")).resolve()
         try:
             base.relative_to(root)  # keep searches inside the workspace
+            home = root
         except ValueError:
-            if not any(_within(base, r) for r in resolved_paths(roots)):
+            granted = resolved_paths(roots)
+            if not any(_within(base, r) for r in granted):
                 # Same wording as read_file's refusal — one vocabulary for one rule.
                 return {"error": "path escapes the session's directories"}
+            home = next((r for r in granted if _within(base, r)), root)
         # ripgrep is run from inside the directory it searches (see below), so settle the
         # target here: `cwd` must be a real directory, and a missing path should read as
         # such rather than as a raw, localised spawn failure.
@@ -141,6 +145,10 @@ def search_tools(workspace: str, roots: Optional[list] = None) -> list:
             ]
             if glob:
                 cmd += ["--glob", glob]
+            # Supply the project-root files explicitly: rg starts in `base`, which may
+            # be a subdirectory where it would not discover the workspace's .ignore.
+            for ignore_file in ignore_files(home):
+                cmd += ["--ignore-file", str(ignore_file)]
             # Do not rely solely on a workspace's .gitignore: the Python fallback
             # always omits these generated/dependency directories too. Exclusions come
             # last because ripgrep resolves conflicting globs with the later one winning.
@@ -174,7 +182,10 @@ def search_tools(workspace: str, roots: Optional[list] = None) -> list:
                 return {"error": (out.stderr or "ripgrep error").strip()[:300]}
             return {"engine": "ripgrep", **_parse_rg(out.stdout, root, cwd, n)}
 
-        return {"engine": "python", **_py_grep(root, base, pattern, glob, n)}
+        return {
+            "engine": "python",
+            **_py_grep(root, base, pattern, glob, n, ignore_root=home),
+        }
 
     grep.__name__ = "grep"
     grep.__doc__ = _SCHEMA["function"]["description"]
@@ -259,20 +270,34 @@ def _parse_rg(stdout: str, root: Path, base: Optional[Path], n: int) -> dict[str
 
 
 def _py_grep(
-    root: Path, base: Path, pattern: str, glob: Optional[str], n: int
+    root: Path,
+    base: Path,
+    pattern: str,
+    glob: Optional[str],
+    n: int,
+    *,
+    ignore_root: Optional[Path] = None,
 ) -> dict[str, Any]:
     try:
         rx = re.compile(pattern)
     except re.error as exc:
         return {"error": f"invalid regex: {exc}", "count": 0, "matches": []}
     matches: list[dict[str, Any]] = []
-    walk = os.walk(base) if base.is_dir() else [(str(base.parent), [], [base.name])]
+    is_directory = base.is_dir()
+    # An explicitly named file is always searchable, just as it is with ripgrep;
+    # ignore rules only prune a recursive directory search.
+    ignored = WorkspaceIgnore(ignore_root or base) if is_directory else None
+    walk = os.walk(base) if is_directory else [(str(base.parent), [], [base.name])]
     for dirpath, dirs, files in walk:
         dirs[:] = [d for d in dirs if d not in _IGNORE_DIRS]
+        if ignored is not None:
+            dirs[:] = ignored.prune(dirpath, dirs)
         for fn in files:
             if glob and not fnmatch.fnmatch(fn, glob):
                 continue
             fp = Path(dirpath) / fn
+            if ignored is not None and ignored.matches(fp):
+                continue
             try:
                 with open(fp, "r", encoding="utf-8", errors="ignore") as fh:
                     for i, line in enumerate(fh, 1):

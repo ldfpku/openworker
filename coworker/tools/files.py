@@ -19,6 +19,7 @@ formats it can only ever corrupt.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, NamedTuple, Optional
 
@@ -29,6 +30,7 @@ import aisuite as ai
 from aisuite.toolkits.files import DEFAULT_IGNORES as _IGNORED_DIRS
 
 from ..roots import resolved_paths
+from ..workspace_ignore import WorkspaceIgnore
 
 _DEFAULT_MAX_LINES = 2000
 _MAX_LINE_CHARS = 500
@@ -241,27 +243,53 @@ def file_tools(workspace: str, roots: Optional[list] = None) -> list:
             return {"error": f"not a directory: {path}"}
 
         results: list[str] = []
+        ignored = WorkspaceIgnore(home)
+        name_pattern = pattern or "*"
+
+        def matches_pattern(item: Path) -> bool:
+            relative = item.relative_to(base)
+
+            def match(glob: str) -> bool:
+                if relative.match(glob):
+                    return True
+                # PurePath.match requires **/ to consume a directory on some supported
+                # Python versions, whereas glob/rglob also allow it to consume none.
+                # Retry with each **/ removed; every retry strictly shortens the pattern.
+                start = 0
+                while (index := glob.find("**/", start)) >= 0:
+                    if match(glob[:index] + glob[index + 3:]):
+                        return True
+                    start = index + 3
+                return False
+
+            return match(name_pattern)
+
         try:
-            iterator = (
-                base.rglob(pattern or "*") if recursive else base.glob(pattern or "*")
-            )
-            for item in iterator:
-                # Skip-list is judged from the root the listing lives in, so `.git` and
-                # friends stay hidden at any depth while a workspace that itself sits
-                # under a `build/` folder still lists.
-                if any(part in _IGNORED_DIRS for part in item.relative_to(home).parts):
-                    continue
-                # Workspace entries come back relative (posix separators, round-trippable
-                # as a `path` argument on every platform); entries in another root come
-                # back absolute, as `read_file` reports them.
-                shown = item.relative_to(root).as_posix() if home == root else str(item)
-                if item.is_dir():
-                    results.append(shown + "/")
-                elif item.is_file():
-                    results.append(shown)
-                else:
-                    continue
-                if len(results) >= n:
+            # Prune before descending. rglob followed by a result filter still walked
+            # every dependency/build directory and then merely hid what it had read.
+            for dirpath, dirs, files in os.walk(base):
+                dirs[:] = [d for d in dirs if d not in _IGNORED_DIRS]
+                dirs[:] = ignored.prune(dirpath, dirs)
+                for name in [*dirs, *files]:
+                    item = Path(dirpath) / name
+                    # Match the relative path, not just its name, to preserve existing
+                    # calls such as `src/*.py` and `**/*.md`.
+                    if not matches_pattern(item):
+                        continue
+                    if item.is_file() and ignored.matches(item):
+                        continue
+                    # Workspace entries come back relative (posix separators,
+                    # round-trippable as a `path` argument); other roots stay absolute.
+                    shown = item.relative_to(root).as_posix() if home == root else str(item)
+                    if item.is_dir():
+                        results.append(shown + "/")
+                    elif item.is_file():
+                        results.append(shown)
+                    else:
+                        continue
+                    if len(results) >= n:
+                        return sorted(results)
+                if not recursive:
                     break
         except OSError as exc:
             return {"error": f"list failed: {exc}"}
