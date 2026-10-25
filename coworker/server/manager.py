@@ -4916,6 +4916,11 @@ class SessionManager:
             from .. import aigw_auth
 
             merged["oauth_token"] = aigw_auth.access_token(self.secrets) or ""
+            # Also not a form field: the label the provider stamps into cf-aig-metadata
+            # (stored from the guard's answer — see `_remember_aigw_caller`). Test stamps
+            # the same label a real call would, or the Test traffic lands nameless in
+            # user-insights while turns land named.
+            merged["display_name"] = str(profile.get("display_name") or "")
         return api_key, merged, None
 
     def _catalog_provider_title(self, d: ProviderDescriptor, merged: dict[str, Any]) -> str:
@@ -4953,6 +4958,30 @@ class SessionManager:
             provider_title=self._catalog_provider_title(d, merged),
         )
 
+    def _remember_aigw_caller(self, name: str) -> None:
+        """Store the display name the guard named for this person on the gateway provider's
+        profile (`aigw_auth.set_display_name`). That profile slot is what the provider's
+        existing cf-aig-metadata pipeline has been waiting for: it sends the label on every
+        request, and the gateway's user-insights page finally has a name to filter and
+        group by (the page showed nameless traffic because nothing ever set the slot — the
+        Access token is opaque, so only the guard can say who the caller is). The guard
+        overwrites this label server-side with the same roster name anyway — the client
+        value matters for self-hosted gateways without the guard and as a readable label
+        while the profile is open. Best-effort: a profile that cannot be read or written
+        costs the label, never the model list that arrived with it. Only a CHANGED value
+        invalidates the cached client (an unchanged one still carries the old label).
+        """
+        name = name.strip()
+        if not name:
+            return
+        try:
+            from ..aigw_auth import set_display_name
+
+            if set_display_name(self.secrets, name):
+                self._refresh_provider("aigw")
+        except Exception:  # noqa: BLE001 - attribution label, never the list itself
+            logger.debug("aigw: could not store caller display name", exc_info=True)
+
     def _store_model_catalog(self, name: str, result: dict[str, Any]) -> None:
         """Persist a fetch outcome: success replaces the cached models outright and stamps
         `fetched_at`; a failure keeps whatever models were already cached (an outage
@@ -4971,6 +5000,11 @@ class SessionManager:
 
         now = datetime.now(timezone.utc).isoformat()
         gateway_pull = name == "aigw" and bool(result.get("ok"))
+        if gateway_pull:
+            # The guard names the caller in the same answer (`caller_name`, from the
+            # admin-maintained roster): store it before anything else on this path can
+            # raise, so one successful pull is enough to land the label.
+            self._remember_aigw_caller(str(result.get("caller_name") or ""))
         # What open GUIs render from this list: the ids, whether the default survived, and
         # the price / tier each row shows. Same ids with new prices (the guard gaining the
         # fields, an administrator re-pricing or re-tiering a model) is a change too.

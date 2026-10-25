@@ -1498,9 +1498,13 @@ def _catalog_request(
             resp = httpx.get(
                 normalise_base(gw_base) + "/gate/models",
                 headers=(
-                    bearer_headers(oauth_token)
+                    bearer_headers(
+                        oauth_token, str((fields or {}).get("display_name") or "")
+                    )
                     if oauth_token
-                    else access_headers(access_token)
+                    else access_headers(
+                        access_token, str((fields or {}).get("display_name") or "")
+                    )
                 ),
                 timeout=timeout,
             )
@@ -1699,4 +1703,13 @@ def list_provider_models(
             "error": f"{d.title} returned no models.",
             "http_ok": True,
         }
-    return {"ok": True, "models": [m.to_dict() for m in models]}
+    out: dict[str, Any] = {"ok": True, "models": [m.to_dict() for m in models]}
+    if name == "aigw" and isinstance(payload, dict):
+        # The guard echoes the caller's own roster display name (2026-10-25). The gateway's
+        # user-insights page has shown nothing name-shaped because nothing ever set
+        # `display_name` on this profile — the Access token is opaque, so the label has to
+        # come from the server. Stored at the `_store_model_catalog` choke point.
+        caller = str(payload.get("name") or "").strip()
+        if caller:
+            out["caller_name"] = caller
+    return out

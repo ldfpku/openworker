@@ -156,6 +156,30 @@ def _save_state(secrets: SecretStore, patch: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
+def set_display_name(secrets: SecretStore, name: str) -> bool:
+    """Stamp the caller's roster display name onto the provider profile (top-level
+    `display_name`, the slot `registry._build_aigw` reads for every request's
+    cf-aig-metadata). The value's only trusted source is the guard's answer — the Access
+    token it hands this app is opaque by design, so the client cannot read a name out of
+    it and must be told. True when the stored value changed.
+
+    Under `_refresh_lock`, the same lock `access_token()` takes while refreshing: profile
+    writes are read-modify-write of the WHOLE profile, and an unguarded write racing a
+    silent refresh could resurrect the pre-refresh token. A blocked caller just waits on
+    one HTTP timeout — this runs on catalog-pull threads, never on a model call.
+    """
+    name = (name or "").strip()
+    if not name:
+        return False
+    with _refresh_lock:
+        profile = _profile(secrets)
+        if str(profile.get("display_name") or "").strip() == name:
+            return False
+        profile["display_name"] = name
+        secrets.put(PROFILE, profile)
+        return True
+
+
 # ---------------------------------------------------------------------------------------
 # Discovery and registration
 # ---------------------------------------------------------------------------------------

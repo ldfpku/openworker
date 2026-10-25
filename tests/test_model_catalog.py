@@ -1142,6 +1142,46 @@ def test_list_provider_models_aigw_carries_prices_to_the_cache_rows(monkeypatch)
     }
 
 
+def test_list_provider_models_aigw_passes_the_callers_roster_name(monkeypatch):
+    # 2026-10-25: the guard answers /gate/models with the CALLER's own display name (the
+    # roster entry an admin maintains). It rides out on the result so the manager can
+    # store it — `display_name` is the label the provider's cf-aig-metadata pipeline
+    # sends and the gateway's user-insights page groups by, and until now nothing set it.
+    _patch_get(
+        monkeypatch,
+        status=200,
+        json_body={
+            "models": [{"id": "openai/gpt-5.6-terra"}],
+            "role": "staff",
+            "exempt": False,
+            "name": "liu-defu",
+        },
+    )
+    res = list_provider_models("aigw", fields={"oauth_token": "tok-1"})
+    assert res["ok"] is True and res["caller_name"] == "liu-defu"
+    # An older guard (no name field in the answer): the key is ABSENT, never "" or None —
+    # a missing name must not look like a name that changed to blank.
+    _patch_get(monkeypatch, status=200, json_body={"models": [{"id": "openai/gpt-5.6-terra"}]})
+    res = list_provider_models("aigw", fields={"oauth_token": "tok-1"})
+    assert "caller_name" not in res
+
+
+def test_aigw_pull_lands_the_callers_name_on_the_gateway_profile(tmp_path):
+    # The persistence half of the same fix: one successful pull is enough, the write is
+    # idempotent, and a nameless answer never erases a name already stored. A profile
+    # that cannot be written must cost the LABEL, never the model list that arrived with
+    # it — the catalog assertions below ride on the same call.
+    from coworker.aigw_auth import PROFILE
+
+    mgr = SessionManager(data_dir=tmp_path / "data")
+    rows = [{"id": "openai/gpt-5.6-terra", "label": "x", "context_window": None}]
+    mgr._store_model_catalog("aigw", {"ok": True, "models": rows, "caller_name": "liu-defu"})
+    assert (mgr.secrets.get(PROFILE) or {}).get("display_name") == "liu-defu"
+    mgr._store_model_catalog("aigw", {"ok": True, "models": rows})
+    assert (mgr.secrets.get(PROFILE) or {}).get("display_name") == "liu-defu"
+    assert mgr._catalog_models("aigw")[0]["id"] == "openai/gpt-5.6-terra"
+
+
 def test_list_provider_models_aigw_hits_gate_models_with_the_oauth_session(monkeypatch):
     cap: dict = {}
     _patch_get(

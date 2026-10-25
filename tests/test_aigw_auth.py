@@ -439,3 +439,23 @@ def test_begin_login_still_honours_a_stored_or_passed_address(monkeypatch):
     assert seen["base_url"] == "https://own.example"
     aigw_auth.begin_login(FakeSecrets(), base_url="https://passed.example")
     assert seen["base_url"] == "https://passed.example"
+
+
+# -- display_name: the label the gateway provider stamps on every request --------------
+
+
+def test_set_display_name_stores_and_keeps_the_oauth_session_intact():
+    # The guard names the caller on /gate/models (2026-10-25: user-insights showed a
+    # single nameless "user" because nothing ever filled this profile slot). Writing the
+    # profile is a whole-profile read-modify-write — the OAuth sub-dict must survive it.
+    s = _store({"access_token": "a", "refresh_token": "r"})
+    assert aigw_auth.set_display_name(s, "  liu-defu ") is True
+    prof = s.get(aigw_auth.PROFILE)
+    assert prof["display_name"] == "liu-defu"
+    assert prof[aigw_auth.OAUTH_FIELD]["refresh_token"] == "r"
+    # Same name twice: no write, so the cached client is not needlessly rebuilt upstream.
+    assert aigw_auth.set_display_name(s, "liu-defu") is False
+    # A nameless answer never erases the stored label (an older guard, or a D1 read that
+    # failed on the guard's side, sends no name — attribution must not flip to blank).
+    assert aigw_auth.set_display_name(s, "   ") is False
+    assert s.get(aigw_auth.PROFILE)["display_name"] == "liu-defu"
