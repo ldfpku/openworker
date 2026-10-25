@@ -56,6 +56,19 @@ _WS_MAX_FRAME_BYTES = 16 * 1024 * 1024
 _WS_RATE_LIMIT_COUNT = 30
 _WS_RATE_LIMIT_WINDOW_SECONDS = 10.0
 _MAX_MESSAGE_TEXT_CHARS = 200_000
+
+# 2026-10-26 (状态显示错误报告, session 432e97a2-22b): the socket is accepted BEFORE the
+# connect preparation (retarget + prepare_mcp_tools + engine rebuild) runs, and `ready` is
+# only sent when that preparation finishes. Uncapped, one hanging MCP stdio handshake or a
+# stalled engine rebuild left the socket open-but-unready for minutes: the GUI believed it
+# was connected, received no snapshot and no events, and a still-running turn looked to the
+# user like it had ended or deadlocked. Cap the window so the client gets an explicit
+# failure instead of an indefinite limbo (the GUI now also auto-reconnects on any drop).
+_CONNECT_PREPARE_TIMEOUT_SECONDS = 120.0
+
+
+class _ConnectFailure(Exception):
+    """Connect preparation refused on purpose; the message IS the user-facing notice."""
 _MAX_ATTACHMENTS_BYTES = 15_000_000  # leaves JSON overhead below the 16 MiB frame cap
 
 # A connect slower than this gets its phase breakdown at INFO, not just DEBUG. The owner
@@ -2792,7 +2805,7 @@ def create_app(manager: SessionManager) -> FastAPI:
             except Exception:
                 pass  # client already gone — nothing left to tell
 
-        try:
+        async def _prepare() -> tuple[Any, dict[str, Any]]:
             # The lock lives on the manager, not here: two sockets for one id can be in
             # flight at once (the GUI bumps connectNonce on a coworker/folder pick), and
             # so can a durable Inbox resume or an inbound DM for the same session — all
@@ -2838,10 +2851,12 @@ def create_app(manager: SessionManager) -> FastAPI:
                 t3 = time.monotonic()
                 _log_connect_timing(session_id, t0, t1, t2, t3)
                 if engine is None:
-                    await fail_connect(
+                    # The fail_connect transport (tell the client, then close) is the one
+                    # this path has always used; the raise below routes it through the
+                    # shared handler at the bottom of the block.
+                    raise _ConnectFailure(
                         "no valid workspace — choose a project folder first"
                     )
-                    return
             # MCP servers that failed to start while preparing this session's tools:
             # leave a quiet, persistent notice instead of the session silently lacking
             # them (drill 2026-08-20: three silent startup failures in a row).
@@ -2885,6 +2900,33 @@ def create_app(manager: SessionManager) -> FastAPI:
                     str(getattr(engine, "audit_context", {}).get("workspace", ""))
                 ),
             }
+            return engine, ready_data
+
+        try:
+            # Capped (2026-10-26, see the constant near its top): a hung MCP handshake used
+            # to park the socket in an open-but-unready limbo — the GUI sat looking idle and
+            # frozen over a still-streaming turn (owner report, session 432e97a2-22b).
+            # A timeout cancels _prepare at its next await; the abandoned to_thread build
+            # still lands in the manager cache, so the next connect (the GUI now
+            # auto-reconnects) reuses it instead of starting over.
+            engine, ready_data = await asyncio.wait_for(
+                _prepare(), _CONNECT_PREPARE_TIMEOUT_SECONDS
+            )
+        except _ConnectFailure as exc:
+            await fail_connect(str(exc))
+            return
+        except asyncio.TimeoutError:
+            logger.warning(
+                "connect preparation timed out after %ss for session %s",
+                int(_CONNECT_PREPARE_TIMEOUT_SECONDS),
+                session_id,
+            )
+            await fail_connect(
+                f"this session took more than {int(_CONNECT_PREPARE_TIMEOUT_SECONDS)}s "
+                "to prepare (an MCP server or engine startup is hanging) — the app "
+                "will reconnect automatically"
+            )
+            return
         except Exception as exc:
             logger.exception("session connect failed for session %s", session_id)
             await fail_connect(f"could not start this session: {exc}")

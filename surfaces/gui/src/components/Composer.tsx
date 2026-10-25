@@ -152,6 +152,13 @@ interface Props {
   // Feeds the "/" force-run popup (SKILLS-SPEC §4.1 #3): the popup lists this session's
   // effective skill menu. Absent (e.g. tests without sessions) → the popup never opens.
   sessionId?: string;
+  // Session-connection phase (status-display fix, 2026-10-26): "connecting" covers the
+  // window between the socket opening and the server's `ready` (engine rebuild + MCP
+  // prepare) — during it the view holds no snapshot and no events can reach it;
+  // "offline" is a dropped socket. The send/stop button must never look idle in either:
+  // a turn the server is still running would be indistinguishable from one that ended
+  // (the owner's 2026-10-25 report). Callers that never gate omit it → treated "live".
+  phase?: "connecting" | "live" | "offline";
   onInterrupt: () => void;
   onModeChange: (mode: string) => void;
   onModelChange: (model: string) => void;
@@ -194,6 +201,19 @@ interface Props {
 
 export function Composer(props: Props) {
   const { t } = useTranslation();
+  const phase = props.phase ?? "live";
+  const notLive = phase !== "live";
+  // A fast connect should not blink a status chip: only a slow prepare or a real drop
+  // earns visible text. The send button gates immediately regardless.
+  const [slowPrepare, setSlowPrepare] = useState(false);
+  useEffect(() => {
+    if (phase !== "connecting") {
+      setSlowPrepare(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setSlowPrepare(true), 800);
+    return () => window.clearTimeout(timer);
+  }, [phase]);
   const [text, setText] = useState(() => props.draft?.text ?? "");
   const [attachments, setAttachments] = useState<Attachment[]>(() => props.draft?.attachments ?? []);
   // "/" force-run (SKILLS-SPEC §4.1 #3). The popup derives from the draft: it is open while
@@ -622,6 +642,9 @@ export function Composer(props: Props) {
       (!body && attachments.length === 0 && !skill) ||
       (props.running && !props.gateOpen) ||
       dictation?.recording ||
+      // Enter follows the same connection gate as the waiting send button
+      // (status-display fix, 2026-10-26).
+      notLive ||
       dictationBusy
     )
       return;
@@ -1230,6 +1253,22 @@ export function Composer(props: Props) {
             </span>
           )}
 
+          {notLive && (slowPrepare || phase === "offline") && (
+            // Plain-language connection state (800 ms grace on a fast connect; a drop
+            // always shows). The waiting send button above covers the same fact for
+            // clicking; this line covers just *looking* at the window.
+            <span className="pill chip text-faint" style={{ whiteSpace: "nowrap" }} data-testid="composer-phase">
+              <span className="spinner mr-1" aria-hidden="true" />
+              <span className="pill-label">
+                {t(
+                  phase === "offline"
+                    ? "composer.status.reconnecting"
+                    : "composer.status.connecting",
+                )}
+              </span>
+            </span>
+          )}
+
           {/* mic — immediately before send (owner call, DMG #28 walkthrough). Same size config
               as the "Enhance prompt" button above (small hit area + explicit 16px glyph) —
               keep the two pinned together, see the comment there. */}
@@ -1261,6 +1300,23 @@ export function Composer(props: Props) {
           {props.running && !props.gateOpen ? (
             <button className={BTN_OUTLINE} onClick={props.onInterrupt}>
               {t("composer.stop")}
+            </button>
+          ) : notLive ? (
+            // The gate is real but the connection is not. A plain send arrow here reads
+            // as "idle, ready to go" — which is exactly what made a turn the server was
+            // still running look finished/dead (owner report 2026-10-25). Show a waiting
+            // state whenever the socket has not delivered `ready` or has dropped.
+            <button
+              type="button"
+              disabled
+              className="w-7 h-7 rounded-full grid place-items-center shrink-0 bg-paper border border-line text-faint cursor-progress"
+              title={t(
+                phase === "offline" ? "composer.status.reconnecting" : "composer.status.connecting",
+              )}
+              aria-label={t("composer.status.waiting")}
+              data-testid="composer-waiting"
+            >
+              <span className="spinner" aria-hidden="true" />
             </button>
           ) : (
             <button

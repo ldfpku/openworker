@@ -2409,3 +2409,29 @@ def test_a_build_that_loses_the_cache_race_adopts_the_live_engine(tmp_path, monk
     assert got is rival
     assert manager._engines["adopt"] is rival  # the loser did not clobber the cache
     assert rival.approver is approver  # …and this connect's callbacks reached it
+
+
+# -- connect preparation is capped: a hang must fail loud, not park the socket ----
+
+
+def test_hanging_connect_prepare_fails_loud_instead_of_limbo(tmp_path, monkeypatch):
+    # The status-display bug (owner report 2026-10-25, session 432e97a2-22b): the GUI sat
+    # inside the open-but-unready window with no snapshot and no events, so a still-running
+    # turn looked finished/frozen. Preparation must now fail LOUD within the cap so the
+    # client can show the true state and its auto-reconnect path can retry.
+    import asyncio
+
+    from coworker.server import app as app_module
+
+    client = _client(tmp_path, [])
+    monkeypatch.setattr(app_module, "_CONNECT_PREPARE_TIMEOUT_SECONDS", 0.3)
+    monkeypatch.setattr(
+        client.app.state.manager,
+        "prepare_mcp_tools",
+        lambda *_a, **_k: asyncio.sleep(30),
+    )
+    with client.websocket_connect("/ws/session/hang?workspace=x") as ws:
+        event = ws.receive_json()
+        assert event["type"] == "error"
+        assert "prepare" in event["data"]["error"]
+        assert "reconnect" in event["data"]["error"]

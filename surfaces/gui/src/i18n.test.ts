@@ -40,6 +40,12 @@ const IMPORTANT_KEYS = [
   "composer.pdf_too_big",
   "composer.pdf_too_many_pages",
   "composer.pdf_unreadable",
+  // Status-display fix (2026-10-26): the composer must say "connecting/reconnecting" out
+  // loud when the socket can't carry a turn — an idle-looking send button over a live turn
+  // read as "finished/deadlocked" to the owner. These three lines are the whole message.
+  "composer.status.connecting",
+  "composer.status.reconnecting",
+  "composer.status.waiting",
   "composer.attach_skipped",
   "composer.folder_drop_unsupported",
   "composer.listening_sr",

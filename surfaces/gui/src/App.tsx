@@ -18,6 +18,7 @@ import {
   announceAutomationsChanged,
   announceMemoryChanged,
   connectEvents,
+  wsReconnectDelay,
   deleteMemory,
   updateMemory,
   getSettings,
@@ -272,6 +273,20 @@ export function App() {
   const [mode, setMode] = useState("interactive");
   const [connected, setConnected] = useState(false);
   const [running, setRunning] = useState(false);
+  // Session-connection phase (status-display fix, 2026-10-26): the composer rendered the
+  // idle send arrow whenever `running` was false, so in the window between the socket
+  // opening and the server's `ready` (engine rebuild + MCP prepare) — and after any socket
+  // drop — a turn the server was still running looked finished or deadlocked (owner report
+  // 2026-10-25, session 432e97a2-22b). The composer gates on this now: "connecting" until
+  // `ready` lands, "offline" after a drop, "live" in between.
+  const [phase, setPhase] = useState<"connecting" | "live" | "offline">("connecting");
+  // The socket used to stay dead after any drop — one hiccup and the window sat on a
+  // frozen view forever. It now reconnects with backoff; these carry the retry timer and
+  // attempt count across effect reruns, and `resyncRef` marks the next `ready` as a
+  // REconnect: the stale view has to be rebuilt from the server's snapshot, since the old
+  // items and the old `running` flag are exactly what made a live turn look finished.
+  const retryRef = useRef<{ timer: number | null; tries: number }>({ timer: null, tries: 0 });
+  const resyncRef = useRef(false);
   // Transient "Compacting context…" indicator (OPE-27): set by the `compacting` event,
   // cleared by whatever the engine emits next — the summarizer call is otherwise a
   // multi-second silent stall mid-turn.
@@ -861,6 +876,8 @@ export function App() {
   useEffect(() => {
     if (booting) return; // wait until boot/resume settles the session before connecting
     if (gatesWorkspace(agent) && !workspace) return; // Code needs a folder (gate handles it)
+    setPhase("connecting"); // from here until `ready`, the view can show neither events nor a snapshot
+    let disposed = false; // guards async resync results against a rerun of this effect
     const handleEvent = (ev: WsEvent) => {
       const d = ev.data || {};
       // An interrupted/errored turn never emits assistant_message, so its streamed partial
@@ -928,6 +945,23 @@ export function App() {
           // Server truth on a live turn: a reconnect mid-turn never sees turn_start, so
           // without this the Stop button and waiting row vanish (owner catch 2026-08-24).
           if (typeof d.running === "boolean") setRunning(d.running);
+          setPhase("live");
+          retryRef.current.tries = 0; // a good connect resets the backoff ladder
+          if (resyncRef.current) {
+            // This `ready` follows a DROP: the transcript still shows the pre-drop view
+            // and `running` whatever it last was — which is exactly how a live turn kept
+            // looking finished/frozen (2026-10-25 report). Rebuild from the server's
+            // snapshot the same way selectSession does, then trust the `running` above.
+            resyncRef.current = false;
+            const sid = sessionId;
+            getSessionMessages(sid)
+              .then((messages) => {
+                if (disposed) return;
+                setItems(itemsFromMessages(messages));
+                setUsage(usageFromMessages(messages));
+              })
+              .catch(() => {}); // keep the old view rather than blank the screen
+          }
           break;
         case "turn_start":
           setRunning(true);
@@ -1351,6 +1385,19 @@ export function App() {
       }
     };
 
+    // Reconnect with backoff on any drop (status-display fix, 2026-10-26). Before this a
+    // dropped socket stayed dead for the life of the view: `connected` false, no events,
+    // a frozen transcript — the "看着像死机" half of the report. `connectNonce` existed
+    // for exactly this rerun but had no setter; this is its first one.
+    const scheduleReconnect = () => {
+      const r = retryRef.current;
+      if (r.timer !== null) return; // a retry is already queued
+      r.timer = window.setTimeout(() => {
+        r.timer = null;
+        r.tries += 1;
+        setConnectNonce((n) => n + 1);
+      }, wsReconnectDelay(r.tries));
+    };
     const session = new Session(sessionId, workspace || "", agent, {
       onEvent: handleEvent,
       onOpen: () => {
@@ -1383,10 +1430,30 @@ export function App() {
           sessionRef.current?.userMessage(p.text, p.attachments, p.model, p.skill, p.preflight);
         }
       },
-      onClose: () => setConnected(false),
+      onClose: () => {
+        setConnected(false);
+        // The effect's own teardown (navigation, rerun) also lands here — that close is
+        // deliberate and its successor connects right away; only an UNEXPECTED drop
+        // means everything on screen is stale truth now: say so (the composer stops
+        // looking idle/ready) and queue the way back — the next `ready` resyncs.
+        if (disposed) return;
+        setPhase("offline");
+        resyncRef.current = true;
+        scheduleReconnect();
+      },
     });
     sessionRef.current = session;
-    return () => session.close();
+    return () => {
+      disposed = true;
+      const r = retryRef.current;
+      if (r.timer !== null) {
+        // Navigating away cancels a queued retry for the OLD session; switching back
+        // reconnects through selectSession anyway.
+        window.clearTimeout(r.timer);
+        r.timer = null;
+      }
+      session.close();
+    };
     // NOTE: `workspace` is intentionally NOT a dependency. Every real workspace change
     // (pick folder, select/switch session, new session) is paired with a `sessionId`
     // change, so the socket still reconnects when it should. The one workspace-only change
@@ -2594,6 +2661,7 @@ export function App() {
               running={running}
               gateOpen={!unattended && (!!pendingTeam || !!pendingItemsReq || !!pendingQuestion)}
               gateKind={!unattended && pendingQuestion && !pendingTeam && !pendingItemsReq ? "question" : "proposal"}
+              phase={phase}
               connected={connected}
               modelReady={modelReady}
               modelNotice={modelNotice}

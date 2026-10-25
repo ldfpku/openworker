@@ -105,6 +105,11 @@
     "attach_image": "照片或图片",
     "attach_other": "其他文件",
     "connect_to_send": "连接模型后即可发送",
+    "status": {
+      "connecting": "正在连接…",
+      "reconnecting": "连接已断开，正在自动重连…",
+      "waiting": "等待连接就绪后才可发送"
+    },
     "stop": "⏹ 停止",
     "mode_label": "模式",
     "approvals_to_inbox": "将允许请求发送到收件箱",

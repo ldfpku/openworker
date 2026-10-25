@@ -107,6 +107,11 @@
     "attach_image": "Photo or image",
     "attach_other": "Other files",
     "connect_to_send": "Connect a model to send",
+    "status": {
+      "connecting": "Connecting…",
+      "reconnecting": "Reconnecting…",
+      "waiting": "Waiting for the connection — sending opens once the session is ready"
+    },
     "stop": "⏹ Stop",
     "mode_label": "Mode",
     "approvals_to_inbox": "Send approvals to the Inbox",

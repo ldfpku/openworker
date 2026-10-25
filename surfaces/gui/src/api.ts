@@ -2350,6 +2350,16 @@ export function announceAutomationsChanged() {
  * automation_run_started (the UX-026 toast) and models_changed (the company gateway's
  * model list changed under a background refresh: re-read settings). Quietly reconnects
  * while the app is open; the returned cleanup stops it for good. */
+// Session-socket reconnect backoff (status-display fix, 2026-10-26): a dropped session
+// socket used to end the view for good — the transcript froze at its last snapshot and a
+// still-running turn looked finished or deadlocked. The App now reconnects on any drop;
+// this keeps the retries quiet (500 ms → up to 10 s) and jittered so a server restart that
+// drops every window doesn't have them all retry at once.
+export function wsReconnectDelay(tries: number): number {
+  const base = Math.min(10000, 500 * 2 ** Math.max(0, tries));
+  return base + Math.floor(Math.random() * 250);
+}
+
 export function connectEvents(
   onEvent: (msg: { type: string; data?: Record<string, unknown> }) => void
 ): () => void {
