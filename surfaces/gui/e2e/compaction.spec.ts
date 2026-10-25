@@ -1,10 +1,10 @@
-// OPE-27 — auto-compaction GUI: the Settings card's two overrides + summarizer-model
-// pin POST through, and the "context compacted" divider renders inline mid-session
-// (driven by the fixtures' scripted `compacted` event) without touching the transcript.
+// OPE-27 — auto-compaction GUI: the Settings card's two overrides POST through,
+// the fixed Cloudflare summarizer pool is explained, and the "context compacted"
+// divider renders inline mid-session without touching the transcript.
 import { expect } from "@playwright/test";
 import { test } from "./fixtures";
 
-test("Settings: Context compaction card edits threshold, cap, and summarizer model", async ({
+test("Settings: Context compaction card edits threshold and cap with fixed failover", async ({
   page,
 }) => {
   await page.goto("/");
@@ -19,7 +19,6 @@ test("Settings: Context compaction card edits threshold, cap, and summarizer mod
   // Defaults render when the backend doesn't send the fields (older-backend robustness).
   await expect(card.getByTestId("compaction-threshold")).toHaveValue("80");
   await expect(card.getByTestId("compaction-cap")).toHaveValue("250000");
-  await expect(card.getByTestId("compaction-model")).toHaveValue("");
 
   // Threshold edits POST as a fraction, clamped to 10–95%.
   const [req] = await Promise.all([
@@ -38,14 +37,13 @@ test("Settings: Context compaction card edits threshold, cap, and summarizer mod
   ]);
   expect(req2.postDataJSON()).toEqual({ compaction_cap_tokens: 100000 });
 
-  // Summarizer pin: the picker offers the session-default plus the configured models.
-  const [req3] = await Promise.all([
-    page.waitForRequest(
-      (r) => r.url().endsWith("/v1/settings/compaction") && r.method() === "POST",
+  // Self-managed sessions use the fixed Cloudflare pool; no legacy model picker remains.
+  await expect(card.getByTestId("compaction-model")).toHaveCount(0);
+  await expect(
+    card.getByText(
+      "Self-managed sessions automatically summarize through Cloudflare AI Gateway with failover: GPT-6 Luna → GLM 5.3 Flash → Claude Haiku 4.5. No summarizer model setting is needed.",
     ),
-    card.getByTestId("compaction-model").selectOption("gpt-4o-mini"),
-  ]);
-  expect(req3.postDataJSON()).toEqual({ compaction_model: "gpt-4o-mini" });
+  ).toBeVisible();
 });
 
 test("the compacted divider renders mid-session and the transcript stays intact", async ({
