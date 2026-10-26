@@ -125,16 +125,42 @@ _PROTECTED_IN_PROJECT = (
     ".gitlab-ci.yml",
     ".vscode/tasks.json",
     ".coworker/",  # workspace policy + skills the agent would otherwise self-grant
+    # Run by a build backend, env tool, git or a hook manager without being named on the
+    # command line (OPE-231). package.json / pyproject.toml / setup.cfg are deliberately
+    # NOT here: users edit them constantly (versions, dependencies) and the reviewer sees
+    # the content, so it can tell a version bump from a new install script.
+    "setup.py",
+    ".envrc",
+    ".gitattributes",
+    ".pre-commit-config.yaml",
+    "tox.ini",
+    ".devcontainer/",
+    ".husky/",
+    ".circleci/",
+    "AGENTS.md",  # read into every later session's system prompt (project.py)
 )
 
 
+def _case_insensitive_fs() -> bool:
+    """Windows always, and macOS by default, treat `.GIT/hooks` and `.git/hooks` as one
+    folder. `Path.resolve()` only restores the on-disk case for parts that already exist,
+    so a not-yet-created target keeps the case the agent typed and matching has to fold
+    case itself. Folding on a case-sensitive macOS volume only adds a card, never removes
+    one."""
+    return sys.platform in ("win32", "darwin")
+
+
+def _fold(text: str) -> str:
+    return text.casefold() if _case_insensitive_fs() else text
+
+
 def _is_protected_in_project(candidate: Path) -> bool:
-    posix = candidate.as_posix()
+    posix = _fold(candidate.as_posix())
     return any(
         (f"/{marker}" in posix or posix.startswith(marker))
         if marker.endswith("/")
         else posix.endswith("/" + marker)
-        for marker in _PROTECTED_IN_PROJECT
+        for marker in map(_fold, _PROTECTED_IN_PROJECT)
     )
 
 
@@ -617,9 +643,9 @@ class PermissionEngine:
         paths, located = write_paths(tool_name, arguments)
         if not located:
             return None  # unlocatable writes are already failed closed by the caller
-        resolved = {str(self._candidate(p)) for p in paths}
+        resolved = {_fold(str(self._candidate(p))) for p in paths}
         for target in targets:
-            if str(Path(target).resolve()) in resolved:
+            if _fold(str(Path(target).resolve())) in resolved:
                 return target
         return None
 
