@@ -205,9 +205,38 @@ def test_an_ignored_existing_file_goes_to_the_reviewer(tmp_path):
 
 
 @git
-def test_deleting_a_tracked_unmodified_file_is_eligible(tmp_path):
+def test_deleting_even_a_tracked_unmodified_file_goes_to_the_reviewer(tmp_path):
+    # Devika, 26 Oct 2026: git could restore it, but the reviewer should see every delete.
+    # A clearly requested delete is still allowed there (Rule 1b); one taken from a to-do
+    # file with no approved plan becomes a card.
     _repo(tmp_path, {"old-notes.txt": "old"})
     patch = "*** Begin Patch\n*** Delete File: old-notes.txt\n*** End Patch"
+    assert _goes_to_reviewer(_gate(tmp_path).evaluate("apply_patch", {"patch": patch}))
+
+
+@git
+def test_moving_a_file_goes_to_the_reviewer(tmp_path):
+    # A move removes the original name, so it is treated like a delete.
+    _repo(tmp_path, {"notes.md": "old"})
+    patch = (
+        "*** Begin Patch\n*** Update File: notes.md\n*** Move to: archive.md\n"
+        "@@\n-old\n+old\n*** End Patch"
+    )
+    assert _goes_to_reviewer(_gate(tmp_path).evaluate("apply_patch", {"patch": patch}))
+
+
+@git
+def test_a_patch_that_deletes_one_file_and_adds_another_goes_to_the_reviewer(tmp_path):
+    _repo(tmp_path, {"old-notes.txt": "old"})
+    patch = (
+        "*** Begin Patch\n*** Add File: summary.txt\n+done\n"
+        "*** Delete File: old-notes.txt\n*** End Patch"
+    )
+    assert _goes_to_reviewer(_gate(tmp_path).evaluate("apply_patch", {"patch": patch}))
+
+
+def test_adding_an_inert_file_by_patch_is_still_eligible(tmp_path):
+    patch = "*** Begin Patch\n*** Add File: notes.md\n+hi\n*** End Patch"
     assert _ran_without_reviewer(_gate(tmp_path).evaluate("apply_patch", {"patch": patch}))
 
 

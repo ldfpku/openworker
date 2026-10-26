@@ -146,6 +146,17 @@ def git_file_state(path: Path) -> str:
     return UNTRACKED
 
 
+# A patch that deletes a file, or moves one (which removes the original name). Deletes always
+# reach the reviewer, even when git could restore the file (Devika, 26 Oct 2026): a clearly
+# requested delete is allowed there, one nobody asked for becomes a card.
+_REMOVES_FILE = re.compile(r"^\*\*\* (?:Delete File|Move to): ", re.MULTILINE)
+
+
+def removes_files(arguments: dict[str, Any]) -> bool:
+    """True when a write removes or renames a file (a patch's Delete File or Move to)."""
+    return bool(_REMOVES_FILE.search(str((arguments or {}).get("patch", ""))))
+
+
 def inert_write_check(
     arguments: dict[str, Any],
     targets: list[Path],
@@ -157,6 +168,8 @@ def inert_write_check(
     if not targets:
         return False, ""
     if has_secret_value(arguments):
+        return False, ""
+    if removes_files(arguments):
         return False, ""
     parts: list[str] = []
     for target in targets:
