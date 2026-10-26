@@ -178,9 +178,9 @@ async def test_routes_to_cheap_sibling_not_the_session_model(tmp_path):
         ["Japan Trip Planning Help"],
         model="aigw:anthropic/claude-fable-5",
     )
-    _gateway_list(mgr, "anthropic/claude-fable-5", "anthropic/claude-haiku-4-5")
+    _gateway_list(mgr, "anthropic/claude-fable-5", "anthropic/claude-haiku-5.5")
     await _turn(mgr, "s9", "help me plan a trip to japan")
-    assert provider.title_requests[0]["model"] == "aigw:anthropic/claude-haiku-4-5"
+    assert provider.title_requests[0]["model"] == "aigw:anthropic/claude-haiku-5.5"
 
 
 async def test_gateway_sibling_off_the_persons_list_falls_back_to_the_session_model(

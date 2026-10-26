@@ -5,7 +5,7 @@ API (the findings are recorded in `matrix.py`); a test cannot re-litigate that w
 Access session and a bill. What can regress silently is everything around it: sending
 Anthropic a request shaped for OpenAI, forwarding a model id with the `author/` prefix on
 a wire that 404s on it (or stripping it on the one wire that requires it), or reading
-`anthropic/claude-haiku-4-5` as an unknown Claude family and picking a thinking config it
+`anthropic/claude-haiku-5.5` as an unknown Claude family and picking a thinking config it
 rejects. Those are what these cover.
 """
 
@@ -113,7 +113,7 @@ def test_each_wire_gets_its_own_path_under_the_gateway_domain():
     # Anthropic SDK adds `/v1/messages`, the OpenAI ones add `/responses` and
     # `/chat/completions`. Off-by-one here is a 404 nobody enjoys diagnosing.
     p = _provider()
-    assert p._client_for("anthropic/claude-haiku-4-5")._base_url == BASE + "/anthropic"
+    assert p._client_for("anthropic/claude-haiku-5.5")._base_url == BASE + "/anthropic"
     assert p._client_for("openai/gpt-5.6-sol")._base_url == BASE + "/openai/v1"
     assert (
         p._client_for("google-ai-studio/gemini-3.6-flash")._base_url == BASE + "/compat"
@@ -125,10 +125,10 @@ def test_every_wire_authenticates_with_the_access_session_only():
     # the gateway ignores. A real token appearing in any of them would be a regression
     # towards the per-person-token design this replaced.
     p = _provider()
-    for model in ("anthropic/claude-haiku-4-5", "openai/gpt-5.6-sol", "x/y"):
+    for model in ("anthropic/claude-haiku-5.5", "openai/gpt-5.6-sol", "x/y"):
         assert p._client_for(model)._default_headers["cf-access-token"] == SESSION
     assert p._client_for("openai/gpt-5.6-sol")._api_key != SESSION
-    anthropic = p._client_for("anthropic/claude-haiku-4-5")
+    anthropic = p._client_for("anthropic/claude-haiku-5.5")
     assert anthropic._api_key is None and anthropic._auth_token != SESSION
 
 
@@ -141,7 +141,7 @@ def test_access_header_is_omitted_rather_than_sent_empty():
 
 def test_display_name_metadata_reaches_every_wire_without_changing_access_identity():
     p = _provider(display_name="  刘德富  ")
-    for model in ("anthropic/claude-haiku-4-5", "openai/gpt-5.6-sol", "x/y"):
+    for model in ("anthropic/claude-haiku-5.5", "openai/gpt-5.6-sol", "x/y"):
         headers = p._client_for(model)._default_headers
         assert headers["cf-access-token"] == SESSION
         assert json.loads(headers["cf-aig-metadata"]) == {"display_name": "刘德富"}
@@ -166,7 +166,7 @@ def test_the_sdk_user_agent_is_replaced_on_every_wire():
     # before Access even runs. Verified live 2026-08-23 — this override is what makes the
     # provider work at all there, so it is asserted rather than left to a comment.
     p = _provider()
-    for model in ("anthropic/claude-haiku-4-5", "openai/gpt-5.6-sol", "x/y"):
+    for model in ("anthropic/claude-haiku-5.5", "openai/gpt-5.6-sol", "x/y"):
         ua = p._client_for(model)._default_headers["User-Agent"]
         assert ua.startswith("openworker/")
         assert "/Python" not in ua
@@ -200,7 +200,7 @@ def test_missing_settings_say_which_one(kwargs, missing):
 
 def test_an_oauth_session_travels_as_a_bearer_not_as_a_pasted_session():
     p = AIGatewayProvider(base_url=BASE, token_provider=lambda: "oauth-tok")
-    for model in ("anthropic/claude-haiku-4-5", "openai/gpt-5.6-sol", "x/y"):
+    for model in ("anthropic/claude-haiku-5.5", "openai/gpt-5.6-sol", "x/y"):
         headers = p._client_for(model)._default_headers
         assert headers["Authorization"] == "Bearer oauth-tok"
         assert "cf-access-token" not in headers
@@ -269,9 +269,9 @@ def test_the_anthropic_wire_leaves_the_authorization_slot_to_access():
     # The Anthropic SDK's `auth_token` would claim `Authorization: Bearer <placeholder>`,
     # colliding with the Access bearer; under OAuth the placeholder moves to `x-api-key`.
     signed_in = AIGatewayProvider(base_url=BASE, token_provider=lambda: "oauth-tok")
-    assert signed_in._client_for("anthropic/claude-haiku-4-5")._auth_token is None
+    assert signed_in._client_for("anthropic/claude-haiku-5.5")._auth_token is None
     pasted = AIGatewayProvider(base_url=BASE, access_token=SESSION)
-    assert pasted._client_for("anthropic/claude-haiku-4-5")._auth_token is not None
+    assert pasted._client_for("anthropic/claude-haiku-5.5")._auth_token is not None
 
 
 @pytest.mark.parametrize(
@@ -319,7 +319,7 @@ def test_the_company_gateway_is_the_address_of_last_resort(monkeypatch):
     [
         # Provider-native wires reach the vendor's own API, which has never heard of
         # Cloudflare's `author/` namespace.
-        ("anthropic/claude-haiku-4-5", "claude-haiku-4-5"),
+        ("anthropic/claude-haiku-5.5", "claude-haiku-5-5"),
         ("openai/gpt-5.6-sol", "gpt-5.6-sol"),
         # `/compat` is the opposite: the prefix is how it picks a provider, and without
         # one it answers `2008 Invalid provider`.
@@ -329,6 +329,12 @@ def test_the_company_gateway_is_the_address_of_last_resort(monkeypatch):
 )
 def test_the_prefix_is_stripped_on_exactly_the_wires_that_reject_it(model, sent):
     assert upstream_model(model, wire_for(model)) == sent
+
+
+def test_anthropic_catalog_id_stays_intact_on_the_compat_wire():
+    model = "anthropic/claude-haiku-5.5"
+    assert upstream_model(model, "chat") == model
+    assert upstream_model(model, "messages") == "claude-haiku-5-5"
 
 
 def test_the_transformed_id_is_what_reaches_the_sub_client():
@@ -348,11 +354,11 @@ def test_the_transformed_id_is_what_reaches_the_sub_client():
         access_token=SESSION,
         clients={"messages": Spy(), "chat": Spy()},
     )
-    p.complete(model="anthropic/claude-haiku-4-5", messages=[])
+    p.complete(model="anthropic/claude-haiku-5.5", messages=[])
     # `stream` is a generator now (dynamic routing has to catch the sub-client's error),
     # so nothing reaches the sub-client until it is iterated.
     list(p.stream(model="google-ai-studio/gemini-3.6-flash", messages=[]))
-    assert seen["complete"] == "claude-haiku-4-5"
+    assert seen["complete"] == "claude-haiku-5-5"
     assert seen["stream"] == "google-ai-studio/gemini-3.6-flash"
 
 
@@ -481,7 +487,7 @@ def test_the_utility_tier_is_deliberately_unrouted():
     # Haiku and Luna are the cheap summariser (auto-title) siblings; the limiter has never
     # fired there, and a route on them would put a second model behind what is meant to
     # be the cheapest call. Adding one should be a decision, not a drift.
-    assert route_for("anthropic/claude-haiku-4-5") is None
+    assert route_for("anthropic/claude-haiku-5.5") is None
     assert route_for("openai/gpt-5.6-luna") is None
     assert route_for("google-ai-studio/gemini-3.6-flash") is None
 
@@ -692,7 +698,7 @@ def test_an_unrouted_model_keeps_its_429():
         clients={"messages": _Spy(error=_Busy()), "chat": chat},
     )
     with pytest.raises(_Busy):
-        p.complete(model="anthropic/claude-haiku-4-5", messages=[])
+        p.complete(model="anthropic/claude-haiku-5.5", messages=[])
     assert chat.calls == []
 
 
@@ -881,7 +887,7 @@ def test_stream_raises_on_the_first_next_not_at_call_time():
         access_token=SESSION,
         clients={"messages": _Spy(error=RuntimeError("nope")), "chat": _Spy()},
     )
-    it = p.stream(model="anthropic/claude-haiku-4-5", messages=[])
+    it = p.stream(model="anthropic/claude-haiku-5.5", messages=[])
     with pytest.raises(RuntimeError):
         next(it)
 

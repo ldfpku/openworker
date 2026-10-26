@@ -415,12 +415,12 @@ def test_manager_curated_models(tmp_path, monkeypatch):
     assert len(mgr.get_settings()["models"]) == n
 
     # removing a matrix model hides it persistently; re-adding unhides it
-    removed = mgr.remove_model("anthropic:claude-haiku-4-5")
-    assert "anthropic:claude-haiku-4-5" not in removed["models"]
+    removed = mgr.remove_model("anthropic:claude-haiku-5-5")
+    assert "anthropic:claude-haiku-5-5" not in removed["models"]
     mgr2 = SessionManager(data_dir=tmp_path)  # survives a restart
-    assert "anthropic:claude-haiku-4-5" not in mgr2.get_settings()["models"]
-    mgr.add_model("anthropic:claude-haiku-4-5")
-    assert "anthropic:claude-haiku-4-5" in mgr.get_settings()["models"]
+    assert "anthropic:claude-haiku-5-5" not in mgr2.get_settings()["models"]
+    mgr.add_model("anthropic:claude-haiku-5-5")
+    assert "anthropic:claude-haiku-5-5" in mgr.get_settings()["models"]
 
     # removing a custom id drops it
     mgr.remove_model("ollama:qwen2.5-coder:32b")

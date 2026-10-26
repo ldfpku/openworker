@@ -699,17 +699,17 @@ def test_utility_model_for_every_table_row_and_fallback():
     from coworker.providers.matrix import MATRIX, utility_model_for
 
     cases = {
-        "aigw:anthropic/claude-fable-5": "aigw:anthropic/claude-haiku-4-5",
+        "aigw:anthropic/claude-fable-5": "aigw:anthropic/claude-haiku-5.5",
         "aigw:openai/gpt-5.6-sol": "aigw:openai/gpt-5.6-luna",
         "aigw:google-ai-studio/gemini-3.6-flash": (
             "aigw:google-ai-studio/gemini-3.1-flash-lite"
         ),
-        "anthropic:claude-opus-4-8": "anthropic:claude-haiku-4-5",
+        "anthropic:claude-opus-4-8": "anthropic:claude-haiku-5-5",
         "gemini:gemini-3.7-flash": "gemini:gemini-3.5-flash-lite",
         "bedrock:claude/anthropic.claude-sonnet-4-6-v1:0": (
-            "bedrock:claude/anthropic.claude-haiku-4-5-v1:0"
+            "bedrock:claude/anthropic.claude-haiku-5-5-v1:0"
         ),
-        "vertex:claude/claude-sonnet-4-6": "vertex:claude/claude-haiku-4-5",
+        "vertex:claude/claude-sonnet-4-6": "vertex:claude/claude-haiku-5-5",
         "vertex:gemini/gemini-3.1-pro-preview": "vertex:gemini/gemini-3.6-flash",
         # bare id starting "gpt-": no provider prefix, routes to the OpenAI default's
         # cheap tier.

@@ -17,7 +17,7 @@ function stubFetch() {
 
 const MODELS = [
   "aigw:anthropic/claude-fable-5",
-  "aigw:anthropic/claude-haiku-4-5",
+  "aigw:anthropic/claude-haiku-5.5",
   "ollama:qwen3-coder:30b",
 ];
 
@@ -27,7 +27,7 @@ const props = (extra: Partial<Parameters<typeof Composer>[0]> = {}) => ({
   models: MODELS,
   modelLabels: {
     "aigw:anthropic/claude-fable-5": "Claude Fable 5 · via Cloudflare",
-    "aigw:anthropic/claude-haiku-4-5": "Claude Haiku 4.5 · via Cloudflare",
+    "aigw:anthropic/claude-haiku-5.5": "Claude Haiku 5.5 · via Cloudflare",
     "ollama:qwen3-coder:30b": "Qwen3 Coder · Ollama",
   },
   modelFallbacks: {
@@ -80,7 +80,7 @@ describe("Composer — the model picker's stand-in badge", () => {
   it("leaves an unrouted model unbadged", () => {
     stubFetch();
     render(<Composer {...props()} />);
-    expect(openRow("Claude Haiku 4.5").querySelector(".dd-badge")).toBeNull();
+    expect(openRow("Claude Haiku 5.5").querySelector(".dd-badge")).toBeNull();
   });
 
   it("keeps Free in the single badge slot and folds the stand-in into its tooltip", () => {
@@ -107,7 +107,7 @@ describe("Composer — the model picker's price note and Restricted tag", () => 
     props({
       modelPrices: {
         "aigw:anthropic/claude-fable-5": { in: 10, out: 50 },
-        "aigw:anthropic/claude-haiku-4-5": { in: 1 },
+        "aigw:anthropic/claude-haiku-5.5": { in: 1 },
       },
       modelTiers: { "aigw:anthropic/claude-fable-5": "limited" },
       ...extra,
@@ -124,7 +124,7 @@ describe("Composer — the model picker's price note and Restricted tag", () => 
   it("names the side when only one is priced", () => {
     stubFetch();
     render(<Composer {...priced()} />);
-    expect(openRow("Claude Haiku 4.5").querySelector(".dd-meta")?.textContent).toBe("Input $1");
+    expect(openRow("Claude Haiku 5.5").querySelector(".dd-meta")?.textContent).toBe("Input $1");
   });
 
   it("tags a limited model without taking the badge slot", () => {
@@ -136,7 +136,7 @@ describe("Composer — the model picker's price note and Restricted tag", () => 
     expect(tag?.getAttribute("title")).toBe("Open to the General Manager and administrators only");
     // The stand-in pill is still there, and still the only pill.
     expect(row.querySelector(".dd-badge")?.textContent).toBe("Has stand-in");
-    expect(pickerRow("Claude Haiku 4.5").querySelector(".dd-tag")).toBeNull();
+    expect(pickerRow("Claude Haiku 5.5").querySelector(".dd-tag")).toBeNull();
   });
 
   it("adds nothing to a model without data, or when the backend sends no maps", () => {
@@ -183,7 +183,7 @@ describe("Composer — the default model left the gateway's list", () => {
     props({
       modelReady: false,
       modelNotice: "default_model_gone",
-      models: ["aigw:anthropic/claude-haiku-4-5"],
+      models: ["aigw:anthropic/claude-haiku-5.5"],
       ...extra,
     });
 

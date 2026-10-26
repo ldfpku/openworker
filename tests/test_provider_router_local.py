@@ -16,5 +16,5 @@ def test_custom_models_are_self_managed_even_behind_a_remote_domain():
 def test_ollama_is_self_managed_but_gateway_models_are_not():
     router = ProviderRouter()
     assert router.is_local_model("ollama:qwen3:8b")
-    assert not router.is_local_model("aigw:anthropic/claude-haiku-4-5")
+    assert not router.is_local_model("aigw:anthropic/claude-haiku-5.5")
     assert not router.is_local_model("gemini:gemini-3.5-flash-lite")

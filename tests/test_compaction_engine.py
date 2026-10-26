@@ -251,7 +251,7 @@ def test_self_managed_timeouts_try_each_gateway_once_then_clear_the_trigger(tmp_
     assert [call["model"] for call in provider.summary_calls] == [
         "aigw:openai/gpt-6-luna",
         "aigw:workers-ai/@cf/zai-org/glm-5.3-flash",
-        "aigw:anthropic/claude-haiku-4-5",
+        "aigw:anthropic/claude-haiku-5.5",
     ]
     for call in provider.summary_calls:
         assert call["timeout"] == 0.03
@@ -280,7 +280,7 @@ def test_self_managed_session_uses_fixed_gateway_pool(tmp_path):
     assert cfg["model"] == "aigw:openai/gpt-6-luna"
     assert cfg["fallback_models"] == [
         "aigw:workers-ai/@cf/zai-org/glm-5.3-flash",
-        "aigw:anthropic/claude-haiku-4-5",
+        "aigw:anthropic/claude-haiku-5.5",
     ]
     assert cfg["local_summarizer"] is False
     assert cfg["summary_max_tokens"] == 16_000
@@ -335,7 +335,7 @@ def test_gateway_pool_tries_each_model_once_before_trimming(tmp_path):
     assert [call["model"] for call in provider.summary_calls] == [
         "aigw:openai/gpt-6-luna",
         "aigw:workers-ai/@cf/zai-org/glm-5.3-flash",
-        "aigw:anthropic/claude-haiku-4-5",
+        "aigw:anthropic/claude-haiku-5.5",
     ]
     assert engine.compaction_state is not None and engine.compaction_state.trimmed
 
@@ -351,7 +351,7 @@ def test_local_custom_session_cannot_be_diverted_to_direct_gemini(tmp_path):
         "threshold_pct": 0.75,
         "context_window": 192_000,
         "model": "gemini:gemini-3.5-flash-lite",
-        "gateway_model": "aigw:anthropic/claude-haiku-4-5",
+        "gateway_model": "aigw:anthropic/claude-haiku-5.5",
     }
 
     cfg = engine._compaction_config()

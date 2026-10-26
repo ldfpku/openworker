@@ -303,9 +303,9 @@ cloudflared access token -app=https://gateway.smjtools.com
 ## 3 · 能用哪些模型
 
 > **你实际能选哪些，以登录后卡片里的清单为准**（第 5 节）：清单由管理员在 help 后台勾选、网关按人下发。
-> 下表是 2026-08-23 的实测记录，说明这些型号在这条路上跑得通，不代表它们都对你开放。
+> 下表主要是 2026-08-23 的实测记录，不代表这些型号都对你开放。Haiku 5.5 按 2026-10-26 的 Cloudflare 模型页更新。
 
-下表每一行都在 2026-08-23 通过 `gateway.smjtools.com` 真调过，带工具定义，返回 200。
+除 Haiku 5.5 外，下表每一行都在 2026-08-23 通过 `gateway.smjtools.com` 真调过，带工具定义，返回 200。Haiku 5.5 已于 2026-10-26 通过真实八段压缩探测：实际调用点号目录 ID，Messages 上游转为横杠 ID，生成 2,457 字摘要，未触发裁剪。
 
 | 模型 | 网关 id | 上下文 |
 | --- | --- | --- |
@@ -315,7 +315,7 @@ cloudflared access token -app=https://gateway.smjtools.com
 | Claude Opus 5 | `anthropic/claude-opus-5` | 1M |
 | Claude Sonnet 5 | `anthropic/claude-sonnet-5` | 1M |
 | Claude Fable 5 | `anthropic/claude-fable-5` | 1M |
-| Claude Haiku 4.5 | `anthropic/claude-haiku-4-5` | 200k |
+| Claude Haiku 5.5 | `anthropic/claude-haiku-5.5` | 1M |
 | Gemini 3.6 Flash | `google-ai-studio/gemini-3.6-flash` | 1M |
 | Gemini 3.1 Pro | `google-ai-studio/gemini-3.1-pro-preview` | 1M |
 | Gemini 3.1 Flash-Lite | `google-ai-studio/gemini-3.1-flash-lite` | 1M |
@@ -336,15 +336,16 @@ cloudflared access token -app=https://gateway.smjtools.com
 
 ## 4 · 模型 id 为什么长这样
 
-`aigw:anthropic/claude-haiku-4-5` 拆成三段：
+`aigw:anthropic/claude-haiku-5.5` 拆成三段：
 
 - `aigw:` —— 应用内部的路由前缀，选择器里看不到。
 - `anthropic` —— **厂商段**。它决定用哪种请求格式，不只是个标签。
-- `claude-haiku-4-5` —— **厂商自己的写法**。
+- `claude-haiku-5.5` —— **Cloudflare 目录的写法**。
 
-第三段有个坑：Cloudflare 的 REST API 把这个模型叫 `claude-haiku-4.5`（点），
-但自定义域这条路是把模型名**原样**转给厂商的，所以要用 Anthropic 自己的
-`claude-haiku-4-5`（横杠）。写错了 Anthropic 会亲自提醒你：
+第三段有个坑：Cloudflare 目录把这个模型叫 `claude-haiku-5.5`（点），而 Anthropic
+Messages API 的上游模型名是 `claude-haiku-5-5`（横杠）。应用配置和按人清单统一保存
+Cloudflare 目录 ID；走 Anthropic Messages 协议时，`upstream_model()` 会剥掉厂商段并把
+点号版本转换成横杠，不能把目录里的点号直接发给上游。写错了 Anthropic 会提醒你：
 `model: claude-sonnet-4.6 was not found. Did you mean claude-sonnet-4-6?`
 
 厂商段决定的那件事——实测下来是三条线：
@@ -498,7 +499,7 @@ Anthropic 走 `/anthropic/v1/messages` **带 `anthropic-version` 头**，Google 
 | 旗舰·长上下文 | `anthropic/claude-fable-5`（1M） | `openai/gpt-5.6-sol`（1.05M） | Fable 的对家本来想用 `gpt-6-astra`，见 8.6 |
 | 旗舰 | `anthropic/claude-opus-5`（1M） | `openai/gpt-5.6-sol`（1.05M） | |
 | 高阶/均衡 | `anthropic/claude-sonnet-5`（1M） | `openai/gpt-5.6-terra`（400k） | |
-| 轻量 | `anthropic/claude-haiku-4-5`（200k） | `openai/gpt-5.6-luna`（1.05M） | **不建路由**，见 8.3 |
+| 轻量 | `anthropic/claude-haiku-5.5`（1M） | `openai/gpt-5.6-luna`（1.05M） | **不建路由**，见 8.3 |
 
 ### 8.3 五条路由
 

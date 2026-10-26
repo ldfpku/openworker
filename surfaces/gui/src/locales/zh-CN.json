@@ -1491,7 +1491,7 @@
   "The models offered when starting a session; the black badge marks the default. Add more from a provider's card above.": "开始会话时可选择的模型；黑色徽章标记默认模型。可在上方的模型提供商卡片中添加更多。",
   "The nine shipped roles, why none are on by default, and why they can't join a team.": "随包带的九个岗位、为什么默认一个都不开、以及它们为什么不能组团。",
   "The region your Bedrock model access is enabled in.": "已启用 Bedrock 模型访问权限的区域。",
-  "Self-managed sessions automatically summarize through Cloudflare AI Gateway with failover: GPT-6 Luna → GLM 5.3 Flash → Claude Haiku 4.5. No summarizer model setting is needed.": "自管理会话自动通过 Cloudflare AI Gateway 生成摘要，并按 GPT-6 Luna → GLM 5.3 Flash → Claude Haiku 4.5 的顺序自动切换，无需配置摘要模型。",
+  "Self-managed sessions automatically summarize through Cloudflare AI Gateway with failover: GPT-6 Luna → GLM 5.3 Flash → Claude Haiku 5.5. No summarizer model setting is needed.": "自管理会话自动通过 Cloudflare AI Gateway 生成摘要，并按 GPT-6 Luna → GLM 5.3 Flash → Claude Haiku 5.5 的顺序自动切换，无需配置摘要模型。",
   "The update couldn't be installed — it will be offered again next launch.": "更新未能安装——下次启动时将再次提示。",
   "Theme": "主题",
   "They message the bot once — the sender shows up under Recent senders below.": "让对方先给机器人发一条消息——他就会出现在下面的「最近的发送者」里。",

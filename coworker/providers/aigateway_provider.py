@@ -41,11 +41,12 @@ itself refuses — "Function tools with reasoning_effort are not supported for g
 in /v1/chat/completions. To use function tools, use /v1/responses" — which is why the
 `responses` wire exists rather than collapsing everything onto `/compat`.
 
-**Vendor spelling, not Cloudflare's.** On this host the gateway forwards the model id to
-the vendor untouched, so Anthropic wants dashes where Cloudflare's REST API writes dots:
-`claude-haiku-4-5`, not `claude-haiku-4.5`. Anthropic says so itself — "model:
-claude-sonnet-4.6 was not found. Did you mean claude-sonnet-4-6?". The matrix carries the
-spelling that goes on the wire, so nothing here translates.
+**Catalog spelling vs vendor spelling.** The matrix and company model catalog carry
+Cloudflare's ids, including `anthropic/claude-haiku-5.5`. The provider-native Messages
+wire strips the author prefix and translates Anthropic's dotted version to the upstream
+`claude-haiku-5-5`; other wires keep their existing spelling rules. Anthropic rejects the
+dotted form itself — "model: claude-sonnet-4.6 was not found. Did you mean
+claude-sonnet-4-6?" — so `upstream_model` owns this boundary conversion.
 
 **The SDKs' placeholder credentials are harmless.** Both SDKs insist on *some* key and
 will send `Authorization: Bearer …` / `x-api-key: …`; the gateway ignores them whenever
@@ -225,8 +226,14 @@ def upstream_model(model: str, wire: str) -> str:
     """
     if wire == "chat":
         return model
-    _author, _, bare = model.partition("/")
-    return bare or model
+    author, _, bare = model.partition("/")
+    if not bare:
+        return model
+    if wire == "messages" and author == "anthropic":
+        # Cloudflare's catalog uses dotted display ids such as claude-haiku-5.5,
+        # while Anthropic's Messages API requires claude-haiku-5-5.
+        return bare.replace(".", "-")
+    return bare
 
 
 class _Route(NamedTuple):

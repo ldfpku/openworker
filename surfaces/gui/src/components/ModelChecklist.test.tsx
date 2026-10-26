@@ -383,7 +383,7 @@ describe("ModelChecklist — catalog hygiene", () => {
 describe("ModelChecklist — gateway price hint and Restricted tag", () => {
   const SOL = "aigw:openai/gpt-6.1-sol";
   const FLASH = "aigw:google-ai-studio/gemini-3.7-flash";
-  const HAIKU = "aigw:anthropic/claude-haiku-4-5";
+  const HAIKU = "aigw:anthropic/claude-haiku-5.5";
   const LUNA = "aigw:openai/gpt-6-luna";
   const gateway = (extra: Partial<Parameters<typeof ModelChecklist>[0]> = {}) => (
     <ModelChecklist
@@ -392,7 +392,7 @@ describe("ModelChecklist — gateway price hint and Restricted tag", () => {
       suggested={[
         "openai/gpt-6.1-sol",
         "google-ai-studio/gemini-3.7-flash",
-        "anthropic/claude-haiku-4-5",
+        "anthropic/claude-haiku-5.5",
         "openai/gpt-6-luna",
       ]}
       curated={[SOL]}

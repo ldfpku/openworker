@@ -747,7 +747,7 @@ def test_curated_models_drops_a_stale_matrix_id_but_pins_the_active_default(tmp_
         "error": None,
     }
     models = mgr._curated_models()
-    assert "anthropic:claude-haiku-4-5" not in models  # not in the live catalog
+    assert "anthropic:claude-haiku-5-5" not in models  # not in the live catalog
     assert "anthropic:claude-fable-5" in models  # confirmed still live
     assert models[0] == "anthropic:claude-opus-4-8"  # active default always first
 
@@ -889,7 +889,7 @@ def test_verify_provider_failure_surfaces_the_catalog_error(tmp_path, monkeypatc
     "model_id,expected",
     [
         ("anthropic/claude-opus-5-5", "Claude Opus 5.5 · via Cloudflare"),
-        ("anthropic/claude-haiku-4-5", "Claude Haiku 4.5 · via Cloudflare"),
+        ("anthropic/claude-haiku-5.5", "Claude Haiku 5.5 · via Cloudflare"),
         ("anthropic/claude-3-7-sonnet-latest", "Claude 3.7 Sonnet Latest · via Cloudflare"),
         ("openai/gpt-6-luna", "GPT-6 Luna · via Cloudflare"),
         ("openai/gpt-5.6-terra-pro", "GPT-5.6 Terra Pro · via Cloudflare"),

@@ -271,7 +271,7 @@ def test_a_successful_pull_drops_local_picks_that_left_the_list(tmp_path, monkey
     mgr._prefs["hidden_models"] = [
         "aigw:anthropic/claude-sonnet-5",  # still listed → still hidden
         "aigw:anthropic/claude-fable-5",  # gone from the list → tidied away
-        "anthropic:claude-haiku-4-5",
+        "anthropic:claude-haiku-5-5",
     ]
     _pull_ok(monkeypatch, "anthropic/claude-sonnet-5", "openai/gpt-6-luna")
     assert mgr.refresh_model_catalog("aigw")["ok"] is True
@@ -279,7 +279,7 @@ def test_a_successful_pull_drops_local_picks_that_left_the_list(tmp_path, monkey
     assert mgr._prefs["models"] == ["aigw:openai/gpt-6-luna", "zai:glm-9", "my-own-finetune"]
     assert mgr._prefs["hidden_models"] == [
         "aigw:anthropic/claude-sonnet-5",
-        "anthropic:claude-haiku-4-5",
+        "anthropic:claude-haiku-5-5",
     ]
     # Persisted with the list itself, not only in memory.
     reborn = SessionManager(data_dir=tmp_path / "data")
@@ -431,8 +431,8 @@ async def test_a_changed_list_tells_open_guis_to_reload_their_settings(tmp_path,
 
 # -- the auto-title sibling ----------------------------------------------------------------
 def test_the_utility_sibling_is_used_only_when_it_is_listed(tmp_path, monkeypatch):
-    mgr = _mgr(tmp_path, monkeypatch, "anthropic/claude-fable-5", "anthropic/claude-haiku-4-5")
-    assert mgr._utility_model("aigw:anthropic/claude-fable-5") == "aigw:anthropic/claude-haiku-4-5"
+    mgr = _mgr(tmp_path, monkeypatch, "anthropic/claude-fable-5", "anthropic/claude-haiku-5.5")
+    assert mgr._utility_model("aigw:anthropic/claude-fable-5") == "aigw:anthropic/claude-haiku-5.5"
 
     # Haiku unticked: the session's own model titles its own session.
     mgr = _mgr(tmp_path / "b", monkeypatch, "anthropic/claude-fable-5", "openai/gpt-5.6-sol")
@@ -444,7 +444,7 @@ def test_the_utility_sibling_is_used_only_when_it_is_listed(tmp_path, monkeypatc
     assert mgr._utility_model("aigw:anthropic/claude-fable-5") == "aigw:anthropic/claude-fable-5"
 
     # Other providers are not the gateway's business — their sibling stands.
-    assert mgr._utility_model("anthropic:claude-opus-4-8") == "anthropic:claude-haiku-4-5"
+    assert mgr._utility_model("anthropic:claude-opus-4-8") == "anthropic:claude-haiku-5-5"
     assert mgr._utility_model("gpt-5.6-sol") == "gpt-5.6-luna"
     assert mgr._utility_model("together:zai-org/GLM-5.2") == "together:zai-org/GLM-5.2"
 
@@ -459,7 +459,7 @@ def test_route_allowed_needs_both_ends_on_the_list():
     assert route_allowed(opus, {terra}) is False  # primary not ticked
     assert route_allowed(opus, None) is False  # no list
     assert route_allowed(opus, frozenset()) is False
-    assert route_allowed("anthropic/claude-haiku-4-5", {"anthropic/claude-haiku-4-5"}) is False  # unrouted
+    assert route_allowed("anthropic/claude-haiku-5.5", {"anthropic/claude-haiku-5.5"}) is False  # unrouted
 
 
 def test_the_stand_in_badge_only_shows_for_routes_this_person_can_use(tmp_path, monkeypatch):
@@ -523,14 +523,14 @@ def test_prices_and_tiers_reach_the_settings_payload(tmp_path, monkeypatch):
         monkeypatch,
         _priced("openai/gpt-6.1-sol", price_in=3.0, price_out=15.0, tier="limited"),
         _priced("google-ai-studio/gemini-3.7-flash", price_in=0.15, price_out=0.6, tier="all"),
-        _priced("anthropic/claude-haiku-4-5", price_in=1.0),  # only one side priced
+        _priced("anthropic/claude-haiku-5.5", price_in=1.0),  # only one side priced
         _priced("openai/gpt-6-luna"),  # the guard listed no price
     )
     s = mgr.get_settings()
     assert s["model_prices"] == {
         "aigw:openai/gpt-6.1-sol": {"in": 3.0, "out": 15.0},
         "aigw:google-ai-studio/gemini-3.7-flash": {"in": 0.15, "out": 0.6},
-        "aigw:anthropic/claude-haiku-4-5": {"in": 1.0},
+        "aigw:anthropic/claude-haiku-5.5": {"in": 1.0},
     }
     # "all" is the unmarked case: only restricted models are named.
     assert s["model_tiers"] == {"aigw:openai/gpt-6.1-sol": "limited"}

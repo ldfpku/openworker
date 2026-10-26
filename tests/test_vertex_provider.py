@@ -60,10 +60,10 @@ def test_raw_ids_route_by_name():
     p, gemini, claude, openweight = _provider()
     msgs = [{"role": "user", "content": "x"}]
     p.complete(model="gemini-2.5-pro", messages=msgs)
-    p.complete(model="claude-haiku-4-5", messages=msgs)
+    p.complete(model="claude-haiku-5-5", messages=msgs)
     p.complete(model="deepseek-ai/deepseek-v4-maas", messages=msgs)
     assert gemini.seen == ["gemini-2.5-pro"]
-    assert claude.seen == ["claude-haiku-4-5"]
+    assert claude.seen == ["claude-haiku-5-5"]
     assert openweight.seen == ["deepseek-ai/deepseek-v4-maas"]
 
 

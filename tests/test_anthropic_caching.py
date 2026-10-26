@@ -16,7 +16,7 @@ MARKER = {"type": "ephemeral", "ttl": _CACHE_TTL}
 
 def _kwargs(messages, tools=None):
     return AnthropicProvider(client=object())._request_kwargs(
-        model="claude-haiku-4-5", messages=messages, tools=tools, settings={}
+        model="claude-haiku-5-5", messages=messages, tools=tools, settings={}
     )
 
 

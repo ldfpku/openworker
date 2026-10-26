@@ -1007,7 +1007,7 @@ function CompactionCard() {
       </div>
 
       <div className={"mt-3 " + FIELD_HELP}>
-        {t("Self-managed sessions automatically summarize through Cloudflare AI Gateway with failover: GPT-6 Luna → GLM 5.3 Flash → Claude Haiku 4.5. No summarizer model setting is needed.")}
+        {t("Self-managed sessions automatically summarize through Cloudflare AI Gateway with failover: GPT-6 Luna → GLM 5.3 Flash → Claude Haiku 5.5. No summarizer model setting is needed.")}
       </div>
     </div>
   );

@@ -346,13 +346,14 @@ def parse_aigw(payload: Any) -> list[CatalogModel]:
     """gateway-guard `GET /gate/models`: `{"models": [{"id": "anthropic/claude-opus-5",
     "family": "anthropic/", "context": null, "created": "2026-07-24", "price_in": 5,
     "price_out": 25, "tier": "limited"}, ...],
-    "probe": "anthropic/claude-haiku-4-5", ...}` — the allowlist itself: exactly the models
+    "probe": "anthropic/claude-haiku-5.5", ...}` — the allowlist itself: exactly the models
     this person's administrator ticked for them, and the single source of truth for what
     the picker may offer under `aigw:` (the curated matrix only lends these ids a label
     and a context window; it never adds one). `probe` is read separately by the Test
-    button (`registry._aigw_probe_model`). Ids are the gateway form the provider sends
-    as-is. Non-chat rows (deep-research, computer-use, …) still get the same client-side
-    cull as every other catalog.
+    button (`registry._aigw_probe_model`). Ids use Cloudflare's catalog spelling;
+    `aigateway_provider.upstream_model` converts Anthropic's dotted version to dashes on
+    the provider-native Messages wire. Non-chat rows (deep-research, computer-use, …)
+    still get the same client-side cull as every other catalog.
 
     `price_in` / `price_out` (USD per 1M tokens) and `tier` are optional per row: an older
     guard sends none of them and a model can lack a listed price. Each is kept only when

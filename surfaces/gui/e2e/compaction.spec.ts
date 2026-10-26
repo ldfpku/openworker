@@ -41,7 +41,7 @@ test("Settings: Context compaction card edits threshold and cap with fixed failo
   await expect(card.getByTestId("compaction-model")).toHaveCount(0);
   await expect(
     card.getByText(
-      "Self-managed sessions automatically summarize through Cloudflare AI Gateway with failover: GPT-6 Luna → GLM 5.3 Flash → Claude Haiku 4.5. No summarizer model setting is needed.",
+      "Self-managed sessions automatically summarize through Cloudflare AI Gateway with failover: GPT-6 Luna → GLM 5.3 Flash → Claude Haiku 5.5. No summarizer model setting is needed.",
     ),
   ).toBeVisible();
 });

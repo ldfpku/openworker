@@ -29,7 +29,7 @@ describe("modelOrder — by id, newest first (owner call 2026-09-23)", () => {
   it("is otherwise plain string order across vendors, case-insensitive", () => {
     expect(
       sortModelIds([
-        "aigw:anthropic/claude-haiku-4-5",
+        "aigw:anthropic/claude-haiku-5.5",
         "aigw:workers-ai/@cf/qwen/qwq-32b",
         "aigw:google-ai-studio/gemini-3.6-flash",
         "aigw:openai/gpt-6-luna",
@@ -38,7 +38,7 @@ describe("modelOrder — by id, newest first (owner call 2026-09-23)", () => {
       "aigw:workers-ai/@cf/qwen/qwq-32b",
       "aigw:openai/gpt-6-luna",
       "aigw:google-ai-studio/gemini-3.6-flash",
-      "aigw:anthropic/claude-haiku-4-5",
+      "aigw:anthropic/claude-haiku-5.5",
     ]);
     expect(sortModelIds(["minimax:MiniMax-M3", "minimax:MiniMax-M2.5"])).toEqual([
       "minimax:MiniMax-M3",

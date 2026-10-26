@@ -37,15 +37,16 @@ SUMMARY_MAX_TOKENS = 16_000
 # engine's await use this bound; a stalled summarizer falls back to the deterministic trim.
 SUMMARY_TIMEOUT_S = 120.0
 # Fixed Cloudflare AI Gateway pool for self-managed MAIN sessions (Ollama/custom). Cheap
-# utility models first, a higher-quality Anthropic fallback last; all three are on the ZY
-# account's live catalog and passed real eight-section summary validation on 2026-10-25.
+# utility models first, a higher-quality Anthropic fallback last. The first two passed real
+# eight-section summary validation on 2026-10-25; Haiku 5.5 passed it on 2026-10-26 with a
+# 2,457-character summary and no deterministic trim, replacing the retiring 4.5 generation.
 # This is deliberately NOT a saved model pin: an old direct-Gemini pin was the root cause
 # of the reported compaction failure. The engine tries each in order on errors or rejected
 # summaries, giving automatic cross-vendor failover without a gateway route to configure.
 GATEWAY_SUMMARY_MODELS = (
     "aigw:openai/gpt-6-luna",
     "aigw:workers-ai/@cf/zai-org/glm-5.3-flash",
-    "aigw:anthropic/claude-haiku-4-5",
+    "aigw:anthropic/claude-haiku-5.5",
 )
 # A summary is the coworker's ONLY memory of the span, so "not empty" is too low a bar to
 # accept one. Below this, or missing the sections, it is refused and retried (OPE-189).

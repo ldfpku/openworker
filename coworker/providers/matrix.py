@@ -139,8 +139,10 @@ MATRIX: dict[str, ModelEntry] = {
     "anthropic:claude-sonnet-4-6": ModelEntry(
         "Claude Sonnet 4.6 · Anthropic", _AGENTIC_VISION, 200_000
     ),
-    "anthropic:claude-haiku-4-5": ModelEntry(
-        "Claude Haiku 4.5 · Anthropic", _AGENTIC_VISION, 200_000
+    # Owner-directed replacement for the retiring 4.5 generation (2026-10-26). Only the
+    # Cloudflare model page has been re-checked, so direct-provider windows stay unverified.
+    "anthropic:claude-haiku-5-5": ModelEntry(
+        "Claude Haiku 5.5 · Anthropic", _AGENTIC_VISION
     ),
     # Gemini (thought signatures required in tool loops — carried via the `_gemini`
     # message sidecar, see gemini_provider.py). Reconciled against
@@ -293,8 +295,8 @@ MATRIX: dict[str, ModelEntry] = {
     "bedrock:claude/anthropic.claude-sonnet-4-6-v1:0": ModelEntry(
         "Claude Sonnet 4.6 · AWS Bedrock", _AGENTIC_VISION, 200_000
     ),
-    "bedrock:claude/anthropic.claude-haiku-4-5-v1:0": ModelEntry(
-        "Claude Haiku 4.5 · AWS Bedrock", _AGENTIC_VISION, 200_000
+    "bedrock:claude/anthropic.claude-haiku-5-5-v1:0": ModelEntry(
+        "Claude Haiku 5.5 · AWS Bedrock", _AGENTIC_VISION
     ),
     "bedrock:other/amazon.nova-2-pro-v1:0": ModelEntry(
         "Nova 2 Pro · AWS Bedrock", _AGENTIC, 300_000
@@ -324,8 +326,8 @@ MATRIX: dict[str, ModelEntry] = {
     "vertex:claude/claude-sonnet-4-6": ModelEntry(
         "Claude Sonnet 4.6 · Vertex AI", _AGENTIC_VISION, 200_000
     ),
-    "vertex:claude/claude-haiku-4-5": ModelEntry(
-        "Claude Haiku 4.5 · Vertex AI", _AGENTIC_VISION, 200_000
+    "vertex:claude/claude-haiku-5-5": ModelEntry(
+        "Claude Haiku 5.5 · Vertex AI", _AGENTIC_VISION
     ),
     "vertex:openweight/meta/llama-4-maverick-17b-128e-instruct-maas": ModelEntry(
         "Llama 4 Maverick · Vertex AI", _AGENTIC, 1_000_000
@@ -352,9 +354,10 @@ MATRIX: dict[str, ModelEntry] = {
     # picker once they are on the person's list. A row for a model nobody's list carries
     # is inert, not wrong.
     #
-    # Every row below was called live on 2026-08-23 and answered 200 — with a tool
+    # The older rows below were called live on 2026-08-23 and answered 200 — with a tool
     # definition attached, and for the Google rows an inline image part as well;
-    # gemini-3.5-flash's logged response body carries a real `tool_calls` entry.
+    # gemini-3.5-flash's logged response body carries a real `tool_calls` entry. Haiku 5.5
+    # passed a real eight-section compaction probe on 2026-10-26 (2,457 chars, no trim).
     #
     # The GPT-5.6 tiers only answer on the Responses wire. On chat/completions OpenAI
     # itself refuses: "Function tools with reasoning_effort are not supported for
@@ -388,11 +391,11 @@ MATRIX: dict[str, ModelEntry] = {
     "aigw:anthropic/claude-fable-5": ModelEntry(
         "Claude Fable 5 · via Cloudflare", _AGENTIC_IMAGE, 1_000_000
     ),
-    # Dashes, not the dots Cloudflare's REST API uses: on the gateway's own domain the
-    # model id is forwarded to Anthropic untouched. Anthropic says so itself — "model:
-    # claude-sonnet-4.6 was not found. Did you mean claude-sonnet-4-6?".
-    "aigw:anthropic/claude-haiku-4-5": ModelEntry(
-        "Claude Haiku 4.5 · via Cloudflare", _AGENTIC_IMAGE, 200_000
+    # Cloudflare's catalog id uses a dotted version. On the provider-native Messages
+    # wire, `aigateway_provider.upstream_model` strips the author and translates it to
+    # Anthropic's dashed `claude-haiku-5-5`; the `/compat` wire keeps the full id.
+    "aigw:anthropic/claude-haiku-5.5": ModelEntry(
+        "Claude Haiku 5.5 · via Cloudflare", _AGENTIC_IMAGE, 1_000_000
     ),
     # Gemini 3.x and up only (owner call), and note the `google-ai-studio/` author — on
     # this host `google/` answers `2008 Invalid provider`. The prefix is not decoration:
@@ -475,13 +478,13 @@ def models_for_provider(provider: str) -> list[str]:
 # Targets are all existing MATRIX rows (verified above) — keep this table in sync with the
 # matrix: if a target id's row is ever renamed or dropped, update the row here to match.
 _UTILITY_MODELS: tuple[tuple[str, str], ...] = (
-    ("aigw:anthropic/", "aigw:anthropic/claude-haiku-4-5"),
+    ("aigw:anthropic/", "aigw:anthropic/claude-haiku-5.5"),
     ("aigw:openai/", "aigw:openai/gpt-5.6-luna"),
     ("aigw:google-ai-studio/", "aigw:google-ai-studio/gemini-3.1-flash-lite"),
-    ("anthropic:", "anthropic:claude-haiku-4-5"),
+    ("anthropic:", "anthropic:claude-haiku-5-5"),
     ("gemini:gemini-", "gemini:gemini-3.5-flash-lite"),
-    ("bedrock:claude/", "bedrock:claude/anthropic.claude-haiku-4-5-v1:0"),
-    ("vertex:claude/", "vertex:claude/claude-haiku-4-5"),
+    ("bedrock:claude/", "bedrock:claude/anthropic.claude-haiku-5-5-v1:0"),
+    ("vertex:claude/", "vertex:claude/claude-haiku-5-5"),
     ("vertex:gemini/", "vertex:gemini/gemini-3.6-flash"),
 )
 
