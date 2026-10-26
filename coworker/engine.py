@@ -856,6 +856,10 @@ class TurnEngine:
         # sidecar, which is what tells the Artifacts panel which files a shell command
         # could plausibly have written (SessionManager._shell_windows).
         self._tool_started_at: dict[str, float] = {}
+        # OPE-232: set once a shell command has been cleared in the batch being authorized.
+        # The batch runs only after every call is cleared, and the shell persists, so a
+        # later command's folder is unknown from then on (see `current_shell_cwd`).
+        self._shell_cleared_in_batch = False
         # Shadow evaluation (spec Part 6 step 3): when True and a reviewer is attached, the
         # reviewer records what it WOULD have decided on each approval card while the human
         # still decides. Fire-and-forget — the card is never delayed, no decision is ever
@@ -2434,6 +2438,7 @@ class TurnEngine:
         # verdict physically cannot land on the wrong action). The loop below stays
         # sequential because approval cards are interactive and must reach the human one
         # at a time, in call order.
+        self._shell_cleared_in_batch = False
         await self._preconsult_reviewer(tool_calls)
         cleared: list[ToolCall] = []
         for tool_call in tool_calls:
@@ -2488,6 +2493,8 @@ class TurnEngine:
                     allowed = item
             if allowed:
                 cleared.append(tool_call)
+                if tool_call.name == "run_shell":
+                    self._shell_cleared_in_batch = True
 
         concurrent = (
             [tc for tc in cleared if self._parallel_safe(tc)]
@@ -2949,6 +2956,16 @@ class TurnEngine:
             tool_call.name, tool_call.arguments, step=self._step
         )
         return match.render() if match else ""
+
+    def current_shell_cwd(self) -> Optional[str]:
+        """OPE-232: the persistent shell's current folder, or None when it cannot be known
+        for the call being checked: no shell, or a shell command already cleared in this
+        batch may move it before this one runs."""
+        if self._shell_cleared_in_batch:
+            return None
+        executor = getattr(self, "executor", None)
+        cwd = getattr(executor, "cwd", None) if executor is not None else None
+        return str(cwd) if cwd else None
 
     async def _preconsult_reviewer(self, tool_calls: list[ToolCall]) -> None:
         """Fire one reviewer request per call that will escalate, all concurrently, and

@@ -847,6 +847,10 @@ def build_engine(
     if _compaction_overrides:
         engine.compaction_settings = lambda: dict(_compaction_overrides)
     engine.executor = executor  # type: ignore[attr-defined]
+    # OPE-232: the read-only session grant judges paths from the persistent shell's
+    # current folder, not the workspace folder it may have moved away from.
+    if executor is not None:
+        engine.permissions.shell_cwd = engine.current_shell_cwd
     engine.todo = todo  # type: ignore[attr-defined]
     engine.agent_name = agent.name  # type: ignore[attr-defined]
     engine.roots = root_list  # type: ignore[attr-defined]  # shared list; Slice C mutates in place
