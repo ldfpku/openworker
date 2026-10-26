@@ -456,11 +456,29 @@ from .risk import (  # re-exported for back-compat (manager.py imports WRITE_TOO
     classify,
     is_consequential,
 )
-from .workspace_safety import inert_write_check
+from .workspace_safety import has_secret_value, inert_write_check, is_sensitive_name
 
 # The reason prefix of an OPE-233 inert-write allow; the engine keys the transcript chip
 # and the audit row on `Decision.tier`, this text is what the record says.
 INERT_WRITE_REASON = "inert, reversible write inside your folders"
+SECRET_EGRESS_REASON = "this sends a secret-looking file or value off the machine — approval required"
+
+
+def _sends_secret(tool_name: str, arguments: dict[str, Any], metadata: Any, risk: RiskClass) -> bool:
+    """OPE-236: the call sends data off the machine AND names a secret-looking file or
+    carries a secret-looking value. Sending = egress or external risk (web tools,
+    connector writes, MCP tools) or a shell command that runs a network client."""
+    from .review_facts import referenced_names, shell_reaches_network
+
+    sends = risk in (RiskClass.EGRESS, RiskClass.EXTERNAL) or (
+        tool_name == SHELL_TOOL
+        and shell_reaches_network(str((arguments or {}).get("command", "")))
+    )
+    if not sends:
+        return False
+    if has_secret_value(arguments or {}):
+        return True
+    return any(is_sensitive_name(n) for n in referenced_names(tool_name, arguments or {}, []))
 
 
 # The transcript's full Auto-Approve explainer (owner copy 2026-08-24). Persisted as a
@@ -693,6 +711,13 @@ class PermissionEngine:
                 needs_user=True,
                 human_only=True,
             )
+
+        # OPE-236: secret-looking data leaving the machine reaches a person, over the
+        # reviewer, every allowlist and Bypass. Whether an agent declines
+        # to upload a .env file is model behaviour, not policy. A backstop on top of the
+        # sandbox's network allowlist: shell egress can't be recognised completely.
+        if _sends_secret(tool_name, arguments, metadata, risk):
+            return Decision(False, SECRET_EGRESS_REASON, needs_user=True, human_only=True)
 
         # Non-consequential tools always run.
         if not consequential:

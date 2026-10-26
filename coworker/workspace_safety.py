@@ -151,7 +151,16 @@ def _root_of(path: Path, roots: Optional[list[Path]]) -> Optional[Path]:
     return None
 
 
+# Templates and public halves of key pairs carry no secret (OPE-236): `.env.example`,
+# `credentials.sample.json`, `id_ed25519.pub`.
+_NOT_SECRET_SUFFIXES = (".example", ".sample", ".template", ".dist", ".pub")
+_NOT_SECRET_PARTS = re.compile(r"[._-](example|sample|template)[._-]", re.IGNORECASE)
+
+
 def is_sensitive_name(name: str) -> bool:
+    lowered = name.lower()
+    if lowered.endswith(_NOT_SECRET_SUFFIXES) or _NOT_SECRET_PARTS.search(lowered):
+        return False
     return bool(_SENSITIVE_NAME.search(name))
 
 
