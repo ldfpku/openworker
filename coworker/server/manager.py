@@ -4932,11 +4932,15 @@ class SessionManager:
         return d.title
 
     def _fetch_model_catalog(
-        self, name: str, fields: Optional[dict[str, Any]] = None
+        self,
+        name: str,
+        fields: Optional[dict[str, Any]] = None,
+        refresh: bool = False,
     ) -> dict[str, Any]:
         """The one network entry point for a provider's model catalog. Resolves
         credentials the same way a live call would (`_probe_credentials`), then asks the
-        registry to fetch + parse. Never raises."""
+        registry to fetch + parse. Never raises. `refresh` marks an explicit user action;
+        ordinary TTL / startup pulls leave it false so shared upstream caches still work."""
         d = get_descriptor(name)
         if d is None:
             return {"ok": False, "error": f"unknown provider: {name}"}
@@ -4956,6 +4960,7 @@ class SessionManager:
             fields=merged,
             timeout=self.MODEL_CATALOG_TIMEOUT,
             provider_title=self._catalog_provider_title(d, merged),
+            refresh=refresh,
         )
 
     def _remember_aigw_caller(self, name: str) -> None:
@@ -5071,7 +5076,7 @@ class SessionManager:
             }
         if not fields and not self._provider_configured(name):
             return {"ok": False, "error": "not configured"}
-        result = self._fetch_model_catalog(name, fields)
+        result = self._fetch_model_catalog(name, fields, refresh=True)
         self._store_model_catalog(name, result)
         out: dict[str, Any] = {
             "ok": bool(result.get("ok")),
@@ -5555,6 +5560,7 @@ class SessionManager:
                 fields=merged,
                 timeout=self.MODEL_CATALOG_TIMEOUT,
                 provider_title=self._catalog_provider_title(d, merged),
+                refresh=True,
             )
             self._store_model_catalog(name, listed)
             return {"ok": True}

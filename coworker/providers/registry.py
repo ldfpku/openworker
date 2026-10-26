@@ -1110,7 +1110,13 @@ def _verify_aigw(fields: dict[str, Any], timeout: float) -> dict[str, Any]:
     # points at the proxy/VPN, not at "check your network" — and the raw cause is logged
     # at warning so support can read it without a debug build.
     listing, err = _catalog_request(
-        "aigw", key="", base_url=None, fields=fields, timeout=timeout, raw_exc=True
+        "aigw",
+        key="",
+        base_url=None,
+        fields=fields,
+        timeout=timeout,
+        raw_exc=True,
+        refresh=True,
     )
     if listing is None:
         logger.warning(
@@ -1450,6 +1456,7 @@ def _catalog_request(
     fields: Optional[dict[str, Any]],
     timeout: float,
     raw_exc: bool = False,
+    refresh: bool = False,
 ) -> tuple[Any, Any]:
     """One GET against a provider's model-list endpoint — the shared wire logic behind
     both `verify_provider_key` (the Test button) and `list_provider_models` (the catalog
@@ -1495,8 +1502,11 @@ def _catalog_request(
             oauth_token = str((fields or {}).get("oauth_token") or "").strip()
             if not oauth_token and not access_token:
                 return None, "Sign in to the gateway first."
+            # Explicit Refresh / Test bypasses the guard's caches; ordinary TTL pulls keep
+            # the original URL so they still benefit from the shared server-side cache.
+            catalog_path = "/gate/models?refresh=1" if refresh else "/gate/models"
             resp = httpx.get(
-                normalise_base(gw_base) + "/gate/models",
+                normalise_base(gw_base) + catalog_path,
                 headers=(
                     bearer_headers(
                         oauth_token, str((fields or {}).get("display_name") or "")
@@ -1657,6 +1667,7 @@ def list_provider_models(
     fields: Optional[dict[str, Any]] = None,
     timeout: float = 10.0,
     provider_title: str = "",
+    refresh: bool = False,
 ) -> dict[str, Any]:
     """Fetch and parse a provider's live model catalog (Settings ▸ Models' background
     refresh, and `verify_provider`'s Test-button-doubles-as-a-catalog-pull path). Never
@@ -1682,7 +1693,12 @@ def list_provider_models(
     if name == "custom" and not (base_url or "").strip():
         return {"ok": False, "error": "Enter the endpoint URL first."}
     resp, err = _catalog_request(
-        name, key=key, base_url=base_url, fields=fields, timeout=timeout
+        name,
+        key=key,
+        base_url=base_url,
+        fields=fields,
+        timeout=timeout,
+        refresh=refresh,
     )
     if err:
         return {"ok": False, "error": err}

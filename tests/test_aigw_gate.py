@@ -65,7 +65,9 @@ def _mgr(tmp_path, monkeypatch, *listed: str, default: str = "gpt-5.6-sol") -> S
 def _pull(monkeypatch, result: dict) -> None:
     """What the next `/gate/models` pull answers (overrides conftest's offline stub)."""
     monkeypatch.setattr(
-        SessionManager, "_fetch_model_catalog", lambda self, name, fields=None: dict(result)
+        SessionManager,
+        "_fetch_model_catalog",
+        lambda self, name, fields=None, refresh=False: dict(result),
     )
 
 
