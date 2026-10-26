@@ -702,6 +702,7 @@ def build_engine(
         allowed_domains=list(config.allowed_domains),
         roots=root_list or None,
         risk_overrides=risk_overrides,
+        inert_writes=str(config.auto_approve_inert_writes),
     )
     # The plan-mode exit door — mutually exclusive with the board's decomposition
     # gate, DERIVED from the team trait (owner call 2026-08-16): a lead never

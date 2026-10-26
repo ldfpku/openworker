@@ -195,7 +195,7 @@ function originChip(origin: string | undefined, note: string | undefined, grant?
       </span>
     );
   }
-  if (origin !== "reviewer" && origin !== "bypass") return null;
+  if (origin !== "reviewer" && origin !== "bypass" && origin !== "gate_tier") return null;
   return (
     <span
       className="text-[11px] text-faint shrink-0"
@@ -203,10 +203,16 @@ function originChip(origin: string | undefined, note: string | undefined, grant?
       title={
         origin === "reviewer"
           ? note || t("transcript.approval.reviewer_allowed_title")
-          : t("transcript.approval.bypass_title")
+          : origin === "gate_tier"
+            ? t("transcript.approval.gate_tier_title")
+            : t("transcript.approval.bypass_title")
       }
     >
-      {origin === "reviewer" ? t("transcript.approval.auto_approved") : t("transcript.approval.bypassed")}
+      {origin === "reviewer"
+        ? t("transcript.approval.auto_approved")
+        : origin === "gate_tier"
+          ? t("transcript.approval.gate_tier")
+          : t("transcript.approval.bypassed")}
     </span>
   );
 }

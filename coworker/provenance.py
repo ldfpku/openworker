@@ -245,6 +245,12 @@ class SessionFiles:
             # ones that would execute.
             self._files[resolve(path, self.root)] = Origin(step=step, kind=origin)
 
+    def wrote(self, path: Path | str) -> bool:
+        """True when the agent's own write (not a download) produced this file's current
+        bytes this session. Overwriting it loses nothing of the user's (OPE-233)."""
+        origin = self._files.get(resolve(str(path), self.root))
+        return origin is not None and origin.kind == WRITTEN
+
     def match(
         self, tool_name: str, arguments: dict[str, Any], *, step: int
     ) -> Optional[Match]:
