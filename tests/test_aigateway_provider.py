@@ -1286,7 +1286,7 @@ def test_test_probes_with_the_model_the_guard_names(monkeypatch):
     assert verify_provider_key("aigw", fields=_SIGNED_IN) == {"ok": True}
     assert http.verbs == ["GET", "POST"]
     listing, completion = http.calls
-    assert listing["url"] == BASE + "/gate/models"
+    assert listing["url"] == BASE + "/gate/models?refresh=1"
     assert completion["url"] == BASE + "/compat/chat/completions"
     assert completion["json"]["model"] == "google-ai-studio/gemini-3.6-flash"
     assert completion["json"]["max_tokens"] == 16  # still a sub-cent call

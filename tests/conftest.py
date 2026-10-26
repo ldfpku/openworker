@@ -27,7 +27,10 @@ def _no_live_model_catalog(monkeypatch):
     monkeypatch.setattr(
         SessionManager,
         "_fetch_model_catalog",
-        lambda self, name, fields=None: {"ok": False, "error": "offline (test)"},
+        lambda self, name, fields=None, refresh=False: {
+            "ok": False,
+            "error": "offline (test)",
+        },
     )
 
 

@@ -1686,7 +1686,7 @@ def test_providers_models_refresh_route(tmp_path, monkeypatch):
     monkeypatch.setattr(
         SessionManager,
         "_fetch_model_catalog",
-        lambda self, name, fields=None: {
+        lambda self, name, fields=None, refresh=False: {
             "ok": True,
             "models": [
                 {"id": "glm-5.2", "label": "GLM-5.2 · Z AI", "context_window": 128000}

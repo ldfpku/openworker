@@ -34,6 +34,9 @@ from coworker.providers.registry import list_provider_models, verify_provider_ke
 from coworker.server.manager import SessionManager
 
 
+_REAL_FETCH_MODEL_CATALOG = SessionManager._fetch_model_catalog
+
+
 # -- CatalogModel / CATALOG_PROVIDERS --------------------------------------------------
 
 
@@ -429,7 +432,7 @@ def test_catalog_refresh_persists_across_restart(tmp_path, monkeypatch):
     monkeypatch.setattr(
         SessionManager,
         "_fetch_model_catalog",
-        lambda self, name, fields=None: {
+        lambda self, name, fields=None, refresh=False: {
             "ok": True,
             "models": [{"id": "glm-5.2", "label": "GLM-5.2 · Z AI", "context_window": 128000}],
         },
@@ -450,7 +453,7 @@ def test_catalog_failure_keeps_previously_cached_models(tmp_path, monkeypatch):
     monkeypatch.setattr(
         SessionManager,
         "_fetch_model_catalog",
-        lambda self, name, fields=None: {
+        lambda self, name, fields=None, refresh=False: {
             "ok": True,
             "models": [{"id": "glm-5.2", "label": "x", "context_window": None}],
         },
@@ -460,7 +463,7 @@ def test_catalog_failure_keeps_previously_cached_models(tmp_path, monkeypatch):
     monkeypatch.setattr(
         SessionManager,
         "_fetch_model_catalog",
-        lambda self, name, fields=None: {"ok": False, "error": "boom"},
+        lambda self, name, fields=None, refresh=False: {"ok": False, "error": "boom"},
     )
     res = mgr.refresh_model_catalog("zai")
     assert res["ok"] is False and res["error"] == "boom"
@@ -477,7 +480,7 @@ def test_catalog_failure_keeps_fetched_at_and_stamps_failed_at(tmp_path, monkeyp
     mgr.secrets.put("provider:zai", {"api_key": "zk"})
     ok = {"ok": True, "models": [{"id": "glm-5.2", "label": "x", "context_window": None}]}
     monkeypatch.setattr(
-        SessionManager, "_fetch_model_catalog", lambda self, name, fields=None: dict(ok)
+        SessionManager, "_fetch_model_catalog", lambda self, name, fields=None, refresh=False: dict(ok)
     )
     mgr.refresh_model_catalog("zai")
     first = mgr._catalog_status("zai")
@@ -486,7 +489,7 @@ def test_catalog_failure_keeps_fetched_at_and_stamps_failed_at(tmp_path, monkeyp
     monkeypatch.setattr(
         SessionManager,
         "_fetch_model_catalog",
-        lambda self, name, fields=None: {"ok": False, "error": "boom"},
+        lambda self, name, fields=None, refresh=False: {"ok": False, "error": "boom"},
     )
     mgr.refresh_model_catalog("zai")
     failed = mgr._catalog_status("zai")
@@ -495,7 +498,7 @@ def test_catalog_failure_keeps_fetched_at_and_stamps_failed_at(tmp_path, monkeyp
     assert failed["live"] is True and failed["count"] == 1  # the list itself survives
 
     monkeypatch.setattr(
-        SessionManager, "_fetch_model_catalog", lambda self, name, fields=None: dict(ok)
+        SessionManager, "_fetch_model_catalog", lambda self, name, fields=None, refresh=False: dict(ok)
     )
     mgr.refresh_model_catalog("zai")
     healed = mgr._catalog_status("zai")
@@ -583,6 +586,43 @@ def test_legacy_catalog_entries_are_upgraded_on_load(tmp_path):
     assert openai["fetched_at"] == stamp and openai["failed_at"] is None
 
 
+def test_aigw_manual_refresh_forces_guard_refresh_but_normal_pull_does_not(
+    tmp_path, monkeypatch
+):
+    import coworker.server.manager as manager_mod
+
+    mgr = SessionManager(data_dir=tmp_path / "data")
+    profile = dict(mgr.secrets.get("provider:aigw") or {})
+    mgr.secrets.put("provider:aigw", {**profile, "access_token": "jwt"})
+    monkeypatch.setattr(
+        SessionManager, "_fetch_model_catalog", _REAL_FETCH_MODEL_CATALOG
+    )
+    refresh_flags: list = []
+
+    def listed(name, **kwargs):
+        refresh_flags.append(kwargs.get("refresh"))
+        return {
+            "ok": True,
+            "models": [
+                {
+                    "id": "anthropic/claude-haiku-5-5",
+                    "label": "Claude Haiku 5.5 · via Cloudflare",
+                    "context_window": None,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(manager_mod, "list_provider_models", listed)
+    res = mgr.refresh_model_catalog("aigw")
+    assert res["ok"] is True
+    assert "anthropic/claude-haiku-5-5" in res["suggested_models"]
+
+    # The ordinary TTL / startup path uses the same fetch helper without the explicit
+    # user action, so the guard may continue serving its shared cache for that traffic.
+    mgr._fetch_model_catalog("aigw")
+    assert refresh_flags == [True, False]
+
+
 def test_refresh_model_catalog_unknown_and_unsupported_and_unconfigured(tmp_path):
     mgr = SessionManager(data_dir=tmp_path / "data")
     assert mgr.refresh_model_catalog("nope") == {
@@ -629,7 +669,7 @@ def testkick_catalog_refresh_dedupes_inflight(tmp_path, monkeypatch):
     release = threading.Event()
     calls: list[str] = []
 
-    def slow_fetch(self, name, fields=None):
+    def slow_fetch(self, name, fields=None, refresh=False):
         calls.append(name)
         started.set()
         release.wait(timeout=2)
@@ -659,7 +699,7 @@ def test_get_providers_reports_pending_while_the_first_fetch_is_in_flight(
     started = threading.Event()
     release = threading.Event()
 
-    def slow_fetch(self, name, fields=None):
+    def slow_fetch(self, name, fields=None, refresh=False):
         started.set()
         release.wait(timeout=2)
         return {"ok": False, "error": "offline"}
@@ -771,7 +811,7 @@ def test_set_provider_auto_add_follows_a_successful_catalog_pull(tmp_path, monke
     monkeypatch.setattr(
         SessionManager,
         "_fetch_model_catalog",
-        lambda self, name, fields=None: {
+        lambda self, name, fields=None, refresh=False: {
             "ok": True,
             "models": [{"id": "glm-6.0", "label": "GLM 6.0 · Z AI", "context_window": None}],
         },
@@ -796,7 +836,7 @@ def test_set_provider_auto_add_falls_back_to_the_matrix_when_the_pull_fails(
     monkeypatch.setattr(
         SessionManager,
         "_fetch_model_catalog",
-        lambda self, name, fields=None: {"ok": False, "error": "offline"},
+        lambda self, name, fields=None, refresh=False: {"ok": False, "error": "offline"},
     )
     res = mgr.set_provider("zai", {"api_key": "zk"})
     assert res["ok"] is True
@@ -1205,6 +1245,28 @@ def test_list_provider_models_aigw_hits_gate_models_with_the_oauth_session(monke
     assert cap["headers"]["Authorization"] == "Bearer tok-1"
 
 
+def test_list_provider_models_aigw_explicit_refresh_bypasses_guard_cache(monkeypatch):
+    cap: dict = {}
+    _patch_get(
+        monkeypatch,
+        status=200,
+        json_body={"models": [{"id": "anthropic/claude-haiku-5-5"}]},
+        capture=cap,
+    )
+    res = list_provider_models(
+        "aigw", fields={"oauth_token": "tok-1"}, refresh=True
+    )
+    assert cap["url"] == "https://gateway.smjtools.com/gate/models?refresh=1"
+    assert res["ok"] is True
+    assert res["models"] == [
+        {
+            "id": "anthropic/claude-haiku-5-5",
+            "label": "Claude Haiku 5.5 · via Cloudflare",
+            "context_window": None,
+        }
+    ]
+
+
 def test_list_provider_models_aigw_signed_out_makes_no_call(monkeypatch):
     def fail(*a, **k):
         raise AssertionError("no network call while signed out")
@@ -1244,6 +1306,7 @@ def test_verify_aigw_probes_first_then_pulls_and_caches_the_list(tmp_path, monke
 
     mgr = SessionManager(data_dir=tmp_path / "data")
     order: list[str] = []
+    refresh_flags: list = []
     monkeypatch.setattr(
         manager_mod,
         "verify_provider_key",
@@ -1252,11 +1315,13 @@ def test_verify_aigw_probes_first_then_pulls_and_caches_the_list(tmp_path, monke
 
     def listed(name, **k):
         order.append("list")
+        refresh_flags.append(k.get("refresh"))
         return {"ok": True, "models": [{"id": "anthropic/claude-opus-5", "label": "x", "context_window": None}]}
 
     monkeypatch.setattr(manager_mod, "list_provider_models", listed)
     assert mgr.verify_provider("aigw", {}) == {"ok": True}
     assert order == ["probe", "list"]
+    assert refresh_flags == [True]
     assert [m["id"] for m in mgr._catalog_models("aigw")] == ["anthropic/claude-opus-5"]
 
 
