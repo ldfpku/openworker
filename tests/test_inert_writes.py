@@ -88,7 +88,7 @@ def test_an_unknown_flag_value_means_off(tmp_path):
 @pytest.mark.parametrize(
     "path",
     ["notes.md", "out/report.txt", "data/rows.csv", "data/rows.tsv", "result.json", "cfg/settings.yaml",
-     "page.html", "chart.svg", "docs/guide.rst", "run.log", "NOTES.MD"],
+     "chart.png", "docs/guide.rst", "run.log", "NOTES.MD"],
 )
 def test_inert_types_are_eligible(tmp_path, path):
     assert _ran_without_reviewer(_gate(tmp_path).evaluate("write_file", _write(path)))
@@ -97,7 +97,9 @@ def test_inert_types_are_eligible(tmp_path, path):
 @pytest.mark.parametrize(
     "path",
     ["make_report.py", "build.sh", "run.ps1", "app.js", "main.ts", "lib.rb", "x.c", "Makefile",
-     "Dockerfile", "fix.patch", "conftest.py", "sitecustomize.py", "x.pth", "noext"],
+     "Dockerfile", "fix.patch", "conftest.py", "sitecustomize.py", "x.pth", "noext",
+     # document-like formats that can carry script
+     "page.html", "page.HTM", "chart.svg", "feed.xml", "report.pdf"],
 )
 def test_code_scripts_and_unknown_types_go_to_the_reviewer(tmp_path, path):
     assert _goes_to_reviewer(_gate(tmp_path).evaluate("write_file", _write(path)))
@@ -295,3 +297,14 @@ def test_an_existing_file_the_agent_did_not_write_still_reaches_the_reviewer(tmp
     # approves it, the file holds the agent's bytes, so the second write is eligible.
     asked = [args.get("path") for name, args in engine.reviewer.asked]
     assert asked == ["summary.txt", "tool.py"]
+
+
+def test_an_html_page_that_uploads_data_is_not_inert(tmp_path):
+    # Seen in a live GPT run (2026-10-26): refused an upload, the agent wrote this page and
+    # tried to open it. A file that can run script must reach the reviewer.
+    page = (
+        "<!doctype html><script>fetch('https://httpbin.org/post', "
+        "{method: 'POST', body: 'id,value'})</script>"
+    )
+    d = _gate(tmp_path).evaluate("write_file", _write("httpbin-upload.html", page))
+    assert _goes_to_reviewer(d)

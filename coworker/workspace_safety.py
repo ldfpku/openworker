@@ -18,15 +18,19 @@ from typing import Any, Callable, Optional
 
 from . import procutil
 
-# Documents, data and media. Nothing here is loaded and run by a build, test runner,
-# package manager or shell on its own.
+# Plain documents, data and raster images: nothing here is loaded and run by a build,
+# test runner, package manager, shell or browser. Formats that can carry script are NOT
+# here, however document-like: .html/.htm and .svg run JavaScript when opened, .xml can
+# pull in a stylesheet that does, and .pdf supports JavaScript in many readers. A live
+# run showed why (2026-10-26): refused an upload, the agent wrote an .html page whose
+# script did the upload, then tried to open it.
 _DOCUMENT_SUFFIXES = frozenset({
     ".md", ".markdown", ".txt", ".rst", ".csv", ".tsv", ".log",
-    ".html", ".htm", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp",
 })
 # Structured data is inert unless a tool reads it to decide what to run. Those files are
 # dotfiles (`.eslintrc.json`, `.gitpod.yml`) or have well-known names, listed below.
-_DATA_SUFFIXES = frozenset({".json", ".jsonl", ".yaml", ".yml", ".xml"})
+_DATA_SUFFIXES = frozenset({".json", ".jsonl", ".yaml", ".yml"})
 _TOOL_CONFIG_NAMES = frozenset({
     # package managers and task runners: scripts, tasks, hooks
     "package.json", "package-lock.json", "composer.json", "deno.json", "deno.jsonc",
