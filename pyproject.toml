@@ -93,6 +93,7 @@ coworker = [
     "personas/builtin/*.md",
     "personas/builtin/*/manifest.md",
     "personas/builtin/*/skills/*/SKILL.md",
+    "prompts/universal/*.md",
 ]
 
 [tool.pytest.ini_options]

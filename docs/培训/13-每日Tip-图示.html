@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>每日 Tip 图示</title>
+<style>
+ .wrap{max-width:1120px}
+ h2{font-size:15px;margin:18px 0 8px}
+ .note{color:var(--muted-foreground);font-size:13px;margin:6px 0 14px}
+ .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px}
+ .card{border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--card)}
+ .card b{font-size:14px}
+ .num{display:inline-block;min-width:22px;padding:2px 6px;border-radius:6px;background:var(--accent);color:var(--foreground);text-align:center;margin-right:6px}
+ .sub{color:var(--muted-foreground);font-size:12.5px;margin-top:4px}
+ .flow{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:13px}
+ .flow span{border:1px solid var(--border);border-radius:8px;padding:6px 9px;background:var(--card)}
+ .flow i{color:var(--muted-foreground)}
+ table{border-collapse:collapse;width:100%;font-size:12.5px;margin-top:8px}
+ th,td{border:1px solid var(--border);padding:6px 8px;text-align:left;vertical-align:top}
+ th{background:var(--card);color:var(--muted-foreground)}
+ tr.x td{background:color-mix(in srgb, var(--accent) 14%, transparent)}
+ .mail{border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--card);font-size:12.5px;line-height:1.5}
+ .mail .lbl{color:var(--muted-foreground);font-size:11.5px;letter-spacing:.04em}
+ .red{border:1.5px solid #d33;border-radius:8px;padding:8px 10px}
+ code{font-size:12.5px}
+</style></head><body>
+<div class="wrap">
+<h2>1 · 七类 Tip（68 条）——各类解决什么</h2>
+<p class="note">数据源 <code>tips/tips.json</code>（唯一可改处）；讲义 <code>12-每日Tip清单.md</code> 由脚本生成，别手改。</p>
+<div class="cards">
+ <div class="card"><b><span class="num">A</span>省钱与 token · 13</b><div class="sub">同样的活少花钱。代表：T-A01 用量胶囊看「上下文内」而不是「已计费」。</div></div>
+ <div class="card"><b><span class="num">B</span>提准度、少返工 · 15</b><div class="sub">一次做对。代表：T-B01 开工前核对（附图那条）、T-B03 每个数字标出处。</div></div>
+ <div class="card"><b><span class="num">C</span>防错与安全 · 9</b><div class="sub">不出事、不泄密。代表：T-C01 审批卡看清再点、T-C08 公司资料不贴网上免费工具。</div></div>
+ <div class="card"><b><span class="num">D</span>定时与送达 · 7</b><div class="sub">让它按时自己跑，还送到位。代表：T-D01 先「立即运行」当集成测试、T-D04 出题走纯脚本。</div></div>
+ <div class="card"><b><span class="num">E</span>界面与输入效率 · 10</b><div class="sub">手熟。代表：T-E02 语音输入、T-E09 「打开项目时优化检索」建 .ignore。</div></div>
+ <div class="card"><b><span class="num">F</span>排障 · 6</b><div class="sub">卡住了怎么办。代表：T-F01 收不到验证码（安全网关替你点了链接）、T-F03 「正在压缩…」很久。</div></div>
+ <div class="card"><b><span class="num">G</span>Hermes 专属 · 8</b><div class="sub">命令行侧操作。代表：T-G09 /usage 与主动 /compress、T-G11 记忆是「下个会话才生效」。</div></div>
+</div>
+
+<h2>2 · 每条 Tip 的固定骨架（照此写才允许进邮件）</h2>
+<div class="flow">
+ <span>① 在哪</span><i>→</i><span>② 怎么做</span><i>→</i><span>③ 为什么</span><i>→</i><span>④ 怎么算做对了</span><i>→</i><span>⑤ 常见误设</span>
+</div>
+<p class="note">④ 是验收动作：课上要求学员当场在屏幕上做到这一行；做不到，回信写「卡在第几步」。凡考进题库的 Tip 必须配带红框的界面截图（先脱敏）。</p>
+
+<h2>3 · 每日怎么轮到（可复现：只依赖日期）</h2>
+<div class="flow">
+ <span>当周模块的池子按出题日推进</span><i>＋</i><span>每 3 个出题日插一条横切类（C 防错 / F 排障，两类轮流）</span>
+</div>
+<p class="note">同一日期重跑得到同一条；周末自动跳过。前 10 个出题日（2026-11-02 开班）实跑结果：</p>
+<table>
+<tr><th>出题日</th><th>轮到</th><th>类</th><th>要点一句</th></tr>
+<tr class="x"><td>第 1 天</td><td>T-C01</td><td>C 防错</td><td>审批卡看清再点；不在工位时去收件箱补批</td></tr>
+<tr><td>第 2 天</td><td>T-A11</td><td>A 省钱</td><td>「上次怎么定的口径」去查台账，别问模型</td></tr>
+<tr><td>第 3 天</td><td>T-B10</td><td>B 提准</td><td>新会话第一句把路径、成品形式、文件名给全</td></tr>
+<tr class="x"><td>第 4 天</td><td>T-F01</td><td>F 排障</td><td>收不到验证码：先查邮箱在不在允许名单</td></tr>
+<tr class="x"><td>第 5 天</td><td>T-C08</td><td>C 防错</td><td>公司资料不贴到网上免费聊天工具</td></tr>
+<tr><td>第 6 天</td><td>T-B03</td><td>B 提准</td><td>每个数字标出处（文件名＋行号）</td></tr>
+<tr class="x"><td>第 7 天</td><td>T-C02</td><td>C 防错</td><td>key 以人命名、不转发、不贴群</td></tr>
+<tr><td>第 8 天</td><td>T-A01</td><td>A 省钱</td><td>看「上下文内」才是这一轮真发出去的量</td></tr>
+<tr><td>第 9 天</td><td>T-A02</td><td>A 省钱</td><td>PDF 走「提取文本」（20 页 / 10 MB 上限）</td></tr>
+<tr class="x"><td>第 10 天</td><td>T-F02</td><td>F 排障</td><td>「今天的额度用满了」：等窗口或改走免费线</td></tr>
+</table>
+<p class="note">浅色行 = 横切类（每 3 个出题日一次）。10 天 10 条不重样。</p>
+
+<h2>4 · 每日邮件版式（学员看到的顺序）</h2>
+<div class="mail">
+<span class="lbl">主题</span> SMJ AI 培训·每日 5 题｜第 N 周（模块名）｜YYYY-MM-DD<br>
+<span class="lbl">① 开头</span> 5 道题 + 17:00 前回信 + 格式（题号 答案 一句理由）<br>
+<div class="red" style="margin:8px 0"><span class="lbl">② 今日 Tip（先做 5 分钟）</span>「今天先做这一件事，做不到就在回信里写卡在第几步」+ 五段式</div>
+<span class="lbl">③ 5 题</span> 当周 2 单选 + 1 判断 + 1 简答 + 1 道上一周回顾题<br>
+<span class="lbl">④ 尾注</span> 讲评与判分 17:30 跑，明早随题附上；周五 16:00 周小结<br>
+<span class="lbl">⑤ 次日</span> 附「昨日答案与讲评」＋昨日 Tip 的现场结果统计（谁卡在哪一步）
+</div>
+
+<h2>5 · 范例：你截图那条（T-B01）</h2>
+<div class="red">
+<b>在哪</b>：设置 ▸ 上下文优化 ▸ 开工前核对<br>
+<b>怎么做</b>：保持勾选「开工前先核对任务要素」；核对用的模型保持默认「会话模型的廉价同族」<br>
+<b>为什么</b>：第一次交代活儿先核对「要什么 / 给谁看 / 依据在哪 / 按什么口径」，缺什么用一张选择题卡问什么；要素齐就不弹卡 —— 也就不会长篇乱展开（ask 模式最容易读到一长串没依据的回答）<br>
+<b>怎么算做对了</b>：第一次交代活儿时弹出选择题卡；要素本来就全时不弹卡<br>
+<b>常见误设</b>：嫌烦就把整个功能关掉（该点的是「跳过，按默认口径直接做」）；把核对模型换成最贵的没意义<br>
+<b>会考</b>：M1-13（选择题）｜配图：<code>assets/tip-T-B01-开工前核对.png</code>（脱敏后使用）
+</div>
+<p class="note">同一页上的另两块也进了题库：Token 节省（PDF 提取文本 / 页面图像，20 页 / 10 MB）→ M2-13；上下文压缩（75% 或 260000 tokens，以较小者为准）→ M1-12；打开项目时优化检索（建 .ignore，跳过依赖目录、构建产物、本地密钥）→ M2-12。</p>
+</div></body></html>

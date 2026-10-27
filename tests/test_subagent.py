@@ -78,6 +78,16 @@ def test_explorer_engine_is_read_only(tmp_path):
     # The same toolkit replacements as the Code agent: our folder-aware `list_files`
     # (OPE-203), not the toolkit's files-only one.
     assert hasattr(engine.registry.get("list_files").func, "__coworker_schema__")
+    assert engine.max_iterations == 10
+
+
+def test_explorer_also_allows_unlimited_local_model_rounds(tmp_path):
+    engine = build_explorer_engine(
+        workspace=tmp_path,
+        provider=ScriptedProvider([]),
+        model="ollama:qwen3.8",
+    )
+    assert engine.max_iterations == 0
 
 
 def test_explore_returns_final_report(tmp_path):

@@ -152,6 +152,24 @@ def test_build_engine_respects_max_iterations(tmp_path):
         engine.executor.close()
 
 
+def test_local_and_custom_endpoint_models_have_no_iteration_limit(tmp_path):
+    from coworker.agent import build_code_engine
+
+    class _Stub:
+        def complete(self, **k):  # pragma: no cover
+            raise NotImplementedError
+
+        def capabilities(self, m):  # pragma: no cover
+            raise NotImplementedError
+
+    for model in ("ollama:qwen3.8", "custom:local-vllm"):
+        engine = build_code_engine(workspace=tmp_path, model=model, provider=_Stub())
+        try:
+            assert engine.max_iterations == 0
+        finally:
+            engine.executor.close()
+
+
 def test_cloud_relay_defaults_off_in_fork():
     """This fork must never dial the upstream cloud out of the box: the managed
     relay endpoint ships EMPTY (upstream defaults to their production relay —

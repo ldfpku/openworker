@@ -19,6 +19,7 @@ from typing import Any, Callable, Coroutine, Optional, TypeVar
 
 import aisuite as ai
 
+from ..config import iteration_limit_for_model
 from ..engine import TurnEngine
 from ..events import EventType
 from ..permissions import Mode, PermissionEngine
@@ -148,7 +149,7 @@ def build_explorer_engine(
         permissions=permissions,
         model=model,
         instructions=EXPLORER_INSTRUCTIONS,
-        max_iterations=max_iterations,
+        max_iterations=iteration_limit_for_model(model, max_iterations),
         model_settings=model_settings,
     )
 

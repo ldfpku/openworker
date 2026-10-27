@@ -367,7 +367,7 @@ def test_compaction_failure_prompt_carries_a_stable_attempt_suffixed_id(tmp_path
 
 def test_manager_settings_round_trip_and_config(tmp_path):
     mgr = SessionManager(workspace=tmp_path, provider=GuidanceProvider([]))
-    assert mgr.guidance_settings() == {"enabled": True, "model": ""}
+    assert mgr.guidance_settings() == {"enabled": False, "model": ""}
     assert mgr.set_guidance_settings(enabled="no")["ok"] is False
     assert mgr.set_guidance_settings(model=3)["ok"] is False
     out = mgr.set_guidance_settings(enabled=False, model="gpt-4o-mini")
@@ -407,13 +407,14 @@ def test_ws_turn_surfaces_the_preflight_card_and_the_settings_routes(tmp_path):
     mgr = SessionManager(workspace=tmp_path, provider=provider)
     client = TestClient(create_app(mgr))
 
-    assert client.get("/v1/settings").json()["guidance_enabled"] is True
+    assert client.get("/v1/settings").json()["guidance_enabled"] is False
     assert client.post("/v1/settings/guidance", json={"guidance_model": "m1"}).json()["model"] == "m1"
     assert client.get("/v1/settings").json()["guidance_model"] == "m1"
 
     with client.websocket_connect("/ws/session/pre1") as ws:
         assert ws.receive_json()["type"] == "ready"
-        ws.send_json({"type": "user_message", "text": "帮我做个质量周报"})
+        # The default-off setting does not disable the composer's explicit checklist button.
+        ws.send_json({"type": "user_message", "text": "帮我做个质量周报", "preflight": True})
         seen = []
         while True:
             ev = ws.receive_json()

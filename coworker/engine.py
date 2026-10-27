@@ -1134,7 +1134,7 @@ class TurnEngine:
         except Exception:
             logger.warning("pre-flight skipped: config unavailable", exc_info=True)
             return
-        if not forced and not cfg.get("enabled", True):
+        if not forced and not cfg.get("enabled", False):
             return
         yield Event(EventType.PREFLIGHT, {"forced": bool(forced)})
         users = [m for m in self.messages if m.get("role") == "user"]
@@ -1592,7 +1592,7 @@ class TurnEngine:
             # instead of about their bill, and doesn't mention that replying continues —
             # so the session sits idle, the provider cache goes cold, and resuming costs
             # more than finishing would have.
-            if iterations >= self.max_iterations:
+            if self.max_iterations > 0 and iterations >= self.max_iterations:
                 yield Event(
                     EventType.TURN_END,
                     {

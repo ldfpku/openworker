@@ -232,6 +232,18 @@ def test_max_iterations_rail(tmp_path):
     assert provider.calls == 3
 
 
+def test_zero_iterations_means_unlimited(tmp_path):
+    engine, provider = _engine(
+        tmp_path,
+        [_tool_turn("list_files", {}), _text_turn("finished")],
+        max_iterations=0,
+    )
+    events = _collect(engine, "use as many rounds as needed")
+    assert provider.calls == 2
+    assert events[-1].type == EventType.TURN_END
+    assert events[-1].data["status"] == "completed"
+
+
 def test_interrupt_between_iterations(tmp_path):
     engine_holder = {}
 

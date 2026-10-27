@@ -14,7 +14,7 @@ from .agents import Agent, AgentContext, code_agent
 from .automation import scheduling_tools
 from .selfwake import selfwake_tools
 from .subscriptions import subscription_tools
-from .config import load_config
+from .config import iteration_limit_for_model, load_config
 from .connectors import (
     connector_for_tool,
     connector_list,
@@ -53,6 +53,7 @@ from .web import make_web_fetch_tool, make_web_search_tool
 from .workspace_trust import WorkspaceTrustStore
 from .tools.shell import LocalExecutor
 from .tools.todo import TodoList
+from .universal_prompt import load_universal_prompt
 
 # Appended each turn while discuss mode is active: enforcement-only read-only, with no
 # pressure toward a plan proposal (that's what distinguishes it from plan mode).
@@ -593,7 +594,15 @@ def build_engine(
             )
         )
 
-    instructions = f"{agent.system_prompt}\n\n{_NARRATION_GUIDANCE}\n\n{_FIRST_CONTACT_GUIDANCE}"
+    instructions = agent.system_prompt
+    universal_prompt = load_universal_prompt()
+    if universal_prompt:
+        instructions = (
+            f"{instructions}\n\n## Universal behavioral guidelines\n"
+            "Apply these general principles without overriding the agent's existing "
+            f"role, safety, tool-use, or workspace instructions.\n\n{universal_prompt}"
+        )
+    instructions = f"{instructions}\n\n{_NARRATION_GUIDANCE}\n\n{_FIRST_CONTACT_GUIDANCE}"
     if ws is not None:
         instructions = f"{instructions}\n\n{environment_context(ws)}"
         conventions = load_agents_md(ws)
@@ -806,8 +815,9 @@ def build_engine(
         tool_result_spill_dir=spill_dir,
         # Stop kills the in-flight foreground shell command, not just the loop.
         interrupt_hooks=[executor.interrupt_now] if executor is not None else None,
-        max_iterations=(
-            max_iterations if max_iterations is not None else config.max_iterations
+        max_iterations=iteration_limit_for_model(
+            model,
+            max_iterations if max_iterations is not None else config.max_iterations,
         ),
         max_turn_tokens=config.max_turn_tokens,
         model_settings=model_settings,

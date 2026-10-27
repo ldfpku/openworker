@@ -6225,11 +6225,11 @@ class SessionManager:
 
     # -- 开工前核对 (coworker/guidance.py) ---------------------------------------------
     def guidance_settings(self) -> dict[str, Any]:
-        """The live pre-flight knobs: on/off (default on) and the diagnosis-model pin
+        """The live pre-flight knobs: on/off (default off) and the diagnosis-model pin
         ("" → the session model's cheap sibling, like auto-title)."""
         enabled = self._prefs.get("guidance_enabled")
         return {
-            "enabled": True if enabled is None else bool(enabled),
+            "enabled": False if enabled is None else bool(enabled),
             "model": str(self._prefs.get("guidance_model") or ""),
         }
 

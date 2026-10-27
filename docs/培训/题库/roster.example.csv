@@ -1,0 +1,7 @@
+email,name,dept,role
+alice@example.com,张三,技术研发部,lead
+bob@example.com,李四,质量安全部,staff
+carol@example.com,王五,生产制造部·生产计划组,staff
+dave@example.com,赵六,运营管理部·维保技术组,staff
+erin@example.com,孙七,供应链部·仓储物流组,staff
+fay@example.com,周八,租赁业务与商务,staff

@@ -1026,13 +1026,13 @@ function GuidanceCard() {
     getSettings()
       .then((s) => {
         setCfg({
-          guidance_enabled: s.guidance_enabled !== false,
+          guidance_enabled: s.guidance_enabled === true,
           guidance_model: s.guidance_model ?? "",
         });
         setModels(s.models || []);
         setLabels(s.model_labels || {});
       })
-      .catch(() => setCfg({ guidance_enabled: true, guidance_model: "" }));
+      .catch(() => setCfg({ guidance_enabled: false, guidance_model: "" }));
   }, []);
 
   const save = async (patch: Partial<GuidanceSettings>) => {

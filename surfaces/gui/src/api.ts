@@ -1127,7 +1127,7 @@ export interface ModelSettings {
   compaction_threshold_pct?: number; // default 0.8, 0.10–0.95
   compaction_cap_tokens?: number; // default 250000
   compaction_model?: string;
-  // 开工前核对 (coworker/guidance.py): on/off (default on) + the diagnosis-model pin
+  // 开工前核对 (coworker/guidance.py): on/off (default off) + the diagnosis-model pin
   // ("" → the session model's cheap sibling). Optional for an older backend.
   guidance_enabled?: boolean;
   guidance_model?: string;

@@ -28,6 +28,16 @@ from .secrets import state_dir
 # opt into command prefixes in their user-owned global config, accepting that authority.
 DEFAULT_ALLOWED_COMMANDS: list[str] = []
 
+# Local Ollama and user-defined OpenAI-compatible endpoints may continue until the model
+# finishes or the user stops them; other providers keep the configured round limit.
+_UNLIMITED_ITERATION_PROVIDERS = frozenset({"ollama", "custom"})
+
+
+def iteration_limit_for_model(model: str, configured: int) -> int:
+    """Return the round limit for a model; zero means unlimited."""
+    provider = str(model or "").split(":", 1)[0].strip().lower()
+    return 0 if provider in _UNLIMITED_ITERATION_PROVIDERS else configured
+
 
 @dataclass
 class Config:

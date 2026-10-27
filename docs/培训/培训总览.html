@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>SMJ AI 应用培训 · 总览</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { font-family: var(--font-sans, system-ui); color: var(--foreground); margin: 0; padding: 18px 20px 22px; }
+  h1 { font-size: 17px; margin: 0 0 2px; letter-spacing: .01em; }
+  .sub { color: var(--muted-foreground); font-size: 12.5px; margin-bottom: 14px; }
+  .grid { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 8px; margin-bottom: 16px; }
+  .stat { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: var(--card); }
+  .stat b { display: block; font-size: 19px; line-height: 1.15; }
+  .stat span { color: var(--muted-foreground); font-size: 11.5px; }
+  h2 { font-size: 13px; margin: 16px 0 8px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted-foreground); }
+  .week { display: grid; grid-template-columns: 54px 1fr 120px; gap: 10px; align-items: center; padding: 6px 0; border-bottom: 1px dashed var(--border); }
+  .wk { font-size: 11.5px; color: var(--muted-foreground); }
+  .name { font-size: 13.5px; }
+  .name em { font-style: normal; color: var(--muted-foreground); font-size: 12px; }
+  .hrs { font-size: 11.5px; color: var(--muted-foreground); text-align: right; }
+  .bar { height: 4px; border-radius: 3px; background: var(--accent); opacity: .85; margin-top: 3px; }
+  .flow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12.5px; }
+  .node { border: 1px solid var(--border); border-radius: 999px; padding: 5px 10px; background: var(--card); }
+  .node b { font-size: 12px; }
+  .arrow { color: var(--muted-foreground); }
+  .note { color: var(--muted-foreground); font-size: 12px; margin-top: 8px; }
+  .acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+  button { font: inherit; font-size: 12.5px; cursor: pointer; border: 1px solid var(--border); background: var(--card); color: var(--foreground); border-radius: 7px; padding: 7px 11px; }
+  button:hover { border-color: var(--accent); }
+  .flag { color: var(--muted-foreground); font-size: 11.5px; margin-top: 10px; }
+</style>
+</head>
+<body>
+  <h1>SMJ AI 应用培训 · 8 周总览</h1>
+  <div class="sub">面向 IT 基础薄弱的内部人员 · 两个程序：OpenWorker 中文版（全员）＋ Hermes Agent（IT／骨干）</div>
+
+  <div class="grid">
+    <div class="stat"><b>8 周 / 14.5 h</b><span>集中课 ＋ 每工作日 10 分钟答题</span></div>
+    <div class="stat"><b>86 题</b><span>题库 8 个模块，每模块 10–11 题</span></div>
+    <div class="stat"><b>08:30 / 17:30</b><span>工作日发题 ／ 判分讲评</span></div>
+    <div class="stat"><b>3 条硬习惯</b><span>一事一会话 · 要出处 · 不签字不动手</span></div>
+  </div>
+
+  <h2>课程地图</h2>
+  <div class="week"><div class="wk">第 0 周</div><div class="name">模块 0 · 扫盲 24 词 <em>（自学 30 分钟）</em><div class="bar" style="width:8%"></div></div><div class="hrs">0.5 h</div></div>
+  <div class="week"><div class="wk">第 1 周</div><div class="name">模块 1 · LLM 基础与用量：三脾气 / token / 上下文 / 幻觉 / 模型通路<div class="bar" style="width:32%"></div></div><div class="hrs">2 h</div></div>
+  <div class="week"><div class="wk">第 2 周</div><div class="name">模块 2 · OpenWorker 上手：登录 · 界面五站 · 授权 · 三要素 · 拿成品<div class="bar" style="width:32%"></div></div><div class="hrs">2 h</div></div>
+  <div class="week"><div class="wk">第 3 周</div><div class="name">模块 3 · OpenWorker 实务：技能 · 专家团 · 连接器 · 审批 · 自动化<div class="bar" style="width:32%"></div></div><div class="hrs">2 h</div></div>
+  <div class="week"><div class="wk">第 4 周</div><div class="name">模块 4 · Hermes Agent 上手：四面界面 · 钥匙与设置 · 会话恢复<div class="bar" style="width:32%"></div></div><div class="hrs">2 h</div></div>
+  <div class="week"><div class="wk">第 5 周</div><div class="name">模块 5 · Hermes 核心机制：工具 · 技能 · 记忆 · @ 引用 · Profile<div class="bar" style="width:32%"></div></div><div class="hrs">2 h</div></div>
+  <div class="week"><div class="wk">第 6 周</div><div class="name">模块 6 · 定时任务与送达 —— 把下面这套考试机制当堂建起来<div class="bar" style="width:32%"></div></div><div class="hrs">2 h</div></div>
+  <div class="week"><div class="wk">第 7 周</div><div class="name">模块 7 · 二程序选型与协同：什么活给谁（决策树）<div class="bar" style="width:24%"></div></div><div class="hrs">1.5 h</div></div>
+  <div class="week" style="border-bottom:none"><div class="wk">第 8 周</div><div class="name">模块 8 · 部门实务 ＋ 结业：每部门认领一个自动化<div class="bar" style="width:40%"></div></div><div class="hrs">2 ＋ 1 h</div></div>
+
+  <h2>每日考试闭环</h2>
+  <div class="flow">
+    <span class="node"><b>08:30</b> 脚本取 5 题发信</span><span class="arrow">→</span>
+    <span class="node"><b>17:00</b> 学员回信截止</span><span class="arrow">→</span>
+    <span class="node"><b>17:30</b> 判分 ＋ 讲评</span><span class="arrow">→</span>
+    <span class="node"><b>次日 08:30</b> 讲评随题附上</span><span class="arrow">→</span>
+    <span class="node"><b>周五 16:00</b> 周小结四行</span>
+  </div>
+  <div class="note">出题走脚本（稳、可复现、不花 token），判分走模型（读人写的句子）。题量：当周 2 单选 ＋ 1 判断 ＋ 1 简答 ＋ 1 道上周回顾。</div>
+
+  <h2>已实测（2026-10-26）</h2>
+  <div class="flow">
+    <span class="node">40 个出题日模拟：200 槽位 / 用到 86 题</span>
+    <span class="node">单日内重题：0 天</span>
+    <span class="node">每题一周内出现 2.0–2.5 次</span>
+    <span class="node">同日期重跑结果一致</span>
+  </div>
+
+  <h2>结业标准（三条全满足）</h2>
+  <div class="note">① 现场跑通本部门自动化，成品里的数字有出处 ② 连续 5 个出题日均分 ≥80，缺交 ≤1 ③ 交出一份别人能安装的本部门 SOP 技能</div>
+
+  <div class="acts">
+    <button data-hermes-send="按 docs\培训\11-每日考试机制.md，把任务 A 建成 Hermes 定时任务：工作日 08:30 纯脚本跑 assemble_quiz.py --commit，stdout 用 himalaya 发到名单">建任务 A · 08:30 发题</button>
+    <button data-hermes-send="按 docs\培训\templates\grading-prompt.md 建工作日 17:30 的判分讲评定时任务">建任务 B · 17:30 判分</button>
+    <button data-hermes-send="按 docs\培训\11-每日考试机制.md 建周五 16:00 的周小结定时任务">建任务 C · 周五周小结</button>
+    <button data-hermes-send="给 docs\培训\题库\questions.json 的 M4 和 M7 模块各补 2 道简答题，使每模块达到 11 题">补题库</button>
+  </div>
+  <div class="flag">材料位置：docs\培训\10-SMJ-AI应用培训教学大纲.md · 11-每日考试机制.md · 题库\ · templates\</div>
+</body>
+</html>
