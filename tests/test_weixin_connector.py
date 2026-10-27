@@ -326,7 +326,7 @@ async def test_manager_qr_start_commits_and_greets(tmp_path, monkeypatch):
     assert prof["allowed_users"] == ["wxid_scanner"]
     assert done.wait(timeout=2), "connect greeting was never attempted"
     assert greeted["chat_id"] == "wxid_scanner"
-    assert "OpenWorker" in greeted["text"] and "newbot@im.bot" in greeted["text"]
+    assert "smjworker" in greeted["text"] and "newbot@im.bot" in greeted["text"]
 
 
 @pytest.mark.asyncio
