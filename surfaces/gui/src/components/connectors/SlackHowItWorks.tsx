@@ -8,7 +8,7 @@ const tr = (k: string, opts?: Record<string, unknown>) => getI18n().getFixedT(nu
 
 // UX-027: the post-connect "how mentions reach you" card. A tabbed carousel of
 // animated split-scenes — Slack on the left (pinned to light-Slack colors, so it
-// reads as a screenshot of Slack), OpenWorker on the right (app tokens). Tabs
+// reads as a screenshot of Slack), smjworker on the right (app tokens). Tabs
 // auto-advance through one full tour, then idle on a loop of the current scene;
 // clicking a tab takes over. The chevron collapses the carousel to the status
 // line — collapsed IS the seen-state (stored locally, survives restarts).
@@ -188,7 +188,7 @@ function SlackRail({ active }: { active: string }) {
       <div className="hiw-slnav"><span className="hiw-pres" />Priya N</div>
       <div className="hiw-slnav"><span className="hiw-pres" />Emma W</div>
       <div className="hiw-sect">{tr("slack.hiw_agents_apps")}</div>
-      <div className="hiw-slnav"><span className="hiw-appav">OW</span>OpenWorker</div>
+      <div className="hiw-slnav"><span className="hiw-appav">OW</span>smjworker</div>
     </div>
   );
 }
@@ -232,7 +232,7 @@ function OwWin({ children }: { children: React.ReactNode }) {
   return (
     <div className="hiw-win hiw-ow">
       <div className="hiw-owtop">
-        <span className="hiw-dots"><i /><i /><i /></span> OpenWorker
+        <span className="hiw-dots"><i /><i /><i /></span> smjworker
       </div>
       <div className="hiw-owbody">{children}</div>
     </div>
@@ -242,7 +242,7 @@ function OwWin({ children }: { children: React.ReactNode }) {
 function OwRail({ hot, hotSub, glow }: { hot?: string; hotSub?: string; glow?: boolean }) {
   return (
     <div className="hiw-owrail">
-      <div className="hiw-brand">OpenWorker</div>
+      <div className="hiw-brand">smjworker</div>
       <div className="hiw-newbtn">＋ {tr("slack.hiw_new_session")}</div>
       <div className="hiw-ownav">⌕ {tr("slack.hiw_search")}</div>
       <div className="hiw-ownav">◷ {tr("slack.hiw_automations")}</div>
@@ -309,7 +309,7 @@ function SceneMention({ meFirst, meInitial }: { meFirst: string; meInitial: stri
                 </span>
               }
             >
-              <span className="hiw-men">@OpenWorker</span> {tr("slack.hiw_summarize")}
+              <span className="hiw-men">@smjworker</span> {tr("slack.hiw_summarize")}
             </Msg>
           </div>
           <SlackComposer placeholder={tr("slack.hiw_msg_launch")} />
@@ -317,10 +317,10 @@ function SceneMention({ meFirst, meInitial }: { meFirst: string; meInitial: stri
             <div className="hiw-th">{tr("slack.hiw_thread")} <span className="hiw-sub"># launch-room</span><span className="hiw-x">✕</span></div>
             <div className="hiw-tmsgs">
               <Msg av={meInitial} avBg="#3b82c4" name={meFirst} ts="6:33 PM">
-                <span className="hiw-men">@OpenWorker</span> {tr("slack.hiw_summarize")}
+                <span className="hiw-men">@smjworker</span> {tr("slack.hiw_summarize")}
               </Msg>
               <div className="hiw-cnt">{tr("slack.hiw_1reply")}</div>
-              <Msg av="OW" avBg="#4a154b" name="OpenWorker" app ts="6:34 PM">
+              <Msg av="OW" avBg="#4a154b" name="smjworker" app ts="6:34 PM">
                 {tr("slack.hiw_msg_traction")}
               </Msg>
             </div>
@@ -335,7 +335,7 @@ function SceneMention({ meFirst, meInitial }: { meFirst: string; meInitial: stri
             Summarize #launch-room <span className="hiw-via">via Slack</span>
           </div>
           <div className="hiw-owchat">
-            <div className="hiw-bub user hiw-k" style={d("2.8s")}>@OpenWorker {tr("slack.hiw_summarize")}</div>
+            <div className="hiw-bub user hiw-k" style={d("2.8s")}>@smjworker {tr("slack.hiw_summarize")}</div>
             <div className="hiw-bub agent hiw-k" style={d("3.6s")}>
               {tr("slack.hiw_reading_thread")} <i>({tr("slack.hiw_replying_slack")})</i>
             </div>
@@ -371,7 +371,7 @@ function SceneThread({ meFirst, meInitial }: { meFirst: string; meInitial: strin
                 </span>
               }
             >
-              <span className="hiw-men">@OpenWorker</span> {tr("slack.hiw_summarize")}
+              <span className="hiw-men">@smjworker</span> {tr("slack.hiw_summarize")}
             </Msg>
           </div>
           <SlackComposer placeholder={tr("slack.hiw_msg_launch")} />
@@ -380,16 +380,16 @@ function SceneThread({ meFirst, meInitial }: { meFirst: string; meInitial: strin
             <div className="hiw-th">{tr("slack.hiw_thread")} <span className="hiw-sub"># launch-room</span><span className="hiw-x">✕</span></div>
             <div className="hiw-tmsgs">
               <Msg av={meInitial} avBg="#3b82c4" name={meFirst} ts="6:33 PM">
-                <span className="hiw-men">@OpenWorker</span> {tr("slack.hiw_summarize")}
+                <span className="hiw-men">@smjworker</span> {tr("slack.hiw_summarize")}
               </Msg>
               <div className="hiw-cnt">{tr("slack.hiw_2replies")}</div>
-              <Msg av="OW" avBg="#4a154b" name="OpenWorker" app ts="6:34 PM">
+              <Msg av="OW" avBg="#4a154b" name="smjworker" app ts="6:34 PM">
                 {tr("slack.hiw_msg_traction")}
               </Msg>
               <Msg av="P" avBg="#7c6cd0" name="Priya N" ts="6:36 PM" delay=".8s">
-                <span className="hiw-men">@OpenWorker</span> {tr("slack.hiw_break_country")}
+                <span className="hiw-men">@smjworker</span> {tr("slack.hiw_break_country")}
               </Msg>
-              <Msg av="OW" avBg="#4a154b" name="OpenWorker" app ts="6:36 PM" delay="4.8s">
+              <Msg av="OW" avBg="#4a154b" name="smjworker" app ts="6:36 PM" delay="4.8s">
                 {tr("slack.hiw_top_countries")}
               </Msg>
             </div>
@@ -399,7 +399,7 @@ function SceneThread({ meFirst, meInitial }: { meFirst: string; meInitial: strin
       </SlackWin>
       <OwWin>
         <div className="hiw-owrail">
-          <div className="hiw-brand">OpenWorker</div>
+          <div className="hiw-brand">smjworker</div>
           <div className="hiw-newbtn">＋ {tr("slack.hiw_new_session")}</div>
           <div className="hiw-ownav">⌕ {tr("slack.hiw_search")}</div>
           <div className="hiw-ownav">◷ {tr("slack.hiw_automations")}</div>
@@ -448,7 +448,7 @@ function SceneTeammates() {
                 </span>
               }
             >
-              <span className="hiw-men">@OpenWorker</span> {tr("slack.hiw_pull_numbers")}
+              <span className="hiw-men">@smjworker</span> {tr("slack.hiw_pull_numbers")}
             </Msg>
           </div>
           <SlackComposer placeholder={tr("slack.hiw_msg_launch")} />

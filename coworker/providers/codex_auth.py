@@ -282,7 +282,7 @@ class CodexTokenStore:
 last_authorize_url: Optional[str] = None
 _active_server: Optional[asyncio.AbstractServer] = None
 
-_PAGE = """<!doctype html><meta charset="utf-8"><title>OpenWorker</title>
+_PAGE = """<!doctype html><meta charset="utf-8"><title>smjworker</title>
 <body style="font-family: system-ui; margin: 4rem auto; max-width: 28rem; text-align: center;">
 <h2>{title}</h2><p>{body}</p></body>"""
 
@@ -325,7 +325,7 @@ async def _start_callback_server(
                     _http_response(
                         "400 Bad Request",
                         "Sign-in failed",
-                        "The service reported an error. Return to OpenWorker and try again.",
+                        "The service reported an error. Return to smjworker and try again.",
                     )
                 )
                 if not future.done():
@@ -340,7 +340,7 @@ async def _start_callback_server(
                     _http_response(
                         "400 Bad Request",
                         "Nothing waiting for this sign-in",
-                        "The sign-in may have timed out. Return to OpenWorker and start it again.",
+                        "The sign-in may have timed out. Return to smjworker and start it again.",
                     )
                 )
                 return
@@ -348,7 +348,7 @@ async def _start_callback_server(
                 _http_response(
                     "200 OK",
                     "Signed in",
-                    "You can close this tab and return to OpenWorker.",
+                    "You can close this tab and return to smjworker.",
                 )
             )
             if not future.done():

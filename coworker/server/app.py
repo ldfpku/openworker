@@ -136,7 +136,7 @@ def _browser_page(
     preserved on failures (it's the debugging breadcrumb). Inline CSS, light/dark via
     prefers-color-scheme, no external assets — it must render offline.
 
-    `company=True` swaps the OpenWorker wordmark for the SMJAR one. Used by the Gemini-relay
+    `company=True` swaps the smjworker wordmark for the SMJ one. Used by the Gemini-relay
     sign-in landing, which is the tail of a flow that started on the company's own Cloudflare
     Access page — seeing a different brand at the finish line reads as a wrong turn. The
     marks are inlined (coworker/brand_assets.py) to keep the offline promise above.
@@ -159,18 +159,18 @@ def _browser_page(
         # wordmark sitting on a now-white card.
         mark = (
             '<div class="mark">'
-            f'<img class="lt" src="{LOGO_LIGHT_DATA_URI}" alt="SMJAR">'
+            f'<img class="lt" src="{LOGO_LIGHT_DATA_URI}" alt="SMJ">'
             f'<img class="dk" src="{LOGO_DARK_DATA_URI}" alt="">'
             "</div>"
         )
     else:
-        mark = '<div class="mark"><i></i>OpenWorker</div>'
+        mark = '<div class="mark"><i></i>smjworker</div>'
 
     err = f'<div class="err">{_html.escape(error)}</div>' if error else ""
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
-        f"<title>{_html.escape(title)} — OpenWorker</title><style>"
+        f"<title>{_html.escape(title)} — smjworker</title><style>"
         ":root{--paper:#f6f5f2;--panel:#fff;--line:#e4e2dc;--ink:#2c2c2a;--muted:#6f6e68;"
         "--faint:#a3a19a;--accent:#3670b2;--ok:#2e7d4f;--ok-soft:#e3f2e9;--bad:#b3423a;"
         "--bad-soft:#f8e7e5}"
@@ -220,7 +220,7 @@ def _local_host_label() -> str:
     import sys as _sys
 
     system = {"darwin": "Mac", "win32": "PC"}.get(_sys.platform, "computer")
-    return f"Served locally by OpenWorker on your {system}"
+    return f"Served locally by smjworker on your {system}"
 
 
 def _connector_title(name: str) -> str:
@@ -233,7 +233,7 @@ def _connector_title(name: str) -> str:
 
 _CONNECT_FAILED_DETAIL = (
     "Something went wrong finishing this connection. "
-    "Close this tab and try again from OpenWorker."
+    "Close this tab and try again from smjworker."
 )
 
 from .. import __version__
@@ -327,7 +327,7 @@ def create_app(manager: SessionManager) -> FastAPI:
         ):
             return await call_next(request)
         return JSONResponse(
-            {"error": "missing or invalid OpenWorker sidecar token"},
+            {"error": "missing or invalid smjworker sidecar token"},
             status_code=401,
         )
 
@@ -1405,7 +1405,7 @@ def create_app(manager: SessionManager) -> FastAPI:
             return HTMLResponse(
                 _browser_page(
                     "Sign-in failed",
-                    "The service reported an error. Return to OpenWorker and try again.",
+                    "The service reported an error. Return to smjworker and try again.",
                     ok=False,
                     error=error,
                 ),
@@ -1415,7 +1415,7 @@ def create_app(manager: SessionManager) -> FastAPI:
             return HTMLResponse(
                 _browser_page(
                     "Nothing waiting for this sign-in",
-                    "The sign-in may have timed out. Return to OpenWorker and start it again.",
+                    "The sign-in may have timed out. Return to smjworker and start it again.",
                     ok=False,
                 ),
                 status_code=400,
@@ -1423,7 +1423,7 @@ def create_app(manager: SessionManager) -> FastAPI:
         return HTMLResponse(
             _browser_page(
                 "Connected",
-                "Sign-in complete. You can close this tab and return to OpenWorker.",
+                "Sign-in complete. You can close this tab and return to smjworker.",
                 ok=True,
             )
         )
@@ -1652,7 +1652,7 @@ def create_app(manager: SessionManager) -> FastAPI:
         action = str((body or {}).get("action", "")).strip()
         return await manager.resolve_unauthorized(name, item_id, action)
 
-    # -- OpenWorker Cloud: sign-in + managed one-click connect ---------------
+    # -- smjworker Cloud: sign-in + managed one-click connect ---------------
     # All optional: the app is fully functional signed out (manual token paste
     # stays available for every connector, before and after sign-in).
 
@@ -1702,7 +1702,7 @@ def create_app(manager: SessionManager) -> FastAPI:
         from ..config import load_config
 
         signin_failed_detail = (
-            "Close this tab and try signing in again from OpenWorker."
+            "Close this tab and try signing in again from smjworker."
         )
         if error:
             return HTMLResponse(
@@ -1759,8 +1759,8 @@ def create_app(manager: SessionManager) -> FastAPI:
         return HTMLResponse(
             _browser_page(
                 "Signed in",
-                "You're signed in to OpenWorker Cloud. "
-                "You can close this tab and return to OpenWorker.",
+                "You're signed in to smjworker Cloud. "
+                "You can close this tab and return to smjworker.",
             )
         )
 
@@ -1803,7 +1803,7 @@ def create_app(manager: SessionManager) -> FastAPI:
 
         from .. import relay_auth
 
-        failed_detail = "关掉这个标签页，回 OpenWorker 重新点一次「登录」。"
+        failed_detail = "关掉这个标签页，回 smjworker 重新点一次「登录」。"
         if error:
             return HTMLResponse(
                 _browser_page("登录失败", failed_detail, ok=False, error=error, company=True),
@@ -1831,7 +1831,7 @@ def create_app(manager: SessionManager) -> FastAPI:
         return HTMLResponse(
             _browser_page(
                 "已登录",
-                f"{who}，你已经登录 OpenWorker 中转，可以关掉这个标签页回到 OpenWorker 了。",
+                f"{who}，你已经登录 smjworker 中转，可以关掉这个标签页回到 smjworker 了。",
                 company=True,
             )
         )
@@ -1964,7 +1964,7 @@ def create_app(manager: SessionManager) -> FastAPI:
             return HTMLResponse(
                 _browser_page(
                     "GitHub connected",
-                    "You can close this tab and return to OpenWorker.",
+                    "You can close this tab and return to smjworker.",
                     connector="github",
                 )
             )
@@ -2027,7 +2027,7 @@ def create_app(manager: SessionManager) -> FastAPI:
         return HTMLResponse(
             _browser_page(
                 f"{_connector_title(connector)} connected",
-                "You can close this tab and return to OpenWorker.",
+                "You can close this tab and return to smjworker.",
                 connector=connector,
             )
         )

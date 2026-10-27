@@ -152,22 +152,30 @@ jobs:
         run: |
           mkdir -p out
           BUNDLE=surfaces/gui/src-tauri/target/release/bundle
+          PRODUCT=$(node -p "require('./surfaces/gui/src-tauri/tauri.conf.json').productName")
+          VERSION=$(node -p "require('./surfaces/gui/src-tauri/tauri.conf.json').version")
+          # Keep the established OpenWorker download/update asset names for compatibility;
+          # only the bundled application adopts the new smjworker product name.
           if [ "$RUNNER_OS" = "Windows" ]; then
-            cp "$BUNDLE"/nsis/*.exe out/
-            cp "$BUNDLE"/nsis/*.exe out/OpenWorker-windows-setup.exe
-            cp "$BUNDLE"/msi/*.msi out/
-            cp "$BUNDLE"/msi/*.msi out/OpenWorker-windows.msi
+            SETUP="$BUNDLE/nsis/${PRODUCT}_${VERSION}_x64-setup.exe"
+            MSI="$BUNDLE/msi/${PRODUCT}_${VERSION}_x64_en-US.msi"
+            cp "$SETUP" "out/OpenWorker_${VERSION}_x64-setup.exe"
+            cp "$SETUP" out/OpenWorker-windows-setup.exe
+            cp "$MSI" "out/OpenWorker_${VERSION}_x64_en-US.msi"
+            cp "$MSI" out/OpenWorker-windows.msi
             # Updater signature for the NSIS installer (present only when the updater key
             # secret is configured). The .sig signs CONTENT, so the stable rename is safe.
             SIG=$(ls "$BUNDLE"/nsis/*.exe.sig 2>/dev/null | head -1 || true)
             [ -n "$SIG" ] && cp "$SIG" out/OpenWorker-windows-setup.exe.sig
           else
-            cp "$BUNDLE"/dmg/*.dmg out/
-            cp "$BUNDLE"/dmg/*.dmg out/OpenWorker-${{ matrix.slug }}.dmg
+            if [ "${{ matrix.slug }}" = "macos-arm64" ]; then ARCH=aarch64; else ARCH=x86_64; fi
+            DMG="$BUNDLE/dmg/${PRODUCT}_${VERSION}_${ARCH}.dmg"
+            cp "$DMG" "out/OpenWorker_${VERSION}_${ARCH}.dmg"
+            cp "$DMG" out/OpenWorker-${{ matrix.slug }}.dmg
             # macOS updater artifact: the signed .app tarball the installed app swaps in.
-            if [ -f "$BUNDLE"/macos/OpenWorker.app.tar.gz ]; then
-              cp "$BUNDLE"/macos/OpenWorker.app.tar.gz out/OpenWorker-${{ matrix.slug }}.app.tar.gz
-              cp "$BUNDLE"/macos/OpenWorker.app.tar.gz.sig out/OpenWorker-${{ matrix.slug }}.app.tar.gz.sig
+            if [ -f "$BUNDLE/macos/$PRODUCT.app.tar.gz" ]; then
+              cp "$BUNDLE/macos/$PRODUCT.app.tar.gz" out/OpenWorker-${{ matrix.slug }}.app.tar.gz
+              cp "$BUNDLE/macos/$PRODUCT.app.tar.gz.sig" out/OpenWorker-${{ matrix.slug }}.app.tar.gz.sig
             fi
           fi
           ls -la out
@@ -218,7 +226,7 @@ jobs:
             python3 packaging/make_update_manifest.py \
               --version "${TAG#v}" --tag "$TAG" --repo "$GITHUB_REPOSITORY" \
               --dist dist --out dist/latest.json \
-              --notes "OpenWorker ${TAG#v}"
+              --notes "smjworker ${TAG#v}"
           else
             echo "::warning::no updater signatures in dist/ — release ships WITHOUT auto-update manifest"
           fi

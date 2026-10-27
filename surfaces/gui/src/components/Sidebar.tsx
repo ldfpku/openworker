@@ -1082,7 +1082,7 @@ export function Sidebar(props: Props) {
             onClick={props.onCollapse}
           />
         )}
-        <div className="brand-wordmark text-[14px]">OpenWorker<span className="beta-tag">BETA</span></div>
+        <div className="brand-wordmark text-[14px] flex items-center gap-2"><Icon name="logo" size={18} className="shrink-0" />smjworker<span className="beta-tag">BETA</span></div>
       </div>
 
       {/* New session: a quiet nav row like its siblings (UX-040 — the filled accent block

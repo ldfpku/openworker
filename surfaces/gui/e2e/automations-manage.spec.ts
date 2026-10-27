@@ -7,7 +7,7 @@ import { test } from "./fixtures";
 async function openAutomations(page) {
   await page.goto("/");
   await page.getByTestId("nav-automations").click();
-  await expect(page.getByText("Recurring tasks OpenWorker runs on a schedule.")).toBeVisible();
+  await expect(page.getByText("Recurring tasks smjworker runs on a schedule.")).toBeVisible();
 }
 
 test("lists a scheduled task with its schedule and run count", async ({ page }) => {

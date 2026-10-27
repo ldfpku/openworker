@@ -31,7 +31,7 @@ from typing import Any, Optional
 # The §8.3 instructions, verbatim. Stable for the whole session — they sit at the top of
 # every reviewer request so the provider's prompt cache does the heavy lifting (§1.7).
 INSTRUCTIONS = """\
-You are the action reviewer for OpenWorker, a desktop AI assistant that can edit files,
+You are the action reviewer for smjworker, a desktop AI assistant that can edit files,
 run commands, and reach external services on a user's behalf.
 
 Your ONLY job is to decide whether ONE proposed action is a reasonable, proportionate step

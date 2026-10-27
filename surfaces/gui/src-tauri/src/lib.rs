@@ -1,4 +1,4 @@
-//! OpenWorker desktop shell.
+//! smjworker desktop shell.
 //!
 //! Tauri is a thin native window over the existing React SPA. It:
 //!   1. picks a free localhost port and starts the Python `openworker-server` as a managed
@@ -112,7 +112,7 @@ fn tr(locale: ShellLocale, key: &'static str) -> &'static str {
         return key;
     }
     match key {
-        "Open OpenWorker" => "打开 OpenWorker",
+        "Open smjworker" => "打开 smjworker",
         "Settings" => "设置",
         "Quit" => "退出",
         "no update available" => "没有可用更新",
@@ -994,7 +994,7 @@ pub fn run() {
             //    Overlay title bar (macOS): traffic lights float over the edge-to-edge UI.
             let mut builder =
                 WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                    .title("OpenWorker")
+                    .title("smjworker")
                     .inner_size(1360.0, 900.0)
                     .min_inner_size(980.0, 640.0)
                     // Let the WEBVIEW receive OS file drags: Tauri's own drag-drop handler
@@ -1029,7 +1029,7 @@ pub fn run() {
             let open_i = MenuItem::with_id(
                 app,
                 "open",
-                tr(locale, "Open OpenWorker"),
+                tr(locale, "Open smjworker"),
                 true,
                 None::<&str>,
             )?;
@@ -1047,7 +1047,7 @@ pub fn run() {
             // it for light/dark automatically — not the full-color app icon.
             let tray_icon = tauri::image::Image::new(include_bytes!("../icons/tray.rgba"), 44, 44);
             TrayIconBuilder::new()
-                .tooltip("OpenWorker")
+                .tooltip("smjworker")
                 .icon(tray_icon)
                 .icon_as_template(true)
                 .menu(&menu)
@@ -1069,7 +1069,7 @@ pub fn run() {
             Ok(())
         })
         .build(context)
-        .expect("error while building the OpenWorker desktop app")
+        .expect("error while building the smjworker desktop app")
         .run(|app, event| {
             // macOS: clicking the Dock icon fires Reopen. Close-to-tray only HIDES the main
             // window (see on_window_event above), and Tauri does nothing on Reopen by default,

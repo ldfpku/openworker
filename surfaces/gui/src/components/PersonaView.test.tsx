@@ -173,7 +173,7 @@ describe("PersonaView default pointer", () => {
     // request for its backend name only made the tip say two different things depending on
     // timing, and settle on the less localized one (audit 2026-09-13).
     expect(clear.title).toBe(
-      "New sessions, inbound DMs and the disabled-coworker fallback go back to OpenWorker (general).",
+      "New sessions, inbound DMs and the disabled-coworker fallback go back to smjworker (general).",
     );
 
     fireEvent.click(clear);
@@ -229,7 +229,7 @@ describe("PersonaView default pointer", () => {
     const baseline = {
       ...DETAIL,
       id: "cowork",
-      name: "OpenWorker",
+      name: "smjworker",
       enabled: true,
       default: true,
       recommends: [],

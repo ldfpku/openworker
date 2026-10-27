@@ -36,7 +36,7 @@ const CHIP = "text-[11px] px-1.5 py-0.5 rounded border border-line text-muted";
 type Source = "all" | "openworker" | "team";
 
 function sourceOf(p: GalleryPersona): Exclude<Source, "all"> {
-  return p.publisher === "OpenWorker" ? "openworker" : "team";
+  return p.publisher === "smjworker" || p.publisher === "OpenWorker" ? "openworker" : "team";
 }
 
 function ConnectorChip({ name }: { name: string }) {

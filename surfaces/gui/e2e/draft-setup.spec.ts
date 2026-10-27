@@ -4,7 +4,7 @@
 // it never ends the draft phase.
 import { test, expect } from "./fixtures";
 
-// A personas payload where the general OpenWorker is NOT the default — an expert holds the
+// A personas payload where the general smjworker is NOT the default — an expert holds the
 // pointer (C1: the baseline stays ENABLED whatever else is true, and is what every fallback
 // lands on). `cowork` carries whatever `enabled` the caller passes: `false` is the stale-prefs
 // state the server now self-heals, and the client must not act on it either.
@@ -12,7 +12,7 @@ const expertDefaultPersonas = (coworkEnabled: boolean) => ({
   internal: true,
   personas: [
     {
-      id: "cowork", name: "OpenWorker", icon: "cowork",
+      id: "cowork", name: "smjworker", icon: "cowork",
       tagline: "Produce a deliverable — research, analysis, scripts",
       requires_folder: false, builtin: true, tools: ["files", "search"],
       enabled: coworkEnabled, surfaced: true, default: false, ships: true, group: "general",
@@ -162,13 +162,13 @@ test("switching the specialist off lands on the general coworker and stays off",
   const sw = page.getByRole("switch", { name: "Use a specialist coworker" });
   await expect(sw).toBeChecked();
   await sw.click();
-  await expect(chip).toContainText("OpenWorker (general)");
+  await expect(chip).toContainText("smjworker (general)");
   await expect(sw).not.toBeChecked();
 
   // The re-target's reconnect lands about here; a bounce would arrive with it.
   await page.waitForTimeout(500);
   await expect(sw).not.toBeChecked();
-  await expect(chip).toContainText("OpenWorker (general)");
+  await expect(chip).toContainText("smjworker (general)");
   await expect(box).toHaveValue("precious draft"); // re-targeted, never resumed over
 });
 
@@ -194,10 +194,10 @@ test("a stale disabled baseline never bounces the specialist switch back on", as
   await chip.click();
   const sw = page.getByRole("switch", { name: "Use a specialist coworker" });
   await sw.click();
-  await expect(chip).toContainText("OpenWorker (general)");
+  await expect(chip).toContainText("smjworker (general)");
 
   await page.waitForTimeout(500);
   await expect(sw).not.toBeChecked();
-  await expect(chip).toContainText("OpenWorker (general)");
+  await expect(chip).toContainText("smjworker (general)");
   await expect(box).toHaveValue("precious draft");
 });

@@ -507,13 +507,13 @@ function quotaMessage(verdict: QuotaVerdict): string {
   const day = "北京时间次日 00:00 重置";
   switch (verdict.scope) {
     case "suspended":
-      return "OpenWorker 中转：你的账号已被管理员暂停（限额为 0），请联系管理员。";
+      return "smjworker 中转：你的账号已被管理员暂停（限额为 0），请联系管理员。";
     case "rpm":
-      return `OpenWorker 中转：每分钟最多 ${verdict.limit} 次请求，已经用满。${verdict.retryAfter} 秒后自动恢复；如果这是自动循环跑飞了，请先停下来看一眼。`;
+      return `smjworker 中转：每分钟最多 ${verdict.limit} 次请求，已经用满。${verdict.retryAfter} 秒后自动恢复；如果这是自动循环跑飞了，请先停下来看一眼。`;
     case "rpd":
-      return `OpenWorker 中转：今天最多 ${verdict.limit} 次请求，已经用满。${day}；需要更高额度请联系管理员。`;
+      return `smjworker 中转：今天最多 ${verdict.limit} 次请求，已经用满。${day}；需要更高额度请联系管理员。`;
     default:
-      return `OpenWorker 中转：今天最多 ${verdict.limit} tokens，已经用了 ${verdict.used}。${day}；需要更高额度请联系管理员。`;
+      return `smjworker 中转：今天最多 ${verdict.limit} tokens，已经用了 ${verdict.used}。${day}；需要更高额度请联系管理员。`;
   }
 }
 
@@ -555,7 +555,7 @@ export default {
       return apiError(
         401,
         "UNAUTHENTICATED",
-        "OpenWorker 中转：还没有登录。在「设置 ▸ 模型 ▸ Gemini」里用工作邮箱收验证码登录一次。"
+        "smjworker 中转：还没有登录。在「设置 ▸ 模型 ▸ Gemini」里用工作邮箱收验证码登录一次。"
       );
     }
 
@@ -571,7 +571,7 @@ export default {
       return apiError(
         403,
         "PERMISSION_DENIED",
-        "OpenWorker 中转：登录已失效（过期、被吊销，或已不在允许名单里），请重新登录。"
+        "smjworker 中转：登录已失效（过期、被吊销，或已不在允许名单里），请重新登录。"
       );
     }
 
@@ -589,7 +589,7 @@ export default {
       return apiError(
         400,
         "INVALID_ARGUMENT",
-        "OpenWorker 中转：登录成功，但还没有填 Gemini API key。" +
+        "smjworker 中转：登录成功，但还没有填 Gemini API key。" +
           "找管理员要一把（每人一把、以你的名字命名），填进「设置 ▸ 模型 ▸ Gemini」的 API key 里。"
       );
     }
@@ -606,7 +606,7 @@ export default {
       return apiError(
         400,
         "INVALID_ARGUMENT",
-        "OpenWorker 中转：客户端版本过旧——它把登录令牌当成 API key 发了过来。请升级 OpenWorker。"
+        "smjworker 中转：客户端版本过旧——它把登录令牌当成 API key 发了过来。请升级 smjworker。"
       );
     }
 

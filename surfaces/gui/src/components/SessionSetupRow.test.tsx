@@ -1,5 +1,5 @@
 // The composer's coworker picker (owner ask 2026-09-10): a switch turns the specialist
-// coworker off for this draft (→ the general OpenWorker) and back on (→ the last one
+// coworker off for this draft (→ the general smjworker) and back on (→ the last one
 // picked), and every row has a "View" that opens the read-only glance at that coworker.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -36,7 +36,7 @@ const persona = (id: string, name: string, extra: Partial<Persona> = {}): Person
 });
 
 const PERSONAS = [
-  persona("cowork", "OpenWorker"),
+  persona("cowork", "smjworker"),
   persona("production-planning", "生产计划与排产", { tagline: "为交期负责" }),
   persona("ops", "Ops Coworker"),
 ];
@@ -62,7 +62,7 @@ function renderRow(agent: string, overrides: Partial<Parameters<typeof SessionSe
 }
 
 describe("SessionSetupRow — specialist switch", () => {
-  it("switching off re-targets the draft to the general OpenWorker", () => {
+  it("switching off re-targets the draft to the general smjworker", () => {
     const { onPickCoworker } = renderRow("production-planning");
     expect(screen.getByTestId("coworker-chip").textContent).toContain("生产计划与排产");
     fireEvent.click(screen.getByTestId("coworker-chip"));
@@ -76,7 +76,7 @@ describe("SessionSetupRow — specialist switch", () => {
     // A previous draft ran on production-planning; this one is on the general coworker.
     localStorage.setItem("openworker.lastSpecialistCoworker", "production-planning");
     const { onPickCoworker } = renderRow("cowork");
-    expect(screen.getByTestId("coworker-chip").textContent).toContain("OpenWorker (general)");
+    expect(screen.getByTestId("coworker-chip").textContent).toContain("smjworker (general)");
     fireEvent.click(screen.getByTestId("coworker-chip"));
     const sw = screen.getByRole("switch", { name: "Use a specialist coworker" });
     expect(sw.getAttribute("aria-checked")).toBe("false");

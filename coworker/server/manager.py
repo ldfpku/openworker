@@ -1457,7 +1457,7 @@ class SessionManager:
             else []
         )
         # The instructions the coworker actually runs on. A manifest-backed persona's is
-        # its markdown body; a code-built one (OpenWorker, Code) materializes its Agent for
+        # its markdown body; a code-built one (smjworker, Code) materializes its Agent for
         # the text. Shown read-only wherever a coworker is picked or named, so "which
         # prompt am I about to talk to" is never a guess (owner ask 2026-09-10).
         if manifest is not None:
@@ -1526,7 +1526,7 @@ class SessionManager:
         the disabled-coworker fallback and inbound DMs land on the default, so switching
         it off would strand them on whatever enabled entry came first (audit 2026-09-10:
         out of the box that was an unshipped, folder-gated team worker). Clear the default
-        first. The general OpenWorker (the BASELINE) is refused outright and with
+        first. The general smjworker (the BASELINE) is refused outright and with
         its own message: it is not merely *a* default one can move elsewhere, it is the
         floor every fallback ends on, so there is no "pick another first" for it (audit
         2026-09-13). Both refusals happen BEFORE any archiving — a rejected disable must
@@ -2844,7 +2844,7 @@ class SessionManager:
             # Self-identification: every QR login mints a look-alike bot chat in
             # the scanner's WeChat (other agent stacks — e.g. a hermes install —
             # create identical-looking ones), so greet the scanner immediately:
-            # the conversation is labeled OpenWorker from its first message.
+            # the conversation is labeled smjworker from its first message.
             # Best-effort — a tokenless send to a fresh peer may be refused.
             scanner = str(creds.get("user_id") or "")
             if scanner:
@@ -2855,9 +2855,9 @@ class SessionManager:
                         result = _send_weixin(
                             creds["token"],
                             scanner,
-                            "OpenWorker 已连接这个微信通道（bot："
+                            "smjworker 已连接这个微信通道（bot："
                             + creds["account_id"]
-                            + "）。在这个会话里发消息，就是发给 OpenWorker。",
+                            + "）。在这个会话里发消息，就是发给 smjworker。",
                         )
                         if not result.ok:
                             logger.info(
@@ -4071,7 +4071,7 @@ class SessionManager:
         if root is not None and root.is_dir():
             # os.walk with in-place pruning, NOT rglob: rglob descends first and filters
             # after, so a home-directory workspace walked into ~/Library and tripped the
-            # macOS App Data TCC prompt ("OpenWorker would like to access data from other
+            # macOS App Data TCC prompt ("smjworker would like to access data from other
             # apps") on every turn. Pruning here means those dirs are never entered at all.
             skip = _artifact_skip_dirs()
             for dirpath, dirs, files in os.walk(root, onerror=_artifact_walk_error):
@@ -8170,7 +8170,7 @@ class SessionManager:
 
     # -- mention router (§31) ----------------------------------------------------
     async def _route_mention(self, event, ms: MessageSource, subs) -> None:
-        """@OpenWorker tagged in a channel. A subscribed (user-connected) coworker owns the channel
+        """@smjworker tagged in a channel. A subscribed (user-connected) coworker owns the channel
         and must answer; otherwise the per-thread coworker session handles it — spawned on the
         first tag, steered by follow-ups (deduped on the thread target)."""
         from ..connectors.base import format_target

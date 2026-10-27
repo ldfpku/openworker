@@ -558,7 +558,7 @@ export function App() {
   // Make sure a coworker is switched on BEFORE a session is started on it: the
   // disabled-coworker fallback below would otherwise bounce the new draft straight back
   // (the Expert Team Lead ships disabled, so "Build an expert team" used to land on
-  // OpenWorker with the typed goal gone — audit 2026-09-10). Resolves once the fresh
+  // smjworker with the typed goal gone — audit 2026-09-10). Resolves once the fresh
   // persona list is in state, so the fallback effect sees the coworker as enabled.
   const ensurePersonaEnabled = async (id: string) => {
     const current = (personas || []).find((p) => p.id === id);
@@ -1746,7 +1746,7 @@ export function App() {
     setAgent(id);
     // An explicit draft folder pick survives a coworker change (owner catch
     // 2026-08-24) — whichever coworker is picked next: the folder chip shows for every
-    // draft, so a folder picked for OpenWorker was dropped the moment a scratch
+    // draft, so a folder picked for smjworker was dropped the moment a scratch
     // coworker was chosen (audit 2026-09-10). Anything inherited — boot-resume, scratch
     // adoption, temp dirs — still resets; the "never inherit" rule exists for those.
     if (tempWorkspace || !draftFolderPicked || !workspace) {
@@ -2128,7 +2128,7 @@ export function App() {
         {overlay && (
           <div className="titlebar-drag" data-tauri-drag-region>
             <span className="titlebar-brand brand-wordmark">
-              <Icon name="logo" size={13} className="mark" /> OpenWorker<span className="beta-tag">BETA</span>
+              <Icon name="logo" size={13} className="mark" /> smjworker<span className="beta-tag">BETA</span>
             </span>
           </div>
         )}
@@ -2137,8 +2137,7 @@ export function App() {
             <span /><span /><span />
           </div>
         )}
-        {/* The real OpenWorker mark (6-point star, same as the app/tray icon) — the old
-            ✦ text glyph was a 4-point sparkle that read as another product's logo. */}
+        {/* Official SMJ mark, shared by the splash, sidebar, app icon, and tray icon. */}
         <div className="boot-mark">
           <Icon name="logo" size={38} />
         </div>
@@ -2336,7 +2335,7 @@ export function App() {
             // via the composer — the folder gate (expert-lead requires_folder) still
             // shows its own setup-row chip; the user picks a folder and sends.
             // The lead ships disabled: switch it on first, or the disabled-coworker
-            // fallback bounces the draft to OpenWorker with the goal gone.
+            // fallback bounces the draft to smjworker with the goal gone.
             await ensurePersonaEnabled("expert-lead");
             startNewSession("expert-lead");
             prefillComposer(

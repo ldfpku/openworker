@@ -196,11 +196,11 @@ function page(title: string, detail: string, status: number): Response {
     "<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'>" +
     "<meta name='viewport' content='width=device-width,initial-scale=1'>" +
     "<link rel='icon' type='image/webp' href='" + FAVICON_DATA_URI + "'>" +
-    "<title>" + escapeHtml(title) + " — SMJAR</title><style>" +
-    // Brand palette from surfaces/gui/src/brand/README.md (品牌绿 / 浅绿 / 墨黑).
-    ":root{--paper:#f6f5f2;--panel:#fff;--line:#e4e2dc;--ink:#111214;--muted:#6f6e68;--accent:#1F7A3C}" +
-    "@media(prefers-color-scheme:dark){:root{--paper:#191918;--panel:#232322;--line:#373633;" +
-    "--ink:#e8e6e1;--muted:#9d9b94;--accent:#58B96C}}" +
+    "<title>" + escapeHtml(title) + " — SMJ</title><style>" +
+    // Official SMJ palette: SMJ blue with one signal-orange accent.
+    ":root{--paper:#f5f6f7;--panel:#fff;--line:#e4e2dc;--ink:#0A1F54;--muted:#636C7E;--accent:#FA8C1F}" +
+    "@media(prefers-color-scheme:dark){:root{--paper:#111827;--panel:#172033;--line:#2B3752;" +
+    "--ink:#E9EDF5;--muted:#B7BECB;--accent:#FA8C1F}}" +
     "body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;" +
     "background:var(--paper);color:var(--ink);padding:24px;" +
     "font:14px/1.7 -apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif}" +
@@ -220,7 +220,7 @@ function page(title: string, detail: string, status: number): Response {
     // Inline data URIs, not /brand/... URLs: the page has to render even when whatever went
     // wrong is exactly the thing that would keep a second request from succeeding.
     "<div class='mark'>" +
-    "<img class='lt' src='" + LOGO_LIGHT_DATA_URI + "' alt='SMJAR'>" +
+    "<img class='lt' src='" + LOGO_LIGHT_DATA_URI + "' alt='SMJ'>" +
     "<img class='dk' src='" + LOGO_DARK_DATA_URI + "' alt=''>" +
     "</div>" +
     "<h1>" + escapeHtml(title) + "</h1><p>" + escapeHtml(detail) + "</p></div></body></html>";
@@ -245,7 +245,7 @@ const CALLBACK_PATH = "/relay/callback";
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
 /**
- * Only ever redirect to the OpenWorker sidecar on this machine. The port is whatever the
+ * Only ever redirect to the smjworker sidecar on this machine. The port is whatever the
  * packaged app happened to bind (it picks a free one at startup), which is why the host is
  * pinned but the port is not — RFC 8252 §7.3. Anything else would make the relay an open
  * redirector that hands out authorization codes.
@@ -322,8 +322,8 @@ async function completeLogin(request: Request, env: Env, url: URL): Promise<Resp
   const sid = url.pathname.startsWith("/login/") ? url.pathname.slice("/login/".length) : "";
   if (!sid) {
     return page(
-      "请从 OpenWorker 里发起登录",
-      "这个页面不能直接打开。回到 OpenWorker，在「设置 ▸ 模型」里点「登录」，会自动打开带会话的登录链接。",
+      "请从 smjworker 里发起登录",
+      "这个页面不能直接打开。回到 smjworker，在「设置 ▸ 模型」里点「登录」，会自动打开带会话的登录链接。",
       400
     );
   }
@@ -336,7 +336,7 @@ async function completeLogin(request: Request, env: Env, url: URL): Promise<Resp
     console.error("gemini-relay: Access verification failed:", reason);
     return page(
       "身份校验没通过",
-      "没有拿到有效的 Cloudflare Access 登录凭证。请关掉这个标签页，回 OpenWorker 重新登录一次。",
+      "没有拿到有效的 Cloudflare Access 登录凭证。请关掉这个标签页，回 smjworker 重新登录一次。",
       403
     );
   }
@@ -346,7 +346,7 @@ async function completeLogin(request: Request, env: Env, url: URL): Promise<Resp
   if (!rawSession) {
     return page(
       "登录会话已过期",
-      "从发起登录到收到验证码超过了 10 分钟，或者这个链接已经用过一次。回 OpenWorker 重新点一次「登录」。",
+      "从发起登录到收到验证码超过了 10 分钟，或者这个链接已经用过一次。回 smjworker 重新点一次「登录」。",
       400
     );
   }
@@ -361,7 +361,7 @@ async function completeLogin(request: Request, env: Env, url: URL): Promise<Resp
     return page(
       "这个邮箱不在允许名单里",
       identity.email +
-        " 通过了邮箱验证，但还没有被加进 OpenWorker 中转的名单。请联系管理员登记后再试。",
+        " 通过了邮箱验证，但还没有被加进 smjworker 中转的名单。请联系管理员登记后再试。",
       403
     );
   }

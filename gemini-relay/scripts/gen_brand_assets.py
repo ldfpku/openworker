@@ -1,4 +1,4 @@
-"""Generate the inlined SMJAR brand assets used by the relay login pages.
+"""Generate the inlined SMJ brand assets used by the relay login pages.
 
 Two outputs, same bytes:
 
@@ -42,14 +42,14 @@ OUT_PY = ROOT / "coworker" / "brand_assets.py"
 # name, source file, note. `inline` marks the three our own HTML pages embed as data URIs;
 # the rest are only ever served over /brand/.
 ASSETS = [
-    ("LOGO_LIGHT", "logo.webp", "640x160 黑字，浅色背景用", True),
-    ("LOGO_DARK", "logo-dark.webp", "640x160 白字，深色背景用", True),
+    ("LOGO_LIGHT", "logo.webp", "640x235 黑字，浅色背景用", True),
+    ("LOGO_DARK", "logo-dark.webp", "640x235 白字，深色背景用", True),
     ("FAVICON", "favicon.webp", "64x64 标签页图标", True),
     ("LOGO_MARK", "logo-mark.webp", "256x256 方形徽标，App Launcher 用", False),
 ]
 
 TS_HEADER = '''/**
- * SMJAR 品牌资源，base64 内联 —— 自动生成，请勿手改。
+ * SMJ 品牌资源，base64 内联 —— 自动生成，请勿手改。
  *
  * A Worker has no filesystem and the login pages must render without a single external
  * request, so the bytes ride in the bundle. Source files live in
@@ -104,7 +104,7 @@ export function handleBrandRoutes(url: URL): Response | null {
 }
 '''
 
-PY_HEADER = '''"""SMJAR 品牌资源，base64 内联 —— 自动生成，请勿手改。
+PY_HEADER = '''"""SMJ 品牌资源，base64 内联 —— 自动生成，请勿手改。
 
 Regenerate with `gemini-relay/scripts/gen_brand_assets.py` after replacing the source webp
 files in `surfaces/gui/src/brand/`. Inlined rather than shipped as data files because the

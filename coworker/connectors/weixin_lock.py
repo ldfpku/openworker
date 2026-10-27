@@ -37,7 +37,7 @@ _LOCK_OFFSET = 4096
 # The error the user sees when a second poller loses the race. Phrased as the action
 # that fixes it, because the symptom (half the messages, no error) gives no clue.
 LOCK_BUSY_MESSAGE = (
-    "another OpenWorker instance on this computer is already receiving WeChat "
+    "another smjworker instance on this computer is already receiving WeChat "
     "messages for this bot. Close the other one — two pollers on one bot token "
     "each take half the messages."
 )

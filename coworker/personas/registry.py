@@ -97,7 +97,7 @@ class PersonaEntry:
         True  # whether it shows in the picker before any user choice
     )
     # Whether it ships enabled before any user choice. Default off (owner call
-    # 2026-08-31): the shipped coworkers other than OpenWorker are EXAMPLES of what a
+    # 2026-08-31): the shipped coworkers other than smjworker are EXAMPLES of what a
     # coworker can be, and a picker that opens pre-stocked with roles this customer
     # doesn't do reads as the product's opinion of their work. One checkbox in Settings
     # turns any of them on. Installed third-party personas also start disabled pending
@@ -122,7 +122,7 @@ class PersonaEntry:
 class PersonaRegistry:
     """Installed personas + their lifecycle state, on four independent axes.
 
-    BASELINE — ``DEFAULT_PERSONA_ID`` ("cowork", the general OpenWorker). It is the
+    BASELINE — ``DEFAULT_PERSONA_ID`` ("cowork", the general smjworker). It is the
         floor of the whole system: unknown ids resolve to it, ``default_id()`` ends on
         it, and the disabled-coworker fallback lands on it. It is therefore ALWAYS
         enabled and can never be disabled. It can still be un-SURFACED (hidden from the
@@ -225,11 +225,11 @@ class PersonaRegistry:
         # default) leads. Chat is GONE (owner call 2026-08-21; retired-but-listed since
         # 2026-08-11) — stray `persona=chat` session ids resolve to the default via
         # agent()'s unknown-id fallback. Code ships disabled + unsurfaced (same owner
-        # call): OpenWorker is the launch generalist, but Code stays one checkbox away
+        # call): smjworker is the launch generalist, but Code stays one checkbox away
         # as the only plain work-in-my-repo persona.
         self._register_builder(
             "cowork",
-            "OpenWorker",
+            "smjworker",
             "cowork",
             "Produce a deliverable — research, analysis, scripts",
             cowork_agent,

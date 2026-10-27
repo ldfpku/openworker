@@ -4,7 +4,7 @@ Served with every /v1/connectors entry so the GUI's pre-connect detail page
 (UX-DECISIONS §38) can show About / Access before any credentials exist. Plain
 statements of behavior, not marketing: every bullet must stay true to the
 connector's actual tools (tool_defs.py) and, for managed connectors, the scopes
-the OpenWorker Cloud app requests. Overclaiming here is a product bug.
+the smjworker Cloud app requests. Overclaiming here is a product bug.
 
 ABOUT is optional (the list blurb is the fallback subtitle); ACCESS is required
 for every available connector — tests/test_connectors.py enforces it.
@@ -31,7 +31,7 @@ ABOUT: dict[str, str] = {
     "websites — separate from your personal browser, with actions subject to "
     "approval.",
     "github": "Work with issues, pull requests, repository files, and CI "
-    "status. One click installs the OpenWorker GitHub App on the repositories "
+    "status. One click installs the smjworker GitHub App on the repositories "
     "you pick; mention the agent on an issue or PR and it answers from your "
     "desktop.",
     "outlook": "Search, summarize, and send Microsoft 365 mail, and run your "
@@ -211,7 +211,7 @@ ACCESS: dict[str, list[str]] = {
         "Reads messages sent to the bot identity — never your own chats.",
         "Sends messages as the bot, and saves received attachments locally.",
         "DMs work; ordinary group chats generally aren't delivered to bots.",
-        "Messages are consumed only while OpenWorker is running.",
+        "Messages are consumed only while smjworker is running.",
         "Only senders on your allow-list are answered.",
     ],
 }

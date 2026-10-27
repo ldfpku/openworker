@@ -16,7 +16,7 @@ test("Files lists the session roots and browses into a file", async ({ page }) =
   await expect(row).toContainText("Conversation folder");
   await expect(row).not.toContainText("scratch");
   await expect(row).toContainText("read-write");
-  await expect(row).toHaveAttribute("title", "/Users/test/OpenWorker/launch-note");
+  await expect(row).toHaveAttribute("title", "/Users/test/smjworker/launch-note");
 
   // Root → folder listing in the viewer, breadcrumb says Files.
   await row.click();

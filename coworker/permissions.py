@@ -354,7 +354,7 @@ class PermissionEngine:
             if hit is not None:
                 return Decision(
                     False,
-                    f"refusing to modify OpenWorker's own settings: {hit}",
+                    f"refusing to modify smjworker's own settings: {hit}",
                     needs_user=False,
                 )
 
@@ -445,7 +445,7 @@ class PermissionEngine:
                 # The classifier vets what a command DOES; the roots vet what it READS
                 # (OPE-130). Without the second half, a grant the user reads as "stop
                 # asking about my project files" also covers ~/.aws/credentials, another
-                # repo's history, and OpenWorker's own secrets file — none of which the
+                # repo's history, and smjworker's own secrets file — none of which the
                 # self-protection floor catches, since that guards writes, not reads.
                 if is_readonly_command(command) and all(
                     self._under_root(t) for t in read_targets(command)

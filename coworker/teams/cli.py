@@ -2,7 +2,7 @@
 
 The board is an open surface (OPE-100): the same role-scoped verbs the in-app
 agents get, usable by an external agent CLI, a script, or a human. Point it at a
-running OpenWorker server (same machine or remote) or straight at a state dir.
+running smjworker server (same machine or remote) or straight at a state dir.
 
 Backing resolution, in order:
 1. `--url` + `--token` (or OCW_BOARD_URL / OCW_BOARD_TOKEN) — a remote board.
@@ -57,7 +57,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="ocw", description="OpenWorker team board + journal CLI."
+        prog="ocw", description="smjworker team board + journal CLI."
     )
     sub = parser.add_subparsers(dest="group")
 

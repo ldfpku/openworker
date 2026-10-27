@@ -641,8 +641,8 @@ class _Writer:
         self._blocks(tokens, 0, len(tokens))
         self._page_numbers()
         # A document the user forwards: no names, no machine, no account.
-        self.doc.core_properties.author = "OpenWorker"
-        self.doc.core_properties.last_modified_by = "OpenWorker"
+        self.doc.core_properties.author = "smjworker"
+        self.doc.core_properties.last_modified_by = "smjworker"
 
     # -- stylesheet -------------------------------------------------------------
 

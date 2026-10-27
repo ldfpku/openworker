@@ -90,7 +90,7 @@ def ensure_workspace_ignore(workspace: str | Path, *, enabled: bool = True) -> d
         if existing.exists():
             return {"path": str(existing), "status": "existing"}
     content = (
-        "# Created by OpenWorker to reduce search noise; does not affect Git or builds.\n"
+        "# Created by smjworker to reduce search noise; does not affect Git or builds.\n"
         "# Explicit file reads remain available. Edit or delete this file as needed.\n"
         + "\n".join(generated_rules(root))
         + "\n"

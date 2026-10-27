@@ -24,8 +24,8 @@ const CARD = "rounded-xl border border-line bg-paper/60 px-4 py-3.5";
 function CompanyMark() {
   return (
     <>
-      <img src={logoLight} alt="SMJAR" className="h-5 w-auto dark:hidden" />
-      <img src={logoDark} alt="SMJAR" className="hidden h-5 w-auto dark:block" />
+      <img src={logoLight} alt="SMJ" className="h-5 w-auto dark:hidden" />
+      <img src={logoDark} alt="SMJ" className="hidden h-5 w-auto dark:block" />
     </>
   );
 }
@@ -133,7 +133,7 @@ export function GatewaySignIn({
     return (
       <div className={CARD} data-testid={`${tp}-aigw-error`}>
         <p className="text-[12.5px] text-muted">
-          {t("Couldn't reach the local OpenWorker service.")}
+          {t("Couldn't reach the local smjworker service.")}
         </p>
         <button
           className="mt-2.5 text-[12.5px] px-3 py-1.5 rounded-lg border border-line bg-panel hover:border-lineStrong"

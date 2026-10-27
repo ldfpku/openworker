@@ -66,7 +66,7 @@ OAUTH_FIELD = "oauth"
 COMPANY_GATEWAY_GENERATION = "zy-20261003"
 GENERATION_FIELD = "company_gateway_generation"
 
-CLIENT_NAME = "OpenWorker"
+CLIENT_NAME = "smjworker"
 CALLBACK_PATH = "/aigw/callback"
 
 #: Fixed because Cloudflare pins the redirect URI down to the port (see module docstring).
@@ -343,7 +343,7 @@ def _complete(code: str, state: str, error: str) -> tuple[str, str, str]:
     """Redeem the code the browser just handed us. Returns (title, detail, error)."""
     global _pending, _last_error
 
-    failed_detail = "关掉这个标签页，回 OpenWorker 重新点一次「登录」。"
+    failed_detail = "关掉这个标签页，回 smjworker 重新点一次「登录」。"
     with _flow_lock:
         pending = _pending
         # Matching `state` is what says this callback belongs to the sign-in *we* started
@@ -370,7 +370,7 @@ def _complete(code: str, state: str, error: str) -> tuple[str, str, str]:
         return ("登录失败", failed_detail, str(exc))
 
     _last_error = ""
-    return ("登录成功", "可以关掉这个标签页，回 OpenWorker 继续。", "")
+    return ("登录成功", "可以关掉这个标签页，回 smjworker 继续。", "")
 
 
 def _redeem(pending: dict[str, Any], code: str) -> None:

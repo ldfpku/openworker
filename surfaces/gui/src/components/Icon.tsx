@@ -95,10 +95,14 @@ export function Icon({
         </svg>
       );
     case "logo":
-      // The OpenWorker mark — a 6-point star, matching the app + macOS tray icon.
+      // Official SMJ app mark: signal-orange upper hook and white lower hook on SMJ blue.
       return (
-        <svg {...s} fill="currentColor" stroke="none">
-          <path d="M12.00 1.80 L13.35 9.66 L20.83 6.90 L14.70 12.00 L20.83 17.10 L13.35 14.34 L12.00 22.20 L10.65 14.34 L3.17 17.10 L9.30 12.00 L3.17 6.90 L10.65 9.66 Z" />
+        <svg width={size} height={size} viewBox="0 0 192 192" className={className} aria-hidden="true">
+          <rect width="192" height="192" rx="24" fill="#034FBC" />
+          <g transform="translate(46.32 38.96) scale(0.92)">
+            <path fill="#FA8C1F" d="M108 0H35A35 35 0 0 0 0 35A35 35 0 0 0 35 70H50.5V46H35A11 11 0 0 1 24 35A11 11 0 0 1 35 24H108Z" />
+            <path fill="#FFFFFF" d="M0 124H73A35 35 0 0 0 108 89A35 35 0 0 0 73 54H57.5V78H73A11 11 0 0 1 84 89A11 11 0 0 1 73 100H0Z" />
+          </g>
         </svg>
       );
     case "sidebar":

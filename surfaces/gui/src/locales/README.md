@@ -7,5 +7,5 @@ itself, i.e. renders in English, so this file only ever needs to grow by additio
 
 A house glossary enforcing one Chinese rendering per recurring term (conversation, connector,
 provider, workspace, etc.) is coming in a later pass — until then, keep translations short,
-use full-width punctuation, and leave proper nouns (OpenWorker, Slack, Gmail, API key, token,
+use full-width punctuation, and leave proper nouns (smjworker, Slack, Gmail, API key, token,
 Tauri, MCP) in English.
