@@ -5,12 +5,22 @@ can execute later: a plain document or raster image that no build, installer, te
 or other AI tool reads as instructions, a name and content that don't look secret, and a
 target that is new, git-tracked with no uncommitted changes, or written by the agent
 earlier in this session. JSON and YAML are never eligible: tools read them to decide what
-to run, and no list of their names can be complete, so the reviewer sees that content. Every check fails toward "ask the reviewer": an unknown file type,
-an unreadable git state or a doubtful name keeps today's behaviour.
+to run, and no list of their names can be complete, so the reviewer sees that content.
+
+The line between a document and an excluded file: a file leaves the tier when its purpose
+is to tell a tool what to do (requirements.txt, CMakeLists.txt, CLAUDE.md), when a tool
+runs it with no opt-in (test*.txt under default pytest), or when merely opening it can act
+(a spreadsheet cell that starts a formula). A file whose purpose is prose stays, even if a
+project can opt in to running it (a README under `cargo test`, a MyST notebook under
+`jupyter-book build`): the command that would run it still reaches the reviewer.
+
+Every check fails toward "ask the reviewer": an unknown file type, an unreadable git state
+or a doubtful name keeps today's behaviour.
 """
 
 from __future__ import annotations
 
+import csv
 import os
 import re
 import shutil
@@ -33,11 +43,16 @@ _DOCUMENT_SUFFIXES = frozenset({
 })
 # Text files that decide what gets built, installed or tested: CMake runs CMakeLists.txt,
 # pip installs what requirements and constraints files list (`requirements-dev.txt`,
-# `dev-requirements.txt`, `requirements/base.txt`), and pytest runs `test*.txt` as doctests
-# by default.
+# `dev-requirements.txt`, `requirements/base.txt`), platforms install what runtime.txt
+# (Heroku), packages.txt (Streamlit Cloud) and apt.txt (Binder) name, and pytest runs
+# `test*.txt` as doctests by default.
 _BUILD_INPUT_NAME = re.compile(
-    r"^cmakelists\.txt$|^test.*\.txt$|(requirements|constraints).*\.txt$", re.IGNORECASE
+    r"^(cmakelists|runtime|packages|apt)\.txt$|^test.*\.txt$"
+    r"|(requirements|constraints).*\.txt$",
+    re.IGNORECASE,
 )
+# Only `.txt` files under these folders: pip reads `requirements/base.txt`, not a Markdown
+# file kept there.
 _BUILD_INPUT_FOLDERS = frozenset({"requirements"})
 # Instructions other AI coding tools read into their prompt on their next run, so a write
 # here steers a later agent. AGENTS.md is not listed: the protected list (permissions.py)
@@ -49,15 +64,22 @@ _AGENT_INSTRUCTION_NAME = re.compile(
     re.IGNORECASE,
 )
 # Every file in these folders, at any depth: Claude Code, Cursor, Windsurf, Cline, Roo,
-# Kiro, Amazon Q, Continue, Junie, Augment, Gemini, Antigravity, OpenHands, Trae, Codex
-# and OpenCode keep rules, commands, prompts and skills there.
+# Kilo Code, Kiro, Amazon Q, Continue, Junie, JetBrains AI Assistant, Augment, Gemini,
+# Antigravity, OpenHands, Trae, Codex, OpenCode and Zencoder keep rules, commands,
+# prompts and skills there.
 _AGENT_FOLDERS = frozenset({
-    ".claude", ".cursor", ".windsurf", ".clinerules", ".roo", ".kiro", ".amazonq",
-    ".continue", ".junie", ".augment", ".gemini", ".agent", ".agents", ".openhands",
-    ".trae", ".codex", ".opencode",
+    ".claude", ".cursor", ".windsurf", ".clinerules", ".roo", ".kilocode", ".kiro",
+    ".amazonq", ".continue", ".junie", ".aiassistant", ".augment", ".gemini", ".agent",
+    ".agents", ".openhands", ".trae", ".codex", ".opencode", ".zencoder",
 })
 # Under .github/, only Copilot's folders: CONTRIBUTING.md and issue templates stay eligible.
 _GITHUB_AGENT_FOLDERS = frozenset({"instructions", "prompts", "chatmodes", "agents", "skills"})
+
+# Spreadsheet apps evaluate a cell that starts with = @ + or - when a .csv/.tsv is opened,
+# and opening a file is not a command anyone reviews. A signed cell is a number only when
+# all of it is one (-5, +1.5, -.5, -2e3): `-2+3+cmd|...` is a formula.
+_SPREADSHEET_DELIMITERS = {".csv": ",", ".tsv": "\t"}
+_NUMBER_CELL = re.compile(r"[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?%?")
 
 _SENSITIVE_NAME = re.compile(
     r"^\.env(\..*)?$"
@@ -93,19 +115,40 @@ def is_inert_name(name: str) -> bool:
     return not (_BUILD_INPUT_NAME.search(name) or _AGENT_INSTRUCTION_NAME.search(name))
 
 
-def is_inert_path(path: Path) -> bool:
+def is_inert_path(path: Path, root: Optional[Path] = None) -> bool:
     """`is_inert_name`, and not inside a folder that build tools or AI tools read from.
-    Folder names match in any letter case and anywhere in the path: a doubtful match only
-    sends the write to the reviewer."""
+    Folder names match in any letter case, at any depth under `root` (a writable root the
+    path is in); the root's own name and everything above it are the user's choice and
+    are not matched, so a workspace called `requirements` keeps the tier for its notes.
+    Without a root every folder counts, and a doubtful match only sends the write to the
+    reviewer."""
     if not is_inert_name(path.name):
         return False
-    folders = [part.casefold() for part in path.parts[:-1]]
-    if any(f in _AGENT_FOLDERS or f in _BUILD_INPUT_FOLDERS for f in folders):
+    inside = path
+    if root is not None:
+        try:
+            inside = path.relative_to(root)
+        except ValueError:
+            pass
+    folders = [part.casefold() for part in inside.parts[:-1]]
+    if any(f in _AGENT_FOLDERS for f in folders):
+        return False
+    if path.suffix.lower() == ".txt" and any(f in _BUILD_INPUT_FOLDERS for f in folders):
         return False
     return not any(
         parent == ".github" and child in _GITHUB_AGENT_FOLDERS
         for parent, child in zip(folders, folders[1:])
     )
+
+
+def _root_of(path: Path, roots: Optional[list[Path]]) -> Optional[Path]:
+    for root in roots or []:
+        try:
+            path.relative_to(root)
+            return root
+        except ValueError:
+            continue
+    return None
 
 
 def is_sensitive_name(name: str) -> bool:
@@ -128,6 +171,46 @@ def _strings(value: Any, depth: int = 0) -> list[str]:
 
 def has_secret_value(arguments: dict[str, Any]) -> bool:
     return any(_SECRET_VALUE.search(text) for text in _strings(arguments))
+
+
+def _written_lines(arguments: dict[str, Any]) -> list[str]:
+    """The lines a write puts on disk: whole string arguments, or for a patch or diff only
+    its added lines, without the leading `+`."""
+    out: list[str] = []
+    for key, value in (arguments or {}).items():
+        if key in ("patch", "diff") and isinstance(value, str):
+            out.extend(
+                ln[1:] for ln in value.splitlines() if ln.startswith("+") and not ln.startswith("+++")
+            )
+        else:
+            out.extend(ln for text in _strings(value) for ln in text.splitlines())
+    return out
+
+
+def _starts_formula(field: str) -> bool:
+    cell = field.strip().strip("\"'").strip()  # apps drop the quotes before evaluating
+    if not cell:
+        return False
+    if cell[0] in "=@":
+        return True
+    if cell[0] in "+-":
+        return cell != "-" and not _NUMBER_CELL.fullmatch(cell)  # a lone dash marks "none"
+    return False
+
+
+def has_formula_cell(arguments: dict[str, Any], delimiter: str = ",") -> bool:
+    """True when any cell in the written text starts a spreadsheet formula. Lines are split
+    on `delimiter` with quoting as a spreadsheet app reads it, so a comma inside a quoted
+    cell doesn't start a new one. Call it only for .csv/.tsv targets; a line the csv
+    module can't parse counts as a formula (reviewer)."""
+    for line in _written_lines(arguments):
+        try:
+            fields = next(csv.reader([line], delimiter=delimiter), [])
+        except csv.Error:
+            return True
+        if any(_starts_formula(f) for f in fields):
+            return True
+    return False
 
 
 def _git(args: list[str], cwd: Path) -> Optional[subprocess.CompletedProcess]:
@@ -186,19 +269,24 @@ def inert_write_check(
     targets: list[Path],
     *,
     agent_wrote: Optional[Callable[[Path], bool]] = None,
+    roots: Optional[list[Path]] = None,
 ) -> tuple[bool, str]:
     """(eligible, detail) for a write whose targets already passed the gate's floors (in a
-    writable root, not protected). `detail` says what made it eligible, for the audit row."""
+    writable root, not protected). `roots` are the resolved writable roots, so folder rules
+    look only below them. `detail` says what made it eligible, for the audit row."""
     if not targets:
         return False, ""
     if has_secret_value(arguments):
         return False, ""
     if removes_files(arguments):
         return False, ""
+    for delimiter in {_SPREADSHEET_DELIMITERS.get(t.suffix.lower()) for t in targets} - {None}:
+        if has_formula_cell(arguments, delimiter):
+            return False, ""
     parts: list[str] = []
     for target in targets:
         name = target.name
-        if not is_inert_path(target) or is_sensitive_name(name):
+        if not is_inert_path(target, _root_of(target, roots)) or is_sensitive_name(name):
             return False, ""
         if not target.exists():
             parts.append(f"new file {name}")

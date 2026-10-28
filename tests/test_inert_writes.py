@@ -117,8 +117,10 @@ def test_json_and_yaml_go_to_the_reviewer(tmp_path, path):
     # pytest runs test*.txt files as doctests by default.
     ["CMakeLists.txt", "src/lib/cmakelists.TXT", "requirements.txt", "REQUIREMENTS.txt",
      "requirements-dev.txt", "requirements_test.txt", "dev-requirements.txt",
-     "requirements/base.txt", "constraints.txt", "ci/constraints-py311.txt",
-     "test_examples.txt", "docs/testing.txt"],
+     "requirements/base.txt", "requirements/dev/extra.txt", "constraints.txt",
+     "ci/constraints-py311.txt", "test_examples.txt", "docs/testing.txt",
+     # files that pick what a platform installs: Heroku, Streamlit Cloud, Binder
+     "runtime.txt", "packages.txt", "apt.txt"],
 )
 def test_build_and_install_inputs_go_to_the_reviewer(tmp_path, path):
     assert _goes_to_reviewer(_gate(tmp_path).evaluate("write_file", _write(path)))
@@ -138,10 +140,90 @@ def test_build_and_install_inputs_go_to_the_reviewer(tmp_path, path):
      ".amazonq/rules/style.md", ".continue/rules/style.md", ".junie/guidelines.md",
      ".augment/rules/style.md", ".gemini/styleguide.md", ".agent/rules/style.md",
      ".agents/rules/style.md", ".openhands/microagents/repo.md", ".trae/rules/project_rules.md",
-     ".codex/notes.md", ".opencode/agent/review.md"],
+     ".codex/notes.md", ".opencode/agent/review.md", ".kilocode/rules/style.md",
+     ".aiassistant/rules/style.md", ".zencoder/rules/style.md"],
 )
 def test_other_ai_tools_instruction_files_go_to_the_reviewer(tmp_path, path):
     assert _goes_to_reviewer(_gate(tmp_path).evaluate("write_file", _write(path)))
+
+
+@pytest.mark.parametrize("folder", ["requirements", "agents", "Requirements Review"])
+def test_the_workspace_folder_name_itself_is_not_matched(tmp_path, folder):
+    # Folder rules look only at the path under the writable root: a workspace that is
+    # itself called `requirements` keeps the tier for its notes.
+    ws = tmp_path / folder
+    ws.mkdir()
+    assert _ran_without_reviewer(_gate(ws).evaluate("write_file", _write("notes.md")))
+    assert _ran_without_reviewer(_gate(ws).evaluate("write_file", _write("notes.txt")))
+
+
+def test_a_document_in_a_requirements_folder_is_still_eligible(tmp_path):
+    # pip reads `requirements/*.txt`; it does not read a Markdown file kept there.
+    assert _ran_without_reviewer(_gate(tmp_path).evaluate("write_file", _write("requirements/notes.md")))
+
+
+def test_a_second_writable_root_is_scoped_the_same_way(tmp_path):
+    extra = tmp_path / "requirements"
+    extra.mkdir()
+    gate = PermissionEngine(
+        workspace_root=tmp_path, mode=Mode.AUTO_APPROVE, inert_writes="on",
+        roots=[{"path": tmp_path, "writable": True}, {"path": extra, "writable": True}],
+    )
+    assert _ran_without_reviewer(gate.evaluate("write_file", _write(str(extra / "notes.md"))))
+    assert _goes_to_reviewer(gate.evaluate("write_file", _write("requirements/base.txt")))
+
+
+# -- spreadsheet formulas ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        'name,total\nbob,=HYPERLINK("http://x","click")\n',
+        "name,total\nbob,\"=cmd|'/c calc'!A0\"\n",
+        "a,b\n@SUM(1;2),1\n",
+        "a,b\n+cmd|' /C calc'!A0,1\n",
+        "a,b\n-2+3+cmd|' /C calc'!A0,1\n",
+        "a\tb\n=1+1\t2\n",
+        "a,b\n 'x',=1+1\n",  # leading space and quote do not hide the formula
+    ],
+)
+def test_a_csv_cell_that_starts_a_formula_goes_to_the_reviewer(tmp_path, content):
+    # A spreadsheet app runs a cell that starts with = @ + or - when the file is opened.
+    # Opening a file is not a command anyone reviews, so the reviewer must see it first.
+    name = "rows.tsv" if "\t" in content else "rows.csv"
+    assert _goes_to_reviewer(_gate(tmp_path).evaluate("write_file", _write(name, content)))
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["name,total\nbob,-5\nann,+1.5\n", "x,y\n-0.25,-.5\n", "a,b\n1,2\n",
+     'note\n"well, =not at the start"\n', "a,b\n,\n"],
+)
+def test_ordinary_csv_data_is_still_eligible(tmp_path, content):
+    assert _ran_without_reviewer(_gate(tmp_path).evaluate("write_file", _write("rows.csv", content)))
+
+
+def test_a_formula_in_a_markdown_file_is_fine(tmp_path):
+    # Only spreadsheet files are opened by an app that evaluates cells.
+    text = "| a | b |\n|---|---|\n| =SUM(1,2) | x |\n"
+    assert _ran_without_reviewer(_gate(tmp_path).evaluate("write_file", _write("table.md", text)))
+
+
+def test_a_csv_patch_is_checked_on_its_added_lines(tmp_path):
+    bad = "*** Begin Patch\n*** Add File: rows.csv\n+a,b\n+=1+1,2\n*** End Patch"
+    assert _goes_to_reviewer(_gate(tmp_path).evaluate("apply_patch", {"patch": bad}))
+    ok = "*** Begin Patch\n*** Add File: rows.csv\n+a,b\n+1,2\n+-5,+2\n*** End Patch"
+    assert _ran_without_reviewer(_gate(tmp_path).evaluate("apply_patch", {"patch": ok}))
+
+
+def test_a_csv_replace_is_checked_on_the_new_text(tmp_path):
+    files = SessionFiles(tmp_path)
+    gate = _gate(tmp_path, agent_wrote=files.wrote)
+    (tmp_path / "rows.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+    files.record("write_file", _write("rows.csv", "a,b\n1,2\n"), "ok", step=1)
+    args = {"path": "rows.csv", "old": "1,2", "new": "=1+1,2"}
+    assert _goes_to_reviewer(gate.evaluate("replace_in_file", args))
 
 
 @pytest.mark.parametrize(

@@ -779,7 +779,8 @@ class PermissionEngine:
         if is_write and self.mode is Mode.AUTO_APPROVE and self.inert_writes != "off":
             paths, _located = write_paths(tool_name, arguments)  # located: checked above
             eligible, detail = inert_write_check(
-                arguments, [self._candidate(p) for p in paths], agent_wrote=self.agent_wrote
+                arguments, [self._candidate(p) for p in paths], agent_wrote=self.agent_wrote,
+                roots=[rp for rp, writable in self._resolved_roots() if writable],
             )
             if eligible and self.inert_writes == "on":
                 return Decision(True, f"{INERT_WRITE_REASON}: {detail}", tier="inert_write")
