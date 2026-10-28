@@ -1766,7 +1766,7 @@ class TurnEngine:
                 # answer is noise, not a call: drop it and keep the answer.
                 cleaned, dangling = strip_dangling_tool_tag(turn.text)
                 if dangling and not looks_like_unparsed_tool_call(
-                    cleaned, self.registry.schemas() or None
+                    cleaned, self._offered_tool_schemas()
                 ):
                     turn.text = cleaned
             if turn.finish_reason is not None:
@@ -1902,7 +1902,7 @@ class TurnEngine:
                 # the user just sees narration trailing off into stray tags. Fail loudly
                 # instead, on the error path so the GUI offers Retry — this is drift, not a
                 # deterministic failure, so retrying the same model usually works.
-                if looks_like_unparsed_tool_call(turn.text, self.registry.schemas() or None):
+                if looks_like_unparsed_tool_call(turn.text, self._offered_tool_schemas()):
                     message = (
                         f"{self.model} replied with a tool call this endpoint couldn't parse, "
                         "so the turn was stopped rather than answered from a partial call. "
@@ -2204,6 +2204,10 @@ class TurnEngine:
         return None
 
     # -- helpers ----------------------------------------------------------------
+    def _offered_tool_schemas(self) -> Optional[list[dict[str, Any]]]:
+        # Some custom endpoints only parse calls for tools declared in this request.
+        return self.registry.schemas(include_held_back=self.model.startswith("custom:")) or None
+
     async def _astream(self):
         """Bridge the provider's blocking stream generator to the async loop via a
         thread + queue, so text deltas surface live without blocking the event loop.
@@ -2215,7 +2219,7 @@ class TurnEngine:
         """
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()
-        tools = self.registry.schemas() or None
+        tools = self._offered_tool_schemas()
         model, messages, settings = (
             self.model,
             self._outbound_messages(),

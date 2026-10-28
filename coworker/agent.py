@@ -279,8 +279,8 @@ def _hold_back_hint(held_back: list[str]) -> str:
     if not entries:
         return ""
     return (
-        "Some tools are registered but not listed to save context; call them directly "
-        "by name when needed: " + "; ".join(entries) + "."
+        "Some additional tools are available by name when needed: "
+        + "; ".join(entries) + "."
     )
 
 

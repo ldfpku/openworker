@@ -32,6 +32,7 @@ class ToolRegistry:
         # backstop asks for `sleep_until`). So a call that names one materialises the
         # set instead of failing; see `get`.
         self._deferred: dict[str, Callable[[], Any]] = {}
+        self._held_back: dict[str, ToolSpec] = {}
 
     def register(
         self,
@@ -50,6 +51,8 @@ class ToolRegistry:
             schema or getattr(func, "__coworker_schema__", None) or _schema_for(func)
         )
         spec = ToolSpec(name=name, schema=resolved_schema, func=func, metadata=meta)
+        if self._held_back.pop(name, None) is not None:
+            self._deferred.pop(name, None)
         self._tools[name] = spec
         return spec
 
@@ -81,8 +84,10 @@ class ToolRegistry:
             spec = self._tools.pop(name, None)
             if spec is None:
                 continue
+            self._held_back[name] = spec
 
             def _reinstate(spec: ToolSpec = spec) -> None:
+                self._held_back.pop(spec.name, None)
                 self._tools[spec.name] = spec
 
             self._deferred[name] = _reinstate
@@ -103,10 +108,12 @@ class ToolRegistry:
             spec = self._tools.get(name)
         return spec
 
-    def schemas(self) -> list[dict[str, Any]]:
-        """What the model is TOLD it has. Deliberately does not materialise anything —
-        the whole point of a deferred set is to stay out of the prompt until used."""
-        return [spec.schema for spec in self._tools.values()]
+    def schemas(self, *, include_held_back: bool = False) -> list[dict[str, Any]]:
+        """Return offered schemas without materialising held-back or deferred tools."""
+        specs = list(self._tools.values())
+        if include_held_back:
+            specs.extend(self._held_back.values())
+        return [spec.schema for spec in specs]
 
     def execute(self, name: str, arguments: Optional[dict[str, Any]] = None) -> Any:
         spec = self.get(name)

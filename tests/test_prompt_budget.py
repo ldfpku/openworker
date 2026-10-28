@@ -25,6 +25,7 @@ tests/test_office_integration.py and tests/test_document_integration.py."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 from coworker.agent import build_engine, _hold_back_hint
@@ -70,6 +71,63 @@ def test_workspace_only_tools_are_registered_but_hidden(tmp_path):
             assert name in _schema_names(engine), name
     finally:
         engine.executor.close()
+
+
+def test_custom_endpoint_receives_held_back_schemas_after_model_switch(tmp_path):
+    from coworker.providers import AssistantTurn, StreamChunk
+
+    class CaptureProvider(_StubProvider):
+        def __init__(self):
+            self.offered = []
+
+        def stream(self, *, model, messages, tools=None, **settings):
+            self.offered.append({tool["function"]["name"] for tool in tools or []})
+            yield StreamChunk(turn=AssistantTurn(text="ok", finish_reason="stop"))
+
+    provider = CaptureProvider()
+    engine = build_engine(agent=cowork_agent(), workspace=tmp_path, provider=provider)
+    held = {"request_directory", "save_skill", "shell_task_output", "shell_task_kill"}
+    loaded = []
+    engine.registry.defer(["lazy_only"], lambda: loaded.append(True))
+    try:
+        async def sample():
+            return [chunk async for chunk in engine._astream()]
+
+        asyncio.run(sample())
+        assert held.isdisjoint(provider.offered[-1])
+        engine.switch_model("custom:qwen3.8-flash-next-iq2_xs")
+        asyncio.run(sample())
+        assert held <= provider.offered[-1]
+        assert "lazy_only" not in provider.offered[-1]
+        assert not loaded
+        assert held.isdisjoint(_schema_names(engine))
+        engine.switch_model("gpt-5.6-sol")
+        asyncio.run(sample())
+        assert held.isdisjoint(provider.offered[-1])
+        assert engine.registry.get("shell_task_output") is not None
+        assert "shell_task_output" in _schema_names(engine)
+    finally:
+        engine.executor.close()
+
+
+def test_replacing_a_held_back_tool_does_not_restore_the_old_schema():
+    from coworker.tools import ToolRegistry
+
+    registry = ToolRegistry()
+
+    def sample():
+        return "old"
+
+    registry.register(sample)
+    registry.hold_back(["sample"])
+
+    def sample():
+        return "new"
+
+    registry.register(sample)
+    schemas = registry.schemas(include_held_back=True)
+    assert [schema["function"]["name"] for schema in schemas] == ["sample"]
+    assert registry.execute("sample") == "new"
 
 
 def test_messaging_and_memory_tools_are_registered_but_hidden(tmp_path):
