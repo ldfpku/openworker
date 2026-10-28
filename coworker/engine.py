@@ -3043,6 +3043,7 @@ class TurnEngine:
                 write_targets=targets,
                 metadata=spec.metadata if spec else None,
                 egress_host=self.permissions.egress_host,
+                cwd=self.permissions._shell_base(),
             )
         except Exception:  # noqa: BLE001 - facts inform the reviewer, never gate it
             return {}

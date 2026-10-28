@@ -126,6 +126,8 @@ _SECRET_VALUE = re.compile(
 )
 # Contents of a file an action sends are scanned up to this many bytes (OPE-236 review).
 SECRET_SCAN_MAX_BYTES = 1_000_000
+# A script a shell command runs is read up to this many bytes (OPE-236 point 4).
+SCRIPT_SCAN_MAX_BYTES = 256_000
 
 # Git states this module reports for an existing file.
 TRACKED_CLEAN = "tracked_clean"
@@ -260,21 +262,34 @@ def has_secret_value(arguments: dict[str, Any]) -> bool:
     return any(has_secret_text(text) for text in _strings(arguments))
 
 
-def file_has_secret(path: Path) -> Optional[bool]:
-    """Whether a file's CONTENTS carry a secret-looking value: True/False, or None when the
-    file can't be judged (missing, a folder, unreadable, over `SECRET_SCAN_MAX_BYTES`).
-    The caller decides what None means; the floor falls back to the file's name. Bytes are
-    decoded as ASCII with replacement, so a binary file is searched too, nothing can fail
-    to decode, and a non-ASCII byte is a word boundary rather than a letter."""
+def read_capped(path: Path, cap: int) -> Optional[str]:
+    """A file's contents as text, or None when it can't be judged (missing, a folder,
+    unreadable, bigger than `cap`). Bytes are decoded as ASCII with replacement, so a
+    binary file is searched too, nothing can fail to decode, and a non-ASCII byte is a
+    word boundary rather than a letter."""
     try:
         if not path.is_file():
             return None
-        if path.stat().st_size > SECRET_SCAN_MAX_BYTES:
+        if path.stat().st_size > cap:
             return None
         data = path.read_bytes()
     except (OSError, ValueError):
         return None
-    return has_secret_text(data.decode("ascii", "replace"))
+    return data.decode("ascii", "replace")
+
+
+def file_has_secret(path: Path) -> Optional[bool]:
+    """Whether a file's CONTENTS carry a secret-looking value: True/False, or None when the
+    file can't be judged (see `read_capped`, cap `SECRET_SCAN_MAX_BYTES`). The caller
+    decides what None means; the floor falls back to the file's name."""
+    text = read_capped(path, SECRET_SCAN_MAX_BYTES)
+    return None if text is None else has_secret_text(text)
+
+
+def run_git(args: list[str], cwd: Path) -> Optional[subprocess.CompletedProcess]:
+    """Run git without a shell, never taking the index lock, 5 s timeout; None when git
+    is missing or failed to run. Shared by the file-state fact and the push check."""
+    return _git(args, cwd)
 
 
 def _written_lines(arguments: dict[str, Any]) -> list[str]:
