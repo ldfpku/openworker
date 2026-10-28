@@ -903,9 +903,9 @@ class TurnEngine:
         # the agent's own bytes are lost. An injected lookup (tests) is left alone.
         if getattr(permissions, "agent_wrote", None) is None:
             permissions.agent_wrote = self._agent_files.wrote
-        # OPE-235: whether outside content (web, email, connectors, downloads) has entered
-        # the agent's context this session; one of the reviewer's computed facts.
-        self._external_read = False
+        # OPE-235: what each shell command is about to bring in from outside, keyed by tool
+        # call id from just before it runs until its result is recorded.
+        self._intake_plans: dict[str, Any] = {}
         # Completed tool calls so far, so a fact can say how many steps back the write was.
         self._step = 0
         self._last_context_tokens: Optional[int] = None
@@ -2196,7 +2196,14 @@ class TurnEngine:
                 if not failed:
                     break
         if state is not None:
+            # OPE-235: the summarizer read every message it summarized, so outside content
+            # there may survive in the summary; and the transcript file holds it verbatim.
+            state.carries_outside = self._outside_before(state.boundary_index, summarized=True)
             self._write_compaction_transcript(state)
+            if state.transcript_path and any(
+                m.get("_outside") for m in self.messages[: state.boundary_index]
+            ):
+                self._agent_files.mark_outside(state.transcript_path)
             self.compaction_state = state
             self._last_context_tokens = None  # stale once the outbound view shrank
             return "Context compacted — earlier turns were summarized"
@@ -2210,10 +2217,26 @@ class TurnEngine:
                 max_tail_tokens=int(_compaction.TRIM_TARGET_FRACTION * trigger),
             )
             if trimmed is not None:
+                # The trim drops its span without summarizing it; only an earlier summary
+                # (kept in the block) can still carry outside content.
+                trimmed.carries_outside = self._outside_before(trimmed.boundary_index, summarized=False)
                 self.compaction_state = trimmed
                 self._last_context_tokens = None
                 return "Context trimmed — oldest turns dropped (summary unavailable)"
         return None
+
+    def _outside_before(self, boundary: int, *, summarized: bool) -> bool:
+        """OPE-235: whether the compacted block for a new boundary carries outside content:
+        the earlier summary did, or this compaction summarized a message that brought some
+        in. Messages only trimmed away leave nothing behind (the block's mechanical parts
+        are the agent's own commands and the user's messages)."""
+        prior = self.compaction_state
+        if prior is not None and prior.carries_outside:
+            return True
+        if not summarized:
+            return False
+        start = prior.boundary_index if prior is not None else 0
+        return any(m.get("_outside") for m in self.messages[start:boundary])
 
     # -- helpers ----------------------------------------------------------------
     def _offered_tool_schemas(self) -> Optional[list[dict[str, Any]]]:
@@ -2975,6 +2998,24 @@ class TurnEngine:
         cwd = getattr(executor, "cwd", None) if executor is not None else None
         return str(cwd) if cwd else None
 
+    def _outside_in_context(self) -> bool:
+        """OPE-235: whether content from outside is still in what the agent is sent: a tool
+        result marked `_outside` after the compaction boundary, or a compacted summary that
+        was written from one. Outside text can carry instructions for as long as the agent
+        can see it, so the line lasts exactly that long."""
+        state = self.compaction_state
+        start = 0
+        if state is not None and 0 < state.boundary_index < len(self.messages):
+            if state.carries_outside:
+                return True
+            start = state.boundary_index
+        return any(m.get("_outside") for m in self.messages[start:])
+
+    def _shell_cwd(self) -> Optional[str]:
+        executor = getattr(self, "executor", None)
+        cwd = getattr(executor, "cwd", None) if executor is not None else None
+        return str(cwd) if cwd else None
+
     def _facts_kw(
         self, tool_call: ToolCall, request: str, history: list[dict[str, Any]]
     ) -> dict[str, Any]:
@@ -2994,7 +3035,7 @@ class TurnEngine:
                 tool_call.name,
                 tool_call.arguments or {},
                 user_texts=[request, *(str(h.get("text", "")) for h in history)],
-                external_read=self._external_read,
+                external_read=self._outside_in_context(),
                 write_targets=targets,
                 metadata=spec.metadata if spec else None,
                 egress_host=self.permissions.egress_host,
@@ -3437,6 +3478,16 @@ class TurnEngine:
         # The one chokepoint every executed call passes through, concurrent or serial.
         self._tool_started_at[tool_call.id] = time.time()
         try:
+            try:
+                # OPE-235: note what a shell command will bring in before it runs, so the
+                # folders it adds to can be compared afterwards.
+                plan = self._agent_files.before(
+                    tool_call.name, tool_call.arguments, cwd=self._shell_cwd()
+                )
+                if plan is not None:
+                    self._intake_plans[tool_call.id] = plan
+            except Exception:  # noqa: BLE001 - bookkeeping never blocks a tool
+                pass
             return self.registry.execute(tool_call.name, tool_call.arguments), "ok"
         except Exception as exc:
             # A tool may answer "the tool for this is X" — `write_file` refusing a .xlsx is
@@ -3458,26 +3509,29 @@ class TurnEngine:
 
     def _record_result(self, tool_call: ToolCall, result: Any, status: str) -> Event:
         self._step += 1
+        plan = self._intake_plans.pop(tool_call.id, None)
+        outside = False
         if status == "ok":
-            # OPE-235: once outside content has entered the agent's context, every later
-            # review says so. Checked before recording, so reading a file downloaded in
-            # an EARLIER call counts, not the download call itself twice.
             spec = self.registry.get(tool_call.name)
-            if not self._external_read and (
-                review_facts.is_external_read(
-                    tool_call.name, tool_call.arguments, spec.metadata if spec else None
-                )
-                or (
-                    tool_call.name == "read_file"
-                    and self._agent_files.downloaded(
-                        str((tool_call.arguments or {}).get("path", ""))
+            # OPE-235: whether this result brings outside content into the agent's context
+            # (marked on its message below). Checked before recording, so reading a file
+            # that came from outside in an EARLIER call counts, not the download itself.
+            cwd = plan.cwd if plan is not None else self._shell_cwd()
+            try:
+                outside = (
+                    review_facts.is_external_read(
+                        tool_call.name, tool_call.arguments, spec.metadata if spec else None
+                    )
+                    or (plan is not None and plan.brings_outside_in)
+                    or self._agent_files.reads_outside(
+                        tool_call.name, tool_call.arguments, cwd=cwd
                     )
                 )
-            ):
-                self._external_read = True
+            except Exception:  # noqa: BLE001 - a fact, never a reason to fail a call
+                outside = True
             # Only successful calls: a write that raised left nothing on disk to run.
             self._agent_files.record(
-                tool_call.name, tool_call.arguments, result, step=self._step
+                tool_call.name, tool_call.arguments, result, step=self._step, cwd=cwd, plan=plan
             )
         # A `_display` key on a tool result is user-facing metadata the AGENT must
         # never see (e.g. how many gmail hits the privacy filters hid — a count
@@ -3508,6 +3562,8 @@ class TurnEngine:
             # in `_outbound_messages`, kept in the jsonl. With `ts` it brackets exactly the
             # interval the tool was running in.
             message["t0"] = started
+        if outside:
+            message["_outside"] = True
         self.messages.append(message)
         hidden = int((display or {}).get("hidden_by_filters") or 0)
         stripped = int((display or {}).get("hidden_fields") or 0)
@@ -4117,6 +4173,7 @@ class TurnEngine:
             "source",
             "_display",
             "_preflight",
+            "_outside",
             "ts",
             "t0",
             "reasoning",

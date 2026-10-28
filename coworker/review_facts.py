@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
+from . import provenance, public_suffix
 from .risk import RiskClass, classify
 from .workspace_safety import (
     IGNORED,
@@ -51,8 +52,21 @@ _NETWORK_CLIENTS = {
     "invoke-webrequest", "iwr", "invoke-restmethod", "irm", "start-bitstransfer",
 }
 _URL_HOST = re.compile(r"\b[a-z][a-z0-9+.-]*://([^/\s'\"`<>:?#\\]+)", re.IGNORECASE)
-_DOMAIN = re.compile(r"(?<![@\w.-])((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})(?![\w-])", re.IGNORECASE)
+# A bare domain in the user's text, not one inside a path (`docs/intro.md`).
+_DOMAIN = re.compile(
+    r"(?<![@\w./\\~-])((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})(?![\w-])", re.IGNORECASE
+)
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+# Top-level domains that are also common file extensions. A bare `main.py` or `model.ai` is
+# a file name; a name with one of these endings counts as a site only when written as one:
+# in a URL or email address, after `www.`, or followed by a path or a port.
+_FILE_LIKE_TLDS = {
+    "ac", "ai", "am", "cc", "cl", "gd", "in", "ly", "ma", "md", "mk", "ml", "mo", "mov",
+    "pl", "pm", "ps", "pt", "py", "re", "rs", "sc", "sh", "so", "ss", "st", "sv", "tf", "zip",
+}
+# Connector platforms whose targets are written `platform:chat[:thread]`.
+_HANDLE_PLATFORMS = {"slack", "telegram", "github", "discord", "whatsapp"}
+_PHONE = re.compile(r"\+?\d[\d\s().-]{5,}\d")
 _DOWNLOAD_TOOLS = {"github_clone", "github_pull", "email_download_attachment"}
 _PATH_ARGS = ("path", "file", "files", "filename", "attachment", "attachments", "source", "src")
 
@@ -83,31 +97,128 @@ def is_external_read(tool_name: str, arguments: dict[str, Any], metadata: Any = 
     if _KIND_BY_NAME.get(tool_name) == "read":
         return True
     if tool_name == "run_shell":
-        return shell_reaches_network(str((arguments or {}).get("command", "")))
+        command = str((arguments or {}).get("command", ""))
+        return shell_reaches_network(command) or provenance.fetches_outside_files(command)
     return False
 
 
+def _bare_host(host: str) -> str:
+    host = host.lower().strip(".")
+    return host[4:] if host.startswith("www.") else host
+
+
 def _named(user_texts: Iterable[str]) -> tuple[set[str], str]:
-    """Hosts/domains and the lowercased text the user wrote."""
+    """Hosts/domains the user gave as destinations, and the lowercased text they wrote."""
     text = "\n".join(t for t in user_texts if t).lower()
-    domains = {m.group(1).lower() for m in _URL_HOST.finditer(text)}
-    domains |= {m.group(1).lower() for m in _DOMAIN.finditer(text)}
+    domains = {m.group(1).rsplit("@", 1)[-1] for m in _URL_HOST.finditer(text)}
+    for m in _DOMAIN.finditer(text):
+        domain = m.group(1)
+        if domain.rsplit(".", 1)[-1] in _FILE_LIKE_TLDS:
+            after = text[m.end():m.end() + 2]
+            if not (domain.startswith("www.") or after[:1] == "/" or re.match(r":\d", after)):
+                continue  # main.py, README.md, run.sh: a file name, not a site
+        domains.add(domain)
     domains |= {e.split("@", 1)[1] for e in _EMAIL.findall(text)}
-    return {d.strip(".") for d in domains if d}, text
+    return {_bare_host(d) for d in domains if d.strip(".")}, text
 
 
 def _host_named(host: str, domains: set[str]) -> bool:
-    host = host.lower().strip(".")
-    if host.startswith("www."):
-        host = host[4:]
-    return any(host == d or host.endswith("." + d) for d in domains)
+    """The exact host, or a subdomain of a domain the user named. Naming a public suffix
+    (`herokuapp.com`, `github.io`) names only itself, not every site hosted under it."""
+    host = _bare_host(host)
+    return any(
+        host == d or (host.endswith("." + d) and not public_suffix.is_public_suffix(d))
+        for d in domains
+    )
+
+
+def _appears(form: str, text: str) -> bool:
+    """`form` written as a whole token: `#ops` is not in `#ops-alerts`, `acme/web` is not
+    in `acme/website`."""
+    pattern = r"(?<![\w@.#-])" + re.escape(form.lower()) + r"(?![\w-]|\.\w)"
+    return re.search(pattern, text) is not None
+
+
+def _id_like(value: str) -> bool:
+    """A generated id (`C0123ABCD`, a Discord snowflake): long and with a digit, so it is
+    neither an ordinary word nor a small number in a sentence."""
+    return len(value) >= 6 and any(c.isdigit() for c in value)
+
+
+def _chat_named(chat: str, text: str) -> bool:
+    """A channel id in full, or a channel name with its `#`."""
+    if chat.startswith("#"):
+        return _appears(chat, text)
+    return _appears(chat, text) if _id_like(chat) else _appears("#" + chat, text)
 
 
 def _target_named(target: str, text: str) -> bool:
-    target = target.strip().lower()
-    if len(target) < 3:
-        return False
-    return re.search(r"(?<![\w@.-])" + re.escape(target) + r"(?![\w-])", text) is not None
+    """Whether the user wrote this connector target in its own form: an email address or
+    phone number exactly; a channel as `#name` or its full id; a GitHub thread as
+    `owner/repo` or `owner/repo#12`; any other target as its full handle, or as a bare id
+    when the id is long enough not to be an ordinary word or number."""
+    target = target.strip()
+    emails = _EMAIL.findall(target)
+    if emails:
+        given = {e.lower() for e in _EMAIL.findall(text)}
+        return all(e.lower() in given for e in emails)
+    if re.fullmatch(r"\+?[\d\s().-]{7,}", target):
+        digits = re.sub(r"\D", "", target)
+        return any(re.sub(r"\D", "", p) == digits for p in _PHONE.findall(text))
+    platform, sep, rest = target.partition(":")
+    platform = platform.lower()
+    if sep and platform in _HANDLE_PLATFORMS:
+        if _appears(target, text):
+            return True  # the whole handle, e.g. `slack:C0123ABCD`
+        chat = rest.split(":", 1)[0]
+        if platform == "github":
+            repo = chat.split("#", 1)[0]
+            return "/" in repo and (_appears(chat, text) or _appears(repo, text))
+        if platform == "slack":
+            return _chat_named(chat.rsplit("/", 1)[-1], text)
+        return _id_like(chat) and _appears(chat, text)
+    return _chat_named(target, text)
+
+
+def _github_thread(number_arg: str) -> Callable[[dict[str, Any]], Optional[str]]:
+    def target(arguments: dict[str, Any]) -> Optional[str]:
+        owner = str(arguments.get("owner") or "").strip()
+        repo = str(arguments.get("repo") or "").strip()
+        number = str(arguments.get(number_arg) or "").strip()
+        if not (owner and repo and number.isdigit()):
+            return None
+        return f"github:{owner}/{repo}#{number}"
+
+    return target
+
+
+def _slack_thread(arguments: dict[str, Any]) -> Optional[str]:
+    workspace = str(arguments.get("workspace") or "").strip()
+    channel = str(arguments.get("channel") or "").strip()
+    thread = str(arguments.get("thread_ts") or "").strip()
+    if not channel:
+        return None
+    chat = f"{workspace}/{channel}" if workspace and workspace != "default" else channel
+    return f"slack:{chat}" + (f":{thread}" if thread else "")
+
+
+def _telegram_chat(arguments: dict[str, Any]) -> Optional[str]:
+    chat_id = str(arguments.get("chat_id") or "").strip()
+    thread = str(arguments.get("thread_id") or "").strip()
+    if not chat_id:
+        return None
+    return f"telegram:{chat_id}" + (f":{thread}" if thread else "")
+
+
+# Connector targets built from several arguments, in the same handle form upstream's
+# standing rules use. The fork's tool registry names only single-argument targets
+# (target_arg_for), and these must not make the tools rule-eligible, so they live here.
+_COMPOSITE_TARGETS: dict[str, Callable[[dict[str, Any]], Optional[str]]] = {
+    "slack_post_message": _slack_thread,
+    "telegram_send_message": _telegram_chat,
+    "github_reply": _github_thread("number"),
+    "github_review": _github_thread("pull_number"),
+}
 
 
 def destination_fact(
@@ -131,8 +242,12 @@ def destination_fact(
             from .connectors.tool_defs import target_arg_for
         except ImportError:  # pragma: no cover
             return DESTINATION_UNKNOWN
-        arg = target_arg_for(tool_name)
-        target = str((arguments or {}).get(arg) or "").strip() if arg else ""
+        composite = _COMPOSITE_TARGETS.get(tool_name)
+        if composite is not None:
+            target = composite(arguments or {}) or ""
+        else:
+            arg = target_arg_for(tool_name)
+            target = str((arguments or {}).get(arg) or "").strip() if arg else ""
         if not target:
             return DESTINATION_UNKNOWN
         if _target_named(target, text):
