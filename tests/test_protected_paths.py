@@ -153,21 +153,36 @@ _NEW_MARKER_TARGETS = [
     ".git/modules/vendor/lib/hooks/post-checkout",
     ".git/modules/vendor/lib/config",
     "vendor/lib/.git",  # a `.git` file says which folder git takes settings and hooks from
+    ".git/worktrees/feature/config.worktree",  # a linked worktree's own settings
     # pytest imports these on every test run, at any depth
     "conftest.py",
     "tests/unit/conftest.py",
+    "pytest.ini",  # its options can load a plugin on every test run
+    # Python imports these on every start of an interpreter that can see them
+    "sitecustomize.py",
+    ".venv/Lib/site-packages/usercustomize.py",
+    # mise loads these on entering the folder
+    ".mise.toml",
+    "mise.toml",
+    "mise.local.toml",
     # CI services run these on push
     "azure-pipelines.yml",
     ".travis.yml",
     "Jenkinsfile",
     "bitbucket-pipelines.yml",
     ".buildkite/pipeline.yml",
+    ".github/actions/setup/action.yml",  # actions the workflows call
     # the editor runs this when the user starts the program or the debugger
     ".vscode/launch.json",
+    ".vscode/settings.json",  # can name the terminal shell, interpreter and formatters
     # package managers read these on every run, and they can name programs to run
     ".npmrc",
     ".yarnrc",
     ".yarnrc.yml",
+    ".pnpmfile.cjs",
+    # cargo's settings can name the program that runs, links or wraps every build
+    ".cargo/config.toml",
+    ".cargo/config",
 ]
 
 
@@ -184,8 +199,13 @@ def test_new_protected_targets_are_human_only(tmp_path, target):
         ".git/index.lock",
         ".git/COMMIT_EDITMSG",
         ".git/info/exclude",
-        ".vscode/settings.json",
         ".vscode/extensions.json",
+        ".github/ISSUE_TEMPLATE/bug.md",
+        "docs/pytest.ini.md",
+        "src/sitecustomize_helpers.py",
+        "notes/mise.toml.example",
+        ".cargo/credentials.toml",
+        "src/cargo/config.rs",
         "src/conftest.py.bak",
         "tests/my_conftest.py",
         "docs/Jenkinsfile.md",
@@ -296,6 +316,12 @@ def test_a_sequence_of_reads_is_still_a_read(tmp_path, command):
         "git config user.email a@b.c",
         "git config --global user.name 'A B'",
         "git config set --local init.defaultBranch main",
+        "git config --global core.longpaths true",
+        "git config push.autoSetupRemote true",
+        "git config --global push.default simple",
+        "git config fetch.prune true",
+        "git config rebase.autoStash true",
+        "git config merge.conflictStyle zdiff3",
         "cd .git && cat config",
     ],
 )
@@ -311,6 +337,7 @@ def test_other_shell_commands_are_unaffected(tmp_path, case_insensitive, command
         "git config --local core.fsmonitor ./watch.sh",
         "git -C sub config alias.st '!sh x'",
         "git config set core.pager less",
+        "git config --global core.editor vim",
         "git config --unset core.hooksPath",
         "git config -e",
         "git config --system --add safe.directory /deps/repo",

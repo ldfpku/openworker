@@ -123,6 +123,7 @@ def protected_paths() -> list[Path]:
 _PROTECTED_IN_PROJECT = (
     ".git/hooks/",
     ".github/workflows/",
+    ".github/actions/",  # actions the workflows call; they run with the workflow
     ".gitlab-ci.yml",
     ".vscode/tasks.json",
     ".coworker/",  # workspace policy + skills the agent would otherwise self-grant
@@ -147,8 +148,18 @@ _PROTECTED_IN_PROJECT = (
     ".git/config",
     ".git/info/attributes",
     ".git/modules/",
+    ".git/worktrees/",  # each linked worktree's own settings, same role as `modules/`
     ".git",
     "conftest.py",  # pytest imports it on every test run, from any folder it collects
+    "pytest.ini",  # its options can load a plugin on every test run, like `tox.ini`
+    # Python imports these on every start of the interpreter that can see them.
+    "sitecustomize.py",
+    "usercustomize.py",
+    # mise loads these on entering the folder, as direnv does `.envrc`.
+    ".mise.toml",
+    "mise.toml",
+    ".mise.local.toml",
+    "mise.local.toml",
     # CI services run these on push.
     "azure-pipelines.yml",
     ".travis.yml",
@@ -156,11 +167,18 @@ _PROTECTED_IN_PROJECT = (
     "bitbucket-pipelines.yml",
     ".buildkite/",
     ".vscode/launch.json",  # what the editor runs when the user starts or debugs the program
+    # Editor settings can name programs the editor starts on its own: the terminal
+    # shell, the interpreter, formatters and linters.
+    ".vscode/settings.json",
     # Package managers read these on every run, and a setting can name a program to run
     # in place of (or alongside) the package manager itself.
     ".npmrc",
     ".yarnrc",
     ".yarnrc.yml",
+    ".pnpmfile.cjs",  # code pnpm runs on every install
+    # cargo's settings can name the program that runs, links or wraps every build.
+    ".cargo/config.toml",
+    ".cargo/config",
 )
 
 
@@ -254,6 +272,8 @@ _GIT_CONFIG_VALUE_FLAGS = {"-f", "--file", "--blob", "-t", "--type", "--default"
 # file to load, or where git fetches from. Setting one keeps its normal handling.
 _GIT_CONFIG_PLAIN_KEYS = {
     "user.name", "user.email", "init.defaultbranch", "core.autocrlf", "pull.rebase", "color.ui",
+    "core.longpaths", "push.default", "push.autosetupremote", "fetch.prune", "rebase.autostash",
+    "merge.conflictstyle",
 }
 _GIT_CONFIG_WHOLE_FILE = {"--edit", "-e", "edit", "--rename-section", "rename-section",
                           "--remove-section", "remove-section"}
