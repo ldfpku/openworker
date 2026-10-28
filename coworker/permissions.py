@@ -456,29 +456,17 @@ from .risk import (  # re-exported for back-compat (manager.py imports WRITE_TOO
     classify,
     is_consequential,
 )
-from .workspace_safety import has_secret_value, inert_write_check, is_sensitive_name
+from .workspace_safety import (
+    file_has_secret,
+    has_secret_value,
+    inert_write_check,
+    is_sensitive_path,
+)
 
 # The reason prefix of an OPE-233 inert-write allow; the engine keys the transcript chip
 # and the audit row on `Decision.tier`, this text is what the record says.
 INERT_WRITE_REASON = "inert, reversible write inside your folders"
 SECRET_EGRESS_REASON = "this sends a secret-looking file or value off the machine — approval required"
-
-
-def _sends_secret(tool_name: str, arguments: dict[str, Any], metadata: Any, risk: RiskClass) -> bool:
-    """OPE-236: the call sends data off the machine AND names a secret-looking file or
-    carries a secret-looking value. Sending = egress or external risk (web tools,
-    connector writes, MCP tools) or a shell command that runs a network client."""
-    from .review_facts import referenced_names, shell_reaches_network
-
-    sends = risk in (RiskClass.EGRESS, RiskClass.EXTERNAL) or (
-        tool_name == SHELL_TOOL
-        and shell_reaches_network(str((arguments or {}).get("command", "")))
-    )
-    if not sends:
-        return False
-    if has_secret_value(arguments or {}):
-        return True
-    return any(is_sensitive_name(n) for n in referenced_names(tool_name, arguments or {}, []))
 
 
 # The transcript's full Auto-Approve explainer (owner copy 2026-08-24). Persisted as a
@@ -620,6 +608,10 @@ class PermissionEngine:
     agent_wrote: Optional[Callable[[Path], bool]] = None
     # Where `web_search` goes: the configured provider's host (it has no url argument).
     search_host: Optional[Callable[[], str]] = None
+    # "Did the agent write a secret-looking value into this file this session?" (OPE-236).
+    # A file the agent filled with a key and then sends is caught even when the file can't
+    # be read back (moved, over the size cap, outside the folders).
+    agent_file_has_secret: Optional[Callable[[Path], bool]] = None
 
     def __post_init__(self) -> None:
         self.workspace_root = Path(self.workspace_root).expanduser().resolve()
@@ -716,7 +708,7 @@ class PermissionEngine:
         # reviewer, every allowlist and Bypass. Whether an agent declines
         # to upload a .env file is model behaviour, not policy. A backstop on top of the
         # sandbox's network allowlist: shell egress can't be recognised completely.
-        if _sends_secret(tool_name, arguments, metadata, risk):
+        if self._sends_secret(tool_name, arguments, risk):
             return Decision(False, SECRET_EGRESS_REASON, needs_user=True, human_only=True)
 
         # Non-consequential tools always run.
@@ -896,6 +888,45 @@ class PermissionEngine:
             host = host[4:]
         if host:
             self.session_allow_domains.add(host)
+
+    def _sends_secret(self, tool_name: str, arguments: dict[str, Any], risk: RiskClass) -> bool:
+        """OPE-236: the call sends data off the machine AND a secret is involved. Sending =
+        egress or external risk (web tools, connector writes, MCP tools) or a shell command
+        that runs a network client. A secret is involved when:
+
+        * an argument carries a secret-looking value (`has_secret_value`), or
+        * a file the action names has a secret-looking name or path (`is_sensitive_path`:
+          `.env`, `id_rsa`, `~/.kube/config`, `*.tfstate`, ...), or
+        * a file the action SENDS (an upload, an attachment, `scp`) holds a secret-looking
+          value: the engine recorded the agent writing one into it this session, or the
+          file is inside the session's folders, no bigger than `SECRET_SCAN_MAX_BYTES`, and
+          its contents match. A file that can't be read (missing, a folder, too big,
+          outside the folders) is judged by its name alone, so an unreadable plain file is
+          not a card.
+        """
+        from .review_facts import referenced_files, sent_files, shell_reaches_network
+
+        arguments = arguments or {}
+        sends = risk in (RiskClass.EGRESS, RiskClass.EXTERNAL) or (
+            tool_name == SHELL_TOOL
+            and shell_reaches_network(str(arguments.get("command", "")))
+        )
+        if not sends:
+            return False
+        if has_secret_value(arguments):
+            return True
+        if any(is_sensitive_path(p) for p in referenced_files(tool_name, arguments, [])):
+            return True
+        for sent in sent_files(tool_name, arguments):
+            try:
+                candidate = self._candidate(sent)
+                if self.agent_file_has_secret is not None and self.agent_file_has_secret(candidate):
+                    return True
+                if self._under_root(sent) and file_has_secret(candidate):
+                    return True
+            except (OSError, ValueError):  # an unresolvable path: judged by its name above
+                continue
+        return False
 
     # -- helpers ----------------------------------------------------------------
     def _candidate(self, path: str) -> Path:

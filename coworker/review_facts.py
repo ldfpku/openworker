@@ -26,7 +26,7 @@ from .workspace_safety import (
     UNTRACKED,
     git_file_state,
     has_secret_value,
-    is_sensitive_name,
+    is_sensitive_path,
 )
 
 EXTERNAL_READ = "content from outside (web, email, connectors, downloads) was read earlier in this session"
@@ -279,26 +279,132 @@ def file_state_fact(targets: list[Path]) -> str:
     return _FILE_STATE_LINES.get(worst, _FILE_STATE_LINES["unknown"])
 
 
-def referenced_names(tool_name: str, arguments: dict[str, Any], write_targets: list[Path]) -> list[str]:
-    names = [t.name for t in write_targets]
-    args = arguments or {}
+def _path_arg_values(arguments: dict[str, Any]) -> list[str]:
+    out: list[str] = []
     for key in _PATH_ARGS:
-        value = args.get(key)
+        value = (arguments or {}).get(key)
         values = value if isinstance(value, (list, tuple)) else [value]
-        names += [Path(str(v).replace("\\", "/")).name for v in values if isinstance(v, str) and v]
+        out += [str(v) for v in values if isinstance(v, str) and v]
+    return out
+
+
+def referenced_files(tool_name: str, arguments: dict[str, Any], write_targets: list[Path]) -> list[str]:
+    """Every file-like path the action names, as written (separators normalised to `/`):
+    write targets, path-shaped arguments, and for a shell command every word that could
+    be a file. A URL is a destination, not a local file, and is left out: before this,
+    `curl https://api.example.com/oauth/token` read as a file called `token`."""
+    paths = [str(t) for t in write_targets] + _path_arg_values(arguments)
     if tool_name == "run_shell":
-        for word in _words(str(args.get("command", ""))):
+        for word in _words(str((arguments or {}).get("command", ""))):
+            if "://" in word:
+                continue
             word = word.lstrip("@")  # curl -F file=@.env / --data-binary @id_rsa
             if "=" in word:
-                word = word.rsplit("=", 1)[-1].lstrip("@")
-            names.append(Path(word.replace("\\", "/")).name)
-    return [n for n in names if n]
+                word = word.rsplit("=", 1)[-1]
+                if not _FILE_LIKE_VALUE.search(word):
+                    continue
+                word = word.lstrip("@")
+            paths.append(word)
+    return [p.replace("\\", "/") for p in paths if p]
+
+
+def referenced_names(tool_name: str, arguments: dict[str, Any], write_targets: list[Path]) -> list[str]:
+    """Base names of `referenced_files` (kept for callers that judge names only)."""
+    return [Path(p).name for p in referenced_files(tool_name, arguments, write_targets) if Path(p).name]
+
+
+# Shell programs that send a LOCAL FILE out, and how the file is named on their command
+# line. curl: `@file` after a data flag, `name=@file` in a form, `-T`/`--upload-file`.
+# wget: `--post-file`, `--body-file`. PowerShell: `-InFile`. scp/rsync/sftp: the local
+# arguments before the remote `host:path`.
+_UPLOAD_VALUE_FLAGS = {
+    "curl": {"-T", "--upload-file"},
+    "wget": {"--post-file", "--body-file"},
+    "invoke-webrequest": {"-infile"},
+    "iwr": {"-infile"},
+    "invoke-restmethod": {"-infile"},
+    "irm": {"-infile"},
+}
+_COPY_PROGRAMS = {"scp", "rsync", "sftp"}
+_REMOTE_ARG = re.compile(r"^(?:[\w.-]+@)?[\w.-]+:|^rsync://", re.IGNORECASE)
+_DRIVE = re.compile(r"^[A-Za-z]:[\\/]")  # `C:\x` is a local Windows path, not `host:path`
+# A `key=value` word names a file only when the value looks like one: a variable
+# (`token=$GITHUB_TOKEN`), an `@file`, a path, or a dotted name (`--output=keys.json`).
+# `grant_type=client_credentials` is a form field, not a file called `client_credentials`.
+_FILE_LIKE_VALUE = re.compile(r"^[$@%~.]|[\\/.]")
+
+
+def _argv(part: str) -> list[str]:
+    """shlex for unix tools; whitespace for PowerShell, whose paths use backslashes."""
+    import shlex
+
+    words = _words(part)
+    if words and Path(words[0]).name.lower().startswith(("invoke-", "iwr", "irm")):
+        return words
+    try:
+        return shlex.split(part)
+    except ValueError:
+        return words
+
+
+def sent_files(tool_name: str, arguments: dict[str, Any]) -> list[str]:
+    """Local files whose CONTENTS an action sends off the machine, as written. For
+    connector, web and MCP tools: the path-shaped arguments (an attachment, an upload's
+    `path`). For a shell command: the upload positions listed above. Whether the action
+    sends at all is the caller's question (`shell_reaches_network`, the risk class).
+
+    OPE-236 point 4 (pending the parent review's live comparison): this reads the command
+    TEXT and is best effort. A script that builds its URL at runtime, `git push` of a
+    repository with a committed `.env`, or data piped from `cat` (`@-`) are not seen here.
+    When the findings land, extend this function and `shell_reaches_network`, and move the
+    strict expected failures in tests/test_secrets_floor.py up into the passing tests."""
+    args = arguments or {}
+    if tool_name != "run_shell":
+        return [p.replace("\\", "/") for p in _path_arg_values(args)]
+    from .permissions import _split_commands
+
+    out: list[str] = []
+    for part in _split_commands(str(args.get("command", ""))):
+        argv = _argv(part)
+        if not argv:
+            continue
+        program = Path(argv[0]).name.lower()
+        program = program[:-4] if program.endswith(".exe") else program
+        flags = _UPLOAD_VALUE_FLAGS.get(program)
+        if flags is not None:
+            folded = program.startswith(("invoke-", "iwr", "irm"))
+            for i, token in enumerate(argv[1:], start=1):
+                probe = token.lower() if folded else token
+                if probe in flags and i + 1 < len(argv):
+                    out.append(argv[i + 1])
+                elif probe.startswith("--") and "=" in probe:
+                    flag, _, value = token.partition("=")
+                    if flag in flags and value:
+                        out.append(value)
+                if program == "curl":
+                    if token.startswith("@") and token != "@-":
+                        out.append(token[1:])
+                    elif "=@" in token:
+                        out.append(token.split("=@", 1)[1])
+        elif program in _COPY_PROGRAMS:
+            local: list[str] = []
+            remote_seen = False
+            for token in argv[1:]:
+                if token.startswith("-"):
+                    continue
+                if _REMOTE_ARG.match(token) and not _DRIVE.match(token):
+                    remote_seen = True
+                    break  # what follows a remote source is a local destination
+                local.append(token)
+            if remote_seen:
+                out.extend(local)
+    return [p.replace("\\", "/") for p in out if p]
 
 
 def secret_fact(tool_name: str, arguments: dict[str, Any], write_targets: list[Path]) -> str:
     if has_secret_value(arguments or {}):
         return SECRET_INVOLVED
-    if any(is_sensitive_name(n) for n in referenced_names(tool_name, arguments, write_targets)):
+    if any(is_sensitive_path(p) for p in referenced_files(tool_name, arguments, write_targets)):
         return SECRET_INVOLVED
     return ""
 

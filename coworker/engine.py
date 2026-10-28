@@ -906,6 +906,10 @@ class TurnEngine:
         # OPE-235: what each shell command is about to bring in from outside, keyed by tool
         # call id from just before it runs until its result is recorded.
         self._intake_plans: dict[str, Any] = {}
+        # The secrets floor (OPE-236) asks the same record whether the agent put a
+        # secret-looking value into a file it is now sending.
+        if getattr(permissions, "agent_file_has_secret", None) is None:
+            permissions.agent_file_has_secret = self._agent_files.carries_secret
         # Completed tool calls so far, so a fact can say how many steps back the write was.
         self._step = 0
         self._last_context_tokens: Optional[int] = None
