@@ -140,6 +140,7 @@ describe("origin chips — the safe-write gate tier", () => {
     expect(chip.textContent).toBe("safe change, no card");
     expect(chip.getAttribute("title")).toContain("without the reviewer");
     expect(chip.getAttribute("title")).toContain("can be undone");
+    expect(chip.getAttribute("title")).toContain("a document or image"); // OPE-233: JSON/YAML left the tier
   });
 });
 

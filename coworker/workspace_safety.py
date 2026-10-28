@@ -1,9 +1,11 @@
 """What code can establish about a workspace write without asking a model (OPE-233).
 
 Auto-Approve lets a write skip the reviewer when undoing it is easy and nothing about it
-can execute later: an inert file type, a name and content that don't look secret, and a
+can execute later: a plain document or raster image that no build, installer, test runner
+or other AI tool reads as instructions, a name and content that don't look secret, and a
 target that is new, git-tracked with no uncommitted changes, or written by the agent
-earlier in this session. Every check fails toward "ask the reviewer": an unknown file type,
+earlier in this session. JSON and YAML are never eligible: tools read them to decide what
+to run, and no list of their names can be complete, so the reviewer sees that content. Every check fails toward "ask the reviewer": an unknown file type,
 an unreadable git state or a doubtful name keeps today's behaviour.
 """
 
@@ -18,33 +20,44 @@ from typing import Any, Callable, Optional
 
 from . import procutil
 
-# Plain documents, data and raster images: nothing here is loaded and run by a build,
-# test runner, package manager, shell or browser. Formats that can carry script are NOT
-# here, however document-like: .html/.htm and .svg run JavaScript when opened, .xml can
-# pull in a stylesheet that does, and .pdf supports JavaScript in many readers. A live
-# run showed why (2026-10-26): refused an upload, the agent wrote an .html page whose
-# script did the upload, then tried to open it.
+# Plain documents and raster images: nothing here is loaded and run by a build, test
+# runner, package manager, shell or browser. Formats that can carry script are NOT here,
+# however document-like: .html/.htm and .svg run JavaScript when opened, .xml can pull in
+# a stylesheet that does, and .pdf supports JavaScript in many readers. A live run showed
+# why (2026-10-26): refused an upload, the agent wrote an .html page whose script did the
+# upload, then tried to open it. JSON and YAML are not here either (Devika, 28 Oct 2026):
+# package managers, task runners, CI and deploy tools read them to decide what to run.
 _DOCUMENT_SUFFIXES = frozenset({
     ".md", ".markdown", ".txt", ".rst", ".csv", ".tsv", ".log",
     ".png", ".jpg", ".jpeg", ".gif", ".webp",
 })
-# Structured data is inert unless a tool reads it to decide what to run. Those files are
-# dotfiles (`.eslintrc.json`, `.gitpod.yml`) or have well-known names, listed below.
-_DATA_SUFFIXES = frozenset({".json", ".jsonl", ".yaml", ".yml"})
-_TOOL_CONFIG_NAMES = frozenset({
-    # package managers and task runners: scripts, tasks, hooks
-    "package.json", "package-lock.json", "composer.json", "deno.json", "deno.jsonc",
-    "turbo.json", "nx.json", "lerna.json", "taskfile.yml", "taskfile.yaml",
-    # build and transpile configs that load plugins
-    "babel.config.json", "tsconfig.json", "jsconfig.json", "angular.json", "project.json",
-    # containers and deploy targets
-    "docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml",
-    "vercel.json", "now.json", "firebase.json", "app.json", "app.yaml", "serverless.yml",
-    "serverless.yaml", "cloudbuild.yaml", "cloudbuild.yml", "fly.toml",
-    # CI systems not covered by the protected list
-    "azure-pipelines.yml", "bitbucket-pipelines.yml", "appveyor.yml", "codemagic.yaml",
-    "mkdocs.yml", "renovate.json",
+# Text files that decide what gets built, installed or tested: CMake runs CMakeLists.txt,
+# pip installs what requirements and constraints files list (`requirements-dev.txt`,
+# `dev-requirements.txt`, `requirements/base.txt`), and pytest runs `test*.txt` as doctests
+# by default.
+_BUILD_INPUT_NAME = re.compile(
+    r"^cmakelists\.txt$|^test.*\.txt$|(requirements|constraints).*\.txt$", re.IGNORECASE
+)
+_BUILD_INPUT_FOLDERS = frozenset({"requirements"})
+# Instructions other AI coding tools read into their prompt on their next run, so a write
+# here steers a later agent. AGENTS.md is not listed: the protected list (permissions.py)
+# already keeps it human-only, before this tier is consulted.
+_AGENT_INSTRUCTION_NAME = re.compile(
+    r"^(claude|claude\.local|gemini|qwen|crush|warp|agent|agents\.override|conventions"
+    r"|copilot-instructions|skill)\.md$"
+    r"|\.(instructions|prompt|chatmode|agent)\.md$",  # GitHub Copilot's per-topic files
+    re.IGNORECASE,
+)
+# Every file in these folders, at any depth: Claude Code, Cursor, Windsurf, Cline, Roo,
+# Kiro, Amazon Q, Continue, Junie, Augment, Gemini, Antigravity, OpenHands, Trae, Codex
+# and OpenCode keep rules, commands, prompts and skills there.
+_AGENT_FOLDERS = frozenset({
+    ".claude", ".cursor", ".windsurf", ".clinerules", ".roo", ".kiro", ".amazonq",
+    ".continue", ".junie", ".augment", ".gemini", ".agent", ".agents", ".openhands",
+    ".trae", ".codex", ".opencode",
 })
+# Under .github/, only Copilot's folders: CONTRIBUTING.md and issue templates stay eligible.
+_GITHUB_AGENT_FOLDERS = frozenset({"instructions", "prompts", "chatmodes", "agents", "skills"})
 
 _SENSITIVE_NAME = re.compile(
     r"^\.env(\..*)?$"
@@ -75,13 +88,24 @@ UNKNOWN = "unknown"
 
 
 def is_inert_name(name: str) -> bool:
-    lowered = name.lower()
-    suffix = os.path.splitext(lowered)[1]
-    if suffix in _DOCUMENT_SUFFIXES:
-        return True
-    if suffix in _DATA_SUFFIXES:
-        return not lowered.startswith(".") and lowered not in _TOOL_CONFIG_NAMES
-    return False
+    if os.path.splitext(name.lower())[1] not in _DOCUMENT_SUFFIXES:
+        return False
+    return not (_BUILD_INPUT_NAME.search(name) or _AGENT_INSTRUCTION_NAME.search(name))
+
+
+def is_inert_path(path: Path) -> bool:
+    """`is_inert_name`, and not inside a folder that build tools or AI tools read from.
+    Folder names match in any letter case and anywhere in the path: a doubtful match only
+    sends the write to the reviewer."""
+    if not is_inert_name(path.name):
+        return False
+    folders = [part.casefold() for part in path.parts[:-1]]
+    if any(f in _AGENT_FOLDERS or f in _BUILD_INPUT_FOLDERS for f in folders):
+        return False
+    return not any(
+        parent == ".github" and child in _GITHUB_AGENT_FOLDERS
+        for parent, child in zip(folders, folders[1:])
+    )
 
 
 def is_sensitive_name(name: str) -> bool:
@@ -174,7 +198,7 @@ def inert_write_check(
     parts: list[str] = []
     for target in targets:
         name = target.name
-        if not is_inert_name(name) or is_sensitive_name(name):
+        if not is_inert_path(target) or is_sensitive_name(name):
             return False, ""
         if not target.exists():
             parts.append(f"new file {name}")

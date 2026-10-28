@@ -1,8 +1,9 @@
 """Auto-approve's inert-writes tier (OPE-233).
 
-A write inside the session's folders runs without a reviewer call when it is an inert
-file type, its name and content don't look secret, it isn't a protected file, and it can
-be undone: a new file, a git-tracked file with no uncommitted changes, or a file the agent
+A write inside the session's folders runs without a reviewer call when it is a plain
+document or raster image (not JSON or YAML, not a build or install input, not another AI
+tool's instruction file), its name and content don't look secret, it isn't a protected
+file, and it can be undone: a new file, a git-tracked file with no uncommitted changes, or a file the agent
 itself wrote earlier in the session. Every other write reaches the reviewer exactly as
 before. Behind `inert_writes`: "off" (default) → "audit" (decision unchanged, "would
 allow" recorded) → "on"."""
@@ -87,11 +88,60 @@ def test_an_unknown_flag_value_means_off(tmp_path):
 
 @pytest.mark.parametrize(
     "path",
-    ["notes.md", "out/report.txt", "data/rows.csv", "data/rows.tsv", "result.json", "cfg/settings.yaml",
-     "chart.png", "docs/guide.rst", "run.log", "NOTES.MD"],
+    ["notes.md", "out/report.txt", "data/rows.csv", "data/rows.tsv", "chart.png", "docs/guide.rst",
+     "run.log", "NOTES.MD", "README.md", "CHANGELOG.md", "LICENSE.txt", "docs/design.markdown",
+     # names that only look like the exclusions below
+     "docs/claude-notes.md", "notes/agents-meeting.txt", "cursor-tips.md", "cmake-notes.txt"],
 )
 def test_inert_types_are_eligible(tmp_path, path):
     assert _ran_without_reviewer(_gate(tmp_path).evaluate("write_file", _write(path)))
+
+
+@pytest.mark.parametrize(
+    "path",
+    # Devika, 28 Oct 2026: JSON and YAML left the tier. Tools read them to decide what to
+    # run, and no list of tool-config names can be complete. The reviewer sees the content.
+    # result.json and cfg/settings.yaml were eligible before this change.
+    ["result.json", "cfg/settings.yaml", "data/rows.jsonl", "config.yml", "nodemon.json",
+     "docker-compose.override.yml", "deploy/playbook.yml", "buildspec.yml",
+     ".vscode/settings.json", ".vscode/launch.json", "package.json", ".eslintrc.json"],
+)
+def test_json_and_yaml_go_to_the_reviewer(tmp_path, path):
+    assert _goes_to_reviewer(_gate(tmp_path).evaluate("write_file", _write(path)))
+
+
+@pytest.mark.parametrize(
+    "path",
+    # Text files that decide what gets built, installed or tested: CMake runs
+    # CMakeLists.txt, pip installs what requirements and constraints files list, and
+    # pytest runs test*.txt files as doctests by default.
+    ["CMakeLists.txt", "src/lib/cmakelists.TXT", "requirements.txt", "REQUIREMENTS.txt",
+     "requirements-dev.txt", "requirements_test.txt", "dev-requirements.txt",
+     "requirements/base.txt", "constraints.txt", "ci/constraints-py311.txt",
+     "test_examples.txt", "docs/testing.txt"],
+)
+def test_build_and_install_inputs_go_to_the_reviewer(tmp_path, path):
+    assert _goes_to_reviewer(_gate(tmp_path).evaluate("write_file", _write(path)))
+
+
+@pytest.mark.parametrize(
+    "path",
+    # Instructions another AI coding tool reads into its prompt on its next run.
+    ["CLAUDE.md", "claude.MD", "sub/dir/CLAUDE.md", "CLAUDE.local.md", "GEMINI.md", "QWEN.md",
+     "CRUSH.md", "WARP.md", "AGENT.md", "AGENTS.override.md", "CONVENTIONS.md",
+     ".github/copilot-instructions.md", ".github/instructions/python.instructions.md",
+     "src/api.instructions.md", ".github/prompts/release.prompt.md",
+     ".github/chatmodes/plan.chatmode.md", ".github/agents/reviewer.agent.md",
+     ".claude/commands/deploy.md", ".claude/agents/helper.md", "tools/x/SKILL.md",
+     ".cursor/rules/style.md", ".Cursor/Rules/Style.md", ".windsurf/rules/rules.md",
+     ".clinerules/01-style.md", ".roo/rules/style.md", ".kiro/steering/product.md",
+     ".amazonq/rules/style.md", ".continue/rules/style.md", ".junie/guidelines.md",
+     ".augment/rules/style.md", ".gemini/styleguide.md", ".agent/rules/style.md",
+     ".agents/rules/style.md", ".openhands/microagents/repo.md", ".trae/rules/project_rules.md",
+     ".codex/notes.md", ".opencode/agent/review.md"],
+)
+def test_other_ai_tools_instruction_files_go_to_the_reviewer(tmp_path, path):
+    assert _goes_to_reviewer(_gate(tmp_path).evaluate("write_file", _write(path)))
 
 
 @pytest.mark.parametrize(
@@ -107,8 +157,8 @@ def test_code_scripts_and_unknown_types_go_to_the_reviewer(tmp_path, path):
 
 @pytest.mark.parametrize(
     "path",
-    [".env", ".env.local", "secrets/.ENV.production", "server.pem", "api_key.txt", "API-KEY.json",
-     "credentials.json", "id_rsa.txt", "my_secrets.yaml", "token.txt", "password.txt"],
+    [".env", ".env.local", "secrets/.ENV.production", "server.pem", "api_key.txt", "API-KEY.md",
+     "credentials.txt", "id_rsa.txt", "my_secrets.md", "token.txt", "password.txt"],
 )
 def test_secret_looking_names_go_to_the_reviewer(tmp_path, path):
     assert _goes_to_reviewer(_gate(tmp_path).evaluate("write_file", _write(path)))
@@ -199,8 +249,8 @@ def test_an_untracked_existing_file_goes_to_the_reviewer(tmp_path):
 def test_an_ignored_existing_file_goes_to_the_reviewer(tmp_path):
     _repo(tmp_path, {".gitignore": "out/\n"})
     (tmp_path / "out").mkdir()
-    (tmp_path / "out" / "result.json").write_text("{}", encoding="utf-8")
-    d = _gate(tmp_path).evaluate("write_file", _write("out/result.json", overwrite=True))
+    (tmp_path / "out" / "result.csv").write_text("a,b", encoding="utf-8")
+    d = _gate(tmp_path).evaluate("write_file", _write("out/result.csv", overwrite=True))
     assert _goes_to_reviewer(d)
 
 

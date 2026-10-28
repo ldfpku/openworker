@@ -198,7 +198,7 @@
       "auto_approved": "auto-approved",
       "bypassed": "approval bypassed",
       "gate_tier": "safe change, no card",
-      "gate_tier_title": "Auto-approve let this run without the reviewer: an inert file (a document or data, not code) inside your folders that can be undone — a new file, a file unchanged in git, or one the agent wrote earlier. Its full arguments are in this transcript and the audit log"
+      "gate_tier_title": "Auto-approve let this run without the reviewer: an inert file (a document or image, not code or config) inside your folders that can be undone — a new file, a file unchanged in git, or one the agent wrote earlier. Its full arguments are in this transcript and the audit log"
     },
     "step": {
       "raw": "raw",
