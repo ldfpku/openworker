@@ -118,6 +118,10 @@ _SECRET_VALUE = re.compile(
     # curl-auth-header: a Bearer token with at least one digit; letters-only values are
     # placeholders (gitleaks' generic allowlist `^[a-zA-Z_.-]+$`), `$TOKEN` is a variable.
     r"|(?i:\bBearer)\s+(?=[A-Za-z_./+=-]*\d)[A-Za-z0-9_./+=-]{20,}"
+    # An `Authorization: Basic <base64>` header, as a curl `-H` value or as the
+    # `http.extraheader = AUTHORIZATION: basic …` line GitHub Actions' checkout leaves in
+    # `.git/config`. The label is required: a bare `basic` followed by a long word is prose.
+    r"|(?i:\bauthorization\b\s*[:=]?\s*basic)\s+[A-Za-z0-9+/]{20,}={0,2}"
     # detect-secrets BasicAuthDetector: `scheme://user:password@host`. Eight or more
     # characters, none of `{}$` (a `${PASSWORD}` placeholder is not a password).
     r"|://[^\s/:@{}$\"']+:[^\s/:@{}$\"']{8,}@[A-Za-z0-9.-]"
