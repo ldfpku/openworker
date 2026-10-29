@@ -598,7 +598,10 @@ def test_a_network_script_makes_the_files_it_names_count_as_sent(tmp_path):
 )
 def test_scripts_in_other_languages_are_read_too(tmp_path, name, text, command):
     (tmp_path / name).write_text(text, encoding="utf-8")
-    assert _human_only(_workspace_gate(tmp_path).evaluate("run_shell", {"command": command}))
+    gate = _workspace_gate(tmp_path)
+    if "\\" in command:
+        gate.shell_kind = "powershell"  # a backslash path is PowerShell's own form; bash reads it as an escape
+    assert _human_only(gate.evaluate("run_shell", {"command": command}))
 
 
 def test_point4_a_script_that_builds_its_url_at_runtime(tmp_path):
