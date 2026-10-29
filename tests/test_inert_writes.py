@@ -104,7 +104,7 @@ def test_inert_types_are_eligible(tmp_path, path):
     # result.json and cfg/settings.yaml were eligible before this change.
     ["result.json", "cfg/settings.yaml", "data/rows.jsonl", "config.yml", "nodemon.json",
      "docker-compose.override.yml", "deploy/playbook.yml", "buildspec.yml",
-     ".vscode/settings.json", ".vscode/launch.json", "package.json", ".eslintrc.json"],
+     "package.json", ".eslintrc.json"],
 )
 def test_json_and_yaml_go_to_the_reviewer(tmp_path, path):
     assert _goes_to_reviewer(_gate(tmp_path).evaluate("write_file", _write(path)))
@@ -229,12 +229,23 @@ def test_a_csv_replace_is_checked_on_the_new_text(tmp_path):
 @pytest.mark.parametrize(
     "path",
     ["make_report.py", "build.sh", "run.ps1", "app.js", "main.ts", "lib.rb", "x.c", "Makefile",
-     "Dockerfile", "fix.patch", "conftest.py", "sitecustomize.py", "x.pth", "noext",
+     "Dockerfile", "fix.patch", "x.pth", "noext",
      # document-like formats that can carry script
      "page.html", "page.HTM", "chart.svg", "feed.xml", "report.pdf"],
 )
 def test_code_scripts_and_unknown_types_go_to_the_reviewer(tmp_path, path):
     assert _goes_to_reviewer(_gate(tmp_path).evaluate("write_file", _write(path)))
+
+
+@pytest.mark.parametrize(
+    "path",
+    # Files that run on a later action are human-only through the protected-file floor
+    # (OPE-231), which runs before the tier: stricter than the reviewer, never the tier.
+    [".vscode/settings.json", ".vscode/launch.json", "conftest.py", "sitecustomize.py"],
+)
+def test_files_that_run_later_are_human_only_before_the_tier(tmp_path, path):
+    d = _gate(tmp_path).evaluate("write_file", _write(path))
+    assert d.human_only and not d.allowed and d.tier == ""
 
 
 @pytest.mark.parametrize(
