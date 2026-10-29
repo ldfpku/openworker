@@ -689,7 +689,10 @@ def test_sending_a_plain_git_config_stays_with_the_reviewer(tmp_path):
     (tmp_path / ".git").mkdir()
     (tmp_path / ".git" / "config").write_text(_PLAIN_GIT_CONFIG, encoding="utf-8")
     gate = _workspace_gate(tmp_path)
-    assert _reviewer(gate.evaluate("run_shell", {"command": "gh gist create .git/config"}))
+    # A plain settings file is not a secret, so this floor does not fire. The protected-file
+    # floor (OPE-231) still asks, since the command names `.git/config` without only reading it.
+    d = gate.evaluate("run_shell", {"command": "gh gist create .git/config"})
+    assert d.reason != SECRET_EGRESS_REASON and d.needs_user
     # Reading it is not sending: the floor is about the way out, not the way in.
     (tmp_path / ".git" / "config").write_text(_ACTIONS_GIT_CONFIG, encoding="utf-8")
     assert gate.evaluate("run_shell", {"command": "cat .git/config"}).reason != SECRET_EGRESS_REASON
