@@ -697,7 +697,8 @@ def script_runs(command: str, shell: str = "bash") -> list[tuple[Optional[str], 
                 if low in _INLINE_CODE_FLAGS:
                     break  # inline code: read above, off the whole command line
                 if low in _SCRIPT_FILE_FLAGS and i + 1 < len(argv) and program in ("pwsh", "powershell"):
-                    out.append((argv[i + 1], None))
+                    # PowerShell reads a backslash as a path separator on every platform.
+                    out.append((argv[i + 1].replace("\\", "/"), None))
                     break
                 if low == "-m":
                     break  # a module, not a file
@@ -709,7 +710,7 @@ def script_runs(command: str, shell: str = "bash") -> list[tuple[Optional[str], 
         elif program and (
             argv[0].startswith(("./", ".\\")) or Path(argv[0]).suffix.lower() in _SCRIPT_SUFFIXES
         ):
-            out.append((argv[0], None))
+            out.append((argv[0].replace("\\", "/") if argv[0].startswith(".\\") else argv[0], None))
     return out
 
 
