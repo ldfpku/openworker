@@ -244,6 +244,7 @@ from ..attachments import (
     MAX_TEXT_CHARS,
     build_user_content,
 )
+from ..attachment_workspace import materialize_pdf_attachments
 from ..engine import PREFLIGHT_ID_PREFIX, ApprovalOutcome
 from ..inbox import VIS_INBOX, VIS_INLINE, args_preview
 from ..library import register_library_routes
@@ -2964,6 +2965,32 @@ def create_app(manager: SessionManager) -> FastAPI:
             # The receive loop atomically claims this session before scheduling the task.
             # Keeping the claim outside prevents two back-to-back frames from both starting.
             try:
+                # Uploaded PDF originals are copied into the conversation's scratch folder
+                # (a path note rides next to each PDF part) so local tools and MCP servers
+                # can work on the exact bytes, not only the model-facing rendition.
+                if not retry and isinstance(content, list) and any(
+                    isinstance(part, dict) and part.get("type") == "file"
+                    for part in content
+                ):
+                    try:
+                        content = await asyncio.to_thread(
+                            materialize_pdf_attachments,
+                            content,
+                            manager._provision_scratch(session_id),
+                        )
+                    except (OSError, ValueError, RuntimeError):
+                        # The detail goes to the log only: an OSError names the file path.
+                        logger.exception(
+                            "could not copy PDF attachments for session %s", session_id
+                        )
+                        await manager.broadcast_session(
+                            session_id,
+                            {
+                                "type": "input_rejected",
+                                "data": {"error": "无法保存 PDF 附件，详见应用日志"},
+                            },
+                        )
+                        return
                 events = (
                     engine.retry()
                     if retry
