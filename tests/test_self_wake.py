@@ -58,7 +58,11 @@ def test_selfwake_tools(tmp_path):
 
     assert wake_on("job-9")["job_id"] == "job-9"
     assert sleep_until((_now() + timedelta(minutes=5)).isoformat())["fire_at"]
-    assert sleep_until((_now() + timedelta(seconds=30)).isoformat())["ok"]
+    soon = sleep_until((_now() + timedelta(seconds=30)).isoformat())
+    assert soon["ok"]
+    # The sleep tells the model, in the result it reads, that the turn ends here.
+    assert "end your turn" in soon["next"]
+    assert "end your turn" in sleep_until.__doc__.lower()
     assert wake_on_event("alert-fired")["event_key"] == "alert-fired"
 
     pend = store.pending("s1")
