@@ -9,6 +9,7 @@ from coworker.providers import (
     ProviderClient,
     ToolCall,
 )
+from coworker.providers.base import SYSTEM_CONTEXT_OPEN
 from coworker.server.manager import SessionManager
 from coworker.testing.autotitle import autotitle_reply, is_autotitle_call
 
@@ -100,6 +101,51 @@ def test_durable_resume_question(tmp_path):
     asyncio.run(scenario())
     assert any("us-west-2" in (t or "") for t in _final_assistant_texts(mgr, sid))
     assert mgr.inbox.pending(sid) == []  # nothing left pending
+
+
+def test_resume_payload_keeps_the_suspended_tool_call(tmp_path):
+    # `_outbound_messages` drops a TRAILING assistant turn (the partial a mid-stream death
+    # leaves behind). A suspended turn is also stored ending on an assistant turn, so this
+    # pins that resume is unaffected: the pending calls are answered first, making the tail a
+    # `tool` message, and the assistant turn that made the call still reaches the model.
+    class Recording(ScriptedProvider):
+        def __init__(self, turns):
+            super().__init__(turns)
+            self.payloads = []
+
+        def complete(self, *, model, messages, tools=None, **settings):
+            self.payloads.append(messages)
+            return super().complete(
+                model=model, messages=messages, tools=tools, **settings
+            )
+
+    provider = Recording(
+        [
+            _tool("ask_user", {"question": "Which region?", "options": ["a", "b"]}, "call_q"),
+            _text("You chose b."),
+        ]
+    )
+    mgr = SessionManager(workspace=tmp_path, provider=provider)
+    sid = "dur-payload"
+
+    async def scenario():
+        engine = mgr.get_engine(sid, agent="cowork", workspace=str(tmp_path))
+        item = await _run_until_pending(mgr, sid, engine)
+        await mgr.resolve_inbox(item.id, "b")
+
+    asyncio.run(scenario())
+
+    resumed = next(
+        p for p in provider.payloads if any(m.get("role") == "tool" for m in p)
+    )
+    # This fork appends the ephemeral `<system-context>` block as its own trailing user
+    # message; look at the conversation before it.
+    if resumed and str(resumed[-1].get("content") or "").startswith(SYSTEM_CONTEXT_OPEN):
+        resumed = resumed[:-1]
+    assert [m.get("role") for m in resumed][-2:] == ["assistant", "tool"]
+    assert any(
+        m.get("role") == "assistant" and m.get("tool_calls") for m in resumed
+    ), "the assistant turn that made the call must still reach the model"
 
 
 def test_durable_resume_approval_executes_tool(tmp_path):

@@ -4013,8 +4013,11 @@ class TurnEngine:
         prompt cache of the conversation prefix on every single turn; as a separate tail
         message, the persisted history stays byte-stable turn over turn and providers can
         place their cache breakpoint before the tail (anthropic keys off
-        `SYSTEM_CONTEXT_OPEN` to find it). Never mutates `self.messages`, so neither the
-        strip nor the tail message is persisted/replayed.
+        `SYSTEM_CONTEXT_OPEN` to find it). A partial assistant turn abandoned by a turn
+        that died mid-stream — identified by the error/interrupted notice that follows it —
+        is dropped too: display-only like the notices, and rejected outright by several
+        providers as the final message. Never mutates `self.messages`, so none of this is
+        persisted/replayed.
         """
         # Strip the display-only sidecars — `source` (connector cards), `_display`
         # (e.g. filter-hidden counts), `ts` (append-time timestamps), `t0` (when the tool
@@ -4045,6 +4048,35 @@ class TurnEngine:
         source_messages = _compaction.apply_to_outbound(
             self.messages, self.compaction_state
         )
+        # A turn that dies mid-stream (provider error, interrupt) leaves its partial assistant
+        # message in the transcript — so the user can still see what streamed — followed by the
+        # notice saying why it stopped. That partial is display-only in the same sense the
+        # notices are: not a turn the model finished, and several providers reject it as the
+        # FINAL message (Gemini: "Requests ending with a model turn are not supported"; Claude
+        # 4.6+: "does not support assistant message prefill"; older Claude: "final assistant
+        # content cannot end with trailing whitespace"). `retry()` replays the same tail, so
+        # the session wedges for good. The trailing notice is what identifies it: a COMPLETED
+        # turn's assistant message looks identical but has no error/interrupted notice after
+        # it, and must be kept (its `extras` sidecar is replayed back to the owning provider).
+        # Trailing `tool_calls` mean a turn suspended awaiting durable resume, never an
+        # abandoned one. Consecutive failed retries stack one partial each, so walk back
+        # through the whole run.
+        abandoned: set[int] = set()
+        failed = False
+        for i in range(len(source_messages) - 1, -1, -1):
+            message = source_messages[i]
+            if message.get("role") == "notice":
+                failed = failed or message.get("kind") in ("error", "interrupted")
+                continue
+            if (
+                failed
+                and message.get("role") == "assistant"
+                and not message.get("tool_calls")
+            ):
+                abandoned.add(i)
+                failed = False  # that notice belongs to this partial
+                continue
+            break
         out = [
             (
                 # OPE-171: a length-truncated, action-free reply is replayed as a stub.
@@ -4054,8 +4086,10 @@ class TurnEngine:
                 if any(s in msg for s in _SIDECARS)
                 else msg
             )
-            for msg in source_messages
-            if msg.get("role") != "notice" and not msg.get("aborted")
+            for i, msg in enumerate(source_messages)
+            if msg.get("role") != "notice"
+            and not msg.get("aborted")
+            and i not in abandoned
         ]
         # 开工前核对 (replay-side only): the synthetic ask_user exchange becomes one user
         # message carrying the brief — see `_fold_preflight_exchange` for why a synthetic
