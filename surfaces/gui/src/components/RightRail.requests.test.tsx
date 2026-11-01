@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ArtifactContent, ArtifactInfo } from "../api";
 import { getArtifacts, readArtifact } from "../api";
 import { RightRail } from "./RightRail";
+import { OPEN_ARTIFACT_EVENT } from "./Markdown";
 
 vi.mock("../api", async () => {
   const actual: any = await vi.importActual("../api");
@@ -136,5 +137,45 @@ describe("RightRail artifact request ownership", () => {
     await act(async () => firstRead.resolve(content("first.md", "Stale content")));
     expect(screen.getByText("Current content")).toBeTruthy();
     expect(screen.queryByText("Stale content")).toBeNull();
+  });
+
+  it("a chip clicked while the rail is hidden still opens the viewer when the unhide refresh overlaps", async () => {
+    const chipRequest = deferred<ArtifactInfo[]>();
+    const unhideRequest = deferred<ArtifactInfo[]>();
+    vi.mocked(getArtifacts)
+      .mockReturnValueOnce(chipRequest.promise)
+      .mockReturnValueOnce(unhideRequest.promise);
+    vi.mocked(readArtifact).mockResolvedValue(content("report.md", "Report body"));
+
+    const { rerender } = render(<RightRail {...baseProps} active={false} />);
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(OPEN_ARTIFACT_EVENT, { detail: { path: "report.md" } }));
+    });
+    // App unhides the rail on the same click, which starts its own list refresh.
+    rerender(<RightRail {...baseProps} />);
+
+    await act(async () => unhideRequest.resolve([artifact("report.md")]));
+    await act(async () => chipRequest.resolve([artifact("report.md")]));
+
+    expect(await screen.findByText("Report body")).toBeTruthy();
+  });
+
+  it("drops a chip lookup that finishes after the session switched", async () => {
+    const chipRequest = deferred<ArtifactInfo[]>();
+    vi.mocked(getArtifacts)
+      .mockResolvedValueOnce([])
+      .mockReturnValueOnce(chipRequest.promise)
+      .mockResolvedValue([]);
+
+    const { rerender } = render(<RightRail {...baseProps} />);
+    await act(async () => {});
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(OPEN_ARTIFACT_EVENT, { detail: { path: "old.md" } }));
+    });
+    rerender(<RightRail {...baseProps} sessionId="session-b" />);
+    await act(async () => chipRequest.resolve([artifact("old.md")]));
+
+    expect(screen.queryByTestId("artifact-close")).toBeNull();
+    expect(readArtifact).not.toHaveBeenCalled();
   });
 });

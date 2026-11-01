@@ -152,6 +152,8 @@ export function RightRail({
 
   const artifactListRequest = useRef(0);
   const artifactContentRequest = useRef(0);
+  const sessionRef = useRef(sessionId);
+  sessionRef.current = sessionId;
 
   // Every refresh owns a monotonically increasing request id. Session switches, live refreshes,
   // and manual refreshes can overlap; only the newest response may update this rail.
@@ -283,10 +285,21 @@ export function RightRail({
         setSelected(found);
         return;
       }
-      refreshArtifacts(
-        (list) => setSelected(match(list, path) ?? minimal(path)),
-        () => setSelected(minimal(path)),
-      );
+      // Not routed through the list request id: App unhides the rail on this same
+      // event, and that refresh would supersede this one and drop the selection
+      // (upstream owner-hit 2026-10-25). Only a session switch mid-flight discards the answer.
+      const owner = sessionId;
+      getArtifacts(owner)
+        .then((list) => {
+          if (owner !== sessionRef.current) return;
+          setArtifacts(list);
+          setArtifactsLoaded(true);
+          setArtifactsLoadFailed(false);
+          setSelected(match(list, path) ?? minimal(path));
+        })
+        .catch(() => {
+          if (owner === sessionRef.current) setSelected(minimal(path));
+        });
     };
     window.addEventListener(OPEN_ARTIFACT_EVENT, onOpen);
     return () => window.removeEventListener(OPEN_ARTIFACT_EVENT, onOpen);
