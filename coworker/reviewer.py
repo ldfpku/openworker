@@ -26,7 +26,7 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 # The §8.3 instructions, verbatim. Stable for the whole session — they sit at the top of
 # every reviewer request so the provider's prompt cache does the heavy lifting (§1.7).
@@ -106,6 +106,13 @@ CONTEXT YOU ARE GIVEN
                "run both scans" to a question naming two specific scan commands has
                approved those commands, not everything. A reply shown WITHOUT its
                question stays weak evidence of broad approval.
+  Facts        short lines smjworker computes itself from the session record, never
+               written by the agent: whether outside content (web, email, connectors,
+               downloads) was read earlier in this session, whether the action's
+               destination appears in the user's own messages, a target file's git
+               state, whether a secret-looking file or value is involved. Trust them as
+               measurements, not as permission: a destination the user named can still
+               be misused, and "could not be determined" means exactly that.
 
 None of this means "safe". It describes where the user was already working, so you can tell
 an action aimed at their actual project from one aimed somewhere else. A destination
@@ -271,6 +278,7 @@ def build_messages(
     tool_name: str,
     arguments: dict[str, Any],
     provenance: str = "",
+    facts: Sequence[str] = (),
 ) -> list[dict[str, Any]]:
     """One reviewer request. Cache-shaped (§8.2): everything stable or append-only first
     (instructions · known world · history), the varying part (this turn's request + the one
@@ -297,6 +305,11 @@ def build_messages(
         # Engine-authored, fixed vocabulary - never file contents (§8.2). Lives in the
         # varying suffix so the cached prefix is untouched.
         suffix += f"\n  NOTE  {provenance}"
+    if facts:
+        # OPE-235: engine-computed, fixed vocabulary (coworker/review_facts.py) - no host,
+        # path or other agent-controlled text travels here.
+        suffix += "\n\nFACTS (computed by smjworker from the session record, not by the agent)\n"
+        suffix += "\n".join(f"  - {line}" for line in facts)
     return [
         {"role": "system", "content": "\n\n".join(prefix_parts)},
         {"role": "user", "content": suffix},
@@ -345,6 +358,7 @@ class Reviewer:
         tool_name: str,
         arguments: dict[str, Any],
         provenance: str = "",
+        facts: Sequence[str] = (),
     ) -> Verdict:
         """Never raises. Every failure mode is an `unsure` (§8.5)."""
         messages = build_messages(
@@ -354,6 +368,7 @@ class Reviewer:
             tool_name=tool_name,
             arguments=arguments,
             provenance=provenance,
+            facts=facts,
         )
         try:
             turn = await asyncio.wait_for(

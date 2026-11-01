@@ -600,6 +600,8 @@ class PermissionEngine:
     # "Did the agent's own write produce this file this session?" — the engine's
     # provenance record. A file the agent wrote can be rewritten without losing the user's.
     agent_wrote: Optional[Callable[[Path], bool]] = None
+    # Where `web_search` goes: the configured provider's host (it has no url argument).
+    search_host: Optional[Callable[[], str]] = None
 
     def __post_init__(self) -> None:
         self.workspace_root = Path(self.workspace_root).expanduser().resolve()
@@ -843,6 +845,19 @@ class PermissionEngine:
 
     def allow_readonly_for_session(self) -> None:
         self.session_readonly = True
+
+    def egress_host(self, tool_name: str, arguments: dict[str, Any]) -> str:
+        """Where an egress tool is going: its url's host, or for `web_search` (a fixed
+        destination, no url) the configured search provider's host."""
+        url = str((arguments or {}).get("url", "") or "")
+        if url:
+            return _host_of(url)
+        if self.search_host is not None:
+            try:
+                return _host_of(self.search_host() or "")
+            except Exception:  # noqa: BLE001 - an unknown provider reads as "not known"
+                return ""
+        return ""
 
     def allow_domain_for_session(self, url_or_domain: str) -> None:
         """Remember an egress destination for this session ("Always allow this domain").

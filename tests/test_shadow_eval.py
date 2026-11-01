@@ -49,7 +49,7 @@ class _RecordingReviewer:
         self.verdict = verdict
         self.calls = 0
 
-    async def review(self, *, request, history, tool_name, arguments, provenance=""):
+    async def review(self, *, request, history, tool_name, arguments, provenance="", facts=()):
         self.calls += 1
         return reviewer_mod.Verdict(self.verdict, f"shadow says {self.verdict}")
 
@@ -171,7 +171,7 @@ async def test_spawn_shadow_review_tracks_until_drained(tmp_path):
     gate = asyncio.Event()
 
     class _BlockingReviewer:
-        async def review(self, *, request, history, tool_name, arguments, provenance=""):
+        async def review(self, *, request, history, tool_name, arguments, provenance="", facts=()):
             await gate.wait()
             return reviewer_mod.Verdict("allow", "shadow says allow")
 
@@ -351,7 +351,7 @@ def test_error_verdict_flagged_and_retried(monkeypatch):
     calls: dict[str, int] = {}
 
     class _Flaky:
-        async def review(self, *, request, history, tool_name, arguments, provenance=""):
+        async def review(self, *, request, history, tool_name, arguments, provenance="", facts=()):
             n = calls.get(request, 0) + 1
             calls[request] = n
             # First corpus row: error then recover. Others: always error.
