@@ -24,6 +24,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from coworker.events import EventType
 from coworker.server.manager import SessionManager
 
 MANAGER_LOGGER = "coworker.manager"
@@ -71,7 +72,11 @@ class _ExplodingEngine:
         self.messages: list[dict] = []
 
     async def resume(self):
-        yield SimpleNamespace(type="turn_start", data={})
+        # A real engine yields `Event`s whose `.type` is an `EventType` enum (so the
+        # manager can read `event.type.value` to broadcast it, like run_turn /
+        # deliver_to_session do). The mock must match that contract — the old bare-string
+        # `type` only passed because the resume loop used to discard every event.
+        yield SimpleNamespace(type=EventType.TURN_START, data={})
         raise RuntimeError("resume-boom")
 
 

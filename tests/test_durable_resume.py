@@ -176,3 +176,93 @@ def test_durable_resume_approval_executes_tool(tmp_path):
         target.exists() and target.read_text() == "ok"
     )  # the approved write actually ran
     assert any("Done" in (t or "") for t in _final_assistant_texts(mgr, sid))
+
+
+def test_durable_resume_broadcasts_turn_lifecycle(tmp_path):
+    """Regression: `_durable_resume_turn` used to discard every `engine.resume()` event
+    (`async for _event ...: pass`) and never broadcast `turn_done`. A socket viewing the
+    session therefore never saw the resume's `turn_start` — its `running` stayed false and
+    the composer looked idle over a turn the server was actually running, so a plain
+    message hit `claim_turn` and was rejected with "already running a turn" (owner report).
+
+    A resume must now stream its events to every registered session client and emit a
+    trailing `turn_done`, exactly like a foreground `run_turn` or a background
+    `deliver_to_session` turn."""
+    mgr = SessionManager(
+        workspace=tmp_path,
+        provider=ScriptedProvider(
+            [
+                _tool(
+                    "ask_user",
+                    {"question": "Which region?", "options": ["us-east-1", "us-west-2"]},
+                    "call_q",
+                ),
+                _text("You chose us-west-2."),
+            ]
+        ),
+    )
+    sid = "dur-broadcast"
+    seen: list[str] = []
+
+    async def collect(message):
+        seen.append(message.get("type"))
+
+    async def scenario():
+        engine = mgr.get_engine(sid, agent="cowork", workspace=str(tmp_path))
+        item = await _run_until_pending(mgr, sid, engine)
+        # Register the viewer AFTER the suspend/restart, the way a reconnecting GUI socket
+        # attaches before the answer comes in.
+        mgr.register_session_client(sid, collect)
+        await mgr.resolve_inbox(item.id, "us-west-2")
+
+    asyncio.run(scenario())
+
+    assert "turn_start" in seen, (
+        "the resume's turn_start must reach the viewer so the GUI marks the session running"
+    )
+    assert "turn_done" in seen, (
+        "the resume must emit a trailing turn_done so the GUI clears running"
+    )
+    # Order: the session must look running before it looks idle.
+    assert seen.index("turn_start") < seen.index("turn_done")
+
+
+def test_durable_resume_survives_mark_idle_failure(tmp_path, monkeypatch):
+    """`_durable_resume_turn`'s `finally` contains a `mark_idle` failure (logged, not
+    raised) so a resume that already ran and was saved is not reported as a failure. Adding
+    the `turn_done` broadcast after it must keep that containment: the broadcast sits in its
+    own contained step and the whole thing must not raise out of the resume."""
+    mgr = SessionManager(
+        workspace=tmp_path,
+        provider=ScriptedProvider(
+            [
+                _tool(
+                    "ask_user",
+                    {"question": "Which region?", "options": ["a", "b"]},
+                    "call_q",
+                ),
+                _text("You chose b."),
+            ]
+        ),
+    )
+    sid = "dur-markidle-boom"
+
+    real_mark_idle = mgr.mark_idle
+
+    def boom(session_id):
+        if session_id == sid:
+            raise RuntimeError("mark_idle boom")
+        return real_mark_idle(session_id)
+
+    async def scenario():
+        engine = mgr.get_engine(sid, agent="cowork", workspace=str(tmp_path))
+        item = await _run_until_pending(mgr, sid, engine)
+        # Arm the failure only for the resume's own finally — `_run_until_pending` above
+        # legitimately calls mark_idle during its restart simulation.
+        monkeypatch.setattr(mgr, "mark_idle", boom)
+        # Must NOT raise despite mark_idle blowing up in the finally.
+        await mgr.resolve_inbox(item.id, "b")
+
+    asyncio.run(scenario())
+    # The resume's answer still landed and was persisted.
+    assert any("b" in (t or "") for t in _final_assistant_texts(mgr, sid))

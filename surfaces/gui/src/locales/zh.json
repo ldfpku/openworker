@@ -508,6 +508,7 @@
       "compaction_retry": "重试",
       "compaction_trim": "丢弃最早的 10%",
       "input_rejected": "该消息已被拒绝。",
+      "question_text_only": "待回答的问题只接受文字，附件与 /skill 已被忽略。",
       "unknown": "未知",
       "mode_on": "已开启：{{label}}",
       "auto_approve_explainer": "自动审批会用模型来放行常规操作，无需逐一询问；拿不准的操作仍会交由你处理。这样能减少打断，但仍有风险——被放行的指令依然能触达你能触达的任何东西。这些只是模型的判断，并非保证。",

@@ -526,6 +526,7 @@
       "compaction_retry": "Retry",
       "compaction_trim": "Trim oldest 10%",
       "input_rejected": "That message was rejected.",
+      "question_text_only": "The open question takes text only — attachments and /skill were ignored.",
       "unknown": "unknown",
       "mode_on": "{{label}} is on.",
       "auto_approve_explainer": "Auto-approve uses a model to let routine actions through without asking; anything it isn't sure about still comes to you. It cuts interruptions but still carries some risk i.e. a command it allows still reaches anything you can. These are model judgments, and not guarantees.",

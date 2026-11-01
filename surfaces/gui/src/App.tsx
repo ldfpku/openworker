@@ -320,6 +320,10 @@ export function App() {
   // reconnect's opening snapshot predates the pick and used to revert it (audit 2026-09-13).
   // See sessionSettings.ts for the protocol; scoped to one session id, reset below.
   const pendingPicksRef = useRef<PendingPicks>({ sessionId });
+  // The last plain message handed to userMessage(), kept so a "busy" input_rejected (the
+  // session was already running a turn) can restore the typed text the composer cleared on
+  // send — the user loses nothing and can resend once the running turn finishes.
+  const lastSentRef = useRef<{ text: string; attachments?: Attachment[] } | null>(null);
   // Automation-run context (§ owner ask 2026-07-04): which task an open __run__ session belongs
   // to, driving the banner + "Back to runs". Best-effort — a run session without context still
   // shows a generic banner (detected by its __run__ id).
@@ -1362,6 +1366,23 @@ export function App() {
             ...p,
             { kind: "notice", tone: "warn", text: d.error || t("app.notice.input_rejected") },
           ]);
+          if (d.reason === "busy") {
+            // The session was already running a turn the GUI hadn't been told about (a
+            // durable resume, a scheduled run). Re-assert running so the composer locks and
+            // shows Stop until that turn's turn_done lands — not idle for the user to resend
+            // into another rejection. Hand the typed text back, since the composer cleared
+            // it on send.
+            setRunning(true);
+            const last = lastSentRef.current;
+            if (last && (last.text || last.attachments?.length))
+              prefillComposer(last.text, last.attachments);
+          } else {
+            // A plain validation reject (bad JSON, rate-limit, a bad /skill) never claimed a
+            // turn, so no turn_done will arrive to clear the optimistic running set on send.
+            // Release the composer here.
+            setRunning(false);
+          }
+          lastSentRef.current = null;
           break;
         case "turn_done":
           setRunning(false);
@@ -1598,7 +1619,22 @@ export function App() {
     // 2026-10-06). The card answers its CURRENT step with it, so a grouped card (the
     // 开工前核对 card is one) advances instead of resolving with the text misfiled
     // under its first question.
-    if (!unattended && pendingQuestion?.kind === "question" && !attachments?.length && !skill) {
+    // A pending question keeps the composer unlocked (gateOpen), so EVERY send while it is
+    // up must route to the answer — never to userMessage(). Earlier this branch bailed when
+    // an attachment or /skill rode along, so such a send fell through to userMessage() →
+    // the server rejected it ("already running a turn"), because ask_user suspends the turn
+    // mid-run. An ask_user answer carries only text, so attachments/skill are dropped with a
+    // notice rather than sent as a doomed message.
+    if (!unattended && pendingQuestion?.kind === "question") {
+      if (attachments?.length || skill) {
+        setItems((p) => [
+          ...p,
+          { kind: "notice", tone: "warn", text: t("app.notice.question_text_only") },
+        ]);
+      }
+      // Nothing to answer with (a bare attachment, no text): keep the gate open instead of
+      // resolving the question with an empty string.
+      if (!text.trim()) return;
       setComposerAnswer((p) => ({ text, nonce: (p?.nonce ?? 0) + 1 }));
       return;
     }
@@ -1608,6 +1644,16 @@ export function App() {
     setItems((p) => [...p, { kind: "user", text: shown, attachments, ts: Date.now() / 1000 }]);
     // The visible model rides along with the message (single source of truth per turn).
     sessionRef.current?.userMessage(text, attachments, model, skill, opts?.preflight);
+    // Remember it so a "busy" rejection can hand the text back to the composer (below).
+    lastSentRef.current = { text, attachments };
+    // Optimistic running, like retry(): the server confirms with turn_start, and even a
+    // rejected message still ends in a turn_done. Without it the composer stayed idle in the
+    // window before turn_start lands — and for a message the server rejects outright (the
+    // session was already running a turn it never told us about, e.g. a durable resume) no
+    // turn_start ever comes, so the input looked ready to send straight into another
+    // rejection (owner report). The `input_rejected` handler re-asserts this for the busy
+    // case too; a non-busy validation reject (which never claimed a turn) clears it.
+    setRunning(true);
     followLatest(); // sending always re-engages stream-following, wherever the user had scrolled
   };
   // Resolving a LIVE prompt also resolves its parked Inbox mirror server-side, but the polled

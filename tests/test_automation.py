@@ -600,6 +600,49 @@ async def test_scheduled_run_marks_idle_after_success(tmp_path, monkeypatch):
     assert manager.is_running(run.session_id) is False
 
 
+async def test_scheduled_run_broadcasts_turn_lifecycle_to_viewers(tmp_path, monkeypatch):
+    """A GUI that opened this __run__ session (registered as a session client) before the
+    scheduled run started must see the run's `turn_start` and a trailing `turn_done`, so its
+    `running` state tracks the server's. Before the fix the engine loop discarded its events
+    and the run never emitted `turn_done`, leaving a viewer's composer looking idle over a
+    turn the server was actually running (the same mismatch the durable-resume path had)."""
+    from coworker.providers import AssistantTurn, ModelCapabilities, ProviderClient
+    from coworker.server.manager import SessionManager
+
+    class ScriptedProvider(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            return AssistantTurn(text="done", finish_reason="stop")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    monkeypatch.setenv("COWORKER_STATE_DIR", str(tmp_path / "state"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    manager = SessionManager(data_dir=tmp_path / "data", provider=ScriptedProvider())
+    task = _task(workspace=str(ws), agent="cowork")
+    manager.task_store.save(task)
+
+    # The run's session id is deterministic from the TaskRun, but it's simplest to attach a
+    # catch-all viewer: register against the id the run will use. __post_init__ assigns it,
+    # so build the run id the same way the manager does by running once and inspecting — here
+    # we register broadly by spying on broadcast_session instead.
+    seen: list[str] = []
+    original = manager.broadcast_session
+
+    async def spy(session_id, message):
+        seen.append(message.get("type"))
+        return await original(session_id, message)
+
+    monkeypatch.setattr(manager, "broadcast_session", spy)
+
+    run = await manager._run_scheduled_task(task, trigger="manual")
+    assert run.status == "ok"
+    assert "turn_start" in seen, "the run's turn_start must be broadcast to viewers"
+    assert "turn_done" in seen, "the run must emit a trailing turn_done"
+    assert seen.index("turn_start") < seen.index("turn_done")
+
+
 async def test_scheduled_run_marks_idle_when_setup_raises(tmp_path, monkeypatch):
     """An exception during the run's setup must still release the busy marker via
     `finally` — and, since the setup now sits inside the run's own error handling (upstream

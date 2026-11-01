@@ -21,6 +21,12 @@ _WIN = sys.platform == "win32"
 # Per-OS command snippets exercising the same behavior in the native shell.
 SET_ENV = "$env:GREETING='hello_world'" if _WIN else "export GREETING=hello_world"
 ECHO_ENV = "echo $env:GREETING" if _WIN else "echo $GREETING"
+# Print the working directory as a PLAIN string. PowerShell's `pwd` (an alias of
+# Get-Location) renders a formatted TABLE whose Path column wraps to the console width —
+# a long tmp path then has a newline spliced into it, so `"sub" in output` fails depending
+# on how wide the terminal running the suite happens to be (it passed solo, failed under
+# the full run). `$PWD.Path` is the unwrapped string; POSIX `pwd` already prints one.
+PRINT_CWD = "$PWD.Path" if _WIN else "pwd"
 EXIT_OK = "cmd /c exit 0" if _WIN else "true"
 EXIT_FAIL = "cmd /c exit 1" if _WIN else "false"
 SLEEP_5 = "Start-Sleep -Seconds 5" if _WIN else "sleep 5"
@@ -41,7 +47,7 @@ def executor(tmp_path):
 def test_cwd_persists_across_calls(executor, tmp_path):
     (tmp_path / "sub").mkdir()
     executor.run("cd sub")
-    result = executor.run("pwd")
+    result = executor.run(PRINT_CWD)
     assert result["exit_code"] == 0
     assert "sub" in result["output"]
     assert executor.cwd.endswith("sub")

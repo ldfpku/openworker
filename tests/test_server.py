@@ -489,11 +489,20 @@ def test_ws_allows_only_one_inflight_turn_per_session(tmp_path):
         ws.send_json({"type": "user_message", "text": "first"})
         ws.send_json({"type": "user_message", "text": "second"})
 
+        events = []
         types = []
         while "turn_done" not in types:
-            types.append(ws.receive_json()["type"])
+            ev = ws.receive_json()
+            events.append(ev)
+            types.append(ev["type"])
 
     assert "input_rejected" in types
+    # The busy rejection carries a stable machine-readable reason so the GUI can re-assert
+    # `running` and keep the draft (rather than leave the composer falsely idle). The human
+    # text still names the condition.
+    rejected = next(e for e in events if e["type"] == "input_rejected")
+    assert rejected["data"].get("reason") == "busy"
+    assert "already running a turn" in rejected["data"]["error"].lower()
     assert provider.max_active == 1
     engine = manager._engines["serialized"]
     user_messages = [m for m in engine.messages if m.get("role") == "user"]

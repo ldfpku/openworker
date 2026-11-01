@@ -11,8 +11,12 @@ dist/
 # surfaces/gui/src-tauri/tauri.conf.json) — never hand-edited, never committed.
 coworker/_version.py
 
-# Local secrets (live-smoke BYO keys) — never committed
+# Local secrets (live-smoke BYO keys) — never committed. Cover every .env variant
+# (.env.local, .env.production, …) so a future one can't slip in; keep the shipped
+# template (.env.example) tracked.
 .env
+.env.*
+!.env.example
 # The real relay roster: colleagues' names and personal mailboxes. This fork is PUBLIC,
 # so the filled-in roster stays on the admin's machine — only roster.example.csv ships.
 gemini-relay/scripts/roster.csv

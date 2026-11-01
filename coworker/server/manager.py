@@ -1920,8 +1920,16 @@ class SessionManager:
             superseded = self._answer_superseded(engine, item.tool_call_id)
             if superseded:
                 self._log_superseded_answer(item)
-            async for _event in engine.resume():
-                pass
+            # Stream every resume event to any socket viewing this session, exactly like
+            # `deliver_to_session` does for a background turn. The old `pass` here discarded
+            # them all: a durable resume held the session claim (`try_mark_running` above)
+            # and ran a turn, but the GUI never saw `turn_start`, so its `running` stayed
+            # false and the composer looked idle — the user could type and send a message
+            # that `claim_turn` then rejected with "already running a turn" (owner report).
+            async for event in engine.resume():
+                await self.broadcast_session(
+                    session_id, {"type": event.type.value, "data": event.data}
+                )
             notice = self._note_superseded_answer(engine, item) if superseded else None
             self.save(session_id, engine)
             if notice is not None:
@@ -1935,6 +1943,18 @@ class SessionManager:
                 self.mark_idle(session_id)
             except Exception:
                 logger.exception("post-resume bookkeeping failed for %s", session_id)
+            # The end-of-turn signal the GUI ends a turn on (`setRunning(false)`). Without
+            # it, a socket that DID see this resume's `turn_start` (now broadcast above)
+            # would spin forever. Contained and sent after `mark_idle`, matching the
+            # `finally` of both `run_turn` (app.py) and `deliver_to_session`.
+            try:
+                await self.broadcast_session(
+                    session_id, {"type": "turn_done", "data": {}}
+                )
+            except Exception:
+                logger.exception(
+                    "turn_done broadcast failed for %s", session_id
+                )
 
     @staticmethod
     def _answer_superseded(engine, call_id: str) -> bool:
@@ -8373,6 +8393,17 @@ class SessionManager:
                 # business reaching into.
                 interrupted = False
                 async for _event in engine.run(opening):
+                    # Fan each event out to any socket viewing this run's session, like the
+                    # foreground `run_turn` (app.py) and the background `deliver_to_session`
+                    # do. A GUI that opened this __run__ session BEFORE the scheduled run
+                    # started would otherwise never see `turn_start` — its `running` would
+                    # stay false over a turn the server is actually running, the same
+                    # mismatch the durable-resume path had. The headless path still works
+                    # with no socket attached; this is live visibility only.
+                    await self.broadcast_session(
+                        run.session_id,
+                        {"type": _event.type.value, "data": _event.data},
+                    )
                     if _event.type.value == "interrupted":
                         interrupted = True
                 run.result_text = _last_assistant_text(engine.messages)
@@ -8444,6 +8475,17 @@ class SessionManager:
             except Exception:
                 logger.exception(
                     "post-scheduled-run bookkeeping failed for %s", run.session_id
+                )
+            # The end-of-turn signal a viewing GUI clears `running` on. Contained and sent
+            # after `mark_idle`, matching `run_turn` (app.py) and `deliver_to_session`. A
+            # headless run with no socket attached fans out to nobody — a cheap no-op.
+            try:
+                await self.broadcast_session(
+                    run.session_id, {"type": "turn_done", "data": {}}
+                )
+            except Exception:
+                logger.exception(
+                    "scheduled-run turn_done broadcast failed for %s", run.session_id
                 )
         return run
 

@@ -3134,17 +3134,28 @@ def create_app(manager: SessionManager) -> FastAPI:
             )
         inbound_times: deque[float] = deque()
 
-        async def reject_input(reason: str) -> None:
+        async def reject_input(reason: str, *, cause: str | None = None) -> None:
             # Input validation failures are not provider failures and must not offer "Retry"
-            # or flush an in-progress assistant stream in the GUI.
-            await ws.send_json({"type": "input_rejected", "data": {"error": reason}})
+            # or flush an in-progress assistant stream in the GUI. `cause` is a stable,
+            # machine-readable tag the GUI keys behaviour off (e.g. "busy" → keep the draft
+            # and lock the composer until the running turn ends); the human `error` text is
+            # localized/displayed and must never carry it.
+            data: dict[str, Any] = {"error": reason}
+            if cause:
+                data["reason"] = cause
+            await ws.send_json({"type": "input_rejected", "data": data})
 
         async def claim_turn(
             *, retry: bool = False, content=None, display=None, preflight=None
         ) -> None:
             if not manager.try_mark_running(session_id):
+                # `reason="busy"`: the session is already running a turn. The GUI treats
+                # this one specially — it re-marks itself running (showing Stop, locking
+                # the composer) and keeps the typed draft, rather than leaving the input
+                # falsely idle for the user to resend into another rejection.
                 await reject_input(
-                    "This session is already running a turn. Wait for it to finish or stop it."
+                    "This session is already running a turn. Wait for it to finish or stop it.",
+                    cause="busy",
                 )
                 return
             manager.spawn_turn_task(
