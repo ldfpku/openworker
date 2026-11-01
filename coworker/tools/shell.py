@@ -75,7 +75,7 @@ class Executor(ABC):
     def run_background(self, command: str) -> dict[str, Any]:
         return {"error": "background execution is not supported by this executor"}
 
-    def background_output(self, task_id: str) -> dict[str, Any]:
+    def background_output(self, task_id: str, wait_seconds: float = 0) -> dict[str, Any]:
         return {"error": "background execution is not supported by this executor"}
 
     def background_kill(self, task_id: str) -> dict[str, Any]:
@@ -136,6 +136,17 @@ class _BackgroundTask:
             self._cursor = len(self._lines)
         return new
 
+    def has_new(self) -> bool:
+        """Unread output exists — without moving the cursor, so a waiter can look
+        without consuming what the caller is about to read."""
+        with self._lock:
+            return len(self._lines) > self._cursor
+
+    def drain(self, timeout: float) -> None:
+        """After the process exits, give the reader thread a moment to append the
+        last lines, so an exit-triggered read does not miss the final output."""
+        self._reader.join(timeout=timeout)
+
     def kill(self) -> None:
         if self.proc.poll() is not None:
             return
@@ -187,6 +198,10 @@ class LocalExecutor(Executor):
         # Set by interrupt_now() (user Stop) — run()'s read loop treats it like an
         # early deadline, so the in-flight foreground command dies within one tick.
         self._abort = threading.Event()
+        # Bumped by every interrupt_now(). A background wait compares it to the value it
+        # started with instead of reading `_abort`, which stays set until the next run()
+        # clears it — a Stop from an earlier turn must not cut today's wait to nothing.
+        self._interrupts = 0
 
         # Pick a native shell per-OS. POSIX drives bash line-by-line; Windows drives
         # PowerShell in `-Command -` mode, which is a true stdin REPL (executes
@@ -380,7 +395,9 @@ class LocalExecutor(Executor):
     def interrupt_now(self) -> None:
         """User Stop: make an in-flight foreground `run()` bail on its next read tick
         (≤0.5s). Thread-safe; a no-op when nothing is running. Background tasks are
-        left alone — they're explicitly fire-and-forget."""
+        left alone — they're explicitly fire-and-forget; a `shell_task_output` wait on
+        one returns early."""
+        self._interrupts += 1
         self._abort.set()
 
     # -- background tasks ---------------------------------------------------------
@@ -396,13 +413,36 @@ class LocalExecutor(Executor):
             "task_id": task_id,
             "command": _echo(command),
             "status": "running",
-            "note": "use shell_task_output to read its output, shell_task_kill to stop it",
+            "note": "use shell_task_output to read its output (wait_seconds=N to wait for "
+            "it to exit or print more), shell_task_kill to stop it",
         }
 
-    def background_output(self, task_id: str) -> dict[str, Any]:
+    def background_output(self, task_id: str, wait_seconds: float = 0) -> dict[str, Any]:
         task = self._bg_tasks.get(task_id)
         if task is None:
             return {"error": f"unknown task: {task_id}"}
+        # Wait (bounded) until the task exits or prints something new. Without this a
+        # model whose next step depends on the task has to poll, and every poll is a
+        # full model call. A sleep via run_shell is the only alternative and cannot
+        # return early. Capped at the shell's own ceiling so a tool call never outlives
+        # what run_shell would allow; a user Stop ends the wait within one tick.
+        started = time.monotonic()
+        interrupts = self._interrupts
+        try:
+            wait = float(wait_seconds or 0)
+        except (TypeError, ValueError):
+            wait = 0.0
+        deadline = started + max(0.0, min(wait, _MAX_TIMEOUT))
+        while time.monotonic() < deadline:
+            if (
+                task.proc.poll() is not None
+                or task.has_new()
+                or self._interrupts != interrupts
+            ):
+                break
+            time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
+        if task.proc.poll() is not None:
+            task.drain(0.5)
         output = task.read_new()
         truncated = len(output) > self.max_output_chars
         if truncated:
@@ -414,6 +454,7 @@ class LocalExecutor(Executor):
             "exit_code": exit_code,
             "output": output,
             "truncated": truncated,
+            "waited_seconds": round(time.monotonic() - started, 1),
         }
 
     def background_kill(self, task_id: str) -> dict[str, Any]:
@@ -545,8 +586,10 @@ _RUN_SHELL_SCHEMA = {
         "description": (
             "Run a shell command in the persistent session (cwd and env persist across "
             "calls). Output longer than the limit keeps the END (where test/build verdicts "
-            "are). Set run_in_background for long-running processes like dev servers, then "
-            "poll with shell_task_output."
+            "are). Set run_in_background for processes you don't need to wait for, like dev "
+            "servers, and check them with shell_task_output. If your next step depends on "
+            "the process finishing, use shell_task_output with wait_seconds rather than "
+            "polling."
         ),
         "parameters": {
             "type": "object",
@@ -588,7 +631,10 @@ _TASK_OUTPUT_SCHEMA = {
         "name": "shell_task_output",
         "description": (
             "Read NEW output (since the last read) from a background task started with "
-            "run_shell run_in_background=true, plus its status and exit code."
+            "run_shell run_in_background=true, plus its status and exit code. By default "
+            "returns at once. Pass wait_seconds to block until the task exits or prints "
+            "something new, up to that many seconds - use it when your next step depends "
+            "on the task finishing, instead of calling this repeatedly."
         ),
         "parameters": {
             "type": "object",
@@ -596,7 +642,15 @@ _TASK_OUTPUT_SCHEMA = {
                 "task_id": {
                     "type": "string",
                     "description": "The task_id returned by run_shell.",
-                }
+                },
+                "wait_seconds": {
+                    "type": "integer",
+                    "description": (
+                        f"Wait up to this many seconds (max {int(_MAX_TIMEOUT)}) for the "
+                        "task to exit or print new output; returns as soon as either "
+                        "happens. Default 0: return immediately."
+                    ),
+                },
             },
             "required": ["task_id"],
         },
@@ -641,8 +695,11 @@ def shell_tools(executor: Executor) -> list:
             timeout = min(float(timeout_seconds), _MAX_TIMEOUT)
         return executor.run(command, timeout=timeout)
 
-    def shell_task_output(task_id: str) -> dict:
-        return executor.background_output(task_id)
+    def shell_task_output(task_id: str, wait_seconds: Optional[int] = None) -> dict:
+        wait = 0.0
+        if isinstance(wait_seconds, (int, float)) and wait_seconds > 0:
+            wait = min(float(wait_seconds), _MAX_TIMEOUT)
+        return executor.background_output(task_id, wait_seconds=wait)
 
     def shell_task_kill(task_id: str) -> dict:
         return executor.background_kill(task_id)

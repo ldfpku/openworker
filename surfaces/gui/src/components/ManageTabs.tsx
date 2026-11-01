@@ -103,18 +103,21 @@ export function ModelsTab() {
   if (settings === undefined) return <div className="text-[13px] text-muted">{t("manage.loading")}</div>;
 
   if (settings === null) {
+    // A failed or timed-out settings fetch says so and offers Retry instead of sitting on
+    // "Loading…" forever (upstream #43).
     return (
-      <div className="text-[13px] text-muted flex items-center gap-2.5">
-        {t("Couldn't load providers.")}
+      <div className="text-[13px] text-muted flex items-center gap-2.5" data-testid="settings-error">
+        {t("manage.settings_failed")}
         <button
           className={BTN_BORDERED}
+          data-testid="settings-retry"
           onClick={() => {
             setSettings(undefined);
             refreshSettings();
             ps.refreshProviders();
           }}
         >
-          {t("Retry")}
+          {t("manage.settings_retry")}
         </button>
       </div>
     );

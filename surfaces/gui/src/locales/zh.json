@@ -1339,6 +1339,8 @@
     "remove_from_picker": "从选择器中移除",
     "remove_key": "移除密钥…",
     "remove_key_confirm": "要从这台电脑移除 {{title}} 密钥吗？",
+    "settings_failed": "无法连接服务器以加载设置，请确认 smjworker 正在运行。",
+    "settings_retry": "重试",
     "signin_unlocks": "登录后即可一键连接 {{title}}——也可以在下方手动连接。",
     "tool_asks_approval": "{{name}} · {{kind}} · 需审批",
     "tools_exposed": "向 smjworker 开放的工具",
