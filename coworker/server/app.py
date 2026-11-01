@@ -2978,12 +2978,16 @@ def create_app(manager: SessionManager) -> FastAPI:
                             content,
                             manager._provision_scratch(session_id),
                         )
-                    except (OSError, ValueError, RuntimeError) as exc:
+                    except (OSError, ValueError, RuntimeError):
+                        # The detail goes to the log only: an OSError names the file path.
+                        logger.exception(
+                            "could not copy PDF attachments for session %s", session_id
+                        )
                         await manager.broadcast_session(
                             session_id,
                             {
                                 "type": "input_rejected",
-                                "data": {"error": f"无法保存 PDF 附件：{exc}"},
+                                "data": {"error": "无法保存 PDF 附件，详见应用日志"},
                             },
                         )
                         return
