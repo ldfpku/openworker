@@ -8306,39 +8306,44 @@ class SessionManager:
         self.mark_running(run.session_id)
         try:
             self.task_store.add_run(run)  # mark "running"
-            # UX-026: tell every open app window a SCHEDULED run just started (the 5s
-            # top-right toast). Manual runs never come through here — the user is
-            # already watching those live.
-            await self.broadcast_event(
-                {
-                    "type": "automation_run_started",
-                    "data": {
-                        "task_id": task.id,
-                        "task_title": task.title,
-                        "session_id": run.session_id,
-                        "workspace": task.workspace,
-                        "agent": task.agent,
-                        "trigger": trigger,
-                    },
-                }
-            )
-            # Each run is a real, persisted conversation thread: it runs the instructions under its
-            # own session id, then saves the transcript. The user can reopen that session and ask a
-            # follow-up — the scheduled agent is no longer fire-and-forget.
-            engine = self._build_task_engine(task, session_id=run.session_id)
-            # Register the live engine up-front: a parked approval persists the session
-            # mid-run (durable suspend), and resolving from the Inbox must find this engine.
-            self._engines[run.session_id] = engine
-            # The first turn is the task itself. The framing matters: instructions often restate the
-            # schedule ("every day at 5:32pm…"), so make explicit that the schedule already fired and
-            # the job now is to execute, not to (re)schedule.
-            opening = (
-                f"⏰ Scheduled run — {task.title}\n\n"
-                "This automation is due now: carry out the task below immediately and produce the "
-                "result. The schedule already exists — do not create or modify any scheduled tasks.\n\n"
-                f"{task.instructions}"
-            )
+            engine = None
+            notify = False
+            # Everything after the "running" record sits inside this try: a cancel
+            # (scheduler shutdown) anywhere — even during the start broadcast — must still
+            # finalize that record instead of leaving it "running" forever.
             try:
+                # UX-026: tell every open app window a SCHEDULED run just started (the 5s
+                # top-right toast). Manual runs never come through here — the user is
+                # already watching those live.
+                await self.broadcast_event(
+                    {
+                        "type": "automation_run_started",
+                        "data": {
+                            "task_id": task.id,
+                            "task_title": task.title,
+                            "session_id": run.session_id,
+                            "workspace": task.workspace,
+                            "agent": task.agent,
+                            "trigger": trigger,
+                        },
+                    }
+                )
+                # Each run is a real, persisted conversation thread: it runs the instructions
+                # under its own session id, then saves the transcript. The user can reopen that
+                # session and ask a follow-up — the scheduled agent is no longer fire-and-forget.
+                engine = self._build_task_engine(task, session_id=run.session_id)
+                # Register the live engine up-front: a parked approval persists the session
+                # mid-run (durable suspend), and resolving from the Inbox must find this engine.
+                self._engines[run.session_id] = engine
+                # The first turn is the task itself. The framing matters: instructions often
+                # restate the schedule ("every day at 5:32pm…"), so make explicit that the
+                # schedule already fired and the job now is to execute, not to (re)schedule.
+                opening = (
+                    f"⏰ Scheduled run — {task.title}\n\n"
+                    "This automation is due now: carry out the task below immediately and produce the "
+                    "result. The schedule already exists — do not create or modify any scheduled tasks.\n\n"
+                    f"{task.instructions}"
+                )
                 # `request_interrupt()` (the user's Stop button) ends the turn NORMALLY —
                 # `engine.run()` returns instead of raising — so a stopped run must not
                 # fall into the success path below. Every INTERRUPTED event that
@@ -8371,20 +8376,44 @@ class SessionManager:
                 run.status, run.error = _run_outcome_from_transcript(engine.messages)
                 if interrupted and run.status == "ok":
                     run.status = "canceled"
-                if task.notify_on_completion:
-                    await self._notify_task_done(task, run)
+                notify = bool(task.notify_on_completion)
+            except asyncio.CancelledError:
+                # Scheduler shutdown cancelled the run mid-flight: stop the engine's work
+                # and record the run as canceled (persisted below) before re-raising.
+                if engine is not None:
+                    try:
+                        engine.request_interrupt()
+                    except Exception:
+                        pass
+                run.status, run.error = "canceled", "调度器关闭时运行被取消"
+                raise
             except Exception as exc:
                 run.status, run.error = "error", str(exc)
             finally:
                 run.finished_at = _epoch()
                 # Persist the run as a continuable session + keep the live engine for an immediate
                 # follow-up; record the run (now carrying its session_id).
-                try:
-                    self.save(run.session_id, engine)
-                    self._engines[run.session_id] = engine
-                except Exception:
-                    pass
+                if engine is not None:
+                    try:
+                        self.save(run.session_id, engine)
+                        self._engines[run.session_id] = engine
+                    except Exception:
+                        pass
                 self.task_store.add_run(run)
+            # Notify only once the run is persisted. A cancel that lands here hits only the
+            # notification: execution already completed, so keep its verdict — re-raising
+            # would make `Scheduler._run_claimed` skip advancing the task and the run (with
+            # its side effects) would repeat after restart.
+            if notify:
+                try:
+                    await self._notify_task_done(task, run)
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    logger.exception(
+                        "completion notification failed for scheduled run %s",
+                        run.session_id,
+                    )
         finally:
             # Release only after the state above is fully persisted — mark_idle before
             # that save would let a WS client open a new turn on this session before
