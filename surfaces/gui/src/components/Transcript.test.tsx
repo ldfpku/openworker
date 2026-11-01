@@ -126,6 +126,24 @@ describe("TurnGroup (Transcript §33)", () => {
   });
 });
 
+// OPE-233: an inert, reversible write the gate let through without the reviewer — the
+// chip says what kind of change it was and that it can be undone.
+describe("origin chips — the safe-write gate tier", () => {
+  it("names a safe change that ran without a card", () => {
+    const items: Item[] = [
+      { kind: "user", text: "update the notes" },
+      { kind: "tool", id: "t1", name: "write_file", args: { path: "notes.md" }, status: "ok", approvalOrigin: "gate_tier" },
+    ];
+    const { container } = render(<Transcript items={items} onApprove={vi.fn()} />);
+    fireEvent.click(container.querySelector("summary.stepgroup-head")!);
+    const chip = screen.getByTestId("tool-approval-origin");
+    expect(chip.textContent).toBe("safe change, no card");
+    expect(chip.getAttribute("title")).toContain("without the reviewer");
+    expect(chip.getAttribute("title")).toContain("can be undone");
+    expect(chip.getAttribute("title")).toContain("a document or image"); // OPE-233: JSON/YAML left the tier
+  });
+});
+
 describe("live turns (§33 flicker fix)", () => {
   const LIVE: Item[] = [
     { kind: "user", text: "build the app" },

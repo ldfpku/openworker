@@ -8,12 +8,16 @@ prefixes) and a session allowlist. The engine only *decides*; the turn engine ro
 
 from __future__ import annotations
 
+import glob as _glob
+import os
 import re
 import shlex
+import sys
+from collections import Counter
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import urlsplit
 
 # Constructs whose *contents* we cannot evaluate, so a command carrying one is never
@@ -119,20 +123,275 @@ def protected_paths() -> list[Path]:
 _PROTECTED_IN_PROJECT = (
     ".git/hooks/",
     ".github/workflows/",
+    ".github/actions/",  # actions the workflows call; they run with the workflow
     ".gitlab-ci.yml",
     ".vscode/tasks.json",
     ".coworker/",  # workspace policy + skills the agent would otherwise self-grant
+    # Run by a build backend, env tool, git or a hook manager without being named on the
+    # command line (OPE-231). package.json / pyproject.toml / setup.cfg are deliberately
+    # NOT here: users edit them constantly (versions, dependencies) and the reviewer sees
+    # the content, so it can tell a version bump from a new install script.
+    "setup.py",
+    ".envrc",
+    ".gitattributes",
+    ".pre-commit-config.yaml",
+    "tox.ini",
+    ".devcontainer/",
+    ".husky/",
+    ".circleci/",
+    "AGENTS.md",  # read into every later session's system prompt (project.py)
+    # git's own settings: they can name programs git runs (fsmonitor, pager, aliases,
+    # filters) or move the hooks folder. `info/attributes` does what `.gitattributes`
+    # does; a submodule keeps its own git folder, hooks and settings under `modules/`;
+    # a `.git` FILE names the folder git takes all of those from. `.gitmodules` stays
+    # with the reviewer: git refuses to run commands named there.
+    ".git/config",
+    ".git/info/attributes",
+    ".git/modules/",
+    ".git/worktrees/",  # each linked worktree's own settings, same role as `modules/`
+    ".git",
+    "conftest.py",  # pytest imports it on every test run, from any folder it collects
+    "pytest.ini",  # its options can load a plugin on every test run, like `tox.ini`
+    # Python imports these on every start of the interpreter that can see them.
+    "sitecustomize.py",
+    "usercustomize.py",
+    # mise loads these on entering the folder, as direnv does `.envrc`.
+    ".mise.toml",
+    "mise.toml",
+    ".mise.local.toml",
+    "mise.local.toml",
+    # CI services run these on push.
+    "azure-pipelines.yml",
+    ".travis.yml",
+    "Jenkinsfile",
+    "bitbucket-pipelines.yml",
+    ".buildkite/",
+    ".vscode/launch.json",  # what the editor runs when the user starts or debugs the program
+    # Editor settings can name programs the editor starts on its own: the terminal
+    # shell, the interpreter, formatters and linters.
+    ".vscode/settings.json",
+    # Package managers read these on every run, and a setting can name a program to run
+    # in place of (or alongside) the package manager itself.
+    ".npmrc",
+    ".yarnrc",
+    ".yarnrc.yml",
+    ".pnpmfile.cjs",  # code pnpm runs on every install
+    # cargo's settings can name the program that runs, links or wraps every build.
+    ".cargo/config.toml",
+    ".cargo/config",
 )
 
 
-def _is_protected_in_project(candidate: Path) -> bool:
-    posix = candidate.as_posix()
+def _case_insensitive_fs() -> bool:
+    """Windows always, and macOS by default, treat `.GIT/hooks` and `.git/hooks` as one
+    folder. `Path.resolve()` only restores the on-disk case for parts that already exist,
+    so a not-yet-created target keeps the case the agent typed and matching has to fold
+    case itself. Folding on a case-sensitive macOS volume only adds a card, never removes
+    one."""
+    return sys.platform in ("win32", "darwin")
+
+
+def _fold(text: str) -> str:
+    return text.casefold() if _case_insensitive_fs() else text
+
+
+def _names_protected(path_text: str, markers: Optional[Sequence[str]] = None) -> bool:
+    """Whether a path, as text, names a protected in-project file or folder. Folder
+    markers match at any depth and also the folder itself (`.git/hooks`); file markers
+    match the last part only."""
+    text = "/" + _fold(path_text.replace("\\", "/")).strip("/") + "/"
     return any(
-        (f"/{marker}" in posix or posix.startswith(marker))
-        if marker.endswith("/")
-        else posix.endswith("/" + marker)
-        for marker in _PROTECTED_IN_PROJECT
+        f"/{marker}" in text if marker.endswith("/") else text.endswith(f"/{marker}/")
+        for marker in map(_fold, _PROTECTED_IN_PROJECT if markers is None else markers)
     )
+
+
+def _shell_markers() -> tuple[str, ...]:
+    """The markers matched in shell commands: all but the bare `.git`, which in a command
+    almost always names the folder being listed or left out, not a file being written."""
+    return tuple(m for m in _PROTECTED_IN_PROJECT if m != ".git")
+
+
+def _real_location(candidate: Path) -> Optional[str]:
+    """Where a write to `candidate` really lands, or None when that cannot be worked out.
+
+    The folders that exist are resolved by the operating system, so every spelling that
+    reaches them (links, junctions, Windows short names, letter case) gives the same
+    answer. Windows also reads the parts that don't exist yet in its own way: it drops
+    trailing dots and spaces from a name, and `name:stream` is a stream of the file or
+    folder `name`. Those parts are read the same way here."""
+    try:
+        real = os.path.realpath(candidate)
+    except (OSError, ValueError):
+        return None
+    if sys.platform != "win32":
+        return real
+    if real.startswith("\\\\?\\UNC\\"):
+        real = "\\\\" + real[8:]
+    elif real.startswith("\\\\?\\"):
+        real = real[4:]
+    drive, rest = os.path.splitdrive(real)
+    parts = []
+    for part in re.split(r"[\\/]+", rest):
+        if not part:
+            continue
+        name = part.split(":", 1)[0].rstrip(" .")
+        if not name:
+            return None
+        parts.append(name)
+    return drive + "\\" + "\\".join(parts)
+
+
+def _is_protected_in_project(
+    candidate: Path, *, fail_closed: bool = True, markers: Optional[Sequence[str]] = None
+) -> bool:
+    """Whether a write to `candidate` changes a protected in-project file, judged from the
+    path as given and from where it really lands on disk. With `fail_closed`, a location
+    that cannot be worked out counts as protected."""
+    if _names_protected(candidate.as_posix(), markers):
+        return True
+    real = _real_location(candidate)
+    if real is None:
+        return fail_closed
+    return _names_protected(real, markers)
+
+
+# `git config` forms that only read. Anything else (a key with a value, --unset, --edit,
+# the `set` / `unset` subcommands) changes git's settings.
+_GIT_CONFIG_READS = {
+    "--get", "--get-all", "--get-regexp", "--get-urlmatch", "--get-color",
+    "--get-colorbool", "--list", "-l", "get", "list",
+}
+_GIT_CONFIG_WRITES = {
+    "--add", "--unset", "--unset-all", "--replace-all", "--rename-section",
+    "--remove-section", "--edit", "-e", "set", "unset", "rename-section",
+    "remove-section", "edit",
+}
+_GIT_CONFIG_VALUE_FLAGS = {"-f", "--file", "--blob", "-t", "--type", "--default", "--comment", "--value"}
+# Settings that only label commits or pick a default: none names a program to run, a
+# file to load, or where git fetches from. Setting one keeps its normal handling.
+_GIT_CONFIG_PLAIN_KEYS = {
+    "user.name", "user.email", "init.defaultbranch", "core.autocrlf", "pull.rebase", "color.ui",
+    "core.longpaths", "push.default", "push.autosetupremote", "fetch.prune", "rebase.autostash",
+    "merge.conflictstyle",
+}
+_GIT_CONFIG_WHOLE_FILE = {"--edit", "-e", "edit", "--rename-section", "rename-section",
+                          "--remove-section", "remove-section"}
+
+
+def _sets_only_plain_key(args: list[str]) -> bool:
+    """Whether a `git config` change sets or unsets only one of the plain settings."""
+    if any(a in _GIT_CONFIG_WHOLE_FILE for a in args):
+        return False
+    operands, skip = [], False
+    for a in args:
+        if skip:
+            skip = False
+        elif a in _GIT_CONFIG_VALUE_FLAGS:
+            skip = True
+        elif not a.startswith("-"):
+            operands.append(a)
+    if operands and operands[0] in ("set", "unset"):
+        operands = operands[1:]
+    return bool(operands) and operands[0].lower() in _GIT_CONFIG_PLAIN_KEYS
+
+
+def _changes_git_config(argv: list[str]) -> bool:
+    """Whether one parsed command runs `git config` to change a setting that is not one
+    of the plain ones (name, email, default branch and the like)."""
+    for i, word in enumerate(argv):
+        program = Path(word).name.lower()
+        if program not in ("git", "git.exe"):
+            continue
+        rest = argv[i + 1 :]
+        j = 0
+        while j < len(rest) and rest[j].startswith("-"):
+            j += 2 if rest[j] in ("-C", "-c") else 1
+        if j >= len(rest) or rest[j] != "config":
+            continue
+        args = rest[j + 1 :]
+        if _sets_only_plain_key(args):
+            continue
+        if any(a in _GIT_CONFIG_WRITES for a in args):
+            return True
+        if any(a in _GIT_CONFIG_READS for a in args):
+            continue
+        operands, skip = 0, False
+        for a in args:
+            if skip:
+                skip = False
+            elif a in _GIT_CONFIG_VALUE_FLAGS:
+                skip = True
+            elif not a.startswith("-"):
+                operands += 1
+        if operands != 1:  # `git config key value`, or a form not read here
+            return True
+    return False
+
+
+def _split_sequence(command: str) -> Optional[list[str]]:
+    """Split on top-level `;`, `&&` and `||`, outside quotes. None on unbalanced quotes."""
+    parts: list[str] = []
+    current: list[str] = []
+    quote = ""
+    i = 0
+    while i < len(command):
+        ch = command[i]
+        if quote:
+            if ch == quote:
+                quote = ""
+            current.append(ch)
+        elif ch in "'\"":
+            quote = ch
+            current.append(ch)
+        elif ch == ";" or command.startswith(("&&", "||"), i):
+            parts.append("".join(current))
+            current = []
+            i += 1 if ch == ";" else 2
+            continue
+        else:
+            current.append(ch)
+        i += 1
+    if quote:
+        return None
+    parts.append("".join(current))
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _is_cd(part: str) -> bool:
+    """Whether one part of a sequence only changes folder: `cd`, or `cd` and one plain
+    folder name with nothing the shell would expand."""
+    words = part.split()
+    return bool(words) and words[0] == "cd" and len(words) <= 2 and not any(
+        c in part for c in "$`(){}<>|&;*?["
+    )
+
+
+# Redirects that only throw output away. A read with its errors discarded is still a read.
+_DISCARDED_OUTPUT = re.compile(r"(?<!\S)(?:(?:[12]|&)?>{1,2}\s*/dev/null|2>&1)(?!\S)")
+
+# Characters that end a word when a shell command is read for the paths it names. Quotes
+# and PowerShell's backtick are removed first, so `".git"/hooks` reads as `.git/hooks`.
+_WORD_BREAK = re.compile(r"[\s;&|<>(){},=:]+")
+
+
+def _script_run(argv: list[str]) -> Optional[str]:
+    """The file one parsed command runs, when it runs a file: `python setup.py`,
+    `bash .husky/pre-commit`, `./setup.py`. Running a protected file is not changing it,
+    so that one word keeps its normal handling. None when no file is run this way
+    (inline code, a module, or a form not read here)."""
+    if not argv:
+        return None
+    program = Path(argv[0]).name.lower()
+    program = program[:-4] if program.endswith(".exe") else program
+    if program not in _INTERPRETERS and program not in ("py", "python2"):
+        return argv[0] if "/" in argv[0] else None
+    for arg in argv[1:]:
+        if arg in _INLINE_CODE_FLAGS or arg in ("-m", "-W", "-X", "-Q"):
+            return None
+        if not arg.startswith("-"):
+            return arg
+    return None
 
 
 def _host_of(url_or_domain: str) -> str:
@@ -197,6 +456,20 @@ from .risk import (  # re-exported for back-compat (manager.py imports WRITE_TOO
     classify,
     is_consequential,
 )
+from . import workspace_safety as _ws
+from .workspace_safety import (
+    file_has_secret,
+    has_secret_text,
+    has_secret_value,
+    inert_write_check,
+    is_sensitive_path,
+    read_capped,
+)
+
+# The reason prefix of an OPE-233 inert-write allow; the engine keys the transcript chip
+# and the audit row on `Decision.tier`, this text is what the record says.
+INERT_WRITE_REASON = "inert, reversible write inside your folders"
+SECRET_EGRESS_REASON = "this sends a secret-looking file or value off the machine — approval required"
 
 
 # The transcript's full Auto-Approve explainer (owner copy 2026-08-24). Persisted as a
@@ -266,6 +539,12 @@ class Decision:
     # Set when a task-scoped standing rule allowed the call ("tool → target") so the
     # engine can audit the exact rule and the tool card can say so (§25).
     rule: str = ""
+    # Set when an Auto-Approve gate tier matched (OPE-233), e.g. "inert_write". With
+    # `allowed` the call runs without the reviewer; with `tier_audit_only` the decision is
+    # unchanged and the engine only records that the tier WOULD have allowed it.
+    tier: str = ""
+    tier_audit_only: bool = False
+    tier_note: str = ""
 
 
 def standing_rule_candidate(
@@ -325,6 +604,15 @@ class PermissionEngine:
     # Session-wide read-only grant (owner ask 2026-08-11): auto-allow shell commands the
     # conservative classifier (coworker/readonly.py) accepts. User-elected per session.
     session_readonly: bool = False
+    # OPE-232: which shell runs `run_shell` — "bash" (macOS / Linux) or "powershell"
+    # (Windows); None picks by platform. The read-only check reads the command as that
+    # shell would.
+    shell_kind: Optional[str] = None
+    # The persistent shell's current folder, as the engine knows it right now. None (no
+    # callable) means no shell is wired and the workspace folder is used, as before; a
+    # callable that returns None means the folder is unknown for this call (another shell
+    # command was cleared earlier in the same batch and may move it), so the grant asks.
+    shell_cwd: Optional[Callable[[], Optional[str]]] = None
     # Task-scoped standing rules (§25): {tool: {allowed targets}}, seeded from the owning
     # ScheduledTask's target-shaped entries. Kept by reference and re-read every check, so a
     # rule minted mid-run ("Allow every time") applies to the run's next call too.
@@ -335,12 +623,28 @@ class PermissionEngine:
     # `workspace_root` is the sole writable root (back-compat). Kept by reference and re-read on
     # every check, so runtime add/remove of folders takes effect without rebuilding the engine.
     roots: Optional[list] = None
+    # OPE-233 gate tier, Auto-Approve only: "off" (default), "audit" (record what it would
+    # have allowed, change nothing) or "on". User-global config, never a workspace's.
+    inert_writes: str = "off"
+    # "Did the agent's own write produce this file this session?" — the engine's
+    # provenance record. A file the agent wrote can be rewritten without losing the user's.
+    agent_wrote: Optional[Callable[[Path], bool]] = None
+    # Where `web_search` goes: the configured provider's host (it has no url argument).
+    search_host: Optional[Callable[[], str]] = None
+    # "Did the agent write a secret-looking value into this file this session?" (OPE-236).
+    # A file the agent filled with a key and then sends is caught even when the file can't
+    # be read back (moved, over the size cap, outside the folders).
+    agent_file_has_secret: Optional[Callable[[Path], bool]] = None
 
     def __post_init__(self) -> None:
         self.workspace_root = Path(self.workspace_root).expanduser().resolve()
         self.auto_allow_tools = set(self.auto_allow_tools)
         if self.roots is None:
             self.roots = [{"path": self.workspace_root, "writable": True}]
+        if self.shell_kind is None:
+            self.shell_kind = "powershell" if sys.platform == "win32" else "bash"
+        if self.inert_writes not in ("off", "audit", "on"):
+            self.inert_writes = "off"
 
     def _resolved_roots(self) -> list[tuple[Path, bool]]:
         out: list[tuple[Path, bool]] = []
@@ -406,6 +710,10 @@ class PermissionEngine:
                 # edited, but never by an auto-approve path — a human must see it.
                 if _is_protected_in_project(self._candidate(path)):
                     needs_human_for_protected = True
+        # The same files changed by a command: one that names a protected path, unless the
+        # read-only check accepts it (reading a hook or a CI file keeps its normal handling).
+        if is_shell and self._shell_changes_protected(str(arguments.get("command", ""))):
+            needs_human_for_protected = True
 
         # Authority outliving the session reaches a person, over the reviewer and over
         # every allowlist below (OPE-117). Placed ahead of the non-consequential return on
@@ -418,6 +726,13 @@ class PermissionEngine:
                 needs_user=True,
                 human_only=True,
             )
+
+        # OPE-236: secret-looking data leaving the machine reaches a person, over the
+        # reviewer, every allowlist and Bypass. Whether an agent declines
+        # to upload a .env file is model behaviour, not policy. A backstop: shell egress
+        # can't be recognised completely.
+        if self._sends_secret(tool_name, arguments, risk):
+            return Decision(False, SECRET_EGRESS_REASON, needs_user=True, human_only=True)
 
         # Non-consequential tools always run.
         if not consequential:
@@ -460,16 +775,12 @@ class PermissionEngine:
             # Also a session grant, so §1.5 applies: in Auto-Approve the reviewer judges
             # these rather than the classifier waving them through.
             if honor_session_grants and self.session_readonly and command:
-                from .readonly import is_readonly_command, read_targets
-
                 # The classifier vets what a command DOES; the roots vet what it READS
                 # (OPE-130). Without the second half, a grant the user reads as "stop
                 # asking about my project files" also covers ~/.aws/credentials, another
                 # repo's history, and smjworker's own secrets file — none of which the
                 # self-protection floor catches, since that guards writes, not reads.
-                if is_readonly_command(command) and all(
-                    self._under_root(t) for t in read_targets(command)
-                ):
+                if self._readonly_grant_covers(command):
                     return Decision(True, "read-only command (session grant)")
         if is_egress:
             url = str(arguments.get("url", ""))
@@ -504,6 +815,23 @@ class PermissionEngine:
         if self.mode is Mode.CUSTOM and tool_name in self.auto_allow_tools:
             return Decision(True, "auto-allowed by config")
 
+        # OPE-233: in Auto-Approve, an inert write that can be undone needs no reviewer
+        # call. It is the last check on purpose: every floor above (folders, protected
+        # files, self-protection, read-only modes) has already had its say.
+        if is_write and self.mode is Mode.AUTO_APPROVE and self.inert_writes != "off":
+            paths, _located = write_paths(tool_name, arguments)  # located: checked above
+            eligible, detail = inert_write_check(
+                arguments, [self._candidate(p) for p in paths], agent_wrote=self.agent_wrote,
+                roots=[rp for rp, writable in self._resolved_roots() if writable],
+            )
+            if eligible and self.inert_writes == "on":
+                return Decision(True, f"{INERT_WRITE_REASON}: {detail}", tier="inert_write")
+            if eligible:
+                return Decision(
+                    False, "requires approval", needs_user=True,
+                    tier="inert_write", tier_audit_only=True, tier_note=detail,
+                )
+
         # Otherwise: ask the user.
         return Decision(False, "requires approval", needs_user=True)
 
@@ -515,8 +843,61 @@ class PermissionEngine:
         if command:
             self.session_allow_commands.add(command)
 
+    def _readonly_grant_covers(self, command: str) -> bool:
+        """The read-only session grant's check (OPE-130, OPE-232): the command only reads,
+        as this platform's shell runs it, and every path it reads is inside the folders.
+        Paths are judged from the shell's real current folder when the engine knows it,
+        and wildcards are expanded with every match checked. A git command is covered only
+        when the project's own git settings are inert (coworker/git_settings.py), since
+        git obeys settings stored inside the project. Fails closed."""
+        from .git_settings import project_git_settings_inert
+        from .readonly import git_repo_dirs, is_readonly_command, read_targets
+
+        try:
+            if not is_readonly_command(command, shell=self.shell_kind):
+                return False
+            if self.shell_cwd is None:
+                base = self.workspace_root
+            else:
+                cwd = self.shell_cwd()
+                if not cwd:
+                    return False
+                base = Path(cwd).expanduser().resolve()
+                if not self._under_root(str(base)):
+                    return False
+            for target in read_targets(command, shell=self.shell_kind):
+                path = Path(os.path.expanduser(target))
+                full = path if path.is_absolute() else base / path
+                if any(c in target for c in "*?["):
+                    for match in _glob.glob(str(full)):
+                        if not self._under_root(str(Path(match).resolve())):
+                            return False
+                if not self._under_root(str(full.resolve())):
+                    return False
+            for repo in git_repo_dirs(command, shell=self.shell_kind):
+                path = Path(os.path.expanduser(repo))
+                full = path if path.is_absolute() else base / path
+                if not project_git_settings_inert(full, lambda p: self._under_root(str(p))):
+                    return False
+            return True
+        except Exception:  # noqa: BLE001 - a check that cannot finish never allows
+            return False
+
     def allow_readonly_for_session(self) -> None:
         self.session_readonly = True
+
+    def egress_host(self, tool_name: str, arguments: dict[str, Any]) -> str:
+        """Where an egress tool is going: its url's host, or for `web_search` (a fixed
+        destination, no url) the configured search provider's host."""
+        url = str((arguments or {}).get("url", "") or "")
+        if url:
+            return _host_of(url)
+        if self.search_host is not None:
+            try:
+                return _host_of(self.search_host() or "")
+            except Exception:  # noqa: BLE001 - an unknown provider reads as "not known"
+                return ""
+        return ""
 
     def allow_domain_for_session(self, url_or_domain: str) -> None:
         """Remember an egress destination for this session ("Always allow this domain").
@@ -530,6 +911,145 @@ class PermissionEngine:
             host = host[4:]
         if host:
             self.session_allow_domains.add(host)
+
+    def _shell_base(self) -> Path:
+        """The folder a shell command runs in, as far as the engine knows: the persistent
+        shell's folder when one is wired, else the workspace. Unknown (another shell call
+        in the same batch may move it) falls back to the workspace: best effort."""
+        if self.shell_cwd is not None:
+            try:
+                cwd = self.shell_cwd()
+            except Exception:  # noqa: BLE001 - a broken callback must not block the floor
+                cwd = None
+            if cwd:
+                return Path(cwd).expanduser().resolve()
+        return self.workspace_root
+
+    def _resolve_from(self, path: str, base: Path) -> Path:
+        p = Path(os.path.expanduser(path))
+        return (p if p.is_absolute() else base / p).resolve()
+
+    def _read_inside(self, path: str, base: Path, cap: int) -> Optional[str]:
+        """A file's text, only when it lies inside the session's folders and under `cap`."""
+        try:
+            full = self._resolve_from(path, base)
+            if not self._under_root(str(full)):
+                return None
+            return read_capped(full, cap)
+        except (OSError, ValueError):
+            return None
+
+    def _sent_file_has_secret(self, path: str, base: Path) -> bool:
+        try:
+            full = self._resolve_from(path, base)
+        except (OSError, ValueError):
+            return False  # an unresolvable path is judged by its name
+        if self.agent_file_has_secret is not None and self.agent_file_has_secret(full):
+            return True
+        if not self._under_root(str(full)):
+            return False
+        return bool(file_has_secret(full))
+
+    def _sends_secret(self, tool_name: str, arguments: dict[str, Any], risk: RiskClass) -> bool:
+        """OPE-236: the call sends data off the machine AND a secret is involved.
+
+        SENDING is: egress or external risk (web tools, connector writes, MCP tools); a
+        shell command that runs a network client (`curl`, `scp`, ...), a program that
+        sends or publishes (`git push`, `npm publish`, `twine upload`, `docker push`,
+        `gh release upload`, `aws s3 cp`, `rclone`, `mail`, ... see
+        `review_facts._SENDING_PROGRAMS`), or a script whose text uses the network
+        (`python upload.py` where upload.py imports requests; `-c` code too).
+
+        A SECRET is involved when:
+
+        * an argument carries a secret-looking value (`has_secret_value`); or
+        * a file the action names has a secret-looking name or path (`is_sensitive_path`:
+          `.env`, `id_rsa`, `~/.kube/config`, `*.tfstate`, ...); files a network-using
+          script names count as named by the action; or
+        * a file the action SENDS (an upload, an attachment, `scp`, a cloud copy, a file
+          a network-using script names) holds a secret-looking value: the engine recorded
+          the agent writing one into it this session, or the file is inside the session's
+          folders, no bigger than `SECRET_SCAN_MAX_BYTES`, and its contents match. A file
+          that can't be read (missing, a folder, too big, outside the folders) is judged
+          by its name alone, so an unreadable plain file is not a card; or
+        * a network-using script's own text carries a secret-looking value; or
+        * `npm`/`yarn`/`pnpm publish` runs in a folder holding a secret-named file (npm
+          sends the folder; `.npmrc`, `.git`, `node_modules` and the ignore files, which
+          npm never packs, don't count); or
+        * `git push` would push a commit holding a secret-named file, or a file whose
+          blob carries a secret-looking value (`@{u}..HEAD`, else the remote-tracking
+          branch, else the whole branch for a first push; names for every file, blobs for
+          the first hundred).
+
+        Scripts are read only inside the session's folders and up to
+        `SCRIPT_SCAN_MAX_BYTES`. Everything here reads text the agent chose: a module the
+        script imports, a compiled program, a URL assembled from data at run time, or a
+        `git push` outside a repository git can describe, is not seen, and the floor does
+        not fire. Those are left to the sandbox's network allowlist; OPE-242 is the
+        per-command outbound host report that would close the gap.
+        """
+        from . import review_facts as rf
+
+        arguments = arguments or {}
+        shell = self.shell_kind or "bash"
+        command = str(arguments.get("command", "")) if tool_name == SHELL_TOOL else ""
+        sends = risk in (RiskClass.EGRESS, RiskClass.EXTERNAL) or bool(
+            command and (rf.shell_reaches_network(command) or rf.shell_sends_data(command, shell))
+        )
+        base = self._shell_base() if command else self.workspace_root
+        network_scripts: list[str] = []
+        if command:
+            for path, code in rf.script_runs(command, shell):
+                text = code if code is not None else self._read_inside(path or "", base, _ws.SCRIPT_SCAN_MAX_BYTES)
+                if text and rf.script_uses_network(text):
+                    sends = True
+                    network_scripts.append(text)
+        if not sends:
+            return False
+        if has_secret_value(arguments):
+            return True
+        names = rf.referenced_files(tool_name, arguments, [])
+        sent = rf.sent_files(tool_name, arguments, shell)
+        for text in network_scripts:
+            if has_secret_text(text):
+                return True
+            found = rf.script_named_files(text)
+            names += found
+            sent += found
+        if any(is_sensitive_path(p) for p in names):
+            return True
+        if any(self._sent_file_has_secret(p, base) for p in sent):
+            return True
+        if command:
+            for folder in rf.publish_dirs(command, shell):
+                if self._folder_holds_secret_name(folder, base):
+                    return True
+            push = rf.pushed_files(command, base, shell)
+            if push is not None:
+                root, files = push
+                if any(is_sensitive_path(f) for f in files):
+                    return True
+                if any(rf.git_blob_has_secret(root, f) for f in files[: rf._PUSH_CONTENT_FILES]):
+                    return True
+        return False
+
+    _NEVER_PACKED = {".npmrc", ".git", "node_modules", ".gitignore", ".npmignore", ".ds_store"}
+
+    def _folder_holds_secret_name(self, folder: str, base: Path) -> bool:
+        try:
+            full = self._resolve_from(folder, base)
+            if not full.is_dir():
+                return False
+            for n, entry in enumerate(full.iterdir()):
+                if n > 500:
+                    break
+                if entry.name.lower() in self._NEVER_PACKED:
+                    continue
+                if is_sensitive_path(entry.name):
+                    return True
+        except (OSError, ValueError):
+            return False
+        return False
 
     # -- helpers ----------------------------------------------------------------
     def _candidate(self, path: str) -> Path:
@@ -587,11 +1107,78 @@ class PermissionEngine:
         paths, located = write_paths(tool_name, arguments)
         if not located:
             return None  # unlocatable writes are already failed closed by the caller
-        resolved = {str(self._candidate(p)) for p in paths}
+        resolved = {_fold(str(self._candidate(p))) for p in paths}
         for target in targets:
-            if str(Path(target).resolve()) in resolved:
+            if _fold(str(Path(target).resolve())) in resolved:
                 return target
         return None
+
+    def _only_reads(self, command: str) -> bool:
+        """The read-only check, applied to the whole command or to each part of a
+        `;` / `&&` / `||` sequence (where `cd <folder>` counts too: it changes no file),
+        after dropping redirects that only throw output away (`2>/dev/null`, `2>&1`).
+        Fails closed."""
+        from .readonly import is_readonly_command
+
+        try:
+            if self.shell_kind == "bash":
+                command = _DISCARDED_OUTPUT.sub(" ", command)
+            if is_readonly_command(command, shell=self.shell_kind):
+                return True
+            parts = _split_sequence(command)
+            return bool(parts) and len(parts) > 1 and all(
+                is_readonly_command(p, shell=self.shell_kind) or _is_cd(p) for p in parts
+            )
+        except Exception:  # noqa: BLE001 - a check that cannot finish is not a read
+            return False
+
+    def _shell_changes_protected(self, command: str) -> bool:
+        """Whether a shell command may change a protected in-project file: it is not a read
+        the read-only check accepts, and it names one (or runs `git config` to change a
+        setting). Like the settings floor this reads the command text, so it catches the
+        paths a command spells out, not ones it computes. Each word is matched as written,
+        case-folded where the file system ignores case, and also where it really lands
+        from the shell's current folder, with wildcards expanded."""
+        if not command.strip() or self._only_reads(command):
+            return False
+        text = command.replace("\\", "/")
+        run: Counter[str] = Counter()
+        for part in _split_commands(text):
+            try:
+                argv = shlex.split(part)
+            except ValueError:
+                argv = part.split()
+            if _changes_git_config(argv):
+                return True
+            script = _script_run(argv)
+            if script and not _WORD_BREAK.search(script):
+                run[script] += 1
+        base = self.workspace_root
+        if self.shell_cwd is not None:
+            try:
+                cwd = self.shell_cwd()
+            except Exception:  # noqa: BLE001 - fall back to the workspace folder
+                cwd = None
+            if cwd:
+                base = Path(cwd).expanduser()
+        words = Counter(
+            w for w in _WORD_BREAK.split(re.sub(r"[\"'`]", "", text)) if w and not w.startswith("-")
+        )
+        markers = _shell_markers()
+        # A file the command only runs is not a change to it; any other mention of the
+        # same path in the command still counts.
+        for word in [w for w, n in words.items() if n > run[w]]:
+            if _names_protected(word, markers):
+                return True
+            if word.startswith("//"):
+                continue  # a network path: matched as text only
+            full = Path(os.path.expanduser(word))
+            full = full if full.is_absolute() else base / full
+            matches = _glob.glob(str(full)) if any(c in word for c in "*?[") else []
+            for candidate in [full, *map(Path, matches)]:
+                if _is_protected_in_project(candidate, fail_closed=False, markers=markers):
+                    return True
+        return False
 
     def _domain_allowed(self, url: str, *, include_session: bool = True) -> bool:
         """True when the URL's host is an allowed egress destination — an exact match or a

@@ -200,3 +200,14 @@ def test_legacy_codepage_config_is_ignored_not_raised(tmp_path):
         '# 允许\nallowed_commands = ["git"]\n'.encode("gbk")
     )
     assert workspace_allowed_commands(ws) == []
+
+def test_inert_writes_tier_is_user_global_only(tmp_path):
+    # OPE-233: a cloned repo must not be able to switch on a looser Auto-Approve gate.
+    g = tmp_path / "global.toml"
+    g.write_text('auto_approve_inert_writes = "audit"\n')
+    ws = tmp_path / "ws"
+    (ws / ".coworker").mkdir(parents=True)
+    (ws / ".coworker" / "config.toml").write_text('auto_approve_inert_writes = "on"\n')
+
+    assert load_config(ws, global_path=g).auto_approve_inert_writes == "audit"
+    assert load_config(ws, global_path=tmp_path / "none.toml").auto_approve_inert_writes == "off"

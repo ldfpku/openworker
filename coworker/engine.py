@@ -27,6 +27,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 from . import compaction as _compaction
 from . import guidance as _guidance
 from . import provenance
+from . import review_facts
 from . import session_facts
 from . import toolchain as _toolchain
 from .events import Event, EventType
@@ -517,13 +518,13 @@ class ApprovalOutcome(str, Enum):
     DENY = "deny"
 
 
-def _readonly_ok(arguments: dict) -> bool:
+def _readonly_ok(arguments: dict, shell: Optional[str] = "bash") -> bool:
     command = str((arguments or {}).get("command", "") or "")
     if not command:
         return False
     from .readonly import is_readonly_command
 
-    return is_readonly_command(command)
+    return is_readonly_command(command, shell=shell or "bash")
 
 
 @dataclass
@@ -856,6 +857,10 @@ class TurnEngine:
         # sidecar, which is what tells the Artifacts panel which files a shell command
         # could plausibly have written (SessionManager._shell_windows).
         self._tool_started_at: dict[str, float] = {}
+        # OPE-232: set once a shell command has been cleared in the batch being authorized.
+        # The batch runs only after every call is cleared, and the shell persists, so a
+        # later command's folder is unknown from then on (see `current_shell_cwd`).
+        self._shell_cleared_in_batch = False
         # Shadow evaluation (spec Part 6 step 3): when True and a reviewer is attached, the
         # reviewer records what it WOULD have decided on each approval card while the human
         # still decides. Fire-and-forget — the card is never delayed, no decision is ever
@@ -894,6 +899,17 @@ class TurnEngine:
         # the card and in the reviewer's request. Runtime-only, like `_ask_replies`: a
         # restart costs context (more cards), never correctness.
         self._agent_files = provenance.SessionFiles(permissions.workspace_root)
+        # The inert-writes tier (OPE-233) may rewrite a file the agent itself wrote: only
+        # the agent's own bytes are lost. An injected lookup (tests) is left alone.
+        if getattr(permissions, "agent_wrote", None) is None:
+            permissions.agent_wrote = self._agent_files.wrote
+        # OPE-235: what each shell command is about to bring in from outside, keyed by tool
+        # call id from just before it runs until its result is recorded.
+        self._intake_plans: dict[str, Any] = {}
+        # The secrets floor (OPE-236) asks the same record whether the agent put a
+        # secret-looking value into a file it is now sending.
+        if getattr(permissions, "agent_file_has_secret", None) is None:
+            permissions.agent_file_has_secret = self._agent_files.carries_secret
         # Completed tool calls so far, so a fact can say how many steps back the write was.
         self._step = 0
         self._last_context_tokens: Optional[int] = None
@@ -2184,7 +2200,14 @@ class TurnEngine:
                 if not failed:
                     break
         if state is not None:
+            # OPE-235: the summarizer read every message it summarized, so outside content
+            # there may survive in the summary; and the transcript file holds it verbatim.
+            state.carries_outside = self._outside_before(state.boundary_index, summarized=True)
             self._write_compaction_transcript(state)
+            if state.transcript_path and any(
+                m.get("_outside") for m in self.messages[: state.boundary_index]
+            ):
+                self._agent_files.mark_outside(state.transcript_path)
             self.compaction_state = state
             self._last_context_tokens = None  # stale once the outbound view shrank
             return "Context compacted — earlier turns were summarized"
@@ -2198,10 +2221,26 @@ class TurnEngine:
                 max_tail_tokens=int(_compaction.TRIM_TARGET_FRACTION * trigger),
             )
             if trimmed is not None:
+                # The trim drops its span without summarizing it; only an earlier summary
+                # (kept in the block) can still carry outside content.
+                trimmed.carries_outside = self._outside_before(trimmed.boundary_index, summarized=False)
                 self.compaction_state = trimmed
                 self._last_context_tokens = None
                 return "Context trimmed — oldest turns dropped (summary unavailable)"
         return None
+
+    def _outside_before(self, boundary: int, *, summarized: bool) -> bool:
+        """OPE-235: whether the compacted block for a new boundary carries outside content:
+        the earlier summary did, or this compaction summarized a message that brought some
+        in. Messages only trimmed away leave nothing behind (the block's mechanical parts
+        are the agent's own commands and the user's messages)."""
+        prior = self.compaction_state
+        if prior is not None and prior.carries_outside:
+            return True
+        if not summarized:
+            return False
+        start = prior.boundary_index if prior is not None else 0
+        return any(m.get("_outside") for m in self.messages[start:boundary])
 
     # -- helpers ----------------------------------------------------------------
     def _offered_tool_schemas(self) -> Optional[list[dict[str, Any]]]:
@@ -2434,6 +2473,7 @@ class TurnEngine:
         # verdict physically cannot land on the wrong action). The loop below stays
         # sequential because approval cards are interactive and must reach the human one
         # at a time, in call order.
+        self._shell_cleared_in_batch = False
         await self._preconsult_reviewer(tool_calls)
         cleared: list[ToolCall] = []
         for tool_call in tool_calls:
@@ -2488,6 +2528,8 @@ class TurnEngine:
                     allowed = item
             if allowed:
                 cleared.append(tool_call)
+                if tool_call.name == "run_shell":
+                    self._shell_cleared_in_batch = True
 
         concurrent = (
             [tc for tc in cleared if self._parallel_safe(tc)]
@@ -2950,6 +2992,63 @@ class TurnEngine:
         )
         return match.render() if match else ""
 
+    def current_shell_cwd(self) -> Optional[str]:
+        """OPE-232: the persistent shell's current folder, or None when it cannot be known
+        for the call being checked: no shell, or a shell command already cleared in this
+        batch may move it before this one runs."""
+        if self._shell_cleared_in_batch:
+            return None
+        executor = getattr(self, "executor", None)
+        cwd = getattr(executor, "cwd", None) if executor is not None else None
+        return str(cwd) if cwd else None
+
+    def _outside_in_context(self) -> bool:
+        """OPE-235: whether content from outside is still in what the agent is sent: a tool
+        result marked `_outside` after the compaction boundary, or a compacted summary that
+        was written from one. Outside text can carry instructions for as long as the agent
+        can see it, so the line lasts exactly that long."""
+        state = self.compaction_state
+        start = 0
+        if state is not None and 0 < state.boundary_index < len(self.messages):
+            if state.carries_outside:
+                return True
+            start = state.boundary_index
+        return any(m.get("_outside") for m in self.messages[start:])
+
+    def _shell_cwd(self) -> Optional[str]:
+        executor = getattr(self, "executor", None)
+        cwd = getattr(executor, "cwd", None) if executor is not None else None
+        return str(cwd) if cwd else None
+
+    def _facts_kw(
+        self, tool_call: ToolCall, request: str, history: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """OPE-235: what code can check about this call, as `{"facts": [...]}` for the
+        reviewer, or {} when there is nothing to say (so reviewers that predate facts keep
+        working). Fixed vocabulary (review_facts.py); a failure here never blocks a review."""
+        try:
+            from .permissions import write_paths
+            from .risk import WRITE_TOOLS
+
+            targets: list[Path] = []
+            if tool_call.name in WRITE_TOOLS:
+                paths, _located = write_paths(tool_call.name, tool_call.arguments or {})
+                targets = [self.permissions._candidate(p) for p in paths]
+            spec = self.registry.get(tool_call.name)
+            facts = review_facts.compute_facts(
+                tool_call.name,
+                tool_call.arguments or {},
+                user_texts=[request, *(str(h.get("text", "")) for h in history)],
+                external_read=self._outside_in_context(),
+                write_targets=targets,
+                metadata=spec.metadata if spec else None,
+                egress_host=self.permissions.egress_host,
+                cwd=self.permissions._shell_base(),
+            )
+        except Exception:  # noqa: BLE001 - facts inform the reviewer, never gate it
+            return {}
+        return {"facts": facts} if facts else {}
+
     async def _preconsult_reviewer(self, tool_calls: list[ToolCall]) -> None:
         """Fire one reviewer request per call that will escalate, all concurrently, and
         park the verdicts for `_authorize` to consume. One action per request — there is
@@ -2988,6 +3087,7 @@ class TurnEngine:
                     tool_name=tc.name,
                     arguments=tc.arguments,
                     provenance=self._provenance(tc),
+                    **self._facts_kw(tc, request, history),
                 )
                 for tc in pending
             ]
@@ -3007,6 +3107,7 @@ class TurnEngine:
             tool_name=tool_call.name,
             arguments=tool_call.arguments,
             provenance=self._provenance(tool_call),
+            **self._facts_kw(tool_call, request, history),
         )
 
     @staticmethod
@@ -3067,6 +3168,7 @@ class TurnEngine:
                     provenance=prov,
                     tool_name=tool_call.name,
                     arguments=tool_call.arguments,
+                    **self._facts_kw(tool_call, request, history),
                 )
                 self._audit(
                     tool_call,
@@ -3124,6 +3226,22 @@ class TurnEngine:
                 reason=reason,
                 needs_user=True,
                 human_only=True,
+            )
+
+        # OPE-233: an Auto-Approve gate tier let this call run without the reviewer —
+        # recorded, never invisible (transcript chip + audit row), like every other
+        # cardless origin.
+        if allowed and decision.tier:
+            self._approval_origins[tool_call.id] = {"origin": "gate_tier", "note": reason}
+            self._audit(tool_call, stage="auto_allowed", status="allowed", reason=reason)
+        elif decision.tier and decision.tier_audit_only and decision.needs_user:
+            # Audit mode: the decision is unchanged; the record notes what the tier WOULD
+            # have done, so it can be measured before anyone switches it on.
+            self._audit(
+                tool_call,
+                stage="gate_tier_shadow",
+                status="would_allow",
+                reason=f"{decision.tier}: {decision.tier_note}",
             )
 
         if allowed and decision.rule:
@@ -3255,7 +3373,7 @@ class TurnEngine:
                     ),
                     # True when this shell command classifies as read-only — the card
                     # offers "Allow read-only commands for this session" only then.
-                    "readonly_ok": _readonly_ok(tool_call.arguments),
+                    "readonly_ok": _readonly_ok(tool_call.arguments, self.permissions.shell_kind),
                     **(
                         self.approval_extras(tool_call.name, tool_call.arguments)
                         if self.approval_extras
@@ -3365,6 +3483,16 @@ class TurnEngine:
         # The one chokepoint every executed call passes through, concurrent or serial.
         self._tool_started_at[tool_call.id] = time.time()
         try:
+            try:
+                # OPE-235: note what a shell command will bring in before it runs, so the
+                # folders it adds to can be compared afterwards.
+                plan = self._agent_files.before(
+                    tool_call.name, tool_call.arguments, cwd=self._shell_cwd()
+                )
+                if plan is not None:
+                    self._intake_plans[tool_call.id] = plan
+            except Exception:  # noqa: BLE001 - bookkeeping never blocks a tool
+                pass
             return self.registry.execute(tool_call.name, tool_call.arguments), "ok"
         except Exception as exc:
             # A tool may answer "the tool for this is X" — `write_file` refusing a .xlsx is
@@ -3386,10 +3514,29 @@ class TurnEngine:
 
     def _record_result(self, tool_call: ToolCall, result: Any, status: str) -> Event:
         self._step += 1
+        plan = self._intake_plans.pop(tool_call.id, None)
+        outside = False
         if status == "ok":
+            spec = self.registry.get(tool_call.name)
+            # OPE-235: whether this result brings outside content into the agent's context
+            # (marked on its message below). Checked before recording, so reading a file
+            # that came from outside in an EARLIER call counts, not the download itself.
+            cwd = plan.cwd if plan is not None else self._shell_cwd()
+            try:
+                outside = (
+                    review_facts.is_external_read(
+                        tool_call.name, tool_call.arguments, spec.metadata if spec else None
+                    )
+                    or (plan is not None and plan.brings_outside_in)
+                    or self._agent_files.reads_outside(
+                        tool_call.name, tool_call.arguments, cwd=cwd
+                    )
+                )
+            except Exception:  # noqa: BLE001 - a fact, never a reason to fail a call
+                outside = True
             # Only successful calls: a write that raised left nothing on disk to run.
             self._agent_files.record(
-                tool_call.name, tool_call.arguments, result, step=self._step
+                tool_call.name, tool_call.arguments, result, step=self._step, cwd=cwd, plan=plan
             )
         # A `_display` key on a tool result is user-facing metadata the AGENT must
         # never see (e.g. how many gmail hits the privacy filters hid — a count
@@ -3420,6 +3567,8 @@ class TurnEngine:
             # in `_outbound_messages`, kept in the jsonl. With `ts` it brackets exactly the
             # interval the tool was running in.
             message["t0"] = started
+        if outside:
+            message["_outside"] = True
         self.messages.append(message)
         hidden = int((display or {}).get("hidden_by_filters") or 0)
         stripped = int((display or {}).get("hidden_fields") or 0)
@@ -4032,6 +4181,7 @@ class TurnEngine:
             "source",
             "_display",
             "_preflight",
+            "_outside",
             "ts",
             "t0",
             "reasoning",
