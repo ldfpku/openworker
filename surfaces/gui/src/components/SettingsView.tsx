@@ -8,7 +8,6 @@ import {
   setAutoApprove,
   setAutoApproveShadow,
   setAutoWorkspaceIgnore,
-  setCompactionSettings,
   setContextBar,
   setGuidanceSettings,
   setOnboarded,
@@ -16,7 +15,6 @@ import {
   setScratchBase,
   setSessionsPeek,
   setWorkspaceTrusted,
-  type CompactionSettings,
   type GuidanceSettings,
   type ModelSettings,
   type PdfSettings,
@@ -928,32 +926,18 @@ function TokenSavingsCard() {
 // percentage and token cap are configurable; self-managed summarizers use a fixed pool.
 function CompactionCard() {
   const { t } = useTranslation();
-  const [cfg, setCfg] = useState<CompactionSettings | null>(null);
+  // Read-only: the trigger ratio is a fixed industry default and the context window is read
+  // from the model's own metadata. Nothing here is editable — the card only reports.
+  const [thresholdPct, setThresholdPct] = useState<number | null>(null);
 
   useEffect(() => {
     getSettings()
-      .then((s) => {
-        setCfg({
-          compaction_threshold_pct: s.compaction_threshold_pct ?? 0.8,
-          compaction_cap_tokens: s.compaction_cap_tokens ?? 250_000,
-          compaction_model: s.compaction_model ?? "",
-        });
-      })
-      .catch(() =>
-        setCfg({
-          compaction_threshold_pct: 0.8,
-          compaction_cap_tokens: 250_000,
-          compaction_model: "",
-        }),
-      );
+      .then((s) => setThresholdPct(s.compaction_threshold_pct ?? 0.8))
+      .catch(() => setThresholdPct(0.8));
   }, []);
 
-  const save = async (patch: Partial<CompactionSettings>) => {
-    setCfg((p) => (p ? { ...p, ...patch } : p));
-    await setCompactionSettings(patch);
-  };
-
-  if (!cfg) return null;
+  if (thresholdPct === null) return null;
+  const pct = Math.round(thresholdPct * 100);
   return (
     <div className={CARD + " p-4 mb-4"} data-testid="compaction-card">
       <div className={FIELD_LABEL}>{t("Context compaction")}</div>
@@ -961,49 +945,11 @@ function CompactionCard() {
         {t("Long sessions are compacted automatically: older turns are summarized so the coworker keeps working instead of running out of context. Your visible transcript is never changed — a small marker shows where compaction happened.")}
       </div>
 
-      <div className="mt-3 flex items-center gap-5 flex-wrap">
-        <label className="flex items-center gap-2.5">
-          <span className="text-[13px] text-ink">{t("Compact at")}</span>
-          <input
-            type="number"
-            min={10}
-            max={95}
-            value={Math.round(cfg.compaction_threshold_pct * 100)}
-            data-testid="compaction-threshold"
-            className="w-16 px-2 py-1.5 rounded-lg border border-line bg-paper text-[13px] text-ink outline-none focus:border-accent"
-            onChange={(e) =>
-              save({
-                compaction_threshold_pct:
-                  Math.max(10, Math.min(Number(e.target.value) || 80, 95)) / 100,
-              })
-            }
-          />
-          <span className="text-[13px] text-muted">% of the context window</span>
-        </label>
-        <label className="flex items-center gap-2.5">
-          <span className="text-[13px] text-ink">{t("or at")}</span>
-          <input
-            type="number"
-            min={10_000}
-            max={2_000_000}
-            step={10_000}
-            value={cfg.compaction_cap_tokens}
-            data-testid="compaction-cap"
-            className="w-28 px-2 py-1.5 rounded-lg border border-line bg-paper text-[13px] text-ink outline-none focus:border-accent"
-            onChange={(e) =>
-              save({
-                compaction_cap_tokens: Math.max(
-                  10_000,
-                  Math.min(Number(e.target.value) || 250_000, 2_000_000),
-                ),
-              })
-            }
-          />
-          <span className="text-[13px] text-muted">tokens, whichever is smaller</span>
-        </label>
+      <div className="mt-3 text-[13px] text-ink" data-testid="compaction-threshold-readonly">
+        {t("Compaction starts at {{pct}}% of the model's context window.", { pct })}
       </div>
       <div className={FIELD_HELP}>
-        {t("The cap makes very-large-context models compact early — quality and speed degrade well before their nominal limit.")}
+        {t("The context window is read automatically from the model's own metadata, and the trigger ratio follows an industry-standard default — neither is configurable.")}
       </div>
 
       <div className={"mt-3 " + FIELD_HELP}>

@@ -1121,11 +1121,11 @@ export interface ModelSettings {
   pdf_fallback?: "text" | "images";
   pdf_max_pages?: number; // default 20, 1–100
   pdf_max_mb?: number; // default 10, 1–10
-  // Auto-compaction of long histories (OPE-27): trigger = min(threshold% × context
-  // window, cap tokens); model pins the summarizer ("" → the session's own model).
-  // Optional so the GUI is robust to an older backend.
-  compaction_threshold_pct?: number; // default 0.8, 0.10–0.95
-  compaction_cap_tokens?: number; // default 250000
+  // Auto-compaction of long histories: the trigger ratio is a FIXED industry default and
+  // the context window is read from the model's own metadata, so the ratio is reported
+  // read-only (no cap field anymore). `compaction_model` pins the summarizer ("" → the
+  // session's own model). Optional so the GUI is robust to an older backend.
+  compaction_threshold_pct?: number; // read-only display, e.g. 0.8
   compaction_model?: string;
   // 开工前核对 (coworker/guidance.py): on/off (default off) + the diagnosis-model pin
   // ("" → the session model's cheap sibling). Optional for an older backend.
@@ -1152,12 +1152,13 @@ export async function setPdfSettings(
 }
 
 export interface CompactionSettings {
-  compaction_threshold_pct: number;
-  compaction_cap_tokens: number;
+  // The only remaining writable knob: the summarizer-model pin ("" → session's own model).
+  // The trigger ratio is fixed and the token cap is a config.toml/env power-user setting,
+  // so neither is sent from the GUI.
   compaction_model: string;
 }
 
-/** Persist the auto-compaction overrides (threshold %, token cap, summarizer model). */
+/** Pin the summarizer model ("" → the session's own model). */
 export async function setCompactionSettings(
   patch: Partial<CompactionSettings>,
 ): Promise<{ ok: boolean; error?: string }> {
