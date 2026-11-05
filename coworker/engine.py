@@ -1974,12 +1974,15 @@ class TurnEngine:
             from .providers.matrix import model_context_windows
 
             cfg["context_window"] = model_context_windows().get(self.model)
-            if not cfg["context_window"] and self.catalog_context_window is not None:
+            # getattr guard: some call sites build a bare stub (SimpleNamespace) and call
+            # this unbound, so the attribute may be absent even though __init__ sets it.
+            catalog_window = getattr(self, "catalog_context_window", None)
+            if not cfg["context_window"] and catalog_window is not None:
                 # A custom/relay/OpenAI-compatible model the static matrix doesn't carry:
                 # its window comes from the catalog (the endpoint's /v1/models metadata),
                 # so compaction is driven by what the model actually reports.
                 try:
-                    cfg["context_window"] = self.catalog_context_window(self.model)
+                    cfg["context_window"] = catalog_window(self.model)
                 except Exception:
                     pass
             if not cfg["context_window"]:
@@ -1994,7 +1997,10 @@ class TurnEngine:
         # custom-endpoint max_tokens would otherwise let a prompt hit a 400 before the ratio
         # fires. `model_settings["max_tokens"]` is the configured ceiling (agent.py).
         if "max_output_tokens" not in cfg:
-            cfg["max_output_tokens"] = (self.model_settings or {}).get("max_tokens")
+            # getattr guard for the same bare-stub call sites as above.
+            cfg["max_output_tokens"] = (getattr(self, "model_settings", None) or {}).get(
+                "max_tokens"
+            )
         # No `cap_tokens` default: the GUI no longer sets one, so the metadata window alone
         # governs. Only the config.toml / COWORKER_COMPACTION_CAP_TOKENS power-user path
         # supplies a cap (threaded in via compaction_settings()); absent ⇒ no clamp.
