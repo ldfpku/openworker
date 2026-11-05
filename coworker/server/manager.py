@@ -1247,6 +1247,7 @@ class SessionManager:
 
             engine.compaction_state = CompactionState.from_dict(record.compaction)
         engine.compaction_settings = self.compaction_settings
+        engine.catalog_context_window = self.catalog_context_window
         # 开工前核对 (coworker/guidance.py): live getter, same reasoning as compaction. The
         # engine itself decides WHEN (first task message, attended); this supplies the
         # model, the timeout, the catalog recommender and the session's skill menu.
@@ -4493,6 +4494,18 @@ class SessionManager:
         models = getattr(self, "_model_catalog", {}).get(name, {}).get("models")
         return models if isinstance(models, list) else []
 
+    def catalog_context_window(self, model: str) -> Optional[int]:
+        """The context window a configured catalog provider reports for `model` (its
+        /v1/models metadata), or None. Drives the compaction trigger for custom/relay/
+        OpenAI-compatible models the static matrix doesn't carry — injected onto the engine
+        so compaction is governed by what the model itself declares, not the 128k fallback.
+        Same source as `get_settings().model_context_windows` (`_catalog_metadata`)."""
+        try:
+            _labels, windows = self._catalog_metadata()
+        except Exception:
+            return None
+        return windows.get(model)
+
     # -- aigw: the guard's per-person allowlist (GET /gate/models) ----------------
     # The company gateway's guard Worker is an allowlist: a person may call exactly the
     # models their administrator ticked for them, and `GET /gate/models` returns that
@@ -6168,45 +6181,42 @@ class SessionManager:
         }
 
     def compaction_settings(self) -> dict[str, Any]:
-        """The live auto-compaction knobs (OPE-27) — read by every engine per check, so a
-        Settings change applies without a rebuild. Only the two spec'd overrides plus the
-        summarizer-model pin; absent keys fall back to compaction.py defaults."""
-        from ..compaction import DEFAULT_CAP_TOKENS, DEFAULT_THRESHOLD_PCT
+        """The live auto-compaction knobs — read by every engine per check.
 
-        # OPE-186/189: config.toml / COWORKER_COMPACTION_* are the defaults the Settings
-        # prefs override (the summariser ceiling has no pref at all).
+        The trigger ratio is a FIXED industry default (`DEFAULT_THRESHOLD_PCT`), no longer a
+        user knob: the context window comes from the model's own metadata and the ratio is
+        shown read-only in Settings. The absolute token cap is GONE from the GUI; it survives
+        ONLY as the config.toml / COWORKER_COMPACTION_CAP_TOKENS power-user escape hatch, and
+        is threaded through here as `cap_tokens` only when that path set it (absent ⇒ the
+        metadata window alone governs). The summarizer-model pin is unchanged."""
+        from ..compaction import DEFAULT_THRESHOLD_PCT
+
         config = load_config()
-        try:
-            threshold_pct = float(
-                self._prefs.get("compaction_threshold_pct") or DEFAULT_THRESHOLD_PCT
-            )
-        except (TypeError, ValueError):
-            threshold_pct = DEFAULT_THRESHOLD_PCT
-        try:
-            cap_tokens = int(
-                self._prefs.get("compaction_cap_tokens")
-                or config.compaction_cap_tokens
-                or DEFAULT_CAP_TOKENS
-            )
-        except (TypeError, ValueError):
-            cap_tokens = DEFAULT_CAP_TOKENS
-        settings = {
-            "threshold_pct": threshold_pct,
-            "cap_tokens": cap_tokens,
+        settings: dict[str, Any] = {
+            # Fixed ratio — ignored any stale `compaction_threshold_pct` pref on disk.
+            "threshold_pct": DEFAULT_THRESHOLD_PCT,
             # Hosted sessions retain this legacy pin. Self-managed sessions ignore it and
             # use compaction.GATEWAY_SUMMARY_MODELS directly, with no gateway/catalog pref.
             "model": str(self._prefs.get("compaction_model") or ""),
         }
+        # Power-user cap only: config.toml / COWORKER_COMPACTION_CAP_TOKENS. No GUI pref, no
+        # 250k default — an unset cap means the window governs.
+        if config.compaction_cap_tokens:
+            try:
+                settings["cap_tokens"] = int(config.compaction_cap_tokens)
+            except (TypeError, ValueError):
+                pass
         if config.compaction_summary_max_tokens:
             settings["summary_max_tokens"] = int(config.compaction_summary_max_tokens)
         return settings
 
     def compaction_settings_payload(self) -> dict[str, Any]:
-        """The same knobs under REST-facing names (prefixed to keep /v1/settings flat)."""
+        """The display knobs under REST-facing names (prefixed to keep /v1/settings flat).
+        The ratio is reported read-only so the GUI can show it; the cap is intentionally
+        NOT surfaced (it has no GUI control anymore)."""
         settings = self.compaction_settings()
         return {
             "compaction_threshold_pct": settings["threshold_pct"],
-            "compaction_cap_tokens": settings["cap_tokens"],
             "compaction_model": settings["model"],
         }
 
@@ -6216,28 +6226,11 @@ class SessionManager:
         cap_tokens: Any = None,
         model: Any = None,
     ) -> dict[str, Any]:
-        """Persist the auto-compaction overrides (OPE-27). Threshold is a percentage of
-        the model's context window (10–95); the cap is an absolute token ceiling; model
-        pins the summarizer ('' → the session's own model). Engines read these live via
-        `compaction_settings()`, so changes apply to running sessions immediately."""
-        if threshold_pct is not None:
-            try:
-                pct = float(threshold_pct)
-            except (TypeError, ValueError):
-                return {"ok": False, "error": "compaction_threshold_pct must be a number"}
-            if not 0.10 <= pct <= 0.95:
-                return {
-                    "ok": False,
-                    "error": "compaction_threshold_pct must be between 0.10 and 0.95",
-                }
-            self._prefs["compaction_threshold_pct"] = pct
-        if cap_tokens is not None:
-            try:
-                self._prefs["compaction_cap_tokens"] = max(
-                    10_000, min(int(cap_tokens), 2_000_000)
-                )
-            except (TypeError, ValueError):
-                return {"ok": False, "error": "compaction_cap_tokens must be a number"}
+        """Persist the only remaining auto-compaction override: the summarizer-model pin
+        ('' → the session's own model). The trigger ratio is fixed and the absolute token
+        cap is a config.toml/env-only power-user setting, so `threshold_pct` and `cap_tokens`
+        from the GUI are accepted-but-ignored (older clients may still send them). Engines
+        read the live settings via `compaction_settings()`, so a pin change applies at once."""
         if model is not None:
             self._prefs["compaction_model"] = str(model)
         self._save_prefs()
