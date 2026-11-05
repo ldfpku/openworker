@@ -18,12 +18,31 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-# Trigger: min(threshold_pct × context_window, cap_tokens). The cap exists so 1M-context
-# models compact early — quality and latency degrade well before the nominal limit.
+# Trigger: threshold_pct × context_window — the window comes from the model's own metadata
+# (the matrix, or a catalog/relay-reported window), and the ratio is a FIXED industry
+# default, not a user knob. `cap_tokens` is an OPTIONAL power-user escape hatch
+# (config.toml / COWORKER_COMPACTION_CAP_TOKENS only, never the GUI): when set it clamps the
+# trigger with a `min(...)`, so an advanced user can still force a 1M-window model to compact
+# early. Unset (the default, and the only path the GUI exercises) ⇒ the metadata window alone
+# governs.
 DEFAULT_THRESHOLD_PCT = 0.8
+# Kept only for the config.toml / COWORKER_COMPACTION_CAP_TOKENS power-user path (agent.py);
+# NOT a default clamp — `cap_tokens=None` means "no cap", which is what the GUI now sends.
 DEFAULT_CAP_TOKENS = 250_000
 # Models without a verified context_window entry in the matrix.
 DEFAULT_CONTEXT_WINDOW = 128_000
+# Two guardrails ported from the Hermes agent's compaction (verified in its
+# context_compressor._compute_threshold_tokens), so the fixed ratio behaves on small and
+# custom endpoints as well as on giant windows:
+#  1. Effective input budget = window − output reservation. The provider carves the reply's
+#     max_tokens out of the SAME window, so a large output reservation on a custom endpoint
+#     would otherwise let a prompt hit a 400 before the ratio ever fires.
+#  2. Small-window ceiling: a window below _SMALL_CTX_WINDOW_LIMIT never triggers above
+#     _SMALL_CTX_TRIGGER_RATIO of the effective budget — otherwise a 64k model would trigger
+#     near 98% and a provider that silently clips an over-window prompt (Ollama) wedges the
+#     session with no overflow error to recover from. Large windows are unaffected.
+_SMALL_CTX_WINDOW_LIMIT = 512_000
+_SMALL_CTX_TRIGGER_RATIO = 0.85
 # The newest slice kept verbatim, as a fraction of the trigger (a token budget, not a
 # turn count — one huge tool loop shouldn't starve the working set).
 KEEP_RECENT_FRACTION = 0.25
@@ -199,10 +218,35 @@ def trigger_tokens(
     context_window: Optional[int],
     *,
     threshold_pct: float = DEFAULT_THRESHOLD_PCT,
-    cap_tokens: int = DEFAULT_CAP_TOKENS,
+    cap_tokens: Optional[int] = None,
+    max_output_tokens: Optional[int] = None,
 ) -> int:
+    """Tokens at which compaction fires: `threshold_pct × effective_input_budget`, where the
+    window is the model's metadata window (or the 128k fallback when none is known) and the
+    ratio is the fixed industry default.
+
+    Two guardrails keep the fixed ratio safe on small and output-heavy endpoints:
+      * `max_output_tokens`: the reply's reservation is subtracted from the window first, so
+        the ratio is taken against the usable INPUT budget, not the whole window.
+      * small windows (< _SMALL_CTX_WINDOW_LIMIT) never trigger above _SMALL_CTX_TRIGGER_RATIO
+        of that budget, so a 64k model can't trigger near its ceiling and wedge on a provider
+        that silently clips an over-window prompt.
+
+    `cap_tokens` is the optional power-user clamp (config.toml / env only) — when provided it
+    caps the result with a `min(...)`; unset (the GUI's path) ⇒ the metadata window governs."""
     window = context_window or DEFAULT_CONTEXT_WINDOW
-    return min(int(threshold_pct * window), int(cap_tokens))
+    reservation = int(max_output_tokens) if max_output_tokens and max_output_tokens > 0 else 0
+    budget = window - reservation
+    if budget <= 0:
+        budget = window
+    trigger = int(threshold_pct * budget)
+    # Small-window ceiling: never trigger above _SMALL_CTX_TRIGGER_RATIO of the budget for a
+    # small window, unless the configured ratio is itself already higher (explicit user intent).
+    if budget < _SMALL_CTX_WINDOW_LIMIT and threshold_pct < _SMALL_CTX_TRIGGER_RATIO:
+        trigger = min(trigger, int(_SMALL_CTX_TRIGGER_RATIO * budget))
+    if cap_tokens is not None:
+        trigger = min(trigger, int(cap_tokens))
+    return max(1, trigger)
 
 
 def should_compact(
@@ -210,10 +254,14 @@ def should_compact(
     context_window: Optional[int],
     *,
     threshold_pct: float = DEFAULT_THRESHOLD_PCT,
-    cap_tokens: int = DEFAULT_CAP_TOKENS,
+    cap_tokens: Optional[int] = None,
+    max_output_tokens: Optional[int] = None,
 ) -> bool:
     return signal >= trigger_tokens(
-        context_window, threshold_pct=threshold_pct, cap_tokens=cap_tokens
+        context_window,
+        threshold_pct=threshold_pct,
+        cap_tokens=cap_tokens,
+        max_output_tokens=max_output_tokens,
     )
 
 

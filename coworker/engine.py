@@ -820,6 +820,10 @@ class TurnEngine:
         # treat as unattended: never park a background run on internal bookkeeping).
         self.compaction_state: Optional[_compaction.CompactionState] = None
         self.compaction_settings: Optional[Callable[[], dict[str, Any]]] = None
+        # The live-catalog context window for a model id (custom/relay/OpenAI-compatible
+        # endpoints the static matrix doesn't carry) — injected by the manager so the
+        # compaction trigger is driven by the model's own metadata, not the 128k fallback.
+        self.catalog_context_window: Optional[Callable[[str], Optional[int]]] = None
         self.is_attended: Optional[Callable[[], bool]] = None
         # 开工前核对 (coworker/guidance.py) — both set post-construction by the manager, same
         # as compaction. `guidance_config` is a live getter ({enabled, model, timeout,
@@ -1970,6 +1974,17 @@ class TurnEngine:
             from .providers.matrix import model_context_windows
 
             cfg["context_window"] = model_context_windows().get(self.model)
+            # getattr guard: some call sites build a bare stub (SimpleNamespace) and call
+            # this unbound, so the attribute may be absent even though __init__ sets it.
+            catalog_window = getattr(self, "catalog_context_window", None)
+            if not cfg["context_window"] and catalog_window is not None:
+                # A custom/relay/OpenAI-compatible model the static matrix doesn't carry:
+                # its window comes from the catalog (the endpoint's /v1/models metadata),
+                # so compaction is driven by what the model actually reports.
+                try:
+                    cfg["context_window"] = catalog_window(self.model)
+                except Exception:
+                    pass
             if not cfg["context_window"]:
                 # Ollama's window is the num_ctx we send (providers/ollama_context.py),
                 # not the 128k guess — compact before that window context-shifts.
@@ -1977,7 +1992,18 @@ class TurnEngine:
 
                 cfg["context_window"] = context_window_for(self.model)
         cfg.setdefault("threshold_pct", _compaction.DEFAULT_THRESHOLD_PCT)
-        cfg.setdefault("cap_tokens", _compaction.DEFAULT_CAP_TOKENS)
+        # The reply's output reservation is carved out of the same window (OPE-177), so the
+        # trigger is taken against the usable INPUT budget, not the whole window — a large
+        # custom-endpoint max_tokens would otherwise let a prompt hit a 400 before the ratio
+        # fires. `model_settings["max_tokens"]` is the configured ceiling (agent.py).
+        if "max_output_tokens" not in cfg:
+            # getattr guard for the same bare-stub call sites as above.
+            cfg["max_output_tokens"] = (getattr(self, "model_settings", None) or {}).get(
+                "max_tokens"
+            )
+        # No `cap_tokens` default: the GUI no longer sets one, so the metadata window alone
+        # governs. Only the config.toml / COWORKER_COMPACTION_CAP_TOKENS power-user path
+        # supplies a cap (threaded in via compaction_settings()); absent ⇒ no clamp.
         # Self-managed MAIN sessions always use the fixed Cloudflare pool. Saved pins and
         # the old gateway_model preference are intentionally irrelevant here: neither a
         # stale direct-provider id nor the gateway catalog picker can break compaction.
@@ -2013,11 +2039,13 @@ class TurnEngine:
         signal = self._last_context_tokens or _compaction.estimate_tokens(
             self._outbound_messages()
         )
+        cap = cfg.get("cap_tokens")
         return _compaction.should_compact(
             signal,
             cfg.get("context_window"),
             threshold_pct=float(cfg["threshold_pct"]),
-            cap_tokens=int(cfg["cap_tokens"]),
+            cap_tokens=int(cap) if cap else None,
+            max_output_tokens=cfg.get("max_output_tokens"),
         )
 
     def _compaction_record(self) -> Optional[dict[str, Any]]:
@@ -2076,9 +2104,15 @@ class TurnEngine:
         prompt; unattended → auto-trim and continue (never park a run on bookkeeping)."""
         cfg = self._compaction_config()
         pct = float(cfg["threshold_pct"])
-        cap = int(cfg["cap_tokens"])
+        cap_raw = cfg.get("cap_tokens")
+        cap = int(cap_raw) if cap_raw else None
         window = cfg.get("context_window")
-        trigger = _compaction.trigger_tokens(window, threshold_pct=pct, cap_tokens=cap)
+        trigger = _compaction.trigger_tokens(
+            window,
+            threshold_pct=pct,
+            cap_tokens=cap,
+            max_output_tokens=cfg.get("max_output_tokens"),
+        )
         keep = int(_compaction.KEEP_RECENT_FRACTION * trigger)
         # OPE-189: both budgets scale with the trigger, so lowering it to save tokens can't
         # be undone by a block that keeps spending the freed space.

@@ -1,10 +1,12 @@
-// OPE-27 — auto-compaction GUI: the Settings card's two overrides POST through,
-// the fixed Cloudflare summarizer pool is explained, and the "context compacted"
-// divider renders inline mid-session without touching the transcript.
+// Auto-compaction GUI: the Settings card is now READ-ONLY — the trigger ratio is a fixed
+// industry default and the context window is read from the model's metadata, so there are
+// no editable threshold/cap inputs and the card never POSTs. The fixed Cloudflare summarizer
+// pool is explained, and the "context compacted" divider renders inline mid-session without
+// touching the transcript.
 import { expect } from "@playwright/test";
 import { test } from "./fixtures";
 
-test("Settings: Context compaction card edits threshold and cap with fixed failover", async ({
+test("Settings: Context compaction card is read-only (fixed ratio, metadata window)", async ({
   page,
 }) => {
   await page.goto("/");
@@ -16,26 +18,20 @@ test("Settings: Context compaction card edits threshold and cap with fixed failo
   await expect(card).toBeVisible();
   await expect(card.getByText("Context compaction")).toBeVisible();
 
-  // Defaults render when the backend doesn't send the fields (older-backend robustness).
-  await expect(card.getByTestId("compaction-threshold")).toHaveValue("80");
-  await expect(card.getByTestId("compaction-cap")).toHaveValue("250000");
+  // The fixed ratio is shown read-only (default 80% when the backend sends no override).
+  const readonly = card.getByTestId("compaction-threshold-readonly");
+  await expect(readonly).toBeVisible();
+  await expect(readonly).toContainText("80");
 
-  // Threshold edits POST as a fraction, clamped to 10–95%.
-  const [req] = await Promise.all([
-    page.waitForRequest(
-      (r) => r.url().endsWith("/v1/settings/compaction") && r.method() === "POST",
-    ),
-    card.getByTestId("compaction-threshold").fill("70"),
-  ]);
-  expect(req.postDataJSON()).toEqual({ compaction_threshold_pct: 0.7 });
+  // The old editable inputs are gone entirely — nothing to type into.
+  await expect(card.getByTestId("compaction-threshold")).toHaveCount(0);
+  await expect(card.getByTestId("compaction-cap")).toHaveCount(0);
 
-  const [req2] = await Promise.all([
-    page.waitForRequest(
-      (r) => r.url().endsWith("/v1/settings/compaction") && r.method() === "POST",
-    ),
-    card.getByTestId("compaction-cap").fill("100000"),
-  ]);
-  expect(req2.postDataJSON()).toEqual({ compaction_cap_tokens: 100000 });
+  // A read-only card never POSTs to the compaction settings endpoint.
+  let posted = false;
+  page.on("request", (r) => {
+    if (r.url().endsWith("/v1/settings/compaction") && r.method() === "POST") posted = true;
+  });
 
   // Self-managed sessions use the fixed Cloudflare pool; no legacy model picker remains.
   await expect(card.getByTestId("compaction-model")).toHaveCount(0);
@@ -44,6 +40,10 @@ test("Settings: Context compaction card edits threshold and cap with fixed failo
       "Self-managed sessions automatically summarize through Cloudflare AI Gateway with failover: GPT-6 Luna → GLM 5.3 Flash → Claude Haiku 5.5. No summarizer model setting is needed.",
     ),
   ).toBeVisible();
+
+  // Give any stray POST a beat to fire, then assert none did.
+  await page.waitForTimeout(300);
+  expect(posted).toBe(false);
 });
 
 test("the compacted divider renders mid-session and the transcript stays intact", async ({

@@ -2279,14 +2279,12 @@ def create_app(manager: SessionManager) -> FastAPI:
 
     @app.post("/v1/settings/compaction")
     def settings_set_compaction(body: dict) -> dict[str, Any]:
-        # Auto-compaction overrides (OPE-27): threshold % of the context window, the
-        # absolute token cap, and the summarizer-model pin ("" → session's own model).
+        # The only remaining compaction override is the summarizer-model pin ("" → the
+        # session's own model). The trigger ratio is fixed (read-only in Settings) and the
+        # absolute token cap is a config.toml / COWORKER_COMPACTION_CAP_TOKENS power-user
+        # setting — the GUI no longer sends either, so they aren't forwarded here.
         b = body or {}
-        return manager.set_compaction_settings(
-            threshold_pct=b.get("compaction_threshold_pct"),
-            cap_tokens=b.get("compaction_cap_tokens"),
-            model=b.get("compaction_model"),
-        )
+        return manager.set_compaction_settings(model=b.get("compaction_model"))
 
     @app.post("/v1/settings/guidance")
     def settings_set_guidance(body: dict) -> dict[str, Any]:

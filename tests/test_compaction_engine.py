@@ -102,6 +102,52 @@ def collect(engine, text="continue"):
     return asyncio.run(_run())
 
 
+def test_catalog_window_drives_the_trigger_for_a_custom_model(tmp_path):
+    # A custom/relay model the static matrix doesn't carry: its window comes from the
+    # injected catalog hook, and with no cap the trigger is 0.8 × that window.
+    provider = CompactingProvider([AssistantTurn(text="done", finish_reason="stop")])
+    engine = TurnEngine(
+        provider=provider,
+        registry=ToolRegistry(),
+        permissions=PermissionEngine(workspace_root=tmp_path),
+        model="custom:crouton-alpha",
+    )
+    # No cap_tokens and no context_window from settings — the engine must resolve the
+    # window from the catalog hook, exactly as the manager injects it.
+    engine.compaction_settings = lambda: {"threshold_pct": 0.8}
+    engine.catalog_context_window = lambda m: 1_050_000 if m == "custom:crouton-alpha" else None
+
+    cfg = engine._compaction_config()
+    assert cfg["context_window"] == 1_050_000
+    assert cfg.get("cap_tokens") in (None, 0)  # no GUI/default cap
+
+    # 0.8 × 1.05M = 840k, no clamp. Just under does not compact; just over does.
+    assert engine._last_context_tokens is None
+    engine._last_context_tokens = 839_999
+    assert engine._compaction_due() is False
+    engine._last_context_tokens = 840_001
+    assert engine._compaction_due() is True
+
+
+def test_power_user_cap_still_clamps_the_catalog_window(tmp_path):
+    # The config.toml / env power-user path threads a cap through compaction_settings();
+    # then the old min(...) applies even for a large catalog window.
+    provider = CompactingProvider([AssistantTurn(text="done", finish_reason="stop")])
+    engine = TurnEngine(
+        provider=provider,
+        registry=ToolRegistry(),
+        permissions=PermissionEngine(workspace_root=tmp_path),
+        model="custom:crouton-alpha",
+    )
+    engine.compaction_settings = lambda: {"threshold_pct": 0.8, "cap_tokens": 250_000}
+    engine.catalog_context_window = lambda m: 1_050_000
+
+    engine._last_context_tokens = 249_999
+    assert engine._compaction_due() is False
+    engine._last_context_tokens = 250_001
+    assert engine._compaction_due() is True
+
+
 def test_compacts_before_the_turn_when_estimate_crosses(tmp_path):
     provider = CompactingProvider([AssistantTurn(text="done", finish_reason="stop")])
     engine = make_engine(tmp_path,provider, messages=long_history(), cap=400)
@@ -440,7 +486,10 @@ def test_non_overflow_provider_errors_still_surface(tmp_path):
     assert not any(e.type == EventType.COMPACTED for e in events)
 
 
-def test_set_compaction_settings_validates_and_round_trips(tmp_path):
+def test_set_compaction_settings_pins_only_the_summarizer_model(tmp_path):
+    # The ratio is fixed and the token cap is config/env-only now: the GUI can only pin the
+    # summarizer model. A threshold/cap posted by an older client is accepted-but-ignored.
+    from coworker.compaction import DEFAULT_THRESHOLD_PCT
     from coworker.server.manager import SessionManager
 
     class Provider(ProviderClient):
@@ -454,16 +503,37 @@ def test_set_compaction_settings_validates_and_round_trips(tmp_path):
     out = mgr.set_compaction_settings(
         threshold_pct=0.5, cap_tokens=100_000, model="gpt-4o-mini"
     )
-    assert out["ok"] and out["threshold_pct"] == 0.5 and out["cap_tokens"] == 100_000
+    assert out["ok"]
+    # The pin persisted; the stale threshold/cap did NOT change the effective settings.
     assert mgr.compaction_settings()["model"] == "gpt-4o-mini"
-    # validation: out-of-range % and non-numeric cap are rejected, tiny caps clamp up
-    assert mgr.set_compaction_settings(threshold_pct=0.05)["ok"] is False
-    assert mgr.set_compaction_settings(cap_tokens="lots")["ok"] is False
-    assert mgr.set_compaction_settings(cap_tokens=1)["cap_tokens"] == 10_000
-    # the flat /v1/settings names
+    assert mgr.compaction_settings()["threshold_pct"] == DEFAULT_THRESHOLD_PCT
+    assert "cap_tokens" not in mgr.compaction_settings()  # no GUI cap, no default
+    assert "compaction_threshold_pct" not in mgr._prefs  # not persisted
+    assert "compaction_cap_tokens" not in mgr._prefs
+
+    # The flat /v1/settings names: ratio reported read-only, cap not surfaced.
     payload = mgr.compaction_settings_payload()
-    assert payload["compaction_threshold_pct"] == 0.5
+    assert payload["compaction_threshold_pct"] == DEFAULT_THRESHOLD_PCT
     assert payload["compaction_model"] == "gpt-4o-mini"
+    assert "compaction_cap_tokens" not in payload
+
+
+def test_power_user_cap_from_config_reaches_compaction_settings(tmp_path, monkeypatch):
+    # The config.toml / COWORKER_COMPACTION_CAP_TOKENS escape hatch is the ONLY way a cap
+    # reaches compaction now — surfaced as cap_tokens, never from a GUI pref.
+    from coworker.config import COMPACTION_CAP_TOKENS_ENV
+    from coworker.server.manager import SessionManager
+
+    class Provider(ProviderClient):
+        def complete(self, *, model, messages, tools=None, **settings):
+            return AssistantTurn(text="hi")
+
+        def capabilities(self, model):
+            return ModelCapabilities()
+
+    monkeypatch.setenv(COMPACTION_CAP_TOKENS_ENV, "60000")
+    mgr = SessionManager(workspace=tmp_path, provider=Provider())
+    assert mgr.compaction_settings()["cap_tokens"] == 60_000
 
 
 def test_compaction_has_no_gateway_model_or_catalog_dependency(tmp_path):

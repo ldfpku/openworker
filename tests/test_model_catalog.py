@@ -229,6 +229,42 @@ def test_parse_openai_compat_openrouter_uses_name_and_context_length():
     assert models[0].context_window == 128000
 
 
+def test_parse_openai_compat_reads_context_window_alias():
+    # Our Cloudflare relay (and Cloudflare's own catalog) spell it `context_window`;
+    # OpenRouter spells it `context_length`. Either feeds the window.
+    by_window = parse_openai_compat(
+        {"data": [{"id": "stealth/crouton-alpha", "context_window": 1_050_000}]},
+        "custom",
+        "SMJ",
+    )
+    assert by_window[0].context_window == 1_050_000
+
+    by_length = parse_openai_compat(
+        {"data": [{"id": "stealth/crouton-alpha", "context_length": 64_000}]},
+        "custom",
+        "SMJ",
+    )
+    assert by_length[0].context_window == 64_000
+
+    # context_length wins when both are present (OpenRouter's canonical field first).
+    both = parse_openai_compat(
+        {"data": [{"id": "m", "context_length": 128_000, "context_window": 999}]},
+        "custom",
+    )
+    assert both[0].context_window == 128_000
+
+    # Neither present, or a non-int / non-positive value ⇒ no window.
+    assert parse_openai_compat({"data": [{"id": "m"}]}, "custom")[0].context_window is None
+    assert (
+        parse_openai_compat({"data": [{"id": "m", "context_window": "big"}]}, "custom")[0].context_window
+        is None
+    )
+    assert (
+        parse_openai_compat({"data": [{"id": "m", "context_window": 0}]}, "custom")[0].context_window
+        is None
+    )
+
+
 def test_parse_openai_compat_excludes_non_chat_ids():
     payload = {
         "data": [
