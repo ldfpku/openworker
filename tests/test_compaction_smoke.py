@@ -56,11 +56,13 @@ class LongSessionProvider(ProviderClient):
         return ModelCapabilities()
 
 
-def test_long_session_survives_repeated_compaction(tmp_path):
+def test_long_session_survives_repeated_compaction(tmp_path, monkeypatch):
+    # Force tiny windows via the power-user cap escape hatch (the GUI pref is gone now).
+    from coworker.config import COMPACTION_CAP_TOKENS_ENV
+
+    monkeypatch.setenv(COMPACTION_CAP_TOKENS_ENV, "3000")
     provider = LongSessionProvider()
     mgr = SessionManager(workspace=tmp_path, provider=provider)
-    # Force tiny windows straight through the real Settings plumbing.
-    mgr._prefs["compaction_cap_tokens"] = 3_000
     sid = "smoke-long"
 
     boundaries = []

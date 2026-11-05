@@ -106,13 +106,51 @@ class FakeSummarizer:
 # -- trigger math -------------------------------------------------------------
 
 
-def test_trigger_is_min_of_pct_and_cap():
+def test_trigger_is_pct_of_window_with_no_cap_by_default():
+    # The window comes from model metadata and the ratio is fixed: trigger = 0.8 × window,
+    # with NO cap by default (the GUI no longer sends one).
     assert trigger_tokens(100_000) == 80_000
-    assert trigger_tokens(1_000_000) == DEFAULT_CAP_TOKENS  # the 250k cap wins
+    assert trigger_tokens(1_000_000) == 800_000  # no 250k clamp anymore
+    assert trigger_tokens(1_050_000) == 840_000  # a relay-reported 1.05M window
     assert trigger_tokens(None) == int(0.8 * DEFAULT_CONTEXT_WINDOW)
-    # both knobs are user-overridable
+
+
+def test_trigger_cap_is_an_optional_power_user_clamp():
+    # The config.toml / env power-user path can still pass an explicit cap; then the old
+    # min(...) applies. A cap higher than the pct-of-window value is a no-op.
+    assert trigger_tokens(1_000_000, cap_tokens=DEFAULT_CAP_TOKENS) == DEFAULT_CAP_TOKENS
     assert trigger_tokens(100_000, threshold_pct=0.5, cap_tokens=40_000) == 40_000
     assert trigger_tokens(100_000, threshold_pct=0.5, cap_tokens=999_999) == 50_000
+
+
+def test_trigger_subtracts_the_output_reservation():
+    # The reply's max_tokens is carved out of the same window, so the ratio is taken against
+    # the usable INPUT budget. 1.05M window, 50k output ⇒ 0.8 × (1_050_000 − 50_000) = 800_000.
+    assert trigger_tokens(1_050_000, max_output_tokens=50_000) == 800_000
+    # A reservation >= the window degenerates to the whole window (no negative budget).
+    assert trigger_tokens(100_000, max_output_tokens=200_000) == 80_000
+
+
+def test_small_window_ceiling_guards_the_default_ratio():
+    # A small window (< 512k) at a ratio BELOW the 0.85 ceiling is left alone (0.8 < 0.85):
+    # the guardrail is a ceiling, not a floor, so the fixed 0.8 default is unchanged.
+    assert trigger_tokens(64_000) == int(0.8 * 64_000)
+    # Large windows are never touched by the small-window ceiling.
+    assert trigger_tokens(1_000_000, threshold_pct=0.95) == 950_000
+
+
+def test_small_window_ceiling_binds_a_too_low_configured_ratio_not_user_intent():
+    # The ceiling only binds when the configured ratio is BELOW 0.85 — it caps the computed
+    # trigger so a small window can't trigger near its top. Construct a case where 0.8 × a
+    # near-limit budget still beats 0.85 × a smaller effective budget to show the min().
+    # 500k window, 100k output reservation ⇒ budget 400k (< 512k). 0.8 × 400k = 320k, and
+    # 0.85 × 400k = 340k, so 0.8 does not bind. A ratio of 0.84 (just under the ceiling) is
+    # also honored as-is; the ceiling is 0.85 of the budget.
+    assert trigger_tokens(500_000, max_output_tokens=100_000) == int(0.8 * 400_000)
+    assert trigger_tokens(500_000, max_output_tokens=100_000, threshold_pct=0.84) == int(0.84 * 400_000)
+    # An explicit ratio ABOVE the ceiling is user intent and is honored (not capped) —
+    # matches the Hermes rule that an explicit >0.85 keeps more raw context deliberately.
+    assert trigger_tokens(64_000, threshold_pct=0.95) == int(0.95 * 64_000)
 
 
 def test_should_compact_crosses_threshold():

@@ -300,8 +300,14 @@ def parse_openai_compat(
                 if isinstance(name, str) and name.strip()
                 else pretty_model_label(model_id, provider, provider_title)
             )
-            context_window = entry.get("context_length")
-            context_window = context_window if isinstance(context_window, int) else None
+            # `context_length` (OpenRouter's spelling) or `context_window` (Cloudflare /
+            # our own relay's spelling) — first well-formed positive int wins.
+            context_window: Optional[int] = None
+            for key in ("context_length", "context_window"):
+                value = entry.get(key)
+                if isinstance(value, int) and value > 0:
+                    context_window = value
+                    break
             out.append(CatalogModel(model_id, label, context_window))
             seen.add(model_id)
         except Exception:
