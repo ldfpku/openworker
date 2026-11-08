@@ -1709,6 +1709,7 @@ export interface SessionSkillRow {
   scope: "global" | "project" | "coworker" | "external";
   enabled: boolean; // false = muted for this session only
   manual?: boolean; // runs only when picked with "/" (来源与升级 §3)
+  source_id?: string;
   source_label?: string;
 }
 

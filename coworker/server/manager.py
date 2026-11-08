@@ -10086,6 +10086,7 @@ class SessionManager:
                     "name": ext.name,
                     "description": ext.description,
                     "scope": "external",
+                    "source_id": ext.source_id,
                     "source_label": ext.source_label,
                     "enabled": overrides.get(ext.name, True),
                     "manual": ext.name in manual,

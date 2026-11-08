@@ -1018,7 +1018,13 @@ export function Composer(props: Props) {
                     </span>
                   ) : null}
                   <span className="text-[11px] px-1.5 py-0.5 rounded-full border border-line text-faint shrink-0">
-                    {s.scope === "external" ? s.source_label || t("skills.scope_external") : s.scope}
+                    {s.scope === "external"
+                      ? s.source_id
+                        ? t(`skills.source_name.${s.source_id}`, {
+                            defaultValue: s.source_label || t("skills.scope_external"),
+                          })
+                        : s.source_label || t("skills.scope_external")
+                      : s.scope}
                   </span>
                 </button>
               ))

@@ -324,6 +324,8 @@ def test_upgrade_swaps_files_writes_lock_and_rolls_back():
     data = json.loads(lock.read_text(encoding="utf-8"))
     assert data["skills"]["report"]["skillFolderHash"] == gh.folder_sha(0, "skills/report")
     assert backups.latest("report", "external") is None
+    # The old folder is back, so the list must say "update available" again at once.
+    assert upd.cached()["results"]["report"]["status"] == "available"
 
 
 def test_modified_needs_confirmation_and_old_copy_is_backed_up():

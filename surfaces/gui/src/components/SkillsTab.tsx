@@ -598,7 +598,11 @@ export function SkillsTab({
                 {r.copies?.length ? (
                   <div className="text-muted">{t("skills.result_copies", { items: r.copies.join("、") })}</div>
                 ) : null}
-                {r.kept?.length ? <div className="text-muted">{r.kept.join("；")}</div> : null}
+                {r.kept?.map((k) => (
+                  <div key={k} className="text-muted">
+                    {k}
+                  </div>
+                ))}
                 {r.skipped?.length ? (
                   <div className="text-muted">
                     {t("skills.excluded_automatically", { items: r.skipped.join(", ") })}

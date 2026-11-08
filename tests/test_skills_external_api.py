@@ -179,6 +179,7 @@ def test_session_view_marks_external_and_manual(tmp_path, home):
     assert view["translate-pdf"]["scope"] == "external"
     assert view["translate-pdf"]["manual"] is True
     assert view["translate-pdf"]["source_label"]
+    assert view["translate-pdf"]["source_id"] == "agents"  # the GUI localizes by id
     assert view["mermaid"]["manual"] is False
 
 

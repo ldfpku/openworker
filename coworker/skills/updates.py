@@ -345,7 +345,9 @@ class ExternalUpdater:
             except hygiene.ImportRefused as exc:
                 return {"ok": False, "code": "refused", "error": str(exc)}
             try:
-                return self._swap(skill, entry, target, staged, skipped, remote, old, cache)
+                return self._swap(
+                    skill, entry, target, staged, skipped, remote, old, cache, state
+                )
             finally:
                 shutil.rmtree(staged, ignore_errors=True)
 
@@ -376,7 +378,14 @@ class ExternalUpdater:
                 skipped.append(rel)
             else:
                 keep.append(f)
-        hygiene.refuse_secrets(secrets)
+        if secrets:
+            # Shown verbatim in the upgrade result, to people who may not know what a
+            # credential file is; the name is there so an admin can find it.
+            shown = "、".join(secrets[:5]) + ("等" if len(secrets) > 5 else "")
+            raise hygiene.ImportRefused(
+                f"新版本里有密码、密钥之类的文件（{shown}），为了安全没有升级。"
+                "旧版本照常可以用。"
+            )
         if not any(f.path == "SKILL.md" for f in keep):
             raise hygiene.ImportRefused("新版本里没有 SKILL.md，不像一个技能，没有升级。")
         total = 0
@@ -432,7 +441,11 @@ class ExternalUpdater:
             if same:
                 update.append(real)
             else:
-                kept.append(f"{source.label}：{candidate}（内容和旧版本不同，没有改动）")
+                # Shown verbatim under the upgrade result — plain words, no path.
+                kept.append(
+                    f"{source.label} 里另有一份 {name}，和旧版本不一样（可能改过），"
+                    "这次没有动它。"
+                )
         return update, kept
 
     def _swap(
@@ -445,6 +458,7 @@ class ExternalUpdater:
         remote: _Remote,
         old: Optional[_Remote],
         cache: dict[str, Any],
+        state_before: dict[str, Any],
     ) -> dict[str, Any]:
         name = skill.name
         installed = _parse_skill(target / "SKILL.md").name
@@ -466,6 +480,9 @@ class ExternalUpdater:
                     "old_hash": entry.folder_hash,
                     "new_hash": remote.sha,
                     "lock_path": str(self.lock_path),
+                    # What the list showed before the upgrade; a rollback puts the
+                    # exact old folder back, so it puts this state back too.
+                    "state_before": state_before,
                 },
             )
         except ValueError as exc:
@@ -515,6 +532,10 @@ class ExternalUpdater:
                 result["warning"] = f"文件已回滚，但 lock 文件没有恢复：{exc}"
         with self._lock:
             cache = self._read_cache()
-            cache["results"].pop(name, None)
+            before_state = meta.get("state_before")
+            if isinstance(before_state, dict) and before_state.get("status"):
+                cache["results"][name] = {**before_state, "checked_at": time.time()}
+            else:
+                cache["results"].pop(name, None)  # unknown → shown as not checked
             self._write_cache(cache)
         return result
