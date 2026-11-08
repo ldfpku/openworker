@@ -13,6 +13,8 @@ vi.mock("../api", () => ({
   })),
   // Default: a genuine empty list, same shape getTrustedWorkspaces() resolves with when the
   // backend has nothing to report (not a fetch failure).
+  // The Settings nav reads the upgradable-skill count for its badge.
+  getSkillUpdates: vi.fn(async () => ({ ok: true, available_count: 0 })),
   getTrustedWorkspaces: vi.fn(async () => [] as unknown[]),
   setAutoApprove: vi.fn(async () => ({ ok: true })),
   setAutoApproveShadow: vi.fn(async () => ({ ok: true })),

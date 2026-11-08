@@ -1653,22 +1653,95 @@ export async function setSessionConnection(
 // Scope = folder location: "global" (every session) or "project" (one workspace).
 // The session endpoints resolve the effective menu (Settings disables + session mutes).
 
+/** 来源与升级 §5 — where a skill stands against its source. */
+export type SkillUpdateStatus =
+  | "up_to_date"
+  | "available"
+  | "modified"
+  | "modified_and_available"
+  | "untracked"
+  | "unsupported"
+  | "unchecked"
+  | "error";
+
+export interface SkillUpdateState {
+  status: SkillUpdateStatus;
+  origin?: "external" | "library";
+  repo?: string;
+  current?: string;
+  latest?: string;
+  changes?: string[];
+  changes_count?: number;
+  modified_unknown?: boolean;
+  local_only_dirs?: string[];
+  error?: string;
+  reset_at?: number | null;
+  checked_at?: number;
+}
+
+export type SkillOrigin = "own" | "library" | "external";
+
 export interface SkillRow {
   name: string;
   description: string;
   instructions: string;
-  scope: "global" | "project";
-  source: string; // "local" | "uploaded"
+  scope: "global" | "project" | "external";
+  source: string; // "local" | "uploaded" | "external"
   enabled: boolean;
   path: string;
   files?: number; // bundled resources beyond SKILL.md (§6 — rich skills are visible)
+  // 来源与升级 §1–§5. Optional so an older backend (or a test fixture) still renders.
+  origin?: SkillOrigin;
+  source_id?: string;
+  source_label?: string;
+  read_only?: boolean;
+  shadowed_by?: string; // "global" | "project" when an own skill of the same name wins
+  also_in?: string[]; // other source ids holding the same skill
+  invocation?: "auto" | "manual";
+  invocation_locked?: boolean; // the author set disable-model-invocation
+  update?: SkillUpdateState;
+  can_rollback?: boolean;
 }
 
 export interface SessionSkillRow {
   name: string;
   description: string;
-  scope: "global" | "project";
+  scope: "global" | "project" | "coworker" | "external";
   enabled: boolean; // false = muted for this session only
+  manual?: boolean; // runs only when picked with "/" (来源与升级 §3)
+  source_label?: string;
+}
+
+export interface SkillSource {
+  id: string;
+  label: string;
+  path: string;
+  exists: boolean;
+  count: number;
+  enabled: boolean;
+  custom: boolean;
+}
+
+export interface SkillUpdatesView {
+  ok: boolean;
+  error?: string;
+  checked_at?: number | null;
+  stale?: boolean;
+  available_count?: number;
+  items?: { name: string; origin: SkillOrigin; update: SkillUpdateState; can_rollback: boolean }[];
+}
+
+export interface SkillApplyResult {
+  name: string;
+  origin: SkillOrigin;
+  ok: boolean;
+  error?: string;
+  code?: string;
+  unchanged?: boolean;
+  skipped?: string[];
+  copies?: string[];
+  kept?: string[];
+  warning?: string;
 }
 
 export interface SkillUploadPreview {
@@ -1733,6 +1806,68 @@ export async function updateSkill(
   patch: { description?: string; instructions?: string; enabled?: boolean; workspace?: string },
 ): Promise<{ ok: boolean; error?: string }> {
   return skillResult(fetch(skillUrl(`/${encodeURIComponent(name)}`), jsonPost(patch, "PATCH")));
+}
+
+// -- external sources + updates (来源与升级 §1, §6–§7) ---------------------------
+
+export async function listSkillSources(): Promise<{
+  ok: boolean;
+  error?: string;
+  sources?: SkillSource[];
+}> {
+  return skillResult(fetch(skillUrl("/sources")));
+}
+
+export async function setSkillSource(
+  id: string,
+  enabled: boolean,
+): Promise<{ ok: boolean; error?: string; sources?: SkillSource[] }> {
+  return skillResult(
+    fetch(skillUrl(`/sources/${encodeURIComponent(id)}`), jsonPost({ enabled }, "PATCH")),
+  );
+}
+
+export async function addSkillSource(
+  path: string,
+  label = "",
+): Promise<{ ok: boolean; error?: string; sources?: SkillSource[] }> {
+  return skillResult(fetch(skillUrl("/sources"), jsonPost({ path, label })));
+}
+
+export async function removeSkillSource(
+  id: string,
+): Promise<{ ok: boolean; error?: string; sources?: SkillSource[] }> {
+  return skillResult(fetch(skillUrl(`/sources/${encodeURIComponent(id)}`), { method: "DELETE" }));
+}
+
+export async function setSkillInvocation(
+  name: string,
+  invocation: "auto" | "manual",
+): Promise<{ ok: boolean; error?: string }> {
+  return skillResult(
+    fetch(skillUrl(`/${encodeURIComponent(name)}`), jsonPost({ invocation }, "PATCH")),
+  );
+}
+
+export async function getSkillUpdates(): Promise<SkillUpdatesView> {
+  return skillResult(fetch(skillUrl("/updates")));
+}
+
+export async function checkSkillUpdates(): Promise<SkillUpdatesView> {
+  return skillResult(fetch(skillUrl("/updates/check"), jsonPost({})));
+}
+
+export async function applySkillUpdates(
+  items: { name: string; origin: SkillOrigin; overwrite_modified?: boolean }[],
+): Promise<{ ok: boolean; error?: string; results?: SkillApplyResult[] }> {
+  return skillResult(fetch(skillUrl("/updates/apply"), jsonPost({ items })));
+}
+
+export async function rollbackSkill(
+  name: string,
+  origin: SkillOrigin,
+): Promise<{ ok: boolean; error?: string; warning?: string }> {
+  return skillResult(fetch(skillUrl(`/${encodeURIComponent(name)}/rollback`), jsonPost({ origin })));
 }
 
 export async function revealSkill(name: string): Promise<{ ok: boolean; error?: string }> {

@@ -1007,8 +1007,18 @@ export function Composer(props: Props) {
                 >
                   <span className="text-[13px] font-medium text-accent shrink-0">/{s.name}</span>
                   <span className="text-[12px] text-faint truncate flex-1">{s.description}</span>
+                  {/* 来源与升级 §3: a manual skill runs only when picked here — say so,
+                      since this popup is the one place it can be started. */}
+                  {s.manual ? (
+                    <span
+                      className="text-[11px] px-1.5 py-0.5 rounded-full border border-line text-faint shrink-0"
+                      title={t("skills.manual_tip")}
+                    >
+                      {t("skills.manual_badge")}
+                    </span>
+                  ) : null}
                   <span className="text-[11px] px-1.5 py-0.5 rounded-full border border-line text-faint shrink-0">
-                    {s.scope}
+                    {s.scope === "external" ? s.source_label || t("skills.scope_external") : s.scope}
                   </span>
                 </button>
               ))

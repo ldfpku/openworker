@@ -667,6 +667,38 @@ export async function mockApi(page: import("@playwright/test").Page) {
     { name: "html-to-markdown", description: "Convert an HTML document or fragment to clean markdown.", instructions: "Convert the given HTML to markdown, preserving structure.", scope: "global", source: "uploaded", enabled: true, path: "/state/skills/html-to-markdown", files: 2 },
   ];
   let stagedSkill: any = null;
+  // External skill sources + updates (来源与升级 §1–§7): sources start off; switching the
+  // shared folder on brings in two read-only skills that a check then finds updates for.
+  const skillSources: any[] = [
+    { id: "agents", label: "Agents (npx skills)", path: "/home/u/.agents/skills", exists: true, count: 2, enabled: false, custom: false },
+    { id: "claude-code", label: "Claude Code", path: "/home/u/.claude/skills", exists: true, count: 0, enabled: false, custom: false },
+    { id: "codex", label: "Codex", path: "/home/u/.codex/skills", exists: false, count: 0, enabled: false, custom: false },
+  ];
+  const externalSkills: any[] = [
+    { name: "pretty-mermaid", description: "Pretty mermaid diagrams", latest: { status: "available", origin: "external", current: "e234ab7", latest: "f00ba47" } },
+    { name: "pdf-translate", description: "Translate a PDF to Chinese", latest: { status: "modified_and_available", origin: "external", changes: ["改动 SKILL.md"], changes_count: 1 } },
+  ].map((s) => ({
+    ...s,
+    instructions: "", scope: "external", source: "external", enabled: true,
+    path: `/home/u/.agents/skills/${s.name}`, files: 0, origin: "external", source_id: "agents",
+    source_label: "Agents (npx skills)", read_only: true, shadowed_by: "", also_in: [],
+    invocation: "manual", invocation_locked: false, update: { status: "unchecked" }, can_rollback: false,
+  }));
+  let skillsCheckedAt: number | null = null;
+  const listedSkills = () => [
+    ...skills,
+    ...(skillSources.find((s) => s.id === "agents")?.enabled ? externalSkills : []),
+  ];
+  const skillUpdatesView = () => {
+    const rows = listedSkills();
+    return {
+      ok: true,
+      checked_at: skillsCheckedAt,
+      stale: skillsCheckedAt === null && rows.some((r) => r.origin === "external"),
+      available_count: rows.filter((r) => ["available", "modified_and_available"].includes(r.update?.status)).length,
+      items: rows.map((r) => ({ name: r.name, origin: r.origin ?? "own", update: r.update ?? { status: "untracked" }, can_rollback: !!r.can_rollback })),
+    };
+  };
 
   // Agent teams (OPE-96): the session's board — empty until a test opts in by sending
   // "plan the work" (the fake agent then files items; no draft state — the board only
@@ -1461,10 +1493,66 @@ export async function mockApi(page: import("@playwright/test").Page) {
     if (/\/v1\/sessions\/[^/]+\/skills$/.test(p)) {
       // The composer's live menu: every Settings-enabled skill (§4 — disabled = invisible).
       return json({
-        skills: skills
+        skills: listedSkills()
           .filter((s) => s.enabled)
-          .map((s) => ({ name: s.name, description: s.description, scope: s.scope, enabled: true })),
+          .map((s) => ({
+            name: s.name, description: s.description, scope: s.scope, enabled: true,
+            manual: s.origin === "external" && s.invocation !== "auto",
+            ...(s.origin === "external" ? { source_label: s.source_label } : {}),
+          })),
       });
+    }
+    // External sources + updates (来源与升级 §1, §6–§7) — literal paths before {name}.
+    if (p.endsWith("/v1/skills/sources") && m === "GET") return json({ ok: true, sources: skillSources });
+    {
+      const ms = p.match(/\/v1\/skills\/sources\/([^/]+)$/);
+      if (ms && m === "PATCH") {
+        const src = skillSources.find((s) => s.id === decodeURIComponent(ms[1]));
+        if (!src) return json({ ok: false, error: "没有这个技能来源" });
+        src.enabled = !!(req.postDataJSON() || {}).enabled;
+        return json({ ok: true, sources: skillSources });
+      }
+    }
+    if (p.endsWith("/v1/skills/updates") && m === "GET") return json(skillUpdatesView());
+    if (p.endsWith("/v1/skills/updates/check") && m === "POST") {
+      skillsCheckedAt = 1_762_560_000;
+      for (const s of externalSkills) if (!s.can_rollback) s.update = { ...s.latest, checked_at: skillsCheckedAt };
+      return json(skillUpdatesView());
+    }
+    if (p.endsWith("/v1/skills/updates/apply") && m === "POST") {
+      const items: any[] = (req.postDataJSON() || {}).items || [];
+      const results = items.map((it) => {
+        const s = externalSkills.find((x) => x.name === it.name);
+        if (!s) return { name: it.name, origin: it.origin, ok: false, error: `Unknown skill: ${it.name}` };
+        if (s.update.status === "modified_and_available" && !it.overwrite_modified)
+          return { name: it.name, origin: it.origin, ok: false, code: "modified_requires_confirm", error: "本地改过，确认后才能升级" };
+        s.update = { status: "up_to_date", origin: "external" };
+        s.can_rollback = true;
+        return { name: it.name, origin: it.origin, ok: true };
+      });
+      return json({ ok: true, results });
+    }
+    {
+      const mr = p.match(/\/v1\/skills\/([^/]+)\/rollback$/);
+      if (mr && m === "POST") {
+        const s = externalSkills.find((x) => x.name === decodeURIComponent(mr[1]));
+        if (!s || !s.can_rollback) return json({ ok: false, error: "没有可回滚的备份" });
+        s.can_rollback = false;
+        s.update = { ...s.latest };
+        return json({ ok: true });
+      }
+    }
+    {
+      const name = /\/v1\/skills\/[^/]+$/.test(p) ? decodeURIComponent(p.split("/").pop()!) : "";
+      const ext = externalSkills.find((x) => x.name === name);
+      if (ext && !skills.some((s) => s.name === name) && (m === "PATCH" || m === "DELETE")) {
+        const b = m === "PATCH" ? req.postDataJSON() || {} : {};
+        if (m === "DELETE" || typeof b.description === "string" || typeof b.instructions === "string")
+          return json({ ok: false, error: `外部技能只读，请在原工具里管理：${name}` });
+        if (b.invocation === "auto" || b.invocation === "manual") ext.invocation = b.invocation;
+        if (typeof b.enabled === "boolean") ext.enabled = b.enabled;
+        return json({ ok: true });
+      }
     }
     if (p.endsWith("/v1/skills/upload/confirm") && m === "POST") {
       const b = req.postDataJSON() || {};
@@ -1522,7 +1610,7 @@ export async function mockApi(page: import("@playwright/test").Page) {
       });
       return json({ ok: true });
     }
-    if (p.endsWith("/v1/skills")) return json({ skills });
+    if (p.endsWith("/v1/skills")) return json({ skills: listedSkills() });
 
     if (p.endsWith("/v1/health")) return json(HEALTH);
     if (p.endsWith("/v1/settings")) return json(SETTINGS);

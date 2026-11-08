@@ -12,6 +12,8 @@ import { SettingsView } from "./SettingsView";
 
 vi.mock("../api", () => ({
   getSettings: vi.fn(async () => ({ scratch_base: "~/OpenWorker", sessions_peek: 5, context_bar: false })),
+  // The Settings nav reads the upgradable-skill count for its badge.
+  getSkillUpdates: vi.fn(async () => ({ ok: true, available_count: 0 })),
   getTrustedWorkspaces: vi.fn(async () => [] as unknown[]),
   setAutoApprove: vi.fn(async () => ({ ok: true })),
   setAutoApproveShadow: vi.fn(async () => ({ ok: true })),
