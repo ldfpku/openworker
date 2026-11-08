@@ -3,7 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="icon" type="image/webp" href="/src/brand/favicon.webp" />
+    <!-- smjworker app icon set (D:\smj-apps\app-icons\openworker): the 16 px SVG is its own
+         pixel drawing, not the large icon scaled down. -->
+    <link rel="icon" type="image/x-icon" sizes="16x16 24x24 32x32 48x48 64x64" href="/src/brand/app/favicon.ico" />
+    <link rel="icon" type="image/svg+xml" sizes="32x32" href="/src/brand/app/favicon.svg" />
+    <link rel="icon" type="image/svg+xml" sizes="16x16" href="/src/brand/app/favicon-16.svg" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/src/brand/app/apple-touch-icon.png" />
     <title>smjworker</title>
     <!-- Resolve the theme before first paint (no white flash for dark users).
          Must match src/theme.ts: key "openwork-theme", absent/invalid = auto = follow macOS. -->
