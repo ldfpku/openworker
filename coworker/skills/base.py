@@ -27,6 +27,16 @@ class Skill:
     instructions: str = ""  # full body — loaded on demand
     path: Optional[str] = None
     allowed_tools: list[str] = field(default_factory=list)
+    # Claude Code's `disable-model-invocation: true`: the author says this skill runs only
+    # when a person asks for it (来源与升级 §3). It never enters the per-turn catalog and
+    # load_skill only serves it after the user force-ran it.
+    disable_model_invocation: bool = False
+
+
+def _truthy(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("true", "yes", "1", "on")
 
 
 class SkillLoader:
@@ -42,6 +52,9 @@ class SkillLoader:
     def __init__(self, dirs: list[str | Path]) -> None:
         self._dirs = [Path(d) for d in dirs]
         self._skills: dict[str, Skill] = {}
+        # name → index in `_dirs` of the copy that won. Later dirs win, so a higher index
+        # is a higher-priority layer; the catalog budget hands descriptions out by it.
+        self._layer: dict[str, int] = {}
         self._fingerprint: Optional[tuple] = None
         self._lock = threading.Lock()
         self.rescan()
@@ -87,9 +100,16 @@ class SkillLoader:
             if not force and self._skills and fingerprint == self._fingerprint:
                 return
             found: dict[str, Skill] = {}
-            for directory in self._dirs:
+            layer: dict[str, int] = {}
+            for index, directory in enumerate(self._dirs):
+                before = dict(found)
                 self._discover(directory, found)
-            self._skills = found  # one assignment: lock-free readers never see a half-scan
+                for name, skill in found.items():
+                    if before.get(name) is not skill:
+                        layer[name] = index
+            # One assignment each: lock-free readers never see a half-scan.
+            self._skills = found
+            self._layer = layer
             self._fingerprint = fingerprint
 
     def _discover(self, directory: Path, into: dict[str, Skill]) -> None:
@@ -128,11 +148,55 @@ class SkillLoader:
     def get(self, name: str) -> Optional[Skill]:
         return self._skills.get(name)
 
+    def priority(self, name: str) -> int:
+        """Index of the dir the winning copy came from (higher = higher priority)."""
+        return self._layer.get(name, -1)
+
     def catalog(self) -> list[dict]:
         return [
             {"name": s.name, "description": s.description}
             for s in self._skills.values()
         ]
+
+
+class LiveLoader:
+    """A loader whose directory SET may change while a session runs.
+
+    External sources (来源与升级 §1) are switched on and off in Settings; a session built
+    before the switch must see the change from its next message, the same way a skill
+    added to an existing dir already does. This delegates to the shared loader for
+    whatever `dirs_fn()` returns right now — re-resolved only when the set changes, so the
+    per-turn cost stays the stat fingerprint the plain loader already pays.
+    """
+
+    def __init__(self, dirs_fn: Callable[[], list]) -> None:
+        self._dirs_fn = dirs_fn
+        self._key: Optional[tuple[str, ...]] = None
+        self._loader: Optional[SkillLoader] = None
+        self._lock = threading.Lock()
+
+    def _current(self) -> SkillLoader:
+        key = tuple(str(Path(d)) for d in self._dirs_fn())
+        with self._lock:
+            if key != self._key or self._loader is None:
+                self._loader = shared_loader(list(key))
+                self._key = key
+            return self._loader
+
+    def rescan(self, *, force: bool = False) -> None:
+        self._current().rescan(force=force)
+
+    def names(self) -> list[str]:
+        return self._current().names()
+
+    def get(self, name: str) -> Optional[Skill]:
+        return self._current().get(name)
+
+    def priority(self, name: str) -> int:
+        return self._current().priority(name)
+
+    def catalog(self) -> list[dict]:
+        return self._current().catalog()
 
 
 # One loader per directory SET, shared across engine builds (audit 2026-09-13). Before
@@ -199,6 +263,7 @@ def _parse_skill(md: Path) -> Skill:
     # build, so a strict decode here fails every connect to that workspace.
     text = md.read_text(encoding="utf-8", errors="replace")
     name, description, allowed, body = md.parent.name, "", [], text
+    manual_only = False
     if text.startswith("---"):
         end = text.find("\n---", 3)
         if end != -1:
@@ -217,6 +282,10 @@ def _parse_skill(md: Path) -> Skill:
                     allowed = [t.strip() for t in tools.split(",") if t.strip()]
                 elif isinstance(tools, list):
                     allowed = [str(t).strip() for t in tools if str(t).strip()]
+                flag = parsed.get(
+                    "disable-model-invocation", parsed.get("disable_model_invocation", False)
+                )
+                manual_only = _truthy(flag)
             else:
                 for line in frontmatter.splitlines():
                     if ":" not in line:
@@ -229,12 +298,15 @@ def _parse_skill(md: Path) -> Skill:
                         description = value
                     elif key in ("allowed-tools", "allowed_tools"):
                         allowed = [t.strip() for t in value.split(",") if t.strip()]
+                    elif key in ("disable-model-invocation", "disable_model_invocation"):
+                        manual_only = _truthy(value)
     return Skill(
         name=name,
         description=description,
         instructions=body.strip(),
         path=str(md.parent),
         allowed_tools=allowed,
+        disable_model_invocation=manual_only,
     )
 
 
@@ -260,19 +332,65 @@ def _catalog_line(name: str, description: str) -> str:
     return f"- {name}: {text}"  # shape unchanged from before the cap — only length
 
 
+# Total size of the catalog lines (来源与升级 §4). The per-line cap above bounds one skill;
+# this bounds what the user has switched on. External sources can bring dozens of skills
+# at once, and every char here is paid on every round trip. Under the budget the output is
+# exactly what it always was; over it, descriptions go to the highest-priority layers
+# first (project → global → persona → external) and the rest are listed by name only —
+# still loadable, just without the one-clause hint.
+_CATALOG_BUDGET_CHARS = 4000
+_CATALOG_HEADER = (
+    "Available skills — call load_skill(name) to load one's full instructions when "
+    "it's relevant to the task:\n"
+)
+
+
 def skill_catalog_text(
-    loader: SkillLoader, allowed: Optional[set[str]] = None
+    loader: SkillLoader,
+    allowed: Optional[set[str]] = None,
+    *,
+    budget: int = _CATALOG_BUDGET_CHARS,
 ) -> str:
     catalog = [
-        c for c in loader.catalog() if allowed is None or c["name"] in allowed
+        c
+        for c in loader.catalog()
+        if (allowed is None or c["name"] in allowed)
+        and not _manual_only(loader, c["name"])
     ]
     if not catalog:
         return ""
     lines = [_catalog_line(c["name"], c["description"]) for c in catalog]
-    return (
-        "Available skills — call load_skill(name) to load one's full instructions when "
-        "it's relevant to the task:\n" + "\n".join(lines)
+    if sum(len(line) + 1 for line in lines) <= budget:
+        return _CATALOG_HEADER + "\n".join(lines)
+    priority = getattr(loader, "priority", None)
+    order = sorted(
+        range(len(catalog)),
+        key=lambda i: (-(priority(catalog[i]["name"]) if priority else 0), i),
     )
+    described: list[str] = []
+    names_only: list[str] = []
+    used = 0
+    for i in order:
+        line = lines[i]
+        if not names_only and used + len(line) + 1 <= budget:
+            described.append(line)
+            used += len(line) + 1
+        else:
+            names_only.append(catalog[i]["name"])
+    text = _CATALOG_HEADER + "\n".join(described)
+    if names_only:
+        text += (
+            ("\n" if described else "")
+            + "Also available (descriptions omitted to save space — call load_skill(name) "
+            "if the name fits the task): "
+            + ", ".join(names_only)
+        )
+    return text
+
+
+def _manual_only(loader: SkillLoader, name: str) -> bool:
+    skill = loader.get(name)
+    return bool(skill is not None and skill.disable_model_invocation)
 
 
 AllowedSkills = Union[set, Callable[[], set], None]
@@ -297,12 +415,18 @@ def _bundled_files(folder: Path) -> list[str]:
 
 
 def skill_tools(
-    loader: SkillLoader, allowed: AllowedSkills = None, roots: Optional[list] = None
+    loader: SkillLoader,
+    allowed: AllowedSkills = None,
+    roots: Optional[list] = None,
+    annotate: Optional[Callable[[Skill], dict]] = None,
 ) -> list:
     """`allowed` gates load_skill: a set is a build-time snapshot; a CALLABLE is consulted
     on every call — the manager passes one so Settings disables apply to live sessions
     immediately, and skills created after the engine was built are still loadable
     (loader rescans on a miss).
+
+    `annotate(skill)` may add fields to a successful result (the origin of an external
+    skill, 来源与升级 §8).
 
     `roots` is the session's shared roots list. Loading a skill appends that skill's
     folder to it as a read-only RESOURCE root, which is what makes the bundled
@@ -356,6 +480,10 @@ def skill_tools(
             "instructions": skill.instructions,
             "resources_path": skill.path,
         }
+        if annotate is not None:
+            # e.g. origin=external + where it lives (来源与升级 §8): the model should
+            # know these instructions came from another tool's folder, not the user.
+            out.update(annotate(skill) or {})
         if skill.path:
             folder = Path(skill.path)
             files = _bundled_files(folder)

@@ -7,6 +7,8 @@ const setCompactionSettings = vi.fn(async () => ({ ok: true }));
 
 vi.mock("../api", () => ({
   getSettings: (...args: unknown[]) => getSettings(...args),
+  // The Settings nav reads the upgradable-skill count for its badge.
+  getSkillUpdates: vi.fn(async () => ({ ok: true, available_count: 0 })),
   getTrustedWorkspaces: vi.fn(async () => [] as unknown[]),
   setAutoApprove: vi.fn(async () => ({ ok: true })),
   setAutoApproveShadow: vi.fn(async () => ({ ok: true })),

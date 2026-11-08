@@ -4,6 +4,7 @@ import { getI18n, Trans, useTranslation } from "react-i18next";
 import { getStoredLanguage, setLanguage as setI18nLanguage, type Lang } from "../i18n";
 import {
   getSettings,
+  getSkillUpdates,
   getTrustedWorkspaces,
   setAutoApprove,
   setAutoApproveShadow,
@@ -102,6 +103,14 @@ export function SettingsView({
   const tabs = personas ? SET_TABS : SET_TABS.filter((tab) => tab.key !== "personas");
   const wanted = initialTab && (personas || initialTab !== "personas") ? initialTab : "appearance";
   const [tab, setTab] = useState<SetTab>(wanted);
+  // Upgradable-skill count for the nav badge (来源与升级 §6). Cached state only — this
+  // never triggers a GitHub check; the Skills tab does that when it opens.
+  const [skillUpdates, setSkillUpdates] = useState(0);
+  useEffect(() => {
+    getSkillUpdates()
+      .then((view) => setSkillUpdates(view.available_count ?? 0))
+      .catch(() => undefined);
+  }, []);
 
   return (
     <main className="flex-1 min-w-0 flex bg-paper">
@@ -121,6 +130,15 @@ export function SettingsView({
               onClick={() => setTab(tb.key)}
             >
               <Icon name={tb.icon} size={15} /> {t(tb.labelKey)}
+              {tb.key === "skills" && skillUpdates > 0 ? (
+                <span
+                  className="ml-auto text-[11px] min-w-[18px] text-center px-1.5 rounded-full bg-accent text-white"
+                  title={t("skills.updates_badge_tip", { count: skillUpdates })}
+                  data-testid="skills-update-badge"
+                >
+                  {skillUpdates}
+                </span>
+              ) : null}
             </button>
           );
         })}
@@ -149,7 +167,7 @@ export function SettingsView({
               <GuidanceCard />
             </section>
           ) : tab === "skills" ? (
-            <SkillsTab onCreateSkill={onCreateSkill} />
+            <SkillsTab onCreateSkill={onCreateSkill} onUpdateCount={setSkillUpdates} />
           ) : tab === "voice" ? (
             <VoiceInputSection />
           ) : tab === "memory" ? (

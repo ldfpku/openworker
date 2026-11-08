@@ -445,3 +445,175 @@ describe("SkillsTab — import preview", () => {
     expect(screen.getByText("Import a file")).toBeTruthy();
   });
 });
+
+// 来源与升级 §1–§7 GUI — external sources, read-only external rows, invocation switch,
+// update filter, default selection, the confirm step for local changes, errors.
+
+const SOURCES = {
+  ok: true,
+  sources: [
+    { id: "agents", label: "Agents (npx skills)", path: "/home/u/.agents/skills", exists: true, count: 3, enabled: false, custom: false },
+    { id: "codex", label: "Codex", path: "/home/u/.codex/skills", exists: false, count: 0, enabled: false, custom: false },
+  ],
+};
+
+const EXT = {
+  name: "pretty-mermaid",
+  description: "Pretty diagrams",
+  instructions: "",
+  scope: "external",
+  source: "external",
+  enabled: true,
+  path: "/home/u/.agents/skills/pretty-mermaid",
+  origin: "external",
+  source_id: "agents",
+  source_label: "Agents (npx skills)",
+  read_only: true,
+  invocation: "manual",
+  invocation_locked: false,
+  update: { status: "available", origin: "external" },
+};
+
+const EXT_MODIFIED = {
+  ...EXT,
+  name: "pdf-translate",
+  path: "/home/u/.agents/skills/pdf-translate",
+  update: { status: "modified_and_available", origin: "external", changes: ["改动 SKILL.md"], changes_count: 1 },
+};
+
+const LIB_OK = {
+  ...ROW,
+  name: "scanpy",
+  origin: "library",
+  update: { status: "up_to_date", origin: "library" },
+};
+
+function routes(extra: { match: string; method?: string; json: any }[] = []) {
+  return [
+    ...extra,
+    { match: "/v1/skills/sources", method: "GET", json: SOURCES },
+    { match: "/v1/skills/updates", method: "GET", json: { ok: true, checked_at: 1, stale: false, available_count: 2 } },
+    { match: "/v1/skills", method: "GET", json: { skills: [ROW, LIB_OK, EXT, EXT_MODIFIED] } },
+  ];
+}
+
+describe("SkillsTab external sources and updates", () => {
+  it("lists sources off by default and switches one on", async () => {
+    const calls = stubFetch(
+      routes([{ match: "/v1/skills/sources/agents", method: "PATCH", json: { ...SOURCES, ok: true } }]),
+    );
+    render(<SkillsTab />);
+    const toggle = await screen.findByRole("switch", { name: /Use skills from Shared folder/ });
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    expect(screen.getByText("Not found")).toBeTruthy(); // codex folder missing
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(calls.some((c) => c.method === "PATCH" && c.url.endsWith("/v1/skills/sources/agents"))).toBe(true),
+    );
+    const patch = calls.find((c) => c.method === "PATCH" && c.url.includes("/sources/agents"));
+    expect(patch?.body).toEqual({ enabled: true });
+  });
+
+  it("external rows are read-only and switch between manual and auto", async () => {
+    const calls = stubFetch(routes([{ match: "/v1/skills/pretty-mermaid", method: "PATCH", json: { ok: true } }]));
+    render(<SkillsTab />);
+    const row = await screen.findByTestId("skill-row-external:pretty-mermaid");
+    expect(row.textContent).toContain("Read-only");
+    expect(row.textContent).toContain("Shared folder (npx skills)");
+    expect(row.querySelector('[aria-label="Edit"]')).toBeNull();
+    expect(row.querySelector('[aria-label^="Delete"]')).toBeNull();
+    const own = screen.getByTestId("skill-row-own:weekly-report");
+    expect(own.querySelector('[aria-label="Edit"]')).not.toBeNull();
+    const auto = row.querySelector('[role="radio"][aria-checked="false"]') as HTMLElement;
+    expect(auto.textContent).toBe("Auto");
+    fireEvent.click(auto);
+    await waitFor(() =>
+      expect(calls.find((c) => c.method === "PATCH" && c.url.includes("/pretty-mermaid"))?.body).toEqual({
+        invocation: "auto",
+      }),
+    );
+  });
+
+  it("filters to skills with updates and ticks only untouched ones by default", async () => {
+    stubFetch(routes());
+    render(<SkillsTab />);
+    await screen.findByTestId("skill-row-external:pretty-mermaid");
+    fireEvent.click(screen.getByRole("tab", { name: /Updates \(2\)/ }));
+    expect(screen.queryByTestId("skill-row-own:weekly-report")).toBeNull();
+    expect(screen.queryByTestId("skill-row-library:scanpy")).toBeNull();
+    const plain = screen.getByRole("checkbox", { name: /pretty-mermaid/ }) as HTMLInputElement;
+    const changed = screen.getByRole("checkbox", { name: /pdf-translate/ }) as HTMLInputElement;
+    expect(plain.checked).toBe(true);
+    expect(changed.checked).toBe(false);
+    expect(screen.getByTestId("upgrade-bar").textContent).toContain("1 selected");
+    expect(screen.getByText(/Local changes: 改动 SKILL.md/)).toBeTruthy();
+  });
+
+  it("asks before overwriting local changes and sends the confirmation", async () => {
+    const calls = stubFetch(
+      routes([
+        {
+          match: "/v1/skills/updates/apply",
+          method: "POST",
+          json: {
+            ok: true,
+            results: [
+              { name: "pretty-mermaid", origin: "external", ok: true },
+              { name: "pdf-translate", origin: "external", ok: true },
+            ],
+          },
+        },
+      ]),
+    );
+    render(<SkillsTab />);
+    fireEvent.click(await screen.findByRole("checkbox", { name: /pdf-translate/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Upgrade selected" }));
+    const dialog = await screen.findByTestId("confirm-modified");
+    expect(dialog.textContent).toContain("pdf-translate");
+    expect(calls.some((c) => c.url.includes("/updates/apply"))).toBe(false); // nothing yet
+    fireEvent.click(screen.getByRole("button", { name: "Upgrade anyway" }));
+    await screen.findByTestId("upgrade-results");
+    const apply = calls.find((c) => c.url.includes("/updates/apply"));
+    expect(apply?.body.items).toEqual([
+      { name: "pretty-mermaid", origin: "external", overwrite_modified: false },
+      { name: "pdf-translate", origin: "external", overwrite_modified: true },
+    ]);
+  });
+
+  it("shows a refused upgrade's error", async () => {
+    stubFetch(
+      routes([
+        {
+          match: "/v1/skills/updates/apply",
+          method: "POST",
+          json: {
+            ok: true,
+            results: [{ name: "pretty-mermaid", origin: "external", ok: false, error: "GitHub 接口额度用完了" }],
+          },
+        },
+      ]),
+    );
+    render(<SkillsTab />);
+    await screen.findByTestId("skill-row-external:pretty-mermaid");
+    fireEvent.click(screen.getByRole("button", { name: "Upgrade selected" }));
+    expect((await screen.findByTestId("upgrade-results")).textContent).toContain("GitHub 接口额度用完了");
+  });
+
+  it("checks in the background when the last check is stale", async () => {
+    const calls = stubFetch(
+      routes([
+        { match: "/v1/skills/updates/check", method: "POST", json: { ok: true, checked_at: 2, stale: false } },
+        { match: "/v1/skills/updates", method: "GET", json: { ok: true, checked_at: null, stale: true } },
+      ]),
+    );
+    render(<SkillsTab />);
+    await waitFor(() => expect(calls.some((c) => c.url.includes("/updates/check"))).toBe(true));
+  });
+
+  it("reports the upgradable count for the nav badge", async () => {
+    stubFetch(routes());
+    const onUpdateCount = vi.fn();
+    render(<SkillsTab onUpdateCount={onUpdateCount} />);
+    await waitFor(() => expect(onUpdateCount).toHaveBeenCalledWith(2));
+  });
+});
