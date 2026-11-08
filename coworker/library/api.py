@@ -28,7 +28,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ..secrets import state_dir
-from ..skills import hygiene
 from ..skills.store import validate_name
 from .convert import build_expert_bundle, expert_persona_id, load_index
 from .local import LibraryOverlay, LocalLibrary, LocalLibraryError, is_local_id
@@ -429,23 +428,14 @@ def register_library_routes(
                 results.append(row)
                 continue
             try:
-                # 排除表来自 skills/hygiene.py，与用户上传 zip / 导入文件夹共用同一张表，
-                # 两条路不会再各自维护一份而飘移。SKILL.zh.md 是库内浏览用的译文层：
-                # 安装进全局技能目录的保持英文原件，agent 消费面不变。
-                def _ignore(directory: str, names: list[str]) -> set[str]:
-                    return hygiene.copytree_ignore()(directory, names) | {
-                        n for n in names if n == "SKILL.zh.md"
-                    }
-
-                if dest.exists() or dest.is_symlink():
-                    # Through the store, not a bare rmtree: that one stopped at the first
-                    # read-only or in-use file on Windows, AFTER deleting whatever sorted
-                    # before it — "restore the original" could leave half a skill. The
-                    # store takes the folder whole or refuses with it untouched.
-                    manager.skill_store.remove_folder(dest, name, action="替换")
-                shutil.copytree(src, dest, ignore=_ignore)
+                # 排除表来自 skills/hygiene.py，与用户上传 zip / 导入文件夹共用同一张表；
+                # SKILL.zh.md 是库内浏览用的译文层，不装进全局技能目录。
+                # 已装的副本经备份再替换（来源与升级 §7）：改名移出是唯一的闸门，文件被
+                # 占用时整份拒绝、原样不动；替换后「恢复原版」也能回滚。每次安装都记下
+                # 版本基线，技能页据此判断库里有没有更新、本地有没有改过。
+                done = manager.library_updater.install(name, src, replace=replace)
                 row["ok"] = True
-                if replace:
+                if done.get("replaced"):
                     row["replaced"] = True
             except (OSError, ValueError) as e:
                 row["ok"] = False

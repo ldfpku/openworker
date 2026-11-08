@@ -128,7 +128,16 @@ from ..skills import (
     SkillLoader,
     SkillStore,
     effective_skills,
+    shared_loader,
 )
+from ..skills.external import AUTO as SKILL_AUTO
+from ..skills.external import MANUAL as SKILL_MANUAL
+from ..skills.external import ExternalSkill, SourceRegistry
+from ..skills import backups as skill_backups
+from ..skills import skilllock
+from ..skills.library_updates import LibraryUpdater
+from ..skills.updates import UPGRADABLE as SKILL_UPGRADABLE
+from ..skills.updates import ExternalUpdater
 
 _SCOPES = {s.value for s in Scope}
 
@@ -562,6 +571,17 @@ class SessionManager:
         # tools — one resolver feeds the catalog injection, the rail, and the composer popup.
         self.skill_store = SkillStore()
         self.session_skills = SessionSkillStore(base / "session_skills.json")
+        # External skill sources (来源与升级 §1–§3): other agent tools' user-level skill
+        # folders, read in place, all off until the user opts in.
+        self.skill_sources = SourceRegistry()
+        # Manual skills the user force-ran, per session (来源与升级 §3). In memory on
+        # purpose: the engine also treats a skill already loaded in the history as asked
+        # for, so a restart loses nothing a conversation depends on.
+        self._invoked_skills: dict[str, set[str]] = {}
+        # Update checks / upgrades / rollbacks (来源与升级 §5–§7): external skills against
+        # the npx-skills lock + GitHub, library skills against the shipped pack.
+        self.external_updater = ExternalUpdater(self.skill_sources)
+        self.library_updater = LibraryUpdater(self.skill_store.global_dir)
         # Dead-letter: inbound messages with no destination + background-turn failures, so neither
         # vanishes silently (a debugging/visibility surface, not a redelivery queue).
         self.unrouted = UnroutedStore(base / "unrouted.json")
@@ -1221,6 +1241,10 @@ class SessionManager:
             # so its skills are readable, not just listed.
             extra_skill_dirs=(
                 [d] if (d := self.persona_skill_scope(agent_name)[0]) is not None else None
+            ),
+            external_skill_dirs=self.skill_sources.loader_dirs,
+            skill_invocation=lambda sid=session_id, w=ws, a=agent_name: (
+                self.skill_invocation_state(sid, w, agent=a)
             ),
             # Auto-Approve (spec §1.5): prefs-backed, so the Settings toggle takes effect on
             # the next session build without a config.toml edit.
@@ -7430,6 +7454,12 @@ class SessionManager:
             extra_skill_dirs=(
                 [d] if (d := self.persona_skill_scope(task.agent)[0]) is not None else None
             ),
+            # No force-run inside a scheduled run, so manual skills stay unavailable here
+            # (来源与升级 §3); switching one to auto is how a task gets it.
+            external_skill_dirs=self.skill_sources.loader_dirs,
+            skill_invocation=lambda sid=session_id, w=task.workspace, a=task.agent: (
+                self.skill_invocation_state(sid, w, agent=a)
+            ),
         )
         self._seed_task_permissions(engine, task)
         return engine
@@ -9375,6 +9405,7 @@ class SessionManager:
         self.session_connections.remove_session(session_id)
         # ...and its per-session skill mutes (SKILLS-SPEC §3 — mutes die with the session).
         self.session_skills.remove_session(session_id)
+        self._invoked_skills.pop(session_id, None)
         # ...and closes its pending Inbox items — an orphaned approval/question can never be
         # meaningfully answered (owner call, 2026-07-03). Their WeChat expiry tasks go first,
         # while the items are still listed as pending.
@@ -9596,8 +9627,255 @@ class SessionManager:
     # -- skills (SKILLS-SPEC §4.4) ------------------------------------------------
     def list_skills(self, workspace: Optional[str] = None) -> list[dict[str, Any]]:
         """Enriched rows for the Settings screen (scope/source/enabled). Optional workspace
-        adds that project's skills, with project copies shadowing same-named global ones."""
-        return self.skill_store.rows(workspace or None)
+        adds that project's skills, with project copies shadowing same-named global ones.
+
+        External skills of the enabled sources follow (来源与升级 §1), read-only, each with
+        its source, invocation mode and update state; an own skill of the same name wins
+        and the external row says so in `shadowed_by`."""
+        rows = self.skill_store.rows(workspace or None)
+        own = self._own_skill_loader(workspace or None)
+        updates = self._skill_update_states(workspace or None)
+        own_scope: dict[str, str] = {}
+        for row in rows:
+            own_scope[row["name"]] = row["scope"]
+            skill = own.get(row["name"])
+            locked = bool(skill is not None and skill.disable_model_invocation)
+            # Only the GLOBAL copy can be the library install; a project skill of the
+            # same name is the person's own.
+            library = updates.get(("own", row["name"])) if row["scope"] == "global" else None
+            state = library or {"status": "untracked"}
+            origin = "library" if library else "own"
+            row.update(
+                {
+                    "origin": origin,
+                    "source_id": "",
+                    "source_label": "",
+                    "read_only": False,
+                    "shadowed_by": "",
+                    "also_in": [],
+                    "invocation": SKILL_MANUAL if locked else SKILL_AUTO,
+                    "invocation_locked": locked,
+                    "update": state,
+                    "can_rollback": self._skill_can_rollback(row["name"], origin),
+                }
+            )
+        disabled = self.skill_store.disabled_names()
+        for ext in self.skill_sources.discover():
+            try:
+                files = sum(1 for p in ext.path.rglob("*") if p.is_file()) - 1
+            except OSError:
+                files = 0
+            locked = ext.disable_model_invocation
+            state = updates.get(("external", ext.name)) or {"status": "unchecked"}
+            rows.append(
+                {
+                    "name": ext.name,
+                    "description": ext.description,
+                    "instructions": "",  # read-only: no editor to prefill
+                    "scope": "external",
+                    "source": "external",
+                    "enabled": ext.name not in disabled,
+                    "path": str(ext.path),
+                    "files": max(files, 0),
+                    "origin": "external",
+                    "source_id": ext.source_id,
+                    "source_label": ext.source_label,
+                    "read_only": True,
+                    "shadowed_by": own_scope.get(ext.name, ""),
+                    "also_in": [*ext.also_in, *ext.shadows],
+                    "invocation": (
+                        SKILL_MANUAL if locked else self.skill_sources.invocation(ext.name)
+                    ),
+                    "invocation_locked": locked,
+                    "update": state,
+                    "can_rollback": self._skill_can_rollback(ext.name, "external"),
+                }
+            )
+        return rows
+
+    # -- external skill sources (来源与升级 §1) -------------------------------------
+    def list_skill_sources(self) -> dict[str, Any]:
+        return {"ok": True, "sources": self.skill_sources.describe()}
+
+    def set_skill_source(self, source_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(body.get("enabled"), bool):
+            return {"ok": False, "error": "enabled 必须是 true 或 false。"}
+        try:
+            self.skill_sources.set_enabled(source_id, body["enabled"])
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        return self.list_skill_sources()
+
+    def add_skill_source(self, body: dict[str, Any]) -> dict[str, Any]:
+        try:
+            added = self.skill_sources.add_custom(
+                str(body.get("path", "")), str(body.get("label", ""))
+            )
+        except (ValueError, OSError) as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"id": added.id, **self.list_skill_sources()}
+
+    def remove_skill_source(self, source_id: str) -> dict[str, Any]:
+        try:
+            self.skill_sources.remove_custom(source_id)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        return self.list_skill_sources()
+
+    def _external_only(
+        self, name: str, workspace: Optional[str] = None
+    ) -> Optional[ExternalSkill]:
+        """The external skill called `name` when no own skill has that name — the case
+        where an edit/delete/move would land in another tool's folder and is refused."""
+        try:
+            self.skill_store.find(name, workspace or None)
+            return None
+        except ValueError:
+            pass
+        return self.skill_sources.find(name)
+
+    _EXTERNAL_READ_ONLY = "外部技能只读，请在原工具里管理：{name}（{source}）"
+
+    # -- skill updates (来源与升级 §5–§7) ------------------------------------------
+    def _library_pack(self):
+        from ..library.api import _get_pack  # lazy: the library module is route-side
+
+        return _get_pack()
+
+    def _library_skill_states(self) -> dict[str, dict[str, Any]]:
+        """Installed library skills vs the pack this app version ships — no network."""
+        pack = self._library_pack()
+        listing = pack.skills()
+        if not listing.get("ok"):
+            return {}
+        names = {s.get("name") for s in listing.get("skills") or [] if s.get("name")}
+        try:
+            return self.library_updater.states(pack.root, names)
+        except OSError:
+            logger.debug("library skill states unavailable", exc_info=True)
+            return {}
+
+    def _skill_update_states(
+        self, workspace: Optional[str] = None
+    ) -> dict[tuple[str, str], dict[str, Any]]:
+        """(origin key, name) → update state for the Settings rows (来源与升级 §5).
+        Library states are computed live; external ones come from the last check, with
+        "not in the npx skills lock" known without asking GitHub."""
+        out: dict[tuple[str, str], dict[str, Any]] = {}
+        for name, state in self._library_skill_states().items():
+            out[("own", name)] = state
+        cached = self.external_updater.cached()["results"]
+        lock = skilllock.read_lock(self.external_updater.lock_path)
+        for ext in self.skill_sources.discover():
+            if ext.name not in lock.entries:
+                out[("external", ext.name)] = {"origin": "external", "status": "untracked"}
+            elif isinstance(cached.get(ext.name), dict):
+                out[("external", ext.name)] = cached[ext.name]
+        return out
+
+    def _skill_can_rollback(self, name: str, origin: str) -> bool:
+        if origin == "own":
+            return False
+        return skill_backups.latest(name, origin) is not None
+
+    def skill_updates(self, workspace: Optional[str] = None) -> dict[str, Any]:
+        """Every listed skill's update state, plus when external skills were last checked
+        and whether that is older than a day (the GUI then checks in the background)."""
+        rows = self.list_skills(workspace)
+        cache = self.external_updater.cached()
+        items = [
+            {
+                "name": r["name"],
+                "origin": r["origin"],
+                "update": r["update"],
+                "can_rollback": r["can_rollback"],
+            }
+            for r in rows
+        ]
+        tracked = any(
+            r["origin"] == "external" and r["update"].get("status") != "untracked" for r in rows
+        )
+        return {
+            "ok": True,
+            "checked_at": cache["checked_at"],
+            "stale": bool(cache["stale"] and tracked),
+            "available_count": sum(
+                1 for r in rows if r["update"].get("status") in SKILL_UPGRADABLE
+            ),
+            "items": items,
+        }
+
+    def check_skill_updates(self, workspace: Optional[str] = None) -> dict[str, Any]:
+        """Ask GitHub about the external skills of the enabled sources (one tree listing
+        per repository)."""
+        self.external_updater.check(self.skill_sources.discover())
+        return self.skill_updates(workspace)
+
+    def apply_skill_updates(self, body: dict[str, Any]) -> dict[str, Any]:
+        items = body.get("items")
+        if not isinstance(items, list) or not items:
+            return {"ok": False, "error": "请至少选择一个要升级的技能。"}
+        results: list[dict[str, Any]] = []
+        library_states: Optional[dict[str, dict[str, Any]]] = None
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            origin = str(item.get("origin") or "")
+            overwrite = bool(item.get("overwrite_modified", False))
+            row: dict[str, Any] = {"name": name, "origin": origin}
+            try:
+                if origin == "external":
+                    ext = self.skill_sources.find(name)
+                    if ext is None:
+                        row.update(ok=False, error=f"已打开的来源里没有技能 {name}。")
+                    else:
+                        row.update(self.external_updater.apply(ext, overwrite_modified=overwrite))
+                elif origin == "library":
+                    if library_states is None:
+                        library_states = self._library_skill_states()
+                    row.update(self._apply_library_update(name, overwrite, library_states))
+                else:
+                    row.update(ok=False, error=f"这个技能不能升级：{name}")
+            except (OSError, ValueError) as exc:
+                row.update(ok=False, error=str(exc))
+            results.append(row)
+        return {"ok": True, "results": results}
+
+    def _apply_library_update(
+        self, name: str, overwrite: bool, states: dict[str, dict[str, Any]]
+    ) -> dict[str, Any]:
+        state = states.get(name)
+        if state is None:
+            return {"ok": False, "error": f"技能 {name} 不是从内置库安装的。"}
+        status = state.get("status")
+        if status == "up_to_date" or status == "modified":
+            return {"ok": True, "unchanged": True, "status": status}
+        if status == "modified_and_available" and not overwrite:
+            return {
+                "ok": False,
+                "code": "modified_requires_confirm",
+                "error": f"技能 {name} 本地改过，确认覆盖后才能升级（旧版本会备份）。",
+                "changes": state.get("changes") or [],
+            }
+        pack = self._library_pack()
+        src = (pack.root / "skills" / name) if pack.root is not None else None
+        if src is None or not (src / "SKILL.md").is_file():
+            return {"ok": False, "error": f"内置库里已经没有技能 {name}。"}
+        return self.library_updater.install(name, src, replace=True)
+
+    def rollback_skill(self, name: str, body: dict[str, Any]) -> dict[str, Any]:
+        origin = str(body.get("origin") or "")
+        if origin not in ("external", "library"):
+            origin = (
+                "external" if skill_backups.latest(name, "external") is not None else "library"
+            )
+        try:
+            if origin == "external":
+                return self.external_updater.rollback(name)
+            return self.library_updater.rollback(name)
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
 
     def reveal_skill(
         self, name: str, workspace: Optional[str] = None
@@ -9610,7 +9888,10 @@ class SessionManager:
         try:
             folder, _scope = self.skill_store.find(name, workspace or None)
         except ValueError as exc:
-            return {"ok": False, "error": str(exc)}
+            external = self.skill_sources.find(name)
+            if external is None:
+                return {"ok": False, "error": str(exc)}
+            folder = external.path  # showing another tool's folder is read-only
         try:
             if sys.platform == "darwin":
                 # procutil-exempt: shows the folder to the user (Finder open) — not a
@@ -9673,22 +9954,88 @@ class SessionManager:
         The single resolver behind the engine catalog, the rail list, and the composer popup.
         Persona-carried skills (OPE-58) join the merge for the session's persona — user
         disables and mutes still win over them."""
-        dirs = [self.skill_store.global_dir]
-        if workspace:
-            dirs.append(self.skill_store.project_dir(workspace))
-        loader = SkillLoader(dirs)
-        names = set(loader.names())
-        persona_dir, allow = self.persona_skill_scope(self._persona_of(session_id, agent))
-        if persona_dir is not None:
-            persona_names = set(SkillLoader([persona_dir]).names())
-            if allow is not None:
-                persona_names &= allow
-            names |= persona_names
+        names = set(self._own_skill_loader(workspace).names())
+        names |= set(self._persona_skill_index(session_id, agent))
+        # External skills of the enabled sources (来源与升级 §1) join the same merge, so
+        # Settings disables and session mutes apply to them exactly as to any other.
+        names |= {s.name for s in self.skill_sources.discover()}
         return effective_skills(
             names=names,
             disabled=self.skill_store.disabled_names(),
             session_overrides=self.session_skills.get(session_id),
         )
+
+    def _own_skill_loader(self, workspace: Optional[str | Path] = None):
+        """Global + project skills. Shared (stat-fingerprinted) rather than a fresh
+        SkillLoader: this runs per turn and per load_skill through the engine's filters."""
+        dirs = [self.skill_store.global_dir]
+        if workspace:
+            dirs.append(self.skill_store.project_dir(workspace))
+        return shared_loader(dirs)
+
+    def _persona_skill_index(
+        self, session_id: str, agent: Optional[str] = None
+    ) -> dict[str, Any]:
+        """name → Skill for the persona-carried skills that are in scope."""
+        persona_dir, allow = self.persona_skill_scope(self._persona_of(session_id, agent))
+        if persona_dir is None:
+            return {}
+        loader = shared_loader([persona_dir])
+        return {
+            n: loader.get(n)
+            for n in loader.names()
+            if (allow is None or n in allow) and loader.get(n) is not None
+        }
+
+    def _external_skill_index(self) -> dict[str, ExternalSkill]:
+        return {s.name: s for s in self.skill_sources.discover()}
+
+    def manual_skill_names(
+        self,
+        session_id: str,
+        workspace: Optional[str | Path] = None,
+        agent: Optional[str] = None,
+    ) -> set[str]:
+        """Skills that only run when the user force-runs them (来源与升级 §3): every skill
+        whose author set `disable-model-invocation`, plus external skills not switched to
+        auto. Judged on the copy that wins — an own skill shadowing an external one of the
+        same name is never made manual by the external's setting."""
+        manual: set[str] = set()
+        own = self._own_skill_loader(workspace)
+        own_names = set(own.names())
+        for name in own_names:
+            skill = own.get(name)
+            if skill is not None and skill.disable_model_invocation:
+                manual.add(name)
+        persona = self._persona_skill_index(session_id, agent)
+        for name, skill in persona.items():
+            if name not in own_names and skill.disable_model_invocation:
+                manual.add(name)
+        taken = own_names | set(persona)
+        for name, ext in self._external_skill_index().items():
+            if name in taken:
+                continue
+            if ext.disable_model_invocation or self.skill_sources.invocation(name) != SKILL_AUTO:
+                manual.add(name)
+        return manual
+
+    def skill_invocation_state(
+        self,
+        session_id: str,
+        workspace: Optional[str | Path] = None,
+        agent: Optional[str] = None,
+    ) -> tuple[set[str], set[str]]:
+        """(manual skills, manual skills the user force-ran in this session) — what the
+        engine needs to keep manual skills out of the catalog and gate load_skill."""
+        return (
+            self.manual_skill_names(session_id, workspace, agent),
+            set(self._invoked_skills.get(session_id, set())),
+        )
+
+    def note_skill_invoked(self, session_id: str, name: str) -> None:
+        """The user force-ran `name` (`/name` in the composer): from now on load_skill may
+        serve it in this session even if it is manual-only."""
+        self._invoked_skills.setdefault(session_id, set()).add(name)
 
     def session_skills_view(
         self, session_id: str, workspace: Optional[str] = None
@@ -9698,12 +10045,14 @@ class SessionManager:
         like any other, but owned by the persona bundle, not the Settings store."""
         disabled = self.skill_store.disabled_names()
         overrides = self.session_skills.get(session_id)
+        manual = self.manual_skill_names(session_id, workspace or None)
         rows = [
             {
                 "name": r["name"],
                 "description": r["description"],
                 "scope": r["scope"],
                 "enabled": overrides.get(r["name"], True),
+                "manual": r["name"] in manual,
             }
             for r in self.skill_store.rows(workspace or None)
             if r["name"] not in disabled
@@ -9717,14 +10066,31 @@ class SessionManager:
                     continue  # a global/project copy shadows the bundle's
                 if allow is not None and name not in allow:
                     continue
+                seen.add(name)
                 rows.append(
                     {
                         "name": name,
                         "description": entry["description"],
                         "scope": "coworker",
                         "enabled": overrides.get(name, True),
+                        "manual": name in manual,
                     }
                 )
+        # External skills (来源与升级 §1): lowest priority, so any copy above wins the name.
+        # `manual` tells the composer popup these run only when picked.
+        for ext in self.skill_sources.discover():
+            if ext.name in seen or ext.name in disabled:
+                continue
+            rows.append(
+                {
+                    "name": ext.name,
+                    "description": ext.description,
+                    "scope": "external",
+                    "source_label": ext.source_label,
+                    "enabled": overrides.get(ext.name, True),
+                    "manual": ext.name in manual,
+                }
+            )
         return {"skills": rows}
 
     def _scratch_workspace_error(self, workspace: Any) -> Optional[dict[str, Any]]:
@@ -9764,6 +10130,38 @@ class SessionManager:
         return {"ok": True, "skill": created}
 
     def update_skill(self, name: str, body: dict[str, Any]) -> dict[str, Any]:
+        workspace = body.get("workspace") or None
+        external = self._external_only(name, workspace)
+        if external is not None and (
+            body.get("description") is not None or body.get("instructions") is not None
+        ):
+            return {
+                "ok": False,
+                "error": self._EXTERNAL_READ_ONLY.format(
+                    name=name, source=external.source_label
+                ),
+            }
+        if "invocation" in body:
+            # Validate before anything is written, so a refused mode change never leaves
+            # half the patch applied.
+            mode = str(body.get("invocation") or "")
+            if external is None:
+                return {
+                    "ok": False,
+                    "error": "只有外部技能能切换调用方式；你自己的技能总是可以自动使用。",
+                }
+            if mode == SKILL_AUTO and external.disable_model_invocation:
+                return {
+                    "ok": False,
+                    "error": (
+                        f"技能 {name} 的作者设定它只能手动调用"
+                        "（disable-model-invocation），不能改成自动。"
+                    ),
+                }
+            try:
+                self.skill_sources.set_invocation(name, mode)
+            except ValueError as exc:
+                return {"ok": False, "error": str(exc)}
         try:
             if "enabled" in body:
                 self.skill_store.set_enabled(name, bool(body["enabled"]))
@@ -9779,6 +10177,12 @@ class SessionManager:
         return {"ok": True}
 
     def delete_skill(self, name: str, workspace: Optional[str] = None) -> dict[str, Any]:
+        external = self._external_only(name, workspace)
+        if external is not None:
+            return {
+                "ok": False,
+                "error": self._EXTERNAL_READ_ONLY.format(name=name, source=external.source_label),
+            }
         try:
             self.skill_store.delete(name, workspace or None)
         except (ValueError, OSError) as exc:
@@ -9786,6 +10190,12 @@ class SessionManager:
         return {"ok": True}
 
     def move_skill(self, name: str, body: dict[str, Any]) -> dict[str, Any]:
+        external = self._external_only(name, body.get("workspace") or None)
+        if external is not None:
+            return {
+                "ok": False,
+                "error": self._EXTERNAL_READ_ONLY.format(name=name, source=external.source_label),
+            }
         # Moving INTO project scope must not target a scratch dir (moving OUT is fine —
         # that's the rescue path for already-stranded skills).
         if str(body.get("scope", "")) == "project":

@@ -57,6 +57,12 @@ def _isolated_state_dir(tmp_path, monkeypatch):
     # Universal scratch provisions a per-session dir for EVERY session — without this,
     # tests would mkdir under the developer's real ~/OpenWorker.
     monkeypatch.setenv("COWORKER_SCRATCH_BASE", str(tmp_path / "coworker-scratch"))
+    # External skill sources (~/.agents/skills, ~/.claude/skills…) hang off this home, so
+    # no test ever reads — or upgrades into — the developer's real agent folders.
+    monkeypatch.setenv("COWORKER_SKILL_HOME", str(tmp_path / "skill-home"))
+    # Skill update checks read a GitHub token from the env; tests run token-less.
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
     monkeypatch.delenv("COWORKER_API_TOKEN", raising=False)
 
 

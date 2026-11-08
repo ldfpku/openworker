@@ -41,6 +41,7 @@ from .providers import ProviderClient, ProviderRouter
 from .overrides import RiskOverrideStore
 from .secrets import SecretStore, state_dir
 from .skills import save_skill_tool, shared_loader, skill_catalog_text, skill_tools
+from .skills.base import LiveLoader
 from .tools import ToolRegistry
 from .tools.ask import ask_user_tool
 from .tools.deferred import make_deferred_toolset_loader
@@ -346,6 +347,14 @@ def build_engine(
     # OPE-186: where the compaction transcript is spilled (None = the session's scratch
     # root if there is one, else a per-process temp directory).
     tool_result_spill_dir: Optional[str | Path] = None,
+    # External skill sources (来源与升级 §1–§2): a zero-arg callable returning the enabled
+    # source folders in loader order (lowest priority first). Re-read every turn, so a
+    # source switched on in Settings applies from the next message. None = no externals.
+    external_skill_dirs: Optional[Callable[[], list]] = None,
+    # Manual invocation (来源与升级 §3): a zero-arg callable returning
+    # (manual skill names, names the user force-ran in this session). Manual skills never
+    # enter the per-turn catalog, and load_skill serves them only once the user asked.
+    skill_invocation: Optional[Callable[[], tuple[set[str], set[str]]]] = None,
 ) -> TurnEngine:
     ws = Path(workspace).expanduser().resolve() if workspace else None
     if agent.requires_folder and ws is None:
@@ -664,9 +673,53 @@ def build_engine(
     # (rebuild on every coworker/folder pick) re-parsed the whole 163-file library each
     # time. The loader holds no per-session state — `skill_filter` below is the per-session
     # view, and it is consulted at read time.
-    skill_loader = shared_loader(
-        [Path(d) for d in (extra_skill_dirs or [])] + _skill_dirs(ws)
-    )
+    own_skill_dirs = [Path(d) for d in (extra_skill_dirs or [])] + _skill_dirs(ws)
+    if external_skill_dirs is not None:
+        # External folders go FIRST: they are the lowest-priority layer, so any persona,
+        # global or project skill of the same name overwrites them in the loader.
+        skill_loader = LiveLoader(
+            lambda: [Path(d) for d in external_skill_dirs()] + own_skill_dirs
+        )
+    else:
+        skill_loader = shared_loader(own_skill_dirs)
+
+    def _menu_now() -> Optional[set]:
+        return skill_filter() if callable(skill_filter) else skill_filter
+
+    def _catalog_allowed() -> Optional[set]:
+        """What the per-turn catalog may list: the menu minus every manual skill."""
+        allowed = _menu_now()
+        if skill_invocation is None:
+            return allowed
+        manual, _invoked = skill_invocation()
+        if not manual:
+            return allowed
+        base = set(skill_loader.names()) if allowed is None else set(allowed)
+        return base - manual
+
+    def _load_allowed() -> Optional[set]:
+        """What load_skill may serve: the menu minus manual skills the user has not asked
+        for. A manual skill already loaded in this conversation stays loadable — the user
+        asked for it once, and after a server restart the in-memory "asked" record is gone
+        while the history is not."""
+        allowed = _menu_now()
+        if skill_invocation is None:
+            return allowed
+        manual, invoked = skill_invocation()
+        if not manual:
+            return allowed
+        eng = _engine_box[0] if _engine_box else None
+        loaded = _loaded_skill_names(eng.messages) if eng is not None else set()
+        base = set(skill_loader.names()) if allowed is None else set(allowed)
+        return base - (manual - set(invoked) - loaded)
+
+    def _annotate(skill) -> dict:
+        if external_skill_dirs is None or not skill.path:
+            return {}
+        parent = str(Path(skill.path).parent)
+        if parent in {str(Path(d)) for d in external_skill_dirs()}:
+            return {"origin": "external", "source": parent}
+        return {}
     # Per-session effective menu (SKILLS-SPEC §3). The manager passes a CALLABLE so
     # load_skill consults the LIVE state per call (a Settings disable applies to running
     # sessions; a skill created after this build is still loadable). The catalog itself
@@ -676,7 +729,12 @@ def build_engine(
     # `roots=root_list`: loading a skill mounts that skill's folder as a read-only
     # resource root, so its bundled references/scripts are readable by the file tools.
     registry.register_all(
-        skill_tools(skill_loader, allowed=skill_filter, roots=root_list or None)
+        skill_tools(
+            skill_loader,
+            allowed=_load_allowed if skill_invocation is not None else skill_filter,
+            roots=root_list or None,
+            annotate=_annotate if external_skill_dirs is not None else None,
+        )
     )
     # The worker-authors door (SKILLS-SPEC §5.2): save_skill proposes installing a finished
     # skill; requires_approval routes it through the standard approval card, so the review-
@@ -789,7 +847,9 @@ def build_engine(
         # no new session, no lost context.
         skill_loader.rescan()
         allowed = skill_filter() if callable(skill_filter) else skill_filter
-        skills_ctx = skill_catalog_text(skill_loader, allowed=allowed)
+        # Manual skills (来源与升级 §3) stay out of the catalog; the countermand below still
+        # judges against the full menu, so a force-run skill is never told to stop.
+        skills_ctx = skill_catalog_text(skill_loader, allowed=_catalog_allowed())
         if skills_ctx:
             parts.append(skills_ctx)
         # Disable countermand (§3): instructions already loaded into this conversation keep
@@ -918,12 +978,11 @@ def build_engine(
     def guidance_context() -> dict[str, Any]:
         # What the 开工前核对 diagnosis reads (coworker/guidance.py): the same session-fixed
         # knowledge the system prompt carries, plus the live roots and skill menu.
-        allowed = skill_filter() if callable(skill_filter) else skill_filter
         return {
             "memories": memories_block,
             "rules": rules_block,
             "roots": [str(r.path) for r in root_list],
-            "skills_catalog": skill_catalog_text(skill_loader, allowed=allowed),
+            "skills_catalog": skill_catalog_text(skill_loader, allowed=_catalog_allowed()),
         }
 
     engine.guidance_context = guidance_context

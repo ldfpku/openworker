@@ -88,6 +88,17 @@ def test_create_then_list_enriched(tmp_path):
             "enabled": True,
             "path": rows[0]["path"],
             "files": 0,
+            # 来源与升级 §5: own skills are writable, auto, and not upgradable.
+            "origin": "own",
+            "source_id": "",
+            "source_label": "",
+            "read_only": False,
+            "shadowed_by": "",
+            "also_in": [],
+            "invocation": "auto",
+            "invocation_locked": False,
+            "update": {"status": "untracked"},
+            "can_rollback": False,
         }
     ]
 
@@ -298,7 +309,13 @@ def test_session_mute_roundtrip(tmp_path):
     client.post("/v1/skills", json=GREET)
     view = client.get("/v1/sessions/s1/skills").json()["skills"]
     assert view == [
-        {"name": "greet", "description": "says hello", "scope": "global", "enabled": True}
+        {
+            "name": "greet",
+            "description": "says hello",
+            "scope": "global",
+            "enabled": True,
+            "manual": False,
+        }
     ]
     after = client.post(
         "/v1/sessions/s1/skills", json={"skill": "greet", "enabled": False}

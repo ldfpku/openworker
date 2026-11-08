@@ -796,6 +796,40 @@ def create_app(manager: SessionManager) -> FastAPI:
     def create_skill(body: dict) -> dict[str, Any]:
         return manager.create_skill(body or {})
 
+    # External skill sources + updates (来源与升级 §1, §6–§7). Registered before the
+    # /v1/skills/{name} routes so the literal paths are matched first.
+    @app.get("/v1/skills/sources")
+    def skill_sources() -> dict[str, Any]:
+        return manager.list_skill_sources()
+
+    @app.post("/v1/skills/sources")
+    def add_skill_source(body: dict) -> dict[str, Any]:
+        return manager.add_skill_source(body or {})
+
+    @app.patch("/v1/skills/sources/{source_id}")
+    def set_skill_source(source_id: str, body: dict) -> dict[str, Any]:
+        return manager.set_skill_source(source_id, body or {})
+
+    @app.delete("/v1/skills/sources/{source_id}")
+    def remove_skill_source(source_id: str) -> dict[str, Any]:
+        return manager.remove_skill_source(source_id)
+
+    @app.get("/v1/skills/updates")
+    def skill_updates(workspace: str = "") -> dict[str, Any]:
+        return manager.skill_updates(workspace or None)
+
+    @app.post("/v1/skills/updates/check")
+    def check_skill_updates(body: Optional[dict] = None) -> dict[str, Any]:
+        return manager.check_skill_updates(str((body or {}).get("workspace", "")) or None)
+
+    @app.post("/v1/skills/updates/apply")
+    def apply_skill_updates(body: dict) -> dict[str, Any]:
+        return manager.apply_skill_updates(body or {})
+
+    @app.post("/v1/skills/{name}/rollback")
+    def rollback_skill(name: str, body: Optional[dict] = None) -> dict[str, Any]:
+        return manager.rollback_skill(name, body or {})
+
     @app.patch("/v1/skills/{name}")
     def update_skill(name: str, body: dict) -> dict[str, Any]:
         return manager.update_skill(name, body or {})
@@ -3434,6 +3468,9 @@ def create_app(manager: SessionManager) -> FastAPI:
                                 f"Skill '{skill}' is not available in this session."
                             )
                             continue
+                        # The user asked for it by name: a manual-only skill (来源与升级
+                        # §3) becomes loadable in this session from here on.
+                        manager.note_skill_invoked(session_id, skill)
                         display = f"/{skill}" + (f" {text}" if text else "")
                         text = (
                             f'Use the skill "{skill}" for this request: first call '
