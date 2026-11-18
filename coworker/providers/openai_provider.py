@@ -85,6 +85,30 @@ def _reasoning_extras(field: Optional[str], text: Optional[str]) -> dict[str, An
     return {}
 
 
+def _tool_extra_sidecar(by_id: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """The `_openai_compat_tool_extra` sidecar: per-call `extra_content` as the wire sent
+    it (Gemini 3+ puts `google.thought_signature` there on the OpenAI-compatible route),
+    keyed by call id so it can be re-attached to the matching outbound tool call. Wrapped
+    in `by_id` so it can't be mistaken for a sidecar carrying `items`. Empty when the
+    wire sent none, keeping extras exactly as they were before."""
+    if by_id:
+        return {"_openai_compat_tool_extra": {"by_id": by_id}}
+    return {}
+
+
+def _message_tool_extras(raw_tool_calls: Any) -> dict[str, dict[str, Any]]:
+    """`{call_id: extra_content}` from a non-streaming message's tool calls: only calls
+    with a non-empty id and a non-empty dict. Kept apart from `_parse_tool_calls` so the
+    parsed `ToolCall` list is untouched."""
+    by_id: dict[str, dict[str, Any]] = {}
+    for tc in raw_tool_calls or []:
+        call_id = getattr(tc, "id", None) or ""
+        extra = getattr(tc, "extra_content", None)
+        if call_id and isinstance(extra, dict) and extra and call_id not in by_id:
+            by_id[call_id] = extra
+    return by_id
+
+
 # Model families whose thinking is sent back on later turns (OPE-178). An allow-list, not
 # "everyone": the sidecar is saved for every model, but replay is gated because some
 # endpoints 400 on a `reasoning_content` key in the INPUT (DeepSeek's own API for
@@ -119,9 +143,40 @@ def replay_reasoning(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def replay_tool_extra(model: str, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Re-attach each tool call's persisted `extra_content` (the `_openai_compat_tool_extra`
+    sidecar, see `_tool_extra_sidecar`) to the matching outbound `tool_calls` entry, so a
+    Gemini 3+ thought signature on the OpenAI-compatible route goes back as it arrived.
+    Only for Gemini model ids: other vendors don't know the field. Messages without the
+    sidecar are returned untouched, and the input is never mutated. Call before
+    `_strip_foreign_sidecars`, which then removes the underscore key itself."""
+    if "gemini" not in (model or "").lower():
+        return messages
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        sidecar = m.get("_openai_compat_tool_extra") if m.get("role") == "assistant" else None
+        by_id = sidecar.get("by_id") if isinstance(sidecar, dict) else None
+        tool_calls = m.get("tool_calls")
+        if not (isinstance(by_id, dict) and by_id and isinstance(tool_calls, list)):
+            out.append(m)
+            continue
+        calls = [
+            (
+                {**tc, "extra_content": by_id[tc.get("id")]}
+                if isinstance(tc, dict) and isinstance(by_id.get(tc.get("id")), dict)
+                else tc
+            )
+            for tc in tool_calls
+        ]
+        out.append({**m, "tool_calls": calls})
+    return out
+
+
 def _outbound(model: str, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The messages as the wire sees them: thinking replayed for the models that take
-    it back, then every provider-private sidecar stripped."""
+    it back, tool-call `extra_content` replayed for Gemini, then every provider-private
+    sidecar stripped."""
+    messages = replay_tool_extra(model, messages)
     return _strip_foreign_sidecars(
         replay_reasoning(messages) if replays_reasoning(model) else messages
     )
@@ -406,7 +461,8 @@ class OpenAIProvider(ProviderClient):
         choice = response.choices[0]
         message = choice.message
         text = getattr(message, "content", None)
-        tool_calls = _parse_tool_calls(getattr(message, "tool_calls", None))
+        raw_tool_calls = getattr(message, "tool_calls", None)
+        tool_calls = _parse_tool_calls(raw_tool_calls)
         text, tool_calls = _maybe_salvage_tool_calls(text, tool_calls, tools=tools)
         reasoning_text = _delta_reasoning(message)
         return AssistantTurn(
@@ -415,7 +471,10 @@ class OpenAIProvider(ProviderClient):
             finish_reason=getattr(choice, "finish_reason", None),
             raw=response,
             reasoning=reasoning_text,
-            extras=_reasoning_extras(_reasoning_field(message), reasoning_text),
+            extras={
+                **_reasoning_extras(_reasoning_field(message), reasoning_text),
+                **_tool_extra_sidecar(_message_tool_extras(raw_tool_calls)),
+            },
             usage=_usage_from(getattr(response, "usage", None)),
             output_limit=_output_limit(kwargs),
         )
@@ -510,9 +569,12 @@ class OpenAIProvider(ProviderClient):
                     tool_calls=tool_calls,
                     finish_reason=finish_reason,
                     reasoning="".join(reasoning_parts) or None,
-                    extras=_reasoning_extras(
-                        reasoning_field, "".join(reasoning_parts) or None
-                    ),
+                    extras={
+                        **_reasoning_extras(
+                            reasoning_field, "".join(reasoning_parts) or None
+                        ),
+                        **_tool_extra_sidecar(acc.extras_by_id()),
+                    },
                     usage=usage,
                     output_limit=_output_limit(kwargs),
                     # A clean Chat Completions stream ALWAYS ends with a choice chunk carrying
@@ -561,7 +623,8 @@ class _StreamToolCalls:
     """
 
     def __init__(self) -> None:
-        # Entries in creation order; each is {"index", "id", "name", "args"}.
+        # Entries in creation order; each is {"index", "id", "name", "args", "extra"}.
+        # `extra` is reserved for provider-specific per-call data (e.g. `extra_content`).
         self.entries: list[dict[str, Any]] = []
         self.by_index: dict[int, dict[str, Any]] = {}
 
@@ -571,6 +634,7 @@ class _StreamToolCalls:
             "id": "",
             "name": "",
             "args": "",
+            "extra": None,
         }
         self.entries.append(entry)
         if index is not None:
@@ -619,6 +683,17 @@ class _StreamToolCalls:
             acc["name"] = name
         if args:
             acc["args"] += args
+        # Non-standard per-call data (Gemini's `extra_content.google.thought_signature`).
+        # The SDK keeps unknown fields as raw values; record the first non-empty one.
+        extra = getattr(tc, "extra_content", None)
+        if isinstance(extra, dict) and extra and not acc["extra"]:
+            acc["extra"] = extra
+
+    def extras_by_id(self) -> dict[str, dict[str, Any]]:
+        """`{call_id: extra_content}` for every call that has both; empty otherwise."""
+        return {
+            e["id"]: e["extra"] for e in self.entries if e["id"] and e["extra"]
+        }
 
     def calls(self) -> list[ToolCall]:
         """Indexed calls in ascending index order, then index-less calls in arrival order."""

@@ -566,3 +566,459 @@ def test_accum_mixed_index_outputs_indexed_first_then_arrival_order():
         _delta(index=0, id="i0", name="read_file", args='{"path": "a.py"}'),
     ])
     assert [c.id for c in calls] == ["i0", "i2", "u1", "u2"]
+
+
+# -- Change 2 (task 4.1): streamed `extra_content` capture ---------------------------
+
+_SIG_A = {"google": {"thought_signature": "sig-A"}}
+_SIG_B = {"google": {"thought_signature": "sig-B"}}
+
+
+def _delta_x(extra, **kwargs):
+    """A tool-call delta that also carries the non-standard `extra_content` field."""
+    d = _delta(**kwargs)
+    d.extra_content = extra
+    return d
+
+
+def test_accum_records_first_extra_content_per_call():
+    acc = _StreamToolCalls()
+    for d in [
+        _delta_x(_SIG_A, id="c1", name="load_skill", args='{"name": '),
+        _delta_x(_SIG_B, args='"pdf-translate-zh"}'),  # later value on same call: ignored
+        _delta(id="c2", name="todo_write", args='{"todos": []}'),  # no extra at all
+        _delta_x({}, id="c3", name="grep", args='{"pattern": "x"}'),  # empty: ignored
+    ]:
+        acc.add(d)
+    assert acc.extras_by_id() == {"c1": _SIG_A}
+    assert [c.name for c in acc.calls()] == ["load_skill", "todo_write", "grep"]
+
+
+def test_accum_extra_without_call_id_is_not_exported():
+    acc = _StreamToolCalls()
+    acc.add(_delta_x(_SIG_A, name="todo_write", args='{"todos": []}'))
+    assert acc.extras_by_id() == {}
+
+
+def test_stream_persists_tool_extra_sidecar_by_id():
+    turn = _final_turn([
+        _delta_x(_SIG_A, id="c1", name="load_skill", args='{"name": "pdf-translate-zh"}'),
+        _delta_x(_SIG_B, id="c2", name="todo_write", args='{"todos": []}'),
+    ])
+    assert turn.extras == {
+        "_openai_compat_tool_extra": {"by_id": {"c1": _SIG_A, "c2": _SIG_B}}
+    }
+
+
+def test_stream_without_extra_content_has_no_tool_extra_sidecar():
+    turn = _final_turn([
+        _delta(id="c1", name="load_skill", args='{"name": "pdf-translate-zh"}'),
+        _delta(id="c2", name="todo_write", args='{"todos": []}'),
+    ])
+    assert turn.extras == {}
+
+
+def test_stream_tool_extra_sidecar_merges_with_reasoning_sidecar():
+    thinking = SimpleNamespace(
+        choices=[SimpleNamespace(
+            delta=SimpleNamespace(content=None, tool_calls=None, reasoning_content="hmm"),
+            finish_reason=None,
+        )]
+    )
+    chunks = [
+        thinking,
+        _chunk(tool_call=_delta_x(_SIG_A, id="c1", name="read_file", args='{"path": "a.py"}')),
+        _chunk(finish="tool_calls"),
+    ]
+    turn = _stream_out(chunks, model="google-ai-studio/gemini-x")[-1].turn
+    assert turn.extras == {
+        "_openai_compat": {"field": "reasoning_content", "text": "hmm"},
+        "_openai_compat_tool_extra": {"by_id": {"c1": _SIG_A}},
+    }
+
+
+# --- Change 2: extra_content capture on non-streaming complete() ---------------------
+
+
+def _complete_turn(tool_calls, **message_fields):
+    message = SimpleNamespace(content=None, tool_calls=tool_calls, **message_fields)
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=message, finish_reason="tool_calls")]
+    )
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **kw: response))
+    )
+    return OpenAIProvider(client=client).complete(
+        model="google-ai-studio/gemini-x", messages=[]
+    )
+
+
+def _message_call(call_id, name, arguments, extra=None):
+    tc = SimpleNamespace(id=call_id, function=SimpleNamespace(name=name, arguments=arguments))
+    if extra is not None:
+        tc.extra_content = extra
+    return tc
+
+
+def test_complete_captures_extra_content_by_id_and_leaves_tool_calls_unchanged():
+    turn = _complete_turn(
+        [
+            _message_call("c1", "load_skill", '{"name": "pdf-translate-zh"}', _SIG_A),
+            _message_call("c2", "todo_write", '{"todos": []}'),  # no extra: skipped
+            _message_call("", "grep", '{"pattern": "x"}', _SIG_B),  # no id: skipped
+            _message_call("c4", "read_file", '{"path": "a.py"}', {}),  # empty: skipped
+        ],
+        reasoning_content="hmm",
+    )
+    assert turn.tool_calls == [
+        ToolCall(id="c1", name="load_skill", arguments={"name": "pdf-translate-zh"}),
+        ToolCall(id="c2", name="todo_write", arguments={"todos": []}),
+        ToolCall(id="", name="grep", arguments={"pattern": "x"}),
+        ToolCall(id="c4", name="read_file", arguments={"path": "a.py"}),
+    ]
+    assert turn.extras == {
+        "_openai_compat": {"field": "reasoning_content", "text": "hmm"},
+        "_openai_compat_tool_extra": {"by_id": {"c1": _SIG_A}},
+    }
+
+
+def test_complete_without_extra_content_has_no_tool_extra_sidecar():
+    turn = _complete_turn([
+        _message_call("c1", "load_skill", '{"name": "pdf-translate-zh"}'),
+        _message_call("c2", "todo_write", '{"todos": []}'),
+    ])
+    assert turn.extras == {}
+
+
+# --- Change 2 (task 4.3): outbound replay of tool-call extra_content -----------------
+
+import copy  # noqa: E402
+
+from coworker.providers.openai_provider import (  # noqa: E402
+    _outbound,
+    _strip_foreign_sidecars,
+    replay_reasoning,
+    replay_tool_extra,
+    replays_reasoning,
+)
+
+
+def _legacy_outbound(model, messages):
+    """Pre-4.3 `_outbound`, copied as-is."""
+    return _strip_foreign_sidecars(
+        replay_reasoning(messages) if replays_reasoning(model) else messages
+    )
+
+
+def _wire_call(call_id, name, arguments):
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {"name": name, "arguments": json.dumps(arguments)},
+    }
+
+
+def _history(with_sidecar=True):
+    """A user turn, an assistant turn with two parallel calls (as `_assistant_message`
+    builds it), and the two tool results."""
+    assistant = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            _wire_call("c1", "load_skill", {"name": "pdf-translate-zh"}),
+            _wire_call("c2", "todo_write", {"todos": []}),
+        ],
+        "_openai_compat": {"field": "reasoning_content", "text": "hmm"},
+    }
+    if with_sidecar:
+        assistant["_openai_compat_tool_extra"] = {"by_id": {"c1": _SIG_A}}
+    return [
+        {"role": "user", "content": "/pdf-translate-zh a.pdf"},
+        assistant,
+        {"role": "tool", "tool_call_id": "c1", "content": "skill body"},
+        {"role": "tool", "tool_call_id": "c2", "content": "ok"},
+    ]
+
+
+def _no_underscore_keys(messages):
+    return all(not k.startswith("_") for m in messages for k in m)
+
+
+def test_outbound_gemini_with_sidecar_reattaches_extra_content():
+    msgs = _history()
+    before = copy.deepcopy(msgs)
+    out = _outbound("google-ai-studio/Gemini-4-hydrogen", msgs)
+    calls = out[1]["tool_calls"]
+    assert calls[0]["extra_content"] == _SIG_A
+    assert "extra_content" not in calls[1]  # no captured value for c2
+    assert _no_underscore_keys(out)
+    assert msgs == before  # input not mutated
+    # Everything but the re-attached field matches the old outbound shape.
+    legacy = _legacy_outbound("google-ai-studio/Gemini-4-hydrogen", msgs)
+    del calls[0]["extra_content"]
+    assert out == legacy
+
+
+@pytest.mark.parametrize("model", ["gpt-5.5", "together:moonshotai/Kimi-K3", "", None])
+def test_outbound_non_gemini_model_equals_legacy(model):
+    msgs = _history()
+    assert _outbound(model, msgs) == _legacy_outbound(model, msgs)
+    assert replay_tool_extra(model, msgs) is msgs
+
+
+def test_outbound_gemini_without_sidecar_equals_legacy():
+    msgs = _history(with_sidecar=False)
+    model = "google-ai-studio/gemini-x"
+    assert replay_tool_extra(model, msgs) == msgs
+    assert _outbound(model, msgs) == _legacy_outbound(model, msgs)
+
+
+# -- Property 3: Thought-signature pass-through (task 4.4) ----------------------------
+# The provider replays a tool call's `extra_content` only when the wire supplied it AND
+# the outbound model is Gemini; any other request is identical to the pre-Change-2 one.
+# **Validates: Requirements 2.5, 3.5, 3.6**
+
+from coworker.engine import _assistant_message, _calls_awaiting_output  # noqa: E402
+from coworker.providers import AssistantTurn  # noqa: E402
+from coworker.providers.openai_provider import _tool_extra_sidecar  # noqa: E402
+
+_GEMINI_MODELS = [
+    "gemini-3-pro-preview",
+    "google-ai-studio/gemini-2.5-flash",
+    "google-ai-studio/Gemini-4-hydrogen",
+    "openrouter/google/GEMINI-3-flash",
+]
+_OTHER_MODELS = [
+    "gpt-5.5",
+    "openai/gpt-4.1-mini",
+    "together:moonshotai/Kimi-K3",
+    "@cf/zai-org/glm-5.3-flash",
+    "deepseek-reasoner",
+    "claude-sonnet-4.5",
+    "google-ai-studio/gemma-3-27b",
+    "",
+]
+
+
+def _random_model(rng):
+    return rng.choice(_GEMINI_MODELS if rng.random() < 0.5 else _OTHER_MODELS)
+
+
+def _random_extra(rng):
+    sig = {"thought_signature": f"sig-{rng.randrange(10**9):x}"}
+    if rng.random() < 0.3:
+        sig["other"] = rng.randrange(10)
+    return {"google": sig}
+
+
+def _random_call_specs(rng, turn_no):
+    """1–4 calls for one assistant turn; each one randomly carries `extra_content`."""
+    specs = []
+    for k in range(rng.randint(1, 4)):
+        specs.append(
+            {
+                "id": f"t{turn_no}_c{k}_{rng.randrange(10**6)}",
+                "name": rng.choice(_TOOL_NAMES),
+                "args": json.loads(_random_args_text(rng)),
+                "extra": _random_extra(rng) if rng.random() < 0.5 else None,
+            }
+        )
+    return specs
+
+
+def _assistant_from_specs(rng, specs):
+    """The assistant message the engine persists for a turn whose wire sent `specs`."""
+    by_id = {s["id"]: s["extra"] for s in specs if s["extra"]}
+    extras = dict(_tool_extra_sidecar(by_id))
+    if rng.random() < 0.4:
+        extras["_openai_compat"] = {"field": "reasoning_content", "text": "think"}
+    if rng.random() < 0.2:
+        extras["_gemini"] = {"parts": [{"thought_signature": "native"}]}  # foreign sidecar
+    turn = AssistantTurn(
+        text=rng.choice([None, "", "working on it"]),
+        tool_calls=[ToolCall(id=s["id"], name=s["name"], arguments=s["args"]) for s in specs],
+        extras=extras,
+    )
+    return _assistant_message(turn, "google-ai-studio/gemini-x")
+
+
+def _random_conversation(rng):
+    """1–3 rounds of user → assistant(tool calls) → tool results, plus the specs."""
+    messages, all_specs = [], []
+    for turn_no in range(rng.randint(1, 3)):
+        specs = _random_call_specs(rng, turn_no)
+        all_specs.append(specs)
+        messages.append({"role": "user", "content": f"step {turn_no}"})
+        messages.append(_assistant_from_specs(rng, specs))
+        for s in specs:
+            messages.append({"role": "tool", "tool_call_id": s["id"], "content": "ok"})
+    return messages, all_specs
+
+
+def _without_extra_content(messages):
+    out = []
+    for m in messages:
+        if isinstance(m.get("tool_calls"), list):
+            m = {
+                **m,
+                "tool_calls": [
+                    {k: v for k, v in tc.items() if k != "extra_content"}
+                    for tc in m["tool_calls"]
+                ],
+            }
+        out.append(m)
+    return out
+
+
+def _assert_pass_through(model, messages, all_specs):
+    before = copy.deepcopy(messages)
+    out = _outbound(model, messages)
+    legacy = _legacy_outbound(model, messages)
+    assert messages == before, "input history must not be mutated"
+    assert _no_underscore_keys(out)
+
+    is_gemini = "gemini" in (model or "").lower()
+    assistants = [m for m in out if m.get("role") == "assistant"]
+    assert len(assistants) == len(all_specs)
+    for message, specs in zip(assistants, all_specs):
+        assert [tc["id"] for tc in message["tool_calls"]] == [s["id"] for s in specs]
+        for tc, spec in zip(message["tool_calls"], specs):
+            if is_gemini and spec["extra"]:
+                assert tc["extra_content"] == spec["extra"]
+            else:
+                assert "extra_content" not in tc
+
+    # Apart from the re-attached field, the request is the old one ...
+    assert _without_extra_content(out) == legacy
+    # ... and byte-for-byte the old one whenever nothing was (or may be) replayed.
+    has_sidecar = any(s["extra"] for specs in all_specs for s in specs)
+    if not is_gemini or not has_sidecar:
+        assert out == legacy
+        assert json.dumps(out, sort_keys=True) == json.dumps(legacy, sort_keys=True)
+
+
+@pytest.mark.parametrize("seed", range(60))
+def test_property3_outbound_replays_extra_only_for_gemini_with_sidecar(seed):
+    rng = random.Random(20_000 + seed)
+    messages, all_specs = _random_conversation(rng)
+    _assert_pass_through(_random_model(rng), messages, all_specs)
+
+
+@pytest.mark.parametrize("seed", range(30))
+def test_property3_history_without_sidecar_equals_legacy_for_any_model(seed):
+    rng = random.Random(30_000 + seed)
+    messages, all_specs = _random_conversation(rng)
+    for specs in all_specs:
+        for s in specs:
+            s["extra"] = None
+    for m in messages:
+        m.pop("_openai_compat_tool_extra", None)
+    for model in ["google-ai-studio/gemini-x", "gpt-5.5", _random_model(rng)]:
+        assert _outbound(model, messages) == _legacy_outbound(model, messages)
+        assert replay_tool_extra(model, messages) == messages
+
+
+# -- Property 3: end to end (capture -> persisted assistant message -> wire request) --
+
+
+class _RecordingClient:
+    """Answers `create()` with a canned stream or response and keeps every request."""
+
+    def __init__(self, reply):
+        self.requests = []
+
+        def create(**kwargs):
+            self.requests.append(kwargs)
+            return iter(reply) if isinstance(reply, list) else reply
+
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=create))
+
+
+def _stream_deltas_for(rng, specs):
+    """Wire deltas for `specs`: no index (the Gemini compat shape) or explicit indices;
+    `extra_content` rides the call's first fragment when the call has one."""
+    with_index = rng.random() < 0.3
+    deltas = []
+    for k, s in enumerate(specs):
+        for i, frag in enumerate(_split(rng, json.dumps(s["args"], ensure_ascii=False))):
+            d = _delta(
+                index=k if with_index else None,
+                id=s["id"] if i == 0 else None,
+                name=s["name"] if i == 0 else None,
+                args=frag,
+            )
+            if i == 0 and s["extra"]:
+                d.extra_content = s["extra"]
+            deltas.append(d)
+    return deltas
+
+
+def _second_request(model, history):
+    """The `messages` a follow-up request actually sends on the wire."""
+    reply = SimpleNamespace(
+        choices=[SimpleNamespace(
+            message=SimpleNamespace(content="done", tool_calls=None), finish_reason="stop"
+        )]
+    )
+    client = _RecordingClient(reply)
+    OpenAIProvider(client=client).complete(model=model, messages=history)
+    return client.requests[0]["messages"]
+
+
+def _check_round_trip(rng, model, turn, specs):
+    assert turn.tool_calls == [
+        ToolCall(id=s["id"], name=s["name"], arguments=s["args"]) for s in specs
+    ]
+    captured = {s["id"]: s["extra"] for s in specs if s["extra"]}
+    if captured:
+        assert turn.extras["_openai_compat_tool_extra"] == {"by_id": captured}
+    else:
+        assert "_openai_compat_tool_extra" not in turn.extras
+
+    message = _assistant_message(turn, model)
+    # The `by_id` wrapper is not an `items` list, so the engine's strict-provider repair
+    # still sees exactly the canonical call ids (no phantom or missing ids).
+    assert _calls_awaiting_output(message) == [s["id"] for s in specs]
+    bare = {k: v for k, v in message.items() if k != "_openai_compat_tool_extra"}
+    assert _calls_awaiting_output(bare) == _calls_awaiting_output(message)
+
+    history = [{"role": "user", "content": "go"}, message] + [
+        {"role": "tool", "tool_call_id": s["id"], "content": "ok"} for s in specs
+    ]
+    wire = _second_request(model, history)
+    _assert_pass_through(model, history, [specs])
+    assert wire == _outbound(model, history)
+
+
+@pytest.mark.parametrize("seed", range(30))
+def test_property3_stream_capture_round_trips_to_wire(seed):
+    rng = random.Random(40_000 + seed)
+    specs = _random_call_specs(rng, 0)
+    capture_model = rng.choice(_GEMINI_MODELS)
+    chunks = [_chunk(tool_call=d) for d in _stream_deltas_for(rng, specs)]
+    chunks.append(_chunk(finish="tool_calls"))
+    provider = OpenAIProvider(client=_RecordingClient(chunks))
+    turn = list(provider.stream(model=capture_model, messages=[]))[-1].turn
+    _check_round_trip(rng, _random_model(rng), turn, specs)
+
+
+@pytest.mark.parametrize("seed", range(30))
+def test_property3_complete_capture_round_trips_to_wire(seed):
+    rng = random.Random(50_000 + seed)
+    specs = _random_call_specs(rng, 0)
+    raw_calls = [
+        _message_call(s["id"], s["name"], json.dumps(s["args"]), s["extra"]) for s in specs
+    ]
+    turn = _complete_turn(raw_calls)
+    _check_round_trip(rng, _random_model(rng), turn, specs)
+
+
+def test_calls_awaiting_output_still_reads_items_sidecars_alongside_by_id():
+    message = {
+        "role": "assistant",
+        "tool_calls": [_wire_call("c1", "load_skill", {"name": "pdf-translate-zh"})],
+        "_openai_compat_tool_extra": {"by_id": {"c1": _SIG_A, "c9": _SIG_B}},
+        "_openai": {"items": [{"type": "function_call", "call_id": "r1"}]},
+    }
+    # `by_id` keys are never read as call ids; a real `items` sidecar still is.
+    assert _calls_awaiting_output(message) == ["c1", "r1"]
