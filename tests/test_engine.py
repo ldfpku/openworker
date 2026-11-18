@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import threading
 import time
@@ -1692,6 +1693,217 @@ def test_a_tool_turn_that_hit_the_ceiling_still_warns(tmp_path):
     assert next(ev for ev in events if ev.type == EventType.TURN_END).data["status"] == (
         "completed"
     )
+
+
+# -- parallel tool calls whose deltas carry no `index` (skill-invocation-error-fix) -----
+
+
+def _sse_tool_chunk_at(name, arguments, call_id, index=None):
+    """Like `_sse_tool_chunk`, but the delta's `index` is settable — `None` is how
+    Gemini's OpenAI-compatible stream (via Cloudflare AI Gateway) sends parallel calls."""
+    call = SimpleNamespace(
+        index=index, id=call_id, function=SimpleNamespace(name=name, arguments=arguments)
+    )
+    delta = SimpleNamespace(content=None, tool_calls=[call])
+    return SimpleNamespace(choices=[SimpleNamespace(delta=delta, finish_reason=None)])
+
+
+def _counted_stream_provider(*chunk_scripts):
+    """`_stream_provider` that also counts model calls, so a retry loop shows up as a
+    number instead of an IndexError from an exhausted script list."""
+    scripts = list(chunk_scripts)
+    calls = []
+
+    def _create(**kw):
+        calls.append(kw)
+        return iter(scripts.pop(0))
+
+    class _Client:
+        def __init__(self):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=_create))
+
+    return OpenAIProvider(client=_Client()), calls
+
+
+def _tool_results(engine):
+    return [m for m in engine.messages if m.get("role") == "tool"]
+
+
+def test_two_parallel_calls_without_index_both_run_through_the_engine(tmp_path):
+    """The 2026 Gemini-via-Cloudflare field bug: two tool calls in one turn, no `index`
+    on either delta. They used to merge into one `{"_raw": "{…}{…}"}` call that the engine
+    rejected as unparseable, and the model re-sent the same pair forever. Now each call
+    runs on its own and the turn ends after one follow-up round."""
+    (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
+    (tmp_path / "b.txt").write_text("bravo\n", encoding="utf-8")
+    provider, calls = _counted_stream_provider(
+        [
+            _sse_tool_chunk_at("read_file", '{"path": "a.txt"}', "c1"),
+            _sse_tool_chunk_at("read_file", '{"path": "b.txt"}', "c2"),
+            _sse_chunk(finish="tool_calls"),
+        ],
+        [_sse_chunk(content="both read"), _sse_chunk(finish="stop")],
+    )
+    engine = _stream_engine(tmp_path, provider)
+    events = _collect(engine, "read a.txt and b.txt")
+
+    proposed = [ev.data for ev in events if ev.type == EventType.TOOL_PROPOSED]
+    assert proposed == [
+        {"name": "read_file", "arguments": {"path": "a.txt"}},
+        {"name": "read_file", "arguments": {"path": "b.txt"}},
+    ]
+    finished = [ev.data for ev in events if ev.type == EventType.TOOL_FINISHED]
+    assert [f["name"] for f in finished] == ["read_file", "read_file"]
+    assert all(f["status"] != "error" for f in finished)
+
+    results = _tool_results(engine)
+    assert [r["tool_call_id"] for r in results] == ["c1", "c2"]
+    assert "alpha" in results[0]["content"] and "bravo" in results[1]["content"]
+
+    history = json.dumps(engine.messages, default=str)
+    assert "_raw" not in history
+    assert "did not parse" not in history
+    assert len(calls) == 2  # one tool round + one closing round, no retry loop
+    assert next(ev for ev in events if ev.type == EventType.TURN_END).data["status"] == (
+        "completed"
+    )
+
+
+def _skill_stream_engine(tmp_path, provider):
+    """`_stream_engine` plus the session tools the `/pdf-translate-zh` field bug hit:
+    `load_skill` over a real SkillLoader with one on-disk skill, and `todo_write`."""
+    from coworker.skills import SkillLoader, skill_tools
+    from coworker.tools.todo import TodoList, todo_tools
+
+    skill_dir = tmp_path / "skills" / "pdf-translate-zh"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: pdf-translate-zh\ndescription: Translate a PDF into Chinese\n---\n\n"
+        "Step 1: extract the PDF text. Step 2: translate it into Simplified Chinese.\n",
+        encoding="utf-8",
+    )
+    engine = _stream_engine(tmp_path, provider)
+    todo = TodoList()
+    engine.registry.register_all(skill_tools(SkillLoader([tmp_path / "skills"])))
+    engine.registry.register_all(todo_tools(todo))
+    return engine, todo
+
+
+def test_load_skill_and_todo_write_without_index_both_run_through_the_engine(tmp_path):
+    """The exact field turn: `/pdf-translate-zh` on Gemini via Cloudflare, where the model
+    answers with `load_skill` + `todo_write` in one turn and no `index` on either delta.
+    Each call must reach its own tool with its own arguments — that is what the GUI reads
+    to show "使用了技能：pdf-translate-zh" and "更新了计划——3 项" instead of an empty
+    skill name and "0 项", both errored."""
+    todos = [
+        {"content": "Extract the PDF text", "status": "in_progress"},
+        {"content": "Translate to Chinese", "status": "pending"},
+        {"content": "Write the translated document", "status": "pending"},
+    ]
+    provider, calls = _counted_stream_provider(
+        [
+            _sse_tool_chunk_at("load_skill", '{"name": "pdf-translate-zh"}', "c1"),
+            _sse_tool_chunk_at("todo_write", json.dumps({"todos": todos}), "c2"),
+            _sse_chunk(finish="tool_calls"),
+        ],
+        [_sse_chunk(content="skill loaded, starting"), _sse_chunk(finish="stop")],
+    )
+    engine, todo = _skill_stream_engine(tmp_path, provider)
+    events = _collect(engine, '/pdf-translate-zh 翻译 "guide.pdf" 文档')
+
+    proposed = [ev.data for ev in events if ev.type == EventType.TOOL_PROPOSED]
+    assert proposed == [
+        {"name": "load_skill", "arguments": {"name": "pdf-translate-zh"}},
+        {"name": "todo_write", "arguments": {"todos": todos}},
+    ]
+    finished = [ev.data for ev in events if ev.type == EventType.TOOL_FINISHED]
+    assert [f["name"] for f in finished] == ["load_skill", "todo_write"]
+    assert all(f["status"] != "error" for f in finished)
+
+    skill_result, todo_result = _tool_results(engine)
+    assert skill_result["tool_call_id"] == "c1"
+    loaded = json.loads(skill_result["content"])
+    assert loaded["name"] == "pdf-translate-zh"
+    assert "translate it into Simplified Chinese" in loaded["instructions"]
+    assert todo_result["tool_call_id"] == "c2"
+    assert json.loads(todo_result["content"])["count"] == 3
+    assert todo.items == todos
+
+    history = json.dumps(engine.messages, default=str)
+    assert "_raw" not in history
+    assert "did not parse" not in history
+    assert len(calls) == 2
+    assert next(ev for ev in events if ev.type == EventType.TURN_END).data["status"] == (
+        "completed"
+    )
+
+
+def test_load_skill_with_a_name_off_the_menu_still_says_unknown_skill(tmp_path):
+    """Preservation (3.7): separating the calls must not make an unknown name loadable —
+    it still answers `unknown skill: …` with the menu of skills that do exist."""
+    provider, _ = _counted_stream_provider(
+        [
+            _sse_tool_chunk_at("load_skill", '{"name": "ghost-skill"}', "c1"),
+            _sse_chunk(finish="tool_calls"),
+        ],
+        [_sse_chunk(content="no such skill"), _sse_chunk(finish="stop")],
+    )
+    engine, _ = _skill_stream_engine(tmp_path, provider)
+    events = _collect(engine, "load ghost-skill")
+
+    assert [ev.data for ev in events if ev.type == EventType.TOOL_PROPOSED] == [
+        {"name": "load_skill", "arguments": {"name": "ghost-skill"}}
+    ]
+    (result,) = _tool_results(engine)
+    body = json.loads(result["content"])
+    assert body["error"] == "unknown skill: ghost-skill"
+    assert body["available"] == ["pdf-translate-zh"]
+
+
+@pytest.mark.parametrize("index", [0, None])
+def test_a_single_call_with_really_bad_json_still_gets_the_parse_diagnosis(
+    tmp_path, index
+):
+    provider, calls = _counted_stream_provider(
+        [
+            _sse_tool_chunk_at("read_file", '{"path": "a.py"', "c1", index=index),
+            _sse_chunk(finish="tool_calls"),
+        ],
+        [_sse_chunk(content="sorry"), _sse_chunk(finish="stop")],
+    )
+    engine = _stream_engine(tmp_path, provider)
+    events = _collect(engine, "read a.py")
+
+    finished = [ev.data for ev in events if ev.type == EventType.TOOL_FINISHED]
+    assert len(finished) == 1 and finished[0]["status"] == "error"
+    assert "did not parse as a JSON object" in finished[0]["reason"]
+    (result,) = _tool_results(engine)
+    assert result["tool_call_id"] == "c1"
+    assert "did not parse as a JSON object" in json.loads(result["content"])["reason"]
+    assert len(calls) == 2
+
+
+def test_a_single_call_cut_off_at_the_length_limit_still_gets_the_token_diagnosis(
+    tmp_path,
+):
+    provider, calls = _counted_stream_provider(
+        [
+            _sse_tool_chunk_at("write_file", '{"path": "big.md", "content": "lo', "c1"),
+            _sse_chunk(finish="length"),
+        ],
+        [_sse_chunk(content="will split it"), _sse_chunk(finish="stop")],
+    )
+    engine = _stream_engine(tmp_path, provider)
+    events = _collect(engine, "write the long doc")
+
+    finished = [ev.data for ev in events if ev.type == EventType.TOOL_FINISHED]
+    assert len(finished) == 1 and finished[0]["status"] == "error"
+    reason = finished[0]["reason"]
+    assert "cut off by the output-token limit" in reason
+    assert "did not parse" not in reason
+    (result,) = _tool_results(engine)
+    assert "cut off by the output-token limit" in json.loads(result["content"])["reason"]
+    assert len(calls) == 2
 
 
 # -- the stream bridge's own lifecycle -------------------------------------------------

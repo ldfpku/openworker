@@ -456,7 +456,7 @@ class OpenAIProvider(ProviderClient):
         text_parts: list[str] = []
         reasoning_parts: list[str] = []
         reasoning_field: Optional[str] = None
-        tool_accum: dict[int, dict[str, str]] = {}
+        acc = _StreamToolCalls()
         finish_reason = None
         usage: Optional[TokenUsage] = None
 
@@ -491,17 +491,7 @@ class OpenAIProvider(ProviderClient):
                         text_parts.append(content)
                         yield StreamChunk(text_delta=content)
                     for tc in getattr(delta, "tool_calls", None) or []:
-                        acc = tool_accum.setdefault(
-                            getattr(tc, "index", 0), {"id": "", "name": "", "args": ""}
-                        )
-                        if getattr(tc, "id", None):
-                            acc["id"] = tc.id
-                        fn = getattr(tc, "function", None)
-                        if fn is not None:
-                            if getattr(fn, "name", None):
-                                acc["name"] = fn.name
-                            if getattr(fn, "arguments", None):
-                                acc["args"] += fn.arguments
+                        acc.add(tc)
                 chunk_finish = getattr(choice, "finish_reason", None)
                 if chunk_finish is not None:
                     # `is not None`, not truthiness: an endpoint that sends `finish_reason: ""`
@@ -509,16 +499,7 @@ class OpenAIProvider(ProviderClient):
                     # perfectly ordinary reply look like a severed stream.
                     finish_reason = chunk_finish
 
-            tool_calls = []
-            for index in sorted(tool_accum):
-                acc = tool_accum[index]
-                try:
-                    arguments = json.loads(acc["args"]) if acc["args"] else {}
-                except (TypeError, json.JSONDecodeError):
-                    arguments = {"_raw": acc["args"]}
-                tool_calls.append(
-                    ToolCall(id=acc["id"], name=acc["name"], arguments=arguments)
-                )
+            tool_calls = acc.calls()
 
             text, tool_calls = _maybe_salvage_tool_calls(
                 "".join(text_parts) or None, tool_calls, tools=tools
@@ -549,6 +530,108 @@ class OpenAIProvider(ProviderClient):
             )
         finally:
             close_stream(chunks)
+
+
+def _is_complete_json(text: str) -> bool:
+    """True when `text` is a non-blank, fully parseable JSON document.
+
+    Used only as a call-boundary signal for index-less streams: an empty or partial
+    argument buffer is never "complete", which biases the accumulator toward the
+    pre-fix behavior (continuing the current call).
+    """
+    if not text or not text.strip():
+        return False
+    try:
+        json.loads(text)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+class _StreamToolCalls:
+    """Assembles streamed Chat Completions tool-call deltas into `ToolCall`s.
+
+    Deltas that carry an `index` are grouped by it, exactly as before. Gemini's
+    OpenAI-compatible stream (via Cloudflare AI Gateway `/compat`) sends parallel calls
+    with NO index (the SDK reads it as `None`); grouping those by index merged every call
+    into one with concatenated, unparseable arguments. For index-less deltas the call
+    boundary is inferred instead: a new `id`, or — in a stream that never sends ids — a
+    name arriving after the current call's arguments already form a complete JSON value.
+    Anything else continues the most recent call.
+    """
+
+    def __init__(self) -> None:
+        # Entries in creation order; each is {"index", "id", "name", "args"}.
+        self.entries: list[dict[str, Any]] = []
+        self.by_index: dict[int, dict[str, Any]] = {}
+
+    def _new_entry(self, index: Optional[int]) -> dict[str, Any]:
+        entry: dict[str, Any] = {
+            "index": index,
+            "id": "",
+            "name": "",
+            "args": "",
+        }
+        self.entries.append(entry)
+        if index is not None:
+            self.by_index[index] = entry
+        return entry
+
+    @staticmethod
+    def _starts_new_call(
+        last: Optional[dict[str, Any]], call_id: str, name: str, args: str
+    ) -> bool:
+        if last is None:
+            return True
+        if call_id:
+            if last["id"]:
+                return call_id != last["id"]
+            return bool(last["name"]) and _is_complete_json(last["args"])
+        # Name-based split only in a stream that has never used ids: once ids are in
+        # play, a new call always brings a new id, so a repeated name must not split.
+        return (
+            not last["id"]
+            and bool(name)
+            and bool(last["name"])
+            and _is_complete_json(last["args"])
+            and (name != last["name"] or bool(args.strip()))
+        )
+
+    def add(self, tc: Any) -> None:
+        index = getattr(tc, "index", None)  # absent and None are treated alike
+        call_id = getattr(tc, "id", None) or ""
+        fn = getattr(tc, "function", None)
+        name = (getattr(fn, "name", None) or "") if fn is not None else ""
+        args = (getattr(fn, "arguments", None) or "") if fn is not None else ""
+
+        if index is not None:
+            acc = self.by_index.get(index) or self._new_entry(index)
+        else:
+            last = self.entries[-1] if self.entries else None
+            if self._starts_new_call(last, call_id, name, args):
+                acc = self._new_entry(None)
+            else:
+                acc = last  # type: ignore[assignment]
+
+        if call_id:
+            acc["id"] = call_id
+        if name:
+            acc["name"] = name
+        if args:
+            acc["args"] += args
+
+    def calls(self) -> list[ToolCall]:
+        """Indexed calls in ascending index order, then index-less calls in arrival order."""
+        indexed = [self.by_index[i] for i in sorted(self.by_index)]
+        unindexed = [e for e in self.entries if e["index"] is None]
+        tool_calls: list[ToolCall] = []
+        for acc in indexed + unindexed:
+            try:
+                arguments = json.loads(acc["args"]) if acc["args"] else {}
+            except (TypeError, json.JSONDecodeError):
+                arguments = {"_raw": acc["args"]}
+            tool_calls.append(ToolCall(id=acc["id"], name=acc["name"], arguments=arguments))
+        return tool_calls
 
 
 def _parse_tool_calls(raw_tool_calls: Any) -> list[ToolCall]:
