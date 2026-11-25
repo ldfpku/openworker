@@ -824,6 +824,9 @@ class TurnEngine:
         # endpoints the static matrix doesn't carry) — injected by the manager so the
         # compaction trigger is driven by the model's own metadata, not the 128k fallback.
         self.catalog_context_window: Optional[Callable[[str], Optional[int]]] = None
+        # Same idea for image input: what the endpoint's /models row declares (None = it
+        # said nothing). Consulted by `_model_capabilities` for models the matrix lacks.
+        self.catalog_vision: Optional[Callable[[str], Optional[bool]]] = None
         self.is_attended: Optional[Callable[[], bool]] = None
         # 开工前核对 (coworker/guidance.py) — both set post-construction by the manager, same
         # as compaction. `guidance_config` is a live getter ({enabled, model, timeout,
@@ -1275,7 +1278,7 @@ class TurnEngine:
 
         text = f"Model switched to {model_labels().get(model, model)}"
         try:
-            caps = self.provider.capabilities(model)
+            caps = self._model_capabilities(model)
         except Exception:
             caps = None
         if (
@@ -1286,6 +1289,32 @@ class TurnEngine:
             text += " — earlier images can't be read by this model"
         self._append_notice("model_switch", text)
         return text
+
+    def _model_capabilities(self, model: str):
+        """`provider.capabilities(model)`, except that for a model the curated matrix does
+        not carry, image input follows what the endpoint's own /models row declares
+        (`catalog_vision`). Custom and self-hosted ids (`custom:localai`) otherwise fall
+        to the conservative default, and every image is replaced by a placeholder before
+        it is sent — even to a model that reads images fine. Curated models keep their
+        vetted answer; an endpoint that declares nothing changes nothing."""
+        caps = self.provider.capabilities(model)
+        getter = getattr(self, "catalog_vision", None)
+        if caps is None or getter is None:
+            return caps
+        from .providers.matrix import entry_for
+
+        if entry_for(model) is not None:
+            return caps
+        try:
+            declared = getter(model)
+        except Exception:
+            return caps
+        if not isinstance(declared, bool) or declared == bool(getattr(caps, "vision", False)):
+            return caps
+        try:
+            return replace(caps, vision=declared)
+        except TypeError:  # a test double that is not a dataclass
+            return caps
 
     def _history_has_images(self) -> bool:
         return any(
@@ -4322,7 +4351,7 @@ class TurnEngine:
             if isinstance(msg.get("content"), list)
             for p in msg["content"]
         ):
-            caps = self.provider.capabilities(self.model)
+            caps = self._model_capabilities(self.model)
             if not getattr(caps, "pdf", False):
                 from . import pdf_support
 
@@ -4347,7 +4376,7 @@ class TurnEngine:
             if isinstance(msg.get("content"), list)
             for p in msg["content"]
         ):
-            caps = self.provider.capabilities(self.model)
+            caps = self._model_capabilities(self.model)
             if not getattr(caps, "vision", False):
                 placeholder = {
                     "type": "text",

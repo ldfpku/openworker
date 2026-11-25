@@ -1272,6 +1272,7 @@ class SessionManager:
             engine.compaction_state = CompactionState.from_dict(record.compaction)
         engine.compaction_settings = self.compaction_settings
         engine.catalog_context_window = self.catalog_context_window
+        engine.catalog_vision = self.catalog_vision
         # 开工前核对 (coworker/guidance.py): live getter, same reasoning as compaction. The
         # engine itself decides WHEN (first task message, attended); this supplies the
         # model, the timeout, the catalog recommender and the session's skill menu.
@@ -4529,6 +4530,24 @@ class SessionManager:
         except Exception:
             return None
         return windows.get(model)
+
+    def catalog_vision(self, model: str) -> Optional[bool]:
+        """Whether a configured catalog provider's own /models row says `model` takes
+        image input, or None when it said nothing (or the model is not in any cached list).
+        Read on every call like `catalog_context_window`, so a catalog refresh applies to
+        open sessions without a rebuild."""
+        try:
+            for name in CATALOG_PROVIDERS:
+                if not self._provider_configured(name):
+                    continue
+                for m in self._catalog_models(name):
+                    full_id = m["id"] if name == "openai" else f"{name}:{m['id']}"
+                    if full_id == model:
+                        vision = m.get("vision")
+                        return vision if isinstance(vision, bool) else None
+        except Exception:
+            return None
+        return None
 
     # -- aigw: the guard's per-person allowlist (GET /gate/models) ----------------
     # The company gateway's guard Worker is an allowlist: a person may call exactly the

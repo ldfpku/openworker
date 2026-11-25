@@ -88,6 +88,9 @@ class CatalogModel:
     price_in: Optional[float] = None
     price_out: Optional[float] = None
     tier: Optional[str] = None
+    # Whether the endpoint itself says this model takes image input (`_declared_vision`).
+    # None = it did not say; the name heuristics in capabilities.py decide then.
+    vision: Optional[bool] = None
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -104,7 +107,34 @@ class CatalogModel:
             out["price_out"] = self.price_out
         if self.tier is not None:
             out["tier"] = self.tier
+        if self.vision is not None:
+            out["vision"] = self.vision
         return out
+
+
+def _declared_vision(entry: dict[str, Any]) -> Optional[bool]:
+    """Image input as a `/models` row declares it, or None when the row says nothing.
+
+    Spellings seen on OpenAI-compatible catalogs: OpenRouter's
+    `architecture.input_modalities` (["text", "image"]), the same list at the top level,
+    and `capabilities` as a dict (`{"vision": true}`) or a list (["vision", ...]). A
+    self-hosted gateway is the case this exists for: its model ids (`localai`,
+    `inkling-2-mini`) match none of the vendor-name heuristics, so without the
+    declaration every image was swapped for a placeholder before it was sent."""
+    modalities: Any = None
+    architecture = entry.get("architecture")
+    if isinstance(architecture, dict):
+        modalities = architecture.get("input_modalities")
+    if modalities is None:
+        modalities = entry.get("input_modalities")
+    if isinstance(modalities, list):
+        return any(isinstance(m, str) and m.strip().lower() == "image" for m in modalities)
+    capabilities = entry.get("capabilities")
+    if isinstance(capabilities, dict) and isinstance(capabilities.get("vision"), bool):
+        return capabilities["vision"]
+    if isinstance(capabilities, list):
+        return any(isinstance(c, str) and c.strip().lower() == "vision" for c in capabilities)
+    return None
 
 
 # -- chat-model filtering ---------------------------------------------------------
@@ -308,7 +338,9 @@ def parse_openai_compat(
                 if isinstance(value, int) and value > 0:
                     context_window = value
                     break
-            out.append(CatalogModel(model_id, label, context_window))
+            out.append(
+                CatalogModel(model_id, label, context_window, vision=_declared_vision(entry))
+            )
             seen.add(model_id)
         except Exception:
             continue
