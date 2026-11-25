@@ -149,13 +149,16 @@ test("Add a note is a pure append — it lands in the timeline, state untouched"
 
 test("journal section lists cases once a board exists", async ({ page }) => {
   await planTheWork(page);
-  // Journal is not a primary section — it sits behind the quiet More row.
-  await expect(page.getByTestId("rail-toggle-journal")).toHaveCount(0);
-  await page.getByTestId("rail-toggle-journal").click();
+  // The More fold is gone (d88a1961): Journal lists flat with the other sections, collapsed
+  // by default. The old `toHaveCount(0)` on its toggle — a leftover from the fold, which the
+  // very next line contradicts by clicking that toggle — only passed while the journal
+  // fetch happened to land after the first check.
   const journal = page.getByTestId("journal-list");
+  await expect(page.getByTestId("rail-toggle-journal")).toBeVisible();
+  await expect(journal).not.toBeVisible();
+  await page.getByTestId("rail-toggle-journal").click();
   await expect(journal).toBeVisible();
   await expect(journal).toContainText("findings");
   await expect(journal).toContainText("12 entries");
-  // Access folds with it — the drawer keeps three primary sections.
   await expect(page.getByTestId("access-section")).toBeVisible();
 });
